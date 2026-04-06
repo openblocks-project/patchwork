@@ -71,6 +71,14 @@ pub struct AudioManager {
     /// Key = device name. The stream reads from a shared buffer filled by the engine.
     #[allow(dead_code)]
     secondary_streams: HashMap<String, SecondaryOutput>,
+    /// Node IDs whose processors were registered mid-session AFTER the
+    /// engine had already done its initial connection walk. The eval loop
+    /// drains this set on the next frame and re-runs `connect_audio` for
+    /// every connection involving these nodes, so a Microphone (or Sampler)
+    /// activated after DSP starts gets correctly wired into the chain.
+    /// Without this, `start_input` adds a processor but the audio edges
+    /// from this node remain dangling, producing silence downstream.
+    pub pending_connection_sync: std::collections::HashSet<NodeId>,
 }
 
 impl AudioManager {
@@ -100,6 +108,7 @@ impl AudioManager {
             output_channel_count: 2,
             device_channel_counts: HashMap::new(),
             secondary_streams: HashMap::new(),
+            pending_connection_sync: std::collections::HashSet::new(),
         }
     }
 
@@ -130,6 +139,7 @@ impl AudioManager {
             output_channel_count: 2,
             device_channel_counts: HashMap::new(),
             secondary_streams: HashMap::new(),
+            pending_connection_sync: std::collections::HashSet::new(),
         }
     }
 
@@ -500,6 +510,11 @@ impl AudioManager {
                 gain: 1.0,
             });
             self.add_processor(node_id, processor, 1);
+            // The engine's initial connection walk happened before this
+            // processor existed, so any mic→sampler edges were silently
+            // dropped. Mark this node for connection replay on the next
+            // eval frame.
+            self.pending_connection_sync.insert(node_id);
         }
 
         Ok(())

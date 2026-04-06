@@ -48,7 +48,7 @@ pub fn render(
         ("Visual", &["Image", "Video", "Shader", "ML"]),
         ("Audio", &["Audio"]),
         ("I/O", &["IO", "Network", "Serial", "OSC", "MIDI", "Hardware"]),
-        ("Utility", &["Utility", "Output", "Custom"]),
+        ("Utility", &["Utility", "Output", "Custom", "System"]),
     ];
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 2.0 * inv;
@@ -83,8 +83,6 @@ pub fn render(
         let mut any_shown = false;
 
         for entry in &cat {
-            if entry.category == "System" { continue; }
-
             // Category pill filter
             if !active_cat.is_empty() {
                 let matched = categories.iter().any(|&(label, cats)| {

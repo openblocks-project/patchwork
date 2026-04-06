@@ -591,7 +591,7 @@ impl super::PatchworkApp {
             ctx.request_repaint();
         }
 
-        // ── Wire context menu (label + delete) ───────────────────────────
+        // ── Wire context menu (label + delete + insert node) ─────────────
         if let Some(conn_id) = self.wire_menu_conn {
             // Re-resolve identity to current index each frame — survives reindexing
             if let Some(conn_idx) = self.find_connection_index(&conn_id) {
@@ -599,12 +599,25 @@ impl super::PatchworkApp {
                 let mut keep_open = true;
                 let pos = self.wire_menu_pos;
 
+                // Resolve the wire's PortKind once per frame for picker filtering.
+                // We use the source (output) port kind — it's the type carried
+                // along the wire and the only kind that matters for compatibility
+                // with both ends of the inserted node.
+                let wire_kind: Option<crate::graph::PortKind> = {
+                    let c = &self.graph.connections[conn_idx];
+                    self.graph.port_kind(c.from_node, c.from_port, true)
+                };
+
+                // Insert action collected from the picker click; applied AFTER
+                // the closure releases its borrow on `self.graph`.
+                let mut insert_request: Option<crate::graph::NodeType> = None;
+
                 egui::Area::new(egui::Id::new("wire_context_menu"))
                     .fixed_pos(pos)
                     .order(egui::Order::Tooltip)
                     .show(ctx, |ui| {
                         egui::Frame::popup(ui.style()).show(ui, |ui| {
-                            ui.set_min_width(60.0 / self.canvas_zoom);
+                            ui.set_min_width(160.0 / self.canvas_zoom);
 
                             // Label text field
                             ui.label(egui::RichText::new("Wire Label").small().strong());
@@ -612,6 +625,72 @@ impl super::PatchworkApp {
                             let r = ui.text_edit_singleline(label);
                             if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                                 keep_open = false;
+                            }
+
+                            ui.separator();
+
+                            // Insert node button — toggles a filtered picker
+                            // listing only nodes whose first input AND first
+                            // output are compatible with `wire_kind`.
+                            let insert_label = if self.wire_insert_picker_open {
+                                format!("{} Cancel insert", crate::icons::PLUS)
+                            } else {
+                                format!("{} Insert node…", crate::icons::PLUS)
+                            };
+                            if ui.add(egui::Button::new(egui::RichText::new(insert_label)).frame(false)).clicked() {
+                                self.wire_insert_picker_open = !self.wire_insert_picker_open;
+                                if self.wire_insert_picker_open {
+                                    self.wire_insert_search.clear();
+                                }
+                            }
+
+                            // Picker popup body (inline below the button so the
+                            // click-outside detection of the wire menu also
+                            // covers the picker without extra plumbing).
+                            if self.wire_insert_picker_open {
+                                ui.add(egui::TextEdit::singleline(&mut self.wire_insert_search)
+                                    .hint_text("Search…")
+                                    .desired_width(ui.available_width()));
+
+                                let query = self.wire_insert_search.to_lowercase();
+                                let cat = crate::nodes::catalog();
+                                let inv = 1.0 / self.canvas_zoom;
+                                let dim = ui.visuals().widgets.noninteractive.fg_stroke.color;
+                                let mut any_shown = false;
+                                egui::ScrollArea::vertical()
+                                    .max_height(280.0 * inv)
+                                    .show(ui, |ui| {
+                                        for entry in &cat {
+                                            // Build a sample instance to inspect ports.
+                                            let nt = (entry.factory)();
+                                            // Must have ≥1 input and ≥1 output that are
+                                            // compatible with the wire's port kind —
+                                            // anything else can't be inserted on a wire,
+                                            // so it doesn't belong in this menu.
+                                            let in_kind = match nt.inputs().first() { Some(p) => p.kind, None => continue };
+                                            let out_kind = match nt.outputs().first() { Some(p) => p.kind, None => continue };
+                                            if let Some(wk) = wire_kind {
+                                                if !crate::graph::PortKind::compatible(wk, in_kind) { continue; }
+                                                if !crate::graph::PortKind::compatible(out_kind, wk) { continue; }
+                                            }
+                                            // Search filter (label or category).
+                                            if !query.is_empty()
+                                                && !entry.label.to_lowercase().contains(&query)
+                                                && !entry.category.to_lowercase().contains(&query)
+                                            {
+                                                continue;
+                                            }
+                                            if ui.add(egui::Button::new(
+                                                egui::RichText::new(format!("{}  {}", crate::icons::node_icon(entry.label), entry.label)).small()
+                                            ).frame(false)).clicked() {
+                                                insert_request = Some((entry.factory)());
+                                            }
+                                            any_shown = true;
+                                        }
+                                        if !any_shown {
+                                            ui.label(egui::RichText::new("No compatible nodes").small().italics().color(dim));
+                                        }
+                                    });
                             }
 
                             ui.separator();
@@ -629,25 +708,66 @@ impl super::PatchworkApp {
                         });
                     });
 
-                // Close on click outside or Escape
+                // ── Apply insert request ──────────────────────────────────
+                // Done outside the closure so we can mutably borrow
+                // `self.graph` (add_node + remove + add_connection).
+                if let Some(nt) = insert_request {
+                    // Capture the original wire's endpoints + midpoint BEFORE
+                    // any mutation invalidates the index.
+                    let (from_node, from_port, to_node, to_port) = {
+                        let c = &self.graph.connections[conn_idx];
+                        (c.from_node, c.from_port, c.to_node, c.to_port)
+                    };
+                    let mid_pos: [f32; 2] = {
+                        let from_pos = self.graph.nodes.get(&from_node).map(|n| n.pos).unwrap_or([0.0, 0.0]);
+                        let to_pos = self.graph.nodes.get(&to_node).map(|n| n.pos).unwrap_or([0.0, 0.0]);
+                        // Slight downward bias so the new node doesn't overlap
+                        // an existing label/wire path centerline.
+                        [(from_pos[0] + to_pos[0]) * 0.5, (from_pos[1] + to_pos[1]) * 0.5 + 20.0]
+                    };
+
+                    self.push_undo();
+                    let new_id = self.graph.add_node(nt, mid_pos);
+                    // Remove the original wire (don't trust conn_idx after add_node).
+                    self.graph.connections.retain(|c| !(
+                        c.from_node == from_node && c.from_port == from_port &&
+                        c.to_node == to_node && c.to_port == to_port
+                    ));
+                    // Wire `from → new.input[0]` and `new.output[0] → to`.
+                    self.graph.add_connection(from_node, from_port, new_id, 0);
+                    self.graph.add_connection(new_id, 0, to_node, to_port);
+
+                    // Close the menu and clear selection state.
+                    self.wire_insert_picker_open = false;
+                    self.wire_insert_search.clear();
+                    self.wire_menu_conn = None;
+                    self.selected_connection = None;
+                    keep_open = false;
+                }
+
+                // Close on click outside or Escape. The menu rect grows when the
+                // picker is open so click-outside detection still works.
                 let esc = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+                let menu_height = if self.wire_insert_picker_open { 380.0 } else { 110.0 };
                 let click_outside = ctx.input(|i| {
                     i.pointer.button_clicked(egui::PointerButton::Primary)
                         || i.pointer.button_clicked(egui::PointerButton::Secondary)
                 }) && ctx.pointer_latest_pos()
                     .map(|p| {
-                        let menu_rect = egui::Rect::from_min_size(pos, egui::vec2(150.0, 80.0));
+                        let menu_rect = egui::Rect::from_min_size(pos, egui::vec2(220.0, menu_height));
                         !menu_rect.contains(p) && !hovered_conn.map(|h| h == conn_idx).unwrap_or(false)
                     })
                     .unwrap_or(false);
 
                 if esc || click_outside || !keep_open {
                     self.wire_menu_conn = None;
+                    self.wire_insert_picker_open = false;
                 }
                 ctx.set_style(orig_style);
             } else {
                 // Connection no longer exists (deleted, undo, etc.) — close menu
                 self.wire_menu_conn = None;
+                self.wire_insert_picker_open = false;
             }
         }
 

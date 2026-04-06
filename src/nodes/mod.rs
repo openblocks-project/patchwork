@@ -361,7 +361,7 @@ pub fn catalog() -> Vec<NodeCatalogEntry> {
         NodeCatalogEntry { label: "Microphone", category: "Audio",
             factory: || NodeType::AudioInput { selected_device: String::new(), gain: 1.0, active: false } },
         NodeCatalogEntry { label: "Audio Sampler", category: "Audio",
-            factory: || NodeType::AudioSampler { record_duration: 5.0, trim_start: 0.0, trim_end: 0.0, volume: 1.0, looping: false, reverse: false } },
+            factory: || NodeType::AudioSampler { record_duration: 5.0, trim_start: 0.0, trim_end: 0.0, volume: 1.0, looping: false, reverse: false, play_mode: 0, range_as_duration: false } },
         NodeCatalogEntry { label: "CLAP Plugin", category: "Audio",
             factory: || NodeType::ClapPlugin { plugin_path: String::new(), plugin_name: String::new(), param_names: Vec::new(), param_ranges: Vec::new(), param_flags: Vec::new(), param_values: Vec::new(), param_labels: Vec::new(), is_instrument: false } },
         NodeCatalogEntry { label: "Audio Analyzer", category: "Audio",

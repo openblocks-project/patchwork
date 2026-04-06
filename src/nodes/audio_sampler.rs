@@ -63,9 +63,9 @@ pub fn render(
     dragging_from: &mut Option<(NodeId, usize, bool)>,
     pending_disconnects: &mut Vec<(NodeId, usize)>,
 ) {
-    let (record_duration, trim_start, trim_end, volume, looping, reverse) = match node_type {
-        NodeType::AudioSampler { record_duration, trim_start, trim_end, volume, looping, reverse } =>
-            (record_duration, trim_start, trim_end, volume, looping, reverse),
+    let (record_duration, trim_start, trim_end, volume, looping, reverse, play_mode, range_as_duration) = match node_type {
+        NodeType::AudioSampler { record_duration, trim_start, trim_end, volume, looping, reverse, play_mode, range_as_duration } =>
+            (record_duration, trim_start, trim_end, volume, looping, reverse, play_mode, range_as_duration),
         _ => return,
     };
 
@@ -80,6 +80,28 @@ pub fn render(
     let current_write_pos = buffer.write_pos.load(std::sync::atomic::Ordering::Relaxed);
     let display_len = if is_recording { current_write_pos } else { rec_len };
     let display_dur = if sr > 0.0 { display_len as f32 / sr } else { 0.0 };
+
+    // ── Range port overrides (Start + End/Dur) ───────────────────
+    // When wired, these ports override the manual trim sliders so a
+    // patch can drive the playback region from upstream nodes (LFO,
+    // Map Range, etc.). Done BEFORE the atomic store below so the
+    // override propagates to the audio thread the same frame.
+    let recorded_dur_override = buffer.recorded_duration_secs();
+    let start_wired = connections.iter().any(|c| c.to_node == node_id && c.to_port == 4);
+    let endur_wired = connections.iter().any(|c| c.to_node == node_id && c.to_port == 5);
+    if start_wired && recorded_dur_override > 0.0 {
+        let v = Graph::static_input_value(connections, values, node_id, 4).as_float();
+        *trim_start = v.clamp(0.0, recorded_dur_override);
+    }
+    if endur_wired && recorded_dur_override > 0.0 {
+        let v = Graph::static_input_value(connections, values, node_id, 5).as_float();
+        let new_end = if *range_as_duration {
+            (*trim_start + v.max(0.0)).min(recorded_dur_override)
+        } else {
+            v.clamp(*trim_start, recorded_dur_override)
+        };
+        *trim_end = new_end;
+    }
 
     // Sync UI state ↔ buffer atomics
     buffer.looping.store(*looping, std::sync::atomic::Ordering::Relaxed);
@@ -103,13 +125,42 @@ pub fn render(
         }
     }
 
+    // Play port behavior depends on `play_mode`:
+    //   0 = Gate  — current behavior: play while high, stop on low
+    //   1 = Trig  — rising edge always (re)starts; ignores low
+    //   2 = Full  — rising edge starts only if not already playing (one-shot)
     let play_wired = connections.iter().any(|c| c.to_node == node_id && c.to_port == 2);
     if play_wired {
         let play_val = Graph::static_input_value(connections, values, node_id, 2).as_float();
-        if play_val > 0.5 && !is_playing && !is_recording && rec_len > 0 {
-            buffer.start_playback();
-        } else if play_val <= 0.5 && is_playing {
-            buffer.stop_playback();
+        // Track previous value per-node for rising-edge detection.
+        // Stored in egui's ctx data store so it survives across frames
+        // without leaking when the node is deleted (egui GCs eventually).
+        let prev_id = egui::Id::new(("sampler_prev_play", node_id));
+        let prev = ui.ctx().data_mut(|d| d.get_temp::<f32>(prev_id)).unwrap_or(0.0);
+        let rising = prev <= 0.5 && play_val > 0.5;
+        ui.ctx().data_mut(|d| d.insert_temp(prev_id, play_val));
+
+        match *play_mode {
+            0 => {
+                // Gate
+                if play_val > 0.5 && !is_playing && !is_recording && rec_len > 0 {
+                    buffer.start_playback();
+                } else if play_val <= 0.5 && is_playing {
+                    buffer.stop_playback();
+                }
+            }
+            1 => {
+                // Trig — rising edge always restarts from beginning
+                if rising && !is_recording && rec_len > 0 {
+                    buffer.start_playback();
+                }
+            }
+            _ => {
+                // Full — rising edge starts only if not already playing
+                if rising && !is_playing && !is_recording && rec_len > 0 {
+                    buffer.start_playback();
+                }
+            }
         }
     }
 
@@ -130,6 +181,21 @@ pub fn render(
         ui.add_space(4.0);
         crate::nodes::inline_port_circle(ui, node_id, 2, true, connections, port_positions, dragging_from, pending_disconnects, PortKind::Trigger);
         ui.label(egui::RichText::new("Play").small());
+        ui.add_space(6.0);
+        // Play-mode dropdown — Gate / Trigger / Full.
+        let mode_label = match *play_mode {
+            0 => "Gate",
+            1 => "Trigger",
+            _ => "Full",
+        };
+        egui::ComboBox::from_id_salt(("sampler_play_mode", node_id))
+            .selected_text(egui::RichText::new(mode_label).small())
+            .width(64.0)
+            .show_ui(ui, |ui| {
+                ui.selectable_value(play_mode, 0, "Gate");
+                ui.selectable_value(play_mode, 1, "Trigger");
+                ui.selectable_value(play_mode, 2, "Full");
+            });
     });
 
     // ── Waveform display ─────────────────────────────────────────
@@ -399,7 +465,7 @@ pub fn render(
                 }
             });
 
-            // Loop + Reverse + Save
+            // Loop + Reverse + PlayMode + Save
             ui.horizontal(|ui| {
                 let loop_color = if *looping { egui::Color32::from_rgb(80, 170, 255) } else { egui::Color32::GRAY };
                 if ui.add(egui::Button::new(egui::RichText::new("↻").size(12.0).color(loop_color)).min_size(egui::vec2(22.0, 20.0))).clicked() {
@@ -410,6 +476,7 @@ pub fn render(
                 if ui.add(egui::Button::new(egui::RichText::new("◀").size(10.0).color(rev_color)).min_size(egui::vec2(22.0, 20.0))).clicked() {
                     *reverse = !*reverse;
                 }
+
 
                 // Save button — export trimmed region as WAV
                 if rec_len > 0 && !is_recording {
@@ -456,18 +523,52 @@ pub fn render(
     });
 
     // ── Trim sliders ─────────────────────────────────────────────
+    // Each slider has its corresponding input port circle on the left,
+    // matching the existing pattern (e.g. volume port). When a port is
+    // wired the slider becomes a read-only display since the value is
+    // driven externally — the slider is still rendered (not hidden) so
+    // the layout stays stable as ports get connected/disconnected.
     let recorded_dur = buffer.recorded_duration_secs();
     if recorded_dur > 0.0 && !is_recording {
+        let label_color = egui::Color32::from_rgb(255, 200, 100);
+        let val_color = egui::Color32::from_rgb(160, 140, 100);
+
+        // Start row — port (4) + slider
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Start").small().color(egui::Color32::from_rgb(255, 200, 100)));
-            ui.add(egui::Slider::new(trim_start, 0.0..=recorded_dur).show_value(false));
-            ui.label(egui::RichText::new(fmt_time(*trim_start)).small().monospace().color(egui::Color32::from_rgb(160, 140, 100)));
+            crate::nodes::inline_port_circle(ui, node_id, 4, true, connections, port_positions, dragging_from, pending_disconnects, PortKind::Number);
+            ui.label(egui::RichText::new("Start").small().color(label_color));
+            ui.add_enabled(!start_wired, egui::Slider::new(trim_start, 0.0..=recorded_dur).show_value(false));
+            ui.label(egui::RichText::new(fmt_time(*trim_start)).small().monospace().color(val_color));
         });
+
+        // End/Dur row — port (5) + slider + clickable mode chip
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("End ").small().color(egui::Color32::from_rgb(255, 200, 100)));
+            crate::nodes::inline_port_circle(ui, node_id, 5, true, connections, port_positions, dragging_from, pending_disconnects, PortKind::Number);
+            // Clickable label that toggles range_as_duration. Stays the
+            // same physical width as the Start label so the two slider
+            // tracks line up.
+            let chip_text = if *range_as_duration { "Dur " } else { "End " };
+            if ui.add(egui::Button::new(egui::RichText::new(chip_text).small().color(label_color)).frame(false))
+                .on_hover_text("Click to switch between End position and Duration")
+                .clicked()
+            {
+                *range_as_duration = !*range_as_duration;
+            }
             if *trim_end <= 0.0 || *trim_end > recorded_dur { *trim_end = recorded_dur; }
-            ui.add(egui::Slider::new(trim_end, *trim_start..=recorded_dur).show_value(false));
-            ui.label(egui::RichText::new(fmt_time(*trim_end)).small().monospace().color(egui::Color32::from_rgb(160, 140, 100)));
+            if *range_as_duration {
+                // Slider edits a derived `duration = trim_end - trim_start`.
+                // Mutates trim_end via a temp on commit so the existing
+                // atomic-store path stays unchanged.
+                let max_dur = (recorded_dur - *trim_start).max(0.0);
+                let mut dur_val = (*trim_end - *trim_start).clamp(0.0, max_dur);
+                if ui.add_enabled(!endur_wired, egui::Slider::new(&mut dur_val, 0.0..=max_dur).show_value(false)).changed() {
+                    *trim_end = (*trim_start + dur_val).min(recorded_dur);
+                }
+                ui.label(egui::RichText::new(fmt_time(dur_val)).small().monospace().color(val_color));
+            } else {
+                ui.add_enabled(!endur_wired, egui::Slider::new(trim_end, *trim_start..=recorded_dur).show_value(false));
+                ui.label(egui::RichText::new(fmt_time(*trim_end)).small().monospace().color(val_color));
+            }
         });
     }
 

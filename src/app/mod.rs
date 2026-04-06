@@ -164,6 +164,12 @@ pub struct PatchworkApp {
     selected_connection: Option<ConnectionId>,
     wire_menu_conn: Option<ConnectionId>,  // connection identity for wire context menu
     wire_menu_pos: egui::Pos2,
+    /// Insert-on-wire picker visible state. When true, the wire menu shows a
+    /// filtered node-picker (only nodes whose first input AND first output
+    /// are compatible with the wire's PortKind). Selecting a node spawns it
+    /// at the wire midpoint and rewires `from → new → to`.
+    wire_insert_picker_open: bool,
+    wire_insert_search: String,
     // Box selection
     box_select_start: Option<egui::Pos2>,
     box_select_end: Option<egui::Pos2>,
@@ -256,6 +262,8 @@ impl PatchworkApp {
             selected_connection: None,
             wire_menu_conn: None,
             wire_menu_pos: egui::Pos2::ZERO,
+            wire_insert_picker_open: false,
+            wire_insert_search: String::new(),
             box_select_start: None,
             box_select_end: None,
             clipboard: None,
@@ -456,6 +464,17 @@ impl PatchworkApp {
         // (e.g., nodes added via palette after engine was started)
         if self.audio.engine_tx.is_some() {
             let mut new_nodes: Vec<NodeId> = Vec::new();
+            // Drain any nodes whose processors were registered mid-session
+            // (e.g., Microphone activated AFTER DSP started). These already
+            // have processors, so the loop below would skip them — but their
+            // connections were silently dropped during the initial walk and
+            // need to be replayed.
+            let pending_sync: Vec<NodeId> = self.audio.pending_connection_sync.drain().collect();
+            for nid in pending_sync {
+                if self.audio.has_processor(nid) {
+                    new_nodes.push(nid);
+                }
+            }
             for (&nid, _node) in &self.graph.nodes {
                 if self.audio.has_processor(nid) { continue; }
                 // Rebuild just this node

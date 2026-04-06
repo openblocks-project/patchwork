@@ -813,6 +813,17 @@ pub enum NodeType {
         /// Reverse playback direction.
         #[serde(default)]
         reverse: bool,
+        /// Play port behavior:
+        /// - 0 = Gate (default, current behavior): plays while port > 0.5, stops on low
+        /// - 1 = Trig: rising edge always (re)starts from beginning; ignores low
+        /// - 2 = Full: rising edge starts only if not already playing (true one-shot)
+        #[serde(default)]
+        play_mode: u8,
+        /// When true, the second range port (port 5) is interpreted as a
+        /// duration in seconds added to the start position; when false it's
+        /// an absolute end position. UI label for the port flips accordingly.
+        #[serde(default)]
+        range_as_duration: bool,
     },
     /// CLAP audio plugin — loaded from a .clap file.
     ClapPlugin {
@@ -1280,11 +1291,17 @@ impl NodeBehavior for NodeType {
                 }
                 ports
             }
-            NodeType::AudioSampler { .. } => vec![
+            NodeType::AudioSampler { range_as_duration, .. } => vec![
                 PortDef::new("Audio", Audio),
                 PortDef::new("Rec", Trigger),
                 PortDef::new("Play", Trigger),
                 PortDef::new("Vol", Normalized),
+                PortDef::new("Start", Number),
+                if *range_as_duration {
+                    PortDef::new("Dur", Number)
+                } else {
+                    PortDef::new("End", Number)
+                },
             ],
             NodeType::ClapPlugin { param_names, is_instrument, .. } => {
                 let mut ports = Vec::new();
