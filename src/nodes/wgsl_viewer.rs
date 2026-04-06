@@ -367,13 +367,18 @@ pub fn render(
         });
     }
 
-    // Read shader code from input port 0
+    // Read shader code from input port 0. We *latch* the last non-empty
+    // source we ever saw — disconnecting the text editor (or swapping it
+    // for another) must NOT wipe the running shader. The viewer keeps
+    // rendering whatever was last loaded until a new non-empty source
+    // arrives or the user clears it manually.
     let input_code = Graph::static_input_value(connections, values, node_id, 0);
-    let code = match &input_code {
-        PortValue::Text(s) => s.clone(),
-        _ => String::new(),
-    };
-    *wgsl_code = code.clone();
+    if let PortValue::Text(s) = &input_code {
+        if !s.trim().is_empty() {
+            *wgsl_code = s.clone();
+        }
+    }
+    let code = wgsl_code.clone();
 
     if code.is_empty() {
         ui.colored_label(egui::Color32::GRAY, "Connect WGSL code to render");

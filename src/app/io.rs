@@ -204,6 +204,7 @@ impl super::PatchworkApp {
                     image_data,
                     preview_size: 150.0,
                     last_save_hash: 0,
+                    cached_file: String::new(),
                 }, [canvas_x, canvas_y]);
             } else if video_exts.contains(&ext.as_str()) {
                 self.graph.add_node(NodeType::VideoPlayer {

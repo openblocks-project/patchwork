@@ -1,7 +1,165 @@
 use crate::graph::*;
 use eframe::egui;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+
+/// Per-fetch result: optional decoded image + optional local cache file
+/// path written for remote URLs (so we can survive URL expiry).
+type FetchResult = (Option<Arc<ImageData>>, Option<String>);
+
+/// Async fetch state stored in egui temp data per node.
+#[derive(Clone)]
+struct ImgFetchState {
+    loaded_url: String,
+    pending_url: String,
+    pending_result: Arc<Mutex<Option<FetchResult>>>,
+}
+
+/// Hash a URL into a stable filename stem.
+fn hash_url(url: &str) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    url.hash(&mut h);
+    format!("{:016x}", h.finish())
+}
+
+/// Sniff bytes to pick an extension. Falls back to .bin.
+fn sniff_ext(bytes: &[u8]) -> &'static str {
+    if bytes.len() >= 8 && &bytes[..8] == b"\x89PNG\r\n\x1a\n" { return "png"; }
+    if bytes.len() >= 3 && &bytes[..3] == b"\xff\xd8\xff" { return "jpg"; }
+    if bytes.len() >= 6 && (&bytes[..6] == b"GIF87a" || &bytes[..6] == b"GIF89a") { return "gif"; }
+    if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" { return "webp"; }
+    "bin"
+}
+
+/// Resolve `~/.patchwork/image_cache/` (creating it if missing).
+fn cache_dir() -> Option<std::path::PathBuf> {
+    let dir = dirs::home_dir()?.join(".patchwork").join("image_cache");
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir)
+}
+
+/// Download a remote URL, decode it, and persist the original bytes to
+/// the local image cache. Returns the decoded image and the cache path.
+fn fetch_and_cache(url: &str) -> FetchResult {
+    let client = match reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return (None, None),
+    };
+    let resp = match client.get(url).send() {
+        Ok(r) if r.status().is_success() => r,
+        _ => return (None, None),
+    };
+    let bytes = match resp.bytes() {
+        Ok(b) => b,
+        Err(_) => return (None, None),
+    };
+    let img = match image::load_from_memory(&bytes) {
+        Ok(i) => i,
+        Err(_) => return (None, None),
+    };
+    let rgba = img.to_rgba8();
+    let (w, h) = rgba.dimensions();
+    let data = Arc::new(ImageData::new(w, h, rgba.into_raw()));
+
+    // Persist original bytes so the node survives URL expiry.
+    let cache_path = cache_dir().and_then(|dir| {
+        let ext = sniff_ext(&bytes);
+        let file = dir.join(format!("{}.{}", hash_url(url), ext));
+        std::fs::write(&file, &bytes).ok()?;
+        Some(file.display().to_string())
+    });
+
+    (Some(data), cache_path)
+}
+
+/// Drive the per-node fetch state machine.
+///
+/// Returns `Some(new_image)` when a freshly-loaded image should overwrite
+/// `image_data`. Local file paths load synchronously (cheap); http(s)
+/// URLs spawn a background thread and `ctx.request_repaint()` wakes egui
+/// up when the bytes arrive — keeping the render thread responsive.
+fn maybe_load_async(
+    ctx: &egui::Context,
+    node_id: NodeId,
+    src: &str,
+) -> Option<FetchResult> {
+    let id = egui::Id::new(("img_fetch_state", node_id));
+    let trimmed = src.trim().to_string();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let mut state: ImgFetchState = ctx
+        .data_mut(|d| d.get_temp::<ImgFetchState>(id))
+        .unwrap_or_else(|| ImgFetchState {
+            loaded_url: String::new(),
+            pending_url: String::new(),
+            pending_result: Arc::new(Mutex::new(None)),
+        });
+
+    // 1) Drain any completed background fetch first.
+    let drained: Option<FetchResult> = state
+        .pending_result
+        .lock()
+        .ok()
+        .and_then(|mut g| g.take());
+    if let Some(result) = drained {
+        state.loaded_url = state.pending_url.clone();
+        state.pending_url.clear();
+        ctx.data_mut(|d| d.insert_temp(id, state.clone()));
+        // Force one more frame: render runs *after* eval, so the new
+        // image_data we're about to hand back won't reach downstream
+        // consumers until the *next* eval pass. Without this nudge the
+        // UI goes idle and the user has to press Send again to wake it.
+        ctx.request_repaint();
+        return Some(result);
+    }
+
+    // 2) Already loaded this exact URL — nothing to do.
+    if state.loaded_url == trimmed && state.pending_url.is_empty() {
+        ctx.data_mut(|d| d.insert_temp(id, state));
+        return None;
+    }
+
+    // 3) Already fetching this same URL — wait.
+    if state.pending_url == trimmed {
+        ctx.data_mut(|d| d.insert_temp(id, state));
+        return None;
+    }
+
+    // 4) New URL — kick off load.
+    let is_remote = trimmed.starts_with("http://") || trimmed.starts_with("https://");
+    if is_remote {
+        state.pending_url = trimmed.clone();
+        // Reset the slot so any stale value doesn't fool us.
+        if let Ok(mut g) = state.pending_result.lock() { *g = None; }
+        let slot = state.pending_result.clone();
+        let ctx_clone = ctx.clone();
+        let url = trimmed.clone();
+        std::thread::spawn(move || {
+            let result = fetch_and_cache(&url);
+            if let Ok(mut g) = slot.lock() {
+                *g = Some(result);
+            }
+            ctx_clone.request_repaint();
+        });
+        ctx.data_mut(|d| d.insert_temp(id, state));
+        None
+    } else {
+        // Local path / file:// — synchronous, cheap. No caching needed
+        // (the file already lives on disk).
+        let img = load_image_from_source(&trimmed);
+        state.loaded_url = trimmed;
+        state.pending_url.clear();
+        ctx.data_mut(|d| d.insert_temp(id, state));
+        Some((img, None))
+    }
+}
 
 pub fn render(
     ui: &mut egui::Ui,
@@ -10,10 +168,19 @@ pub fn render(
     values: &HashMap<(NodeId, usize), PortValue>,
     connections: &[Connection],
 ) {
-    let (path, save_path, image_data, preview_size, last_save_hash) = match node_type {
-        NodeType::ImageNode { path, save_path, image_data, preview_size, last_save_hash } => (path, save_path, image_data, preview_size, last_save_hash),
+    let (path, save_path, image_data, preview_size, last_save_hash, cached_file) = match node_type {
+        NodeType::ImageNode { path, save_path, image_data, preview_size, last_save_hash, cached_file } => (path, save_path, image_data, preview_size, last_save_hash, cached_file),
         _ => return,
     };
+
+    // Cold-load: after deserialize, image_data is None. If we have a
+    // local cache file from a previous session (e.g. an expired DALL·E
+    // URL), prefer it over the original `path`.
+    if image_data.is_none() && !cached_file.is_empty() {
+        if let Some(img) = load_image_from_path(cached_file) {
+            *image_data = Some(img);
+        }
+    }
 
     // Check if there's an input image (for receiving processed images).
     // For GpuImage, store a stub Arc<ImageData> with empty pixels — the GPU
@@ -35,6 +202,33 @@ pub fn render(
         }
         _ => None,
     };
+
+    // ── Src input port (text URL or file path) ───────────────────
+    // When wired, the upstream text overrides the manually-typed path.
+    // Supports http(s):// URLs (one-shot blocking download), file://
+    // URLs, and plain filesystem paths.
+    let src_wired = connections.iter().any(|c| c.to_node == node_id && c.to_port == 1);
+    if src_wired {
+        if let PortValue::Text(s) = Graph::static_input_value(connections, values, node_id, 1) {
+            let trimmed = s.trim().to_string();
+            if !trimmed.is_empty() {
+                if trimmed != *path {
+                    *path = trimmed.clone();
+                }
+                // Only swap on a successful load — a failed/empty fetch
+                // must NOT clear the previous frame, otherwise downstream
+                // blends flash blank between AI responses.
+                if let Some((maybe_img, maybe_cache)) = maybe_load_async(ui.ctx(), node_id, &trimmed) {
+                    if let Some(new_img) = maybe_img {
+                        *image_data = Some(new_img);
+                    }
+                    if let Some(cp) = maybe_cache {
+                        *cached_file = cp;
+                    }
+                }
+            }
+        }
+    }
 
     // Open / Save buttons
     ui.horizontal(|ui| {
@@ -62,15 +256,31 @@ pub fn render(
         }
     });
 
-    // Editable source path
+    // Editable source path / URL — disabled when wired from a port
     let old_path = path.clone();
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new("Src:").small());
-        ui.add(egui::TextEdit::singleline(path).desired_width(160.0).font(egui::TextStyle::Small));
+        ui.add_enabled(
+            !src_wired,
+            egui::TextEdit::singleline(path)
+                .desired_width(160.0)
+                .font(egui::TextStyle::Small)
+                .hint_text(if src_wired { "(wired)" } else { "path or url" }),
+        );
     });
-    if *path != old_path || (image_data.is_none() && !path.is_empty()) {
+    if !src_wired && (*path != old_path || (image_data.is_none() && !path.is_empty())) {
         if !path.is_empty() {
-            *image_data = load_image_from_path(path);
+            let p = path.clone();
+            // Initial load (image_data == None) may set None; subsequent
+            // refreshes keep the old image until a new one decodes.
+            match maybe_load_async(ui.ctx(), node_id, &p) {
+                Some((Some(new_img), maybe_cache)) => {
+                    *image_data = Some(new_img);
+                    if let Some(cp) = maybe_cache { *cached_file = cp; }
+                }
+                Some((None, _)) if image_data.is_none() => *image_data = None,
+                _ => {}
+            }
         }
     }
 
@@ -120,6 +330,40 @@ pub fn load_image_from_path(path: &str) -> Option<Arc<ImageData>> {
     let rgba = img.to_rgba8();
     let (w, h) = rgba.dimensions();
     Some(Arc::new(ImageData::new(w, h, rgba.into_raw())))
+}
+
+/// Load an image from any source string the Image node accepts:
+/// - `http://...` / `https://...` — blocking download via reqwest
+/// - `file://...` — strip the prefix and read as a local file
+/// - anything else — treated as a filesystem path
+///
+/// The blocking download only runs when the Src text actually changes
+/// (caller-side guard), so this is one HTTP hit per AI response, not
+/// per frame.
+pub fn load_image_from_source(src: &str) -> Option<Arc<ImageData>> {
+    let s = src.trim();
+    if s.is_empty() {
+        return None;
+    }
+    if s.starts_with("http://") || s.starts_with("https://") {
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(20))
+            .build()
+            .ok()?;
+        let resp = client.get(s).send().ok()?;
+        if !resp.status().is_success() {
+            return None;
+        }
+        let bytes = resp.bytes().ok()?;
+        let img = image::load_from_memory(&bytes).ok()?;
+        let rgba = img.to_rgba8();
+        let (w, h) = rgba.dimensions();
+        return Some(Arc::new(ImageData::new(w, h, rgba.into_raw())));
+    }
+    if let Some(rest) = s.strip_prefix("file://") {
+        return load_image_from_path(rest);
+    }
+    load_image_from_path(s)
 }
 
 fn save_image(img: &ImageData, path: &str) {

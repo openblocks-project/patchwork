@@ -217,6 +217,7 @@ fn node_type_for_file(path: &str, ext: &str) -> Option<NodeType> {
             Some(NodeType::ImageNode {
                 path: path.to_string(), save_path: String::new(),
                 image_data, preview_size: 150.0, last_save_hash: 0,
+                cached_file: String::new(),
             })
         }
         "mp4" | "mov" | "avi" | "webm" | "mkv" => {

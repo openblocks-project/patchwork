@@ -305,7 +305,7 @@ pub fn catalog() -> Vec<NodeCatalogEntry> {
 
         // ── Image ────────────────────────────────────────────
         NodeCatalogEntry { label: "Image", category: "Image",
-            factory: || NodeType::ImageNode { path: String::new(), save_path: String::new(), image_data: None, preview_size: 150.0, last_save_hash: 0 } },
+            factory: || NodeType::ImageNode { path: String::new(), save_path: String::new(), image_data: None, preview_size: 150.0, last_save_hash: 0, cached_file: String::new() } },
         NodeCatalogEntry { label: "Image Effects", category: "Image",
             factory: || NodeType::ImageEffects { brightness: 1.0, contrast: 1.0, saturation: 1.0, hue: 0.0, exposure: 0.0, gamma: 1.0 } },
         NodeCatalogEntry { label: "Blend", category: "Image",
@@ -399,7 +399,7 @@ pub fn catalog() -> Vec<NodeCatalogEntry> {
                 system_prompt: String::new(), user_prompt: String::new(),
                 response: String::new(), status: String::new(),
                 max_tokens: 1024, temperature: 0.7, api_key: String::new(),
-                response_type: 0, last_trigger: 0.0,
+                response_type: 0, mode: 0, last_trigger: 0.0,
                 api_key_name: String::new(), custom_url: String::new(),
             } },
         NodeCatalogEntry { label: "JSON Extract", category: "Network",
@@ -541,8 +541,8 @@ pub fn render_content(
             palette::render(ui, search, node_id),
         NodeType::HttpRequest { url, method, headers, response, status, auto_send, last_hash } =>
             http_request::render(ui, url, method, headers, response, status, auto_send, last_hash, node_id, values, connections, http_pending, http_actions, port_positions, dragging_from, pending_disconnects),
-        NodeType::AiRequest { provider, model, system_prompt, user_prompt, response, status, max_tokens, temperature, api_key, response_type, last_trigger, .. } =>
-            ai_request::render(ui, provider, model, system_prompt, user_prompt, response, status, max_tokens, temperature, api_key, response_type, last_trigger, node_id, values, connections, http_pending, http_actions, port_positions, dragging_from, pending_disconnects),
+        NodeType::AiRequest { provider, model, system_prompt, user_prompt, response, status, max_tokens, temperature, api_key, response_type, mode, last_trigger, .. } =>
+            ai_request::render(ui, provider, model, system_prompt, user_prompt, response, status, max_tokens, temperature, api_key, response_type, mode, last_trigger, node_id, values, connections, http_pending, http_actions, port_positions, dragging_from, pending_disconnects),
         // JsonExtract migrated to trait-based node
         NodeType::FileMenu => {} // migrated to trait — legacy fallback
         NodeType::ZoomControl { .. } => {} // migrated to trait — legacy fallback

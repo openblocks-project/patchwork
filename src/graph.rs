@@ -597,7 +597,9 @@ pub enum NodeType {
         #[serde(default)]
         api_key: String,
         #[serde(default)]
-        response_type: u8,     // 0=Text, 1=JSON, 2=Code, 3=WGSL, 4=HTML, 5=Image
+        response_type: u8,     // Text mode: 0=Text, 1=JSON, 2=Code, 3=WGSL, 4=HTML
+        #[serde(default)]
+        mode: u8,              // 0 = Text, 1 = Image
         #[serde(default)]
         last_trigger: f32,     // for rising-edge detection on trigger port
         // Legacy fields kept for backward compatibility
@@ -877,6 +879,12 @@ pub enum NodeType {
         /// Hash of last saved image to avoid re-saving unchanged data
         #[serde(skip)]
         last_save_hash: u64,
+        /// Local cache file written when `path` is a remote URL (e.g.
+        /// expiring DALL·E links). Persisted across sessions so the
+        /// node survives URL expiry — on cold load we read the bytes
+        /// from this file instead of re-fetching the dead URL.
+        #[serde(default)]
+        cached_file: String,
     },
     ImageEffects {
         #[serde(default = "default_one")]
@@ -1256,7 +1264,12 @@ impl NodeBehavior for NodeType {
             NodeType::OscIn { .. } => vec![],
             NodeType::Palette { .. } => vec![],
             NodeType::HttpRequest { .. } => vec![PortDef::new("URL", Text), PortDef::new("Body", Text), PortDef::new("Headers", Text)],
-            NodeType::AiRequest { .. } => vec![PortDef::new("System", Text), PortDef::new("Prompt", Text), PortDef::new("Send", Trigger)],
+            NodeType::AiRequest { .. } => vec![
+                PortDef::new("System", Text),
+                PortDef::new("Prompt", Text),
+                PortDef::new("Send", Trigger),
+                PortDef::new("Image", Image),
+            ],
             NodeType::FileMenu => vec![],
             NodeType::ZoomControl { .. } => vec![PortDef::new("Zoom", Number)],
             NodeType::ObHub { .. } => vec![PortDef::new("Command", Text)],
@@ -1322,7 +1335,10 @@ impl NodeBehavior for NodeType {
             }
             NodeType::McpServer => vec![],
             NodeType::HtmlViewer => vec![PortDef::new("HTML", Text)],
-            NodeType::ImageNode { .. } => vec![PortDef::new("Image In", Image)],
+            NodeType::ImageNode { .. } => vec![
+                PortDef::new("Image In", Image),
+                PortDef::new("Src", Text),
+            ],
             NodeType::ImageEffects { .. } => vec![
                 PortDef::new("Image", Image), PortDef::new("Brightness", Normalized), PortDef::new("Contrast", Normalized),
                 PortDef::new("Saturation", Normalized), PortDef::new("Hue", Number), PortDef::new("Exposure", Number), PortDef::new("Gamma", Number),
@@ -2110,7 +2126,10 @@ impl Graph {
                             .unwrap_or(0.0);
                         values.insert((id, 1), PortValue::Float(code));
                     }
-                    NodeType::AiRequest { response, status, .. } => {
+                    NodeType::AiRequest { response, status, mode: _, .. } => {
+                        // v1: always emit URL/text on Response port. v2 will
+                        // swap the Image-mode arm to PortValue::Image once
+                        // an auto-fetch path exists.
                         values.insert((id, 0), PortValue::Text(response.clone()));
                         let code = if status.contains("done") { 1.0 }
                             else if status.contains("error") { -1.0 }
