@@ -165,6 +165,7 @@ fn format_port_value(v: &PortValue) -> String {
             if s.len() > 16 { format!("\"{}...\"", &s[..16]) } else { format!("\"{}\"", s) }
         }
         PortValue::Image(img) => format!("[{}x{}]", img.width, img.height),
+        PortValue::GpuImage(h) => format!("[gpu {}x{}]", h.width, h.height),
         PortValue::None => "—".into(),
     }
 }

@@ -803,7 +803,9 @@ fn render_offscreen(
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format: readback_format,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::COPY_SRC
+            | wgpu::TextureUsages::TEXTURE_BINDING,
         view_formats: &[],
     });
     let view = texture.create_view(&Default::default());
@@ -839,8 +841,30 @@ fn render_offscreen(
     queue.submit(Some(encoder.finish()));
     drop(renderer); // Release the read lock before readback
 
-    // Readback pixels to CPU
-    Some(crate::gpu_image::readback_texture(device, queue, &texture, width, height))
+    // Publish the freshly rendered texture into the GPU cache so downstream
+    // GPU consumers can sample it directly without a re-upload. The drain
+    // happens at the top of the next frame's `begin_frame` (1 frame of
+    // latency, matching the existing WGSL injection latency).
+    // wgpu::Texture is reference-counted internally, so the clone is cheap
+    // and both refer to the same GPU resource.
+    crate::gpu_image::queue_publish_node_output(node_id, 0, texture.clone(), width, height);
+
+    // Conditional readback: only stall the CPU on `device.poll(Wait)` if
+    // some downstream node actually needs CPU pixel bytes. Default-true
+    // (readback) is the safe path; if the hint isn't set yet (graph just
+    // changed), we readback once and recover next frame.
+    let needs_readback = crate::gpu_image::cpu_consumer_hint(node_id).unwrap_or(true);
+    if needs_readback {
+        Some(crate::gpu_image::readback_texture(device, queue, &texture, width, height))
+    } else {
+        // Return a zero-pixel stub so the existing eval-loop injection path
+        // keeps working without the readback stall.
+        Some(std::sync::Arc::new(ImageData {
+            width,
+            height,
+            pixels: Vec::new(),
+        }))
+    }
 }
 
 struct WgslOffscreenGpu {
@@ -1099,4 +1123,23 @@ fn validate_wgsl_naga(code: &str) -> Result<(), String> {
     );
     validator.validate(&module).map_err(|e| format!("Validation: {}", e))?;
     Ok(())
+}
+
+/// Drop all GPU resources for a deleted WGSL Viewer node so VRAM is
+/// released immediately rather than leaking inside egui_wgpu's
+/// callback_resources. Called from
+/// `crate::gpu_image::GpuTextureCache::invalidate_node`.
+pub(crate) fn cleanup_node(
+    callback_resources: &mut eframe::egui_wgpu::CallbackResources,
+    node_id: crate::graph::NodeId,
+) {
+    if let Some(store) = callback_resources.get_mut::<WgslGpuStore>() {
+        store.nodes.remove(&node_id);
+    }
+    if let Some(store) = callback_resources.get_mut::<WgslOffscreenStore>() {
+        store.nodes.remove(&node_id);
+    }
+    if let Some(store) = callback_resources.get_mut::<WgslUniformStore>() {
+        store.data.remove(&node_id);
+    }
 }

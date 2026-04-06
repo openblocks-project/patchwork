@@ -60,6 +60,13 @@ pub trait NodeBehavior: Send + Sync {
     /// Restore node state from JSON (for project load).
     fn load_state(&mut self, _state: &Value) {}
 
+    /// Whether this node needs CPU pixel bytes on the given image input
+    /// port. Default `true` is the safe direction: any new node type
+    /// forces upstream readback. GPU-only consumers (image_effects, blend,
+    /// color_curves, image_style, visual_output, image_node display path)
+    /// override to `false` to opt into the GPU-resident handoff path.
+    fn needs_cpu_image_input(&self, _port: usize) -> bool { true }
+
     /// Render the node's UI content.
     /// Simple nodes can use this (no graph context needed).
     fn render_ui(&mut self, _ui: &mut eframe::egui::Ui) {}

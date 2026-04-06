@@ -1110,6 +1110,9 @@ impl PatchworkApp {
             self.audio.remove_processor(id); // Remove from engine before graph
             self.midi.cleanup_node(id); self.serial.cleanup_node(id); self.osc.cleanup_node(id);
             self.ob.cleanup_node(id); self.audio.cleanup_node(id); crate::nodes::video_player::cleanup_node(id);
+            // Drop GPU textures owned by this node immediately so VRAM
+            // doesn't balloon when users rapidly spawn/delete image nodes.
+            self.gpu_tex_cache.invalidate_node(id, self.wgpu_render_state.as_ref());
             self.graph.remove_node(id);
             // Clean up UI state for deleted node
             self.node_rects.remove(&id);
@@ -1559,16 +1562,69 @@ impl eframe::App for PatchworkApp {
             h
         };
 
+        // Hash either a CPU `Image` or a GPU `GpuImage` port value. The GPU
+        // variant hashes (producer_node_id, port, frame_stamp) so a producer
+        // re-render naturally invalidates the param-cache key downstream.
+        let img_or_gpu_hash = |val: &PortValue| -> u64 {
+            match val {
+                PortValue::Image(img) => img_content_hash(img),
+                PortValue::GpuImage(h) => {
+                    let mut k = (h.node_id as u64).wrapping_mul(31).wrapping_add(h.port as u64);
+                    k = k.wrapping_mul(31).wrapping_add(h.frame_stamp);
+                    k
+                }
+                _ => 0,
+            }
+        };
+
+        // Populate the per-WgslViewer CPU consumer hint thread_local so that
+        // `render_offscreen` (which runs later this frame in the egui paint
+        // pass) knows whether to skip its readback. Default-true is safe;
+        // a stale hint after a graph edit causes one extra readback and
+        // self-recovers next frame.
+        crate::gpu_image::clear_cpu_consumer_hints();
+        for (&id, node) in &self.graph.nodes {
+            if matches!(node.node_type, NodeType::WgslViewer { .. }) {
+                let needs = self.graph.has_cpu_consumer(id, 0);
+                crate::gpu_image::set_cpu_consumer_hint(id, needs);
+            }
+        }
+
         // Inject WGSL Viewer Image output BEFORE image evaluation loop
         // so downstream image nodes (Effects, Style, Blend) can see it.
+        // The producer (`render_offscreen`) publishes its texture into
+        // `gpu_tex_cache` via the PENDING_CACHE_PUBLISHES queue, drained
+        // at the top of this frame's `begin_frame`. If the cache has an
+        // entry, we inject `PortValue::GpuImage` (zero-copy GPU handoff);
+        // otherwise we fall back to the legacy `PortValue::Image` path
+        // (which carries CPU bytes for downstream CPU consumers).
         for (&id, node) in &self.graph.nodes {
             if matches!(node.node_type, NodeType::WgslViewer { .. }) {
                 if let Some(img) = ctx.data_mut(|d| d.get_temp::<std::sync::Arc<ImageData>>(egui::Id::new(("wgsl_image_output", id)))) {
-                    // Pre-upload WGSL output for downstream GPU nodes
-                    if let Some(rs) = &self.wgpu_render_state {
-                        self.gpu_tex_cache.get_or_upload(&rs.device, &rs.queue, &img);
+                    let has_gpu_entry = self.gpu_tex_cache
+                        .get_node_output_cloned(id, 0)
+                        .is_some();
+                    if has_gpu_entry && img.pixels.is_empty() {
+                        // Fully GPU-resident path: emit a GpuImage handle.
+                        let handle = crate::graph::GpuImageHandle {
+                            node_id: id,
+                            port: 0,
+                            width: img.width,
+                            height: img.height,
+                            frame_stamp: self.gpu_tex_cache.frame_stamp(id, 0),
+                        };
+                        values.insert((id, 0), PortValue::GpuImage(handle));
+                    } else {
+                        // CPU bytes are present (or no GPU entry yet) — keep
+                        // the legacy CPU path so CPU consumers and the very
+                        // first frame work correctly.
+                        if let Some(rs) = &self.wgpu_render_state {
+                            if !img.pixels.is_empty() {
+                                self.gpu_tex_cache.get_or_upload(&rs.device, &rs.queue, &img);
+                            }
+                        }
+                        values.insert((id, 0), PortValue::Image(img));
                     }
-                    values.insert((id, 0), PortValue::Image(img));
                 }
             }
         }
@@ -1640,17 +1696,23 @@ impl eframe::App for PatchworkApp {
             let image_ids: Vec<NodeId> = self.graph.nodes.keys().copied().collect();
             for id in image_ids {
                 let inputs: Vec<PortValue> = self.graph.collect_inputs(id, &values);
+                // Identity (producer NodeId, port) of each connected input. Lets GPU
+                // node implementations look up the upstream texture in `gpu_tex_cache`
+                // and skip the redundant CPU→GPU upload.
+                let input_sources = self.graph.collect_input_sources(id);
 
                 // Trait-based image nodes (Transform, ImageStyle, ColorChannel, Crop, etc.)
                 // need re-evaluation here because image sources weren't populated during graph.evaluate().
                 // Cached: only reprocess when inputs (image content + param state) change.
                 let is_dynamic = matches!(self.graph.nodes.get(&id).map(|n| &n.node_type), Some(NodeType::Dynamic { .. }));
-                if is_dynamic && inputs.iter().any(|v| matches!(v, PortValue::Image(_))) {
+                if is_dynamic && inputs.iter().any(|v| matches!(v, PortValue::Image(_) | PortValue::GpuImage(_))) {
                     // Build cache key from image content + params + node state
                     let mut cache_key: u64 = 0;
                     for inp in &inputs {
                         match inp {
-                            PortValue::Image(img) => cache_key = cache_key.wrapping_mul(31).wrapping_add(img_content_hash(img)),
+                            PortValue::Image(_) | PortValue::GpuImage(_) => {
+                                cache_key = cache_key.wrapping_mul(31).wrapping_add(img_or_gpu_hash(inp))
+                            }
                             PortValue::Float(f) => cache_key = cache_key.wrapping_mul(31).wrapping_add(f.to_bits() as u64),
                             _ => {}
                         }
@@ -1669,6 +1731,16 @@ impl eframe::App for PatchworkApp {
                     let cached: Option<(u64, Vec<(usize, PortValue)>)> = ctx.data_mut(|d| d.get_temp(cache_id));
                     if let Some((prev_key, prev_results)) = cached {
                         if prev_key == cache_key {
+                            // Cache hit: keep any cached GPU output texture alive past
+                            // the 2-frame LRU and re-publish to the display callback's
+                            // prerendered map (which is cleared every frame).
+                            let has_gpu_output = prev_results.iter().any(|(_, v)| matches!(v, PortValue::GpuImage(_)));
+                            if has_gpu_output {
+                                self.gpu_tex_cache.touch(id, 0);
+                                if let Some(rs) = &self.wgpu_render_state {
+                                    self.gpu_tex_cache.store_for_display(id, rs);
+                                }
+                            }
                             for (port, val) in prev_results {
                                 values.insert((id, port), val);
                             }
@@ -1676,6 +1748,7 @@ impl eframe::App for PatchworkApp {
                         }
                     }
                     // Cache miss — reprocess (GPU path for ImageStyleNode, CPU for others)
+                    let needs_readback = self.graph.has_cpu_consumer(id, 0);
                     if let Some(mut node_mut) = self.graph.nodes.remove(&id) {
                         if let NodeType::Dynamic { ref mut inner } = node_mut.node_type {
                             let tag = inner.node.type_tag().to_string();
@@ -1689,17 +1762,25 @@ impl eframe::App for PatchworkApp {
                             // Try GPU path for supported nodes
                             let gpu_results: Option<Vec<(usize, PortValue)>> = match tag.as_str() {
                                 "image_style" => {
-                                    if let (Some(PortValue::Image(img)), Some(rs)) = (inputs.first(), &rs) {
+                                    // Accept both CPU `Image` and GPU `GpuImage` upstream.
+                                    // For GpuImage, build a dimensions-only stub; the
+                                    // gpu_source lookup inside process_gpu_cached MUST
+                                    // cache-hit (else process_gpu_cached returns None).
+                                    let stub_owned: Option<ImageData> = match inputs.first() {
+                                        Some(PortValue::GpuImage(h)) => Some(ImageData { width: h.width, height: h.height, pixels: Vec::new() }),
+                                        _ => None,
+                                    };
+                                    let img_ref: Option<&ImageData> = match inputs.first() {
+                                        Some(PortValue::Image(img)) => Some(img.as_ref()),
+                                        Some(PortValue::GpuImage(_)) => stub_owned.as_ref(),
+                                        _ => None,
+                                    };
+                                    if let (Some(rs), Some(img_for_call)) = (&rs, img_ref) {
                                         let state = inner.node.save_state();
+                                        let gpu_src = input_sources.first().copied().flatten();
                                         let result = serde_json::from_value::<nodes::image_style_node::ImageStyleNode>(state).ok()
-                                            .and_then(|sn| sn.process_gpu(img, id, rs));
-                                        if let Some(ref result_img) = result {
-                                            // Cache output for display
-                                            let tex = crate::gpu_image::upload_texture(&rs.device, &rs.queue, result_img, "style_cache");
-                                            self.gpu_tex_cache.cache_node_output(id, 0, tex, result_img.width, result_img.height);
-                                            self.gpu_tex_cache.store_for_display(id, rs);
-                                        }
-                                        result.map(|img| vec![(0, PortValue::Image(img))])
+                                            .and_then(|sn| sn.process_gpu_cached(img_for_call, id, rs, &mut self.gpu_tex_cache, gpu_src, needs_readback));
+                                        result.map(|val| vec![(0, val)])
                                     } else { None }
                                 }
                                 // color_channel: CPU path is faster (simple per-pixel multiply,
@@ -1721,64 +1802,121 @@ impl eframe::App for PatchworkApp {
                 let node = match self.graph.nodes.get(&id) { Some(n) => n, None => continue };
                 match &node.node_type {
                     NodeType::ImageNode { image_data, .. } => {
-                        let out = if let Some(PortValue::Image(img)) = inputs.first() {
-                            PortValue::Image(img.clone())
-                        } else if let Some(img) = image_data {
-                            PortValue::Image(img.clone())
-                        } else {
-                            PortValue::None
+                        // Pass-through any image variant; downstream may be CPU
+                        // (forces upstream readback via has_cpu_consumer) or GPU.
+                        let out = match inputs.first() {
+                            Some(PortValue::Image(img)) => PortValue::Image(img.clone()),
+                            Some(PortValue::GpuImage(h)) => PortValue::GpuImage(*h),
+                            _ => image_data.as_ref().map(|img| PortValue::Image(img.clone())).unwrap_or(PortValue::None),
                         };
                         values.insert((id, 0), out);
                     }
                     NodeType::ImageEffects { brightness, contrast, saturation, hue, exposure, gamma } => {
-                        if let Some(PortValue::Image(img)) = inputs.first() {
-                            // Cache key: param hash + image content hash
+                        // Accept either CPU `Image` or GPU `GpuImage` upstream.
+                        let stub_owned: Option<ImageData> = match inputs.first() {
+                            Some(PortValue::GpuImage(h)) => Some(ImageData { width: h.width, height: h.height, pixels: Vec::new() }),
+                            _ => None,
+                        };
+                        let img_ref: Option<&ImageData> = match inputs.first() {
+                            Some(PortValue::Image(img)) => Some(img.as_ref()),
+                            Some(PortValue::GpuImage(_)) => stub_owned.as_ref(),
+                            _ => None,
+                        };
+                        if let Some(img) = img_ref {
                             let param_hash = ((*brightness * 1000.0) as u64) ^ ((*contrast * 1000.0) as u64) << 8
                                 ^ ((*saturation * 1000.0) as u64) << 16 ^ ((*hue * 10.0) as u64) << 24
                                 ^ ((*exposure * 1000.0) as u64) << 32 ^ ((*gamma * 1000.0) as u64) << 40;
-                            let cache_key = param_hash ^ img_content_hash(img);
+                            let cache_key = param_hash ^ img_or_gpu_hash(inputs.first().unwrap());
                             let cache_id = egui::Id::new(("img_fx_cache", id));
-                            let cached: Option<(u64, std::sync::Arc<ImageData>)> = ctx.data_mut(|d| d.get_temp(cache_id));
-                            if let Some((prev_key, prev_result)) = cached {
+                            let cached: Option<(u64, PortValue)> = ctx.data_mut(|d| d.get_temp(cache_id));
+                            if let Some((prev_key, prev_val)) = cached {
                                 if prev_key == cache_key {
-                                    values.insert((id, 0), PortValue::Image(prev_result));
+                                    if matches!(&prev_val, PortValue::GpuImage(_)) {
+                                        self.gpu_tex_cache.touch(id, 0);
+                                        if let Some(rs) = &self.wgpu_render_state {
+                                            self.gpu_tex_cache.store_for_display(id, rs);
+                                        }
+                                    }
+                                    values.insert((id, 0), prev_val);
                                     continue;
                                 }
                             }
-                            // GPU path (fast), falling back to CPU
-                            let result = if let Some(rs) = &self.wgpu_render_state {
-                                nodes::image_effects::process_gpu_cached(img, *brightness, *contrast, *saturation, *hue, *exposure, *gamma, id, rs, &mut self.gpu_tex_cache)
-                                    .unwrap_or_else(|| nodes::image_effects::process(img, *brightness, *contrast, *saturation, *hue, *exposure, *gamma))
+                            let needs_readback = self.graph.has_cpu_consumer(id, 0);
+                            let result_val: PortValue = if let Some(rs) = &self.wgpu_render_state {
+                                nodes::image_effects::process_gpu_cached(img, *brightness, *contrast, *saturation, *hue, *exposure, *gamma, id, rs, &mut self.gpu_tex_cache, input_sources.first().copied().flatten(), needs_readback)
+                                    .unwrap_or_else(|| {
+                                        // CPU fallback only meaningful when we actually have pixels
+                                        if !img.pixels.is_empty() {
+                                            PortValue::Image(nodes::image_effects::process(img, *brightness, *contrast, *saturation, *hue, *exposure, *gamma))
+                                        } else {
+                                            PortValue::None
+                                        }
+                                    })
+                            } else if !img.pixels.is_empty() {
+                                PortValue::Image(nodes::image_effects::process(img, *brightness, *contrast, *saturation, *hue, *exposure, *gamma))
                             } else {
-                                nodes::image_effects::process(img, *brightness, *contrast, *saturation, *hue, *exposure, *gamma)
+                                PortValue::None
                             };
-                            ctx.data_mut(|d| d.insert_temp(cache_id, (cache_key, result.clone())));
-                            values.insert((id, 0), PortValue::Image(result));
+                            ctx.data_mut(|d| d.insert_temp(cache_id, (cache_key, result_val.clone())));
+                            values.insert((id, 0), result_val);
                         }
                     }
                     // Crop migrated to trait-based CropNode (evaluated in graph.evaluate)
                     NodeType::Blend { mode, mix } => {
-                        let a = inputs.first().and_then(|v| v.as_image());
-                        let b = inputs.get(1).and_then(|v| v.as_image());
+                        let stub_a: Option<ImageData> = match inputs.first() {
+                            Some(PortValue::GpuImage(h)) => Some(ImageData { width: h.width, height: h.height, pixels: Vec::new() }),
+                            _ => None,
+                        };
+                        let stub_b: Option<ImageData> = match inputs.get(1) {
+                            Some(PortValue::GpuImage(h)) => Some(ImageData { width: h.width, height: h.height, pixels: Vec::new() }),
+                            _ => None,
+                        };
+                        let a: Option<&ImageData> = match inputs.first() {
+                            Some(PortValue::Image(img)) => Some(img.as_ref()),
+                            Some(PortValue::GpuImage(_)) => stub_a.as_ref(),
+                            _ => None,
+                        };
+                        let b: Option<&ImageData> = match inputs.get(1) {
+                            Some(PortValue::Image(img)) => Some(img.as_ref()),
+                            Some(PortValue::GpuImage(_)) => stub_b.as_ref(),
+                            _ => None,
+                        };
                         if let (Some(a), Some(b)) = (a, b) {
-                            let cache_key = img_content_hash(a) ^ img_content_hash(b).wrapping_mul(7)
+                            let h_a = inputs.first().map(|v| img_or_gpu_hash(v)).unwrap_or(0);
+                            let h_b = inputs.get(1).map(|v| img_or_gpu_hash(v)).unwrap_or(0);
+                            let cache_key = h_a ^ h_b.wrapping_mul(7)
                                 ^ (*mode as u64) ^ ((*mix * 1000.0) as u64) << 8;
                             let cache_id = egui::Id::new(("blend_cache", id));
-                            let cached: Option<(u64, std::sync::Arc<ImageData>)> = ctx.data_mut(|d| d.get_temp(cache_id));
-                            if let Some((prev_key, prev_result)) = cached {
+                            let cached: Option<(u64, PortValue)> = ctx.data_mut(|d| d.get_temp(cache_id));
+                            if let Some((prev_key, prev_val)) = cached {
                                 if prev_key == cache_key {
-                                    values.insert((id, 0), PortValue::Image(prev_result));
+                                    if matches!(&prev_val, PortValue::GpuImage(_)) {
+                                        self.gpu_tex_cache.touch(id, 0);
+                                        if let Some(rs) = &self.wgpu_render_state {
+                                            self.gpu_tex_cache.store_for_display(id, rs);
+                                        }
+                                    }
+                                    values.insert((id, 0), prev_val);
                                     continue;
                                 }
                             }
-                            let result = if let Some(rs) = &self.wgpu_render_state {
-                                nodes::blend::process_gpu_cached(a, b, *mode, *mix, id, rs, &mut self.gpu_tex_cache)
-                                    .unwrap_or_else(|| nodes::blend::process(a, b, *mode, *mix))
+                            let needs_readback = self.graph.has_cpu_consumer(id, 0);
+                            let result_val: PortValue = if let Some(rs) = &self.wgpu_render_state {
+                                nodes::blend::process_gpu_cached(a, b, *mode, *mix, id, rs, &mut self.gpu_tex_cache, input_sources.first().copied().flatten(), input_sources.get(1).copied().flatten(), needs_readback)
+                                    .unwrap_or_else(|| {
+                                        if !a.pixels.is_empty() && !b.pixels.is_empty() {
+                                            PortValue::Image(nodes::blend::process(a, b, *mode, *mix))
+                                        } else {
+                                            PortValue::None
+                                        }
+                                    })
+                            } else if !a.pixels.is_empty() && !b.pixels.is_empty() {
+                                PortValue::Image(nodes::blend::process(a, b, *mode, *mix))
                             } else {
-                                nodes::blend::process(a, b, *mode, *mix)
+                                PortValue::None
                             };
-                            ctx.data_mut(|d| d.insert_temp(cache_id, (cache_key, result.clone())));
-                            values.insert((id, 0), PortValue::Image(result));
+                            ctx.data_mut(|d| d.insert_temp(cache_id, (cache_key, result_val.clone())));
+                            values.insert((id, 0), result_val);
                         }
                     }
                     NodeType::Curve { points, .. } => {
@@ -1809,7 +1947,16 @@ impl eframe::App for PatchworkApp {
                     // Draw migrated to trait-based DrawNode
                     // Noise migrated to trait-based NoiseNode (evaluated in graph.evaluate)
                     NodeType::ColorCurves { master, red, green, blue, .. } => {
-                        if let Some(PortValue::Image(img)) = inputs.first() {
+                        let stub_owned: Option<ImageData> = match inputs.first() {
+                            Some(PortValue::GpuImage(h)) => Some(ImageData { width: h.width, height: h.height, pixels: Vec::new() }),
+                            _ => None,
+                        };
+                        let img_ref: Option<&ImageData> = match inputs.first() {
+                            Some(PortValue::Image(img)) => Some(img.as_ref()),
+                            Some(PortValue::GpuImage(_)) => stub_owned.as_ref(),
+                            _ => None,
+                        };
+                        if let Some(img) = img_ref {
                             let mut curve_hash: u64 = 0;
                             for pts in [master.as_slice(), red.as_slice(), green.as_slice(), blue.as_slice()] {
                                 for p in pts {
@@ -1817,29 +1964,39 @@ impl eframe::App for PatchworkApp {
                                     curve_hash = curve_hash.wrapping_mul(31).wrapping_add(p[1].to_bits() as u64);
                                 }
                             }
-                            let cache_key = img_content_hash(img) ^ curve_hash;
+                            let cache_key = img_or_gpu_hash(inputs.first().unwrap()) ^ curve_hash;
                             let cache_id = egui::Id::new(("cc_cache", id));
-                            let cached: Option<(u64, std::sync::Arc<ImageData>)> = ctx.data_mut(|d| d.get_temp(cache_id));
-                            if let Some((prev_key, prev_result)) = cached {
+                            let cached: Option<(u64, PortValue)> = ctx.data_mut(|d| d.get_temp(cache_id));
+                            if let Some((prev_key, prev_val)) = cached {
                                 if prev_key == cache_key {
-                                    values.insert((id, 0), PortValue::Image(prev_result));
+                                    if matches!(&prev_val, PortValue::GpuImage(_)) {
+                                        self.gpu_tex_cache.touch(id, 0);
+                                        if let Some(rs) = &self.wgpu_render_state {
+                                            self.gpu_tex_cache.store_for_display(id, rs);
+                                        }
+                                    }
+                                    values.insert((id, 0), prev_val);
                                     continue;
                                 }
                             }
-                            // GPU path — render on GPU, skip readback, cache for display.
-                            let result = if let Some(rs) = &self.wgpu_render_state {
-                                let gpu_result = nodes::color_curves::process_gpu_cached(
-                                    img, master, red, green, blue, id, rs, &mut self.gpu_tex_cache);
-                                if gpu_result.is_some() {
-                                    // Store GPU texture in display callback resources for zero-copy rendering
-                                    self.gpu_tex_cache.store_for_display(id, rs);
-                                }
-                                gpu_result.unwrap_or_else(|| nodes::color_curves::process(img, master, red, green, blue))
+                            let needs_readback = self.graph.has_cpu_consumer(id, 0);
+                            let result_val: PortValue = if let Some(rs) = &self.wgpu_render_state {
+                                nodes::color_curves::process_gpu_cached(
+                                    img, master, red, green, blue, id, rs, &mut self.gpu_tex_cache, input_sources.first().copied().flatten(), needs_readback)
+                                    .unwrap_or_else(|| {
+                                        if !img.pixels.is_empty() {
+                                            PortValue::Image(nodes::color_curves::process(img, master, red, green, blue))
+                                        } else {
+                                            PortValue::None
+                                        }
+                                    })
+                            } else if !img.pixels.is_empty() {
+                                PortValue::Image(nodes::color_curves::process(img, master, red, green, blue))
                             } else {
-                                nodes::color_curves::process(img, master, red, green, blue)
+                                PortValue::None
                             };
-                            ctx.data_mut(|d| d.insert_temp(cache_id, (cache_key, result.clone())));
-                            values.insert((id, 0), PortValue::Image(result));
+                            ctx.data_mut(|d| d.insert_temp(cache_id, (cache_key, result_val.clone())));
+                            values.insert((id, 0), result_val);
                         }
                     }
                     NodeType::VideoPlayer { current_frame, duration, .. } => {

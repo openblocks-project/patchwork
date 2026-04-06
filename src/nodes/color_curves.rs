@@ -447,7 +447,9 @@ pub fn process_gpu_cached(
     node_id: NodeId,
     render_state: &eframe::egui_wgpu::RenderState,
     tex_cache: &mut crate::gpu_image::GpuTextureCache,
-) -> Option<Arc<ImageData>> {
+    gpu_source: Option<(NodeId, usize)>,
+    needs_readback: bool,
+) -> Option<PortValue> {
     let device = &render_state.device;
     let queue = &render_state.queue;
     let w = img.width;
@@ -464,12 +466,23 @@ pub fn process_gpu_cached(
 
     if !has_pipeline {
         // Delegate to process_gpu for pipeline creation (first call only)
-        return process_gpu(img, master, red, green, blue, node_id, render_state);
+        return process_gpu(img, master, red, green, blue, node_id, render_state).map(PortValue::Image);
     }
 
-    // Upload input (check cache first)
-    let input_tex = crate::gpu_image::upload_texture(device, queue, img, "curves_input");
-    let input_view = input_tex.create_view(&Default::default());
+    // Bind input from upstream GPU cache when available; only upload from CPU as fallback.
+    let need_upload = !img.pixels.is_empty();
+    let (input_view, _input_keepalive) = match gpu_source
+        .and_then(|(nid, p)| tex_cache.get_node_output_cloned(nid, p))
+        .filter(|(_, gw, gh)| *gw == w && *gh == h)
+    {
+        Some((view, _, _)) => (view, None),
+        None if need_upload => {
+            let tex = crate::gpu_image::upload_texture(device, queue, img, "curves_input");
+            let v = tex.create_view(&Default::default());
+            (v, Some(tex))
+        }
+        None => return None,
+    };
     let lut_tex = build_lut_texture(device, queue, master, red, green, blue);
     let lut_view = lut_tex.create_view(&Default::default());
 
@@ -518,11 +531,30 @@ pub fn process_gpu_cached(
     queue.submit(Some(encoder.finish()));
     drop(renderer);
 
-    // Readback for downstream nodes that need CPU pixels (e.g., Blend)
-    let result = crate::gpu_image::readback_texture(device, queue, &output_tex, w, h);
+    if needs_readback {
+        let result = crate::gpu_image::readback_texture(device, queue, &output_tex, w, h);
+        tex_cache.publish(node_id, 0, output_tex, w, h, render_state);
+        Some(PortValue::Image(result))
+    } else {
+        tex_cache.publish(node_id, 0, output_tex, w, h, render_state);
+        Some(PortValue::GpuImage(GpuImageHandle {
+            node_id,
+            port: 0,
+            width: w,
+            height: h,
+            frame_stamp: tex_cache.frame_stamp(node_id, 0),
+        }))
+    }
+}
 
-    // Also cache the output texture for direct GPU display (Visual Output skips re-upload)
-    tex_cache.cache_node_output(node_id, 0, output_tex, w, h);
-
-    Some(result)
+/// Drop all GPU resources for a deleted Color Curves node so VRAM is
+/// released immediately. Called from
+/// `crate::gpu_image::GpuTextureCache::invalidate_node`.
+pub(crate) fn cleanup_node(
+    callback_resources: &mut eframe::egui_wgpu::CallbackResources,
+    node_id: crate::graph::NodeId,
+) {
+    if let Some(store) = callback_resources.get_mut::<CurvesGpuStore>() {
+        store.nodes.remove(&node_id);
+    }
 }

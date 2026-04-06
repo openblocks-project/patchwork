@@ -109,7 +109,25 @@ pub enum PortValue {
     Float(f32),
     Text(String),
     Image(Arc<ImageData>),
+    /// GPU-resident image handle. The actual `wgpu::Texture` lives in
+    /// `GpuTextureCache.entries[(node_id, port)]`; this is just plain data
+    /// (no Arc, no GPU resources held by clones). Producers emit this when
+    /// no immediate downstream consumer needs CPU pixels (Tier 2 GPU-handoff).
+    GpuImage(GpuImageHandle),
     None,
+}
+
+/// Plain-data handle to a GPU texture stored in `GpuTextureCache`.
+/// Cloning is cheap (no Arc, no texture clone). The texture's lifetime is
+/// owned by the cache itself; the `frame_stamp` is used by the eval loop's
+/// param cache to detect "the producer re-rendered this frame".
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+pub struct GpuImageHandle {
+    pub node_id: NodeId,
+    pub port: usize,
+    pub width: u32,
+    pub height: u32,
+    pub frame_stamp: u64,
 }
 
 // Custom serde: Image serializes as None (pixel data is runtime-only)
@@ -128,7 +146,10 @@ impl Serialize for PortValue {
                 m.serialize_entry("Text", v)?;
                 m.end()
             }
-            PortValue::Image(_) | PortValue::None => {
+            // Image bytes and GpuImage handles are runtime-only; both
+            // serialize as the "None" token. On project load, downstream
+            // GPU-handoff handles regenerate naturally on the next eval pass.
+            PortValue::Image(_) | PortValue::GpuImage(_) | PortValue::None => {
                 s.serialize_str("None")
             }
         }
@@ -159,6 +180,13 @@ impl PartialEq for PortValue {
             (PortValue::Float(a), PortValue::Float(b)) => a == b,
             (PortValue::Text(a), PortValue::Text(b)) => a == b,
             (PortValue::Image(a), PortValue::Image(b)) => Arc::ptr_eq(a, b),
+            (PortValue::GpuImage(a), PortValue::GpuImage(b)) => {
+                a.node_id == b.node_id
+                    && a.port == b.port
+                    && a.width == b.width
+                    && a.height == b.height
+                    && a.frame_stamp == b.frame_stamp
+            }
             (PortValue::None, PortValue::None) => true,
             _ => false,
         }
@@ -174,6 +202,7 @@ impl std::fmt::Display for PortValue {
                 else { write!(f, "\"{}\"", s) }
             }
             PortValue::Image(img) => write!(f, "[Image {}x{}]", img.width, img.height),
+            PortValue::GpuImage(h) => write!(f, "[GPU Image {}x{}]", h.width, h.height),
             PortValue::None => write!(f, "\u{2014}"),
         }
     }
@@ -185,6 +214,48 @@ impl PortValue {
     }
     pub fn as_image(&self) -> Option<&Arc<ImageData>> {
         match self { PortValue::Image(img) => Some(img), _ => None }
+    }
+
+    /// Returns `(width, height)` for any image port (CPU `Image` or GPU
+    /// `GpuImage`). Use when callers only need dimensions and shouldn't
+    /// care which side of the GPU/CPU boundary the data lives on.
+    pub fn image_dimensions(&self) -> Option<(u32, u32)> {
+        match self {
+            PortValue::Image(img) => Some((img.width, img.height)),
+            PortValue::GpuImage(h) => Some((h.width, h.height)),
+            _ => None,
+        }
+    }
+
+    /// Returns the `(producer_node_id, producer_port)` source if this is
+    /// a `GpuImage`, else `None`. Used by GPU consumers that want
+    /// zero-copy texture sampling via `tex_cache.get_node_output(...)`.
+    pub fn gpu_source(&self) -> Option<(NodeId, usize)> {
+        match self {
+            PortValue::GpuImage(h) => Some((h.node_id, h.port)),
+            _ => None,
+        }
+    }
+
+    /// Materialise this port to a CPU `Arc<ImageData>`. For
+    /// `PortValue::Image` returns the existing Arc. For
+    /// `PortValue::GpuImage`, performs an on-demand readback via
+    /// `tex_cache.readback_node_output(...)`. Use in CPU consumers
+    /// that genuinely need pixel bytes (Crop, Transform, save-to-disk,
+    /// ML, etc.).
+    pub fn into_cpu_image(
+        &self,
+        tex_cache: &crate::gpu_image::GpuTextureCache,
+        device: &eframe::wgpu::Device,
+        queue: &eframe::wgpu::Queue,
+    ) -> Option<Arc<ImageData>> {
+        match self {
+            PortValue::Image(img) => Some(img.clone()),
+            PortValue::GpuImage(h) => {
+                tex_cache.readback_node_output(h.node_id, h.port, device, queue)
+            }
+            _ => None,
+        }
     }
 }
 
@@ -263,7 +334,7 @@ impl PortKind {
         match val {
             PortValue::Float(_) => Self::Number,
             PortValue::Text(_) => Self::Text,
-            PortValue::Image(_) => Self::Image,
+            PortValue::Image(_) | PortValue::GpuImage(_) => Self::Image,
             PortValue::None => Self::Generic,
         }
     }
@@ -1512,6 +1583,27 @@ impl NodeBehavior for NodeType {
         // Migrated standalone structs use their own stable tag.
         "builtin"
     }
+
+    /// Whether this node needs CPU pixel bytes on the given image input
+    /// port. GPU-only consumers return false to opt into the
+    /// `PortValue::GpuImage` zero-copy handoff path. CPU-only consumers
+    /// (Crop CPU fallback, Camera, ML, etc.) return the default `true`,
+    /// forcing the upstream producer to readback into CPU bytes.
+    fn needs_cpu_image_input(&self, port: usize) -> bool {
+        match self {
+            // GPU-resident effect chain — never needs CPU bytes for image inputs
+            NodeType::ImageEffects { .. } => false,
+            NodeType::Blend { .. } => false,
+            NodeType::ColorCurves { .. } => false,
+            // ImageNode display path uses the GPU display callback (renders
+            // straight from gpu_tex_cache) so it doesn't need CPU pixels.
+            // The save-to-disk handler reads back on demand via into_cpu_image.
+            NodeType::ImageNode { .. } => false,
+            NodeType::Dynamic { inner } => inner.node.needs_cpu_image_input(port),
+            // Default-true for everything else — safest direction.
+            _ => true,
+        }
+    }
 }
 
 // ── Node & Connection ───────────────────────────────────────────────────────
@@ -2114,6 +2206,38 @@ impl Graph {
             }
         }
         inputs
+    }
+
+    /// Returns the (producer_node_id, producer_port) source for each input port
+    /// of `node_id`, or None for unconnected ports. Mirrors `collect_inputs`
+    /// but returns identities rather than values, for GPU texture cache lookup.
+    pub fn collect_input_sources(&self, node_id: NodeId) -> Vec<Option<(NodeId, usize)>> {
+        let num = self.nodes.get(&node_id).map(|n| n.node_type.inputs().len()).unwrap_or(0);
+        let mut sources = vec![None; num];
+        for conn in &self.connections {
+            if conn.to_node == node_id && conn.to_port < num {
+                sources[conn.to_port] = Some((conn.from_node, conn.from_port));
+            }
+        }
+        sources
+    }
+
+    /// Returns true if any node connected downstream of
+    /// `(producer_id, producer_port)` requires CPU pixel bytes on its
+    /// receiving port. GPU producers query this to decide whether to
+    /// readback their output texture (`PortValue::Image`) or emit a
+    /// zero-copy `PortValue::GpuImage` handle.
+    pub fn has_cpu_consumer(&self, producer_id: NodeId, producer_port: usize) -> bool {
+        for conn in &self.connections {
+            if conn.from_node == producer_id && conn.from_port == producer_port {
+                if let Some(consumer) = self.nodes.get(&conn.to_node) {
+                    if consumer.node_type.needs_cpu_image_input(conn.to_port) {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
     }
 
     pub fn static_input_value(connections: &[Connection], values: &HashMap<(NodeId, usize), PortValue>, node_id: NodeId, port_idx: usize) -> PortValue {

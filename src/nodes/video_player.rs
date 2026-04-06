@@ -223,8 +223,13 @@ pub fn render_video(
                 *duration = get_duration(&path).unwrap_or(0.0);
                 *playing = false;
                 *status = "Loaded".into();
-                // Stop existing decoder
+                // Stop existing decoder, drop the previously decoded frame,
+                // and invalidate any cached GPU textures so downstream nodes
+                // don't show one stale frame from the previous file.
                 VIDEO_DECODERS.with(|d| d.borrow_mut().remove(&node_id));
+                VIDEO_TEXTURES.with(|t| t.borrow_mut().remove(&node_id));
+                *current_frame = None;
+                crate::gpu_image::request_node_invalidation(node_id);
             }
         }
     });
@@ -263,7 +268,9 @@ pub fn render_video(
         if ui.button("⏹ Stop").clicked() {
             *playing = false;
             VIDEO_DECODERS.with(|d| d.borrow_mut().remove(&node_id));
+            VIDEO_TEXTURES.with(|t| t.borrow_mut().remove(&node_id));
             *current_frame = None;
+            crate::gpu_image::request_node_invalidation(node_id);
             *status = "Stopped".into();
         }
         ui.checkbox(looping, "Loop");
@@ -392,8 +399,33 @@ pub fn render_camera(
             .width(150.0)
             .show_ui(ui, |ui| {
                 for (idx, name) in &cameras {
-                    if ui.selectable_label(*device_index == *idx, name).clicked() {
+                    if ui.selectable_label(*device_index == *idx, name).clicked() && *device_index != *idx {
+                        // Switching device — tear down the old decoder, drop
+                        // the cached frame so downstream nodes can't see it
+                        // for a single frame, and invalidate any GPU textures
+                        // keyed by this node id. Restart capture if the
+                        // camera was already running.
+                        let was_active = *active;
+                        VIDEO_DECODERS.with(|d| d.borrow_mut().remove(&node_id));
+                        VIDEO_TEXTURES.with(|t| t.borrow_mut().remove(&node_id));
+                        *current_frame = None;
+                        crate::gpu_image::request_node_invalidation(node_id);
                         *device_index = *idx;
+                        if was_active {
+                            match VideoDecoder::open_camera(*device_index, *res_w, *res_h) {
+                                Ok(dec) => {
+                                    VIDEO_DECODERS.with(|d| d.borrow_mut().insert(node_id, dec));
+                                    *active = true;
+                                    *status = "Capturing".into();
+                                }
+                                Err(e) => {
+                                    *active = false;
+                                    *status = e;
+                                }
+                            }
+                        } else {
+                            *status = "Stopped".into();
+                        }
                     }
                 }
             });
@@ -412,7 +444,9 @@ pub fn render_camera(
             if ui.button("⏹ Stop").clicked() {
                 *active = false;
                 VIDEO_DECODERS.with(|d| d.borrow_mut().remove(&node_id));
+                VIDEO_TEXTURES.with(|t| t.borrow_mut().remove(&node_id));
                 *current_frame = None;
+                crate::gpu_image::request_node_invalidation(node_id);
                 *status = "Stopped".into();
             }
             ui.colored_label(egui::Color32::from_rgb(255, 80, 80), "● REC");
@@ -513,4 +547,7 @@ pub fn fast_downsample(img: &ImageData, target_w: u32, target_h: u32) -> Vec<u8>
 pub fn cleanup_node(node_id: NodeId) {
     VIDEO_DECODERS.with(|d| d.borrow_mut().remove(&node_id));
     VIDEO_TEXTURES.with(|t| t.borrow_mut().remove(&node_id));
+    // Also drop GPU cache entries for this node so VRAM is released
+    // immediately rather than waiting for the frame-LRU sweep.
+    crate::gpu_image::request_node_invalidation(node_id);
 }

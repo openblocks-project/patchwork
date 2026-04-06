@@ -4,8 +4,77 @@
 use crate::graph::{ImageData, NodeId};
 use eframe::egui;
 use eframe::egui_wgpu::{self, wgpu};
-use std::collections::HashMap;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+
+// ── Pending node invalidations ──────────────────────────────────────────────
+// Render functions for Camera/VideoPlayer don't have access to the
+// GpuTextureCache directly, so they push the node id here when the source
+// changes (camera device switch, video file load). The main update loop
+// drains this set in `begin_frame` before any GPU work runs.
+
+thread_local! {
+    static PENDING_NODE_INVALIDATIONS: RefCell<HashSet<NodeId>> = RefCell::new(HashSet::new());
+
+    /// Pending publish queue used by GPU producers (e.g. WGSL Viewer's
+    /// `render_offscreen`) that don't have direct access to the
+    /// `GpuTextureCache`. Drained at the top of the next frame's
+    /// `begin_frame` (1 frame of latency, matching the existing WGSL
+    /// injection latency).
+    static PENDING_CACHE_PUBLISHES: RefCell<Vec<(NodeId, usize, wgpu::Texture, u32, u32)>>
+        = RefCell::new(Vec::new());
+
+    /// Per-WgslViewer (or any GPU producer) hint set by the eval loop:
+    /// `true` ⇒ at least one downstream consumer needs CPU pixel bytes,
+    /// so the producer must readback this frame. Default `true` (safe).
+    static CPU_CONSUMER_HINTS: RefCell<HashMap<NodeId, bool>>
+        = RefCell::new(HashMap::new());
+}
+
+/// Mark a node's GPU cache entries as stale. Safe to call from anywhere on
+/// the GUI thread (e.g. inside a node's `render` fn).
+pub fn request_node_invalidation(node_id: NodeId) {
+    PENDING_NODE_INVALIDATIONS.with(|s| { s.borrow_mut().insert(node_id); });
+}
+
+/// Queue a producer's freshly rendered output texture for publication into
+/// `GpuTextureCache.entries[(node_id, port)]` at the start of the next
+/// frame. The texture is moved into the queue and stays alive until drained.
+pub fn queue_publish_node_output(
+    node_id: NodeId,
+    port: usize,
+    texture: wgpu::Texture,
+    width: u32,
+    height: u32,
+) {
+    PENDING_CACHE_PUBLISHES.with(|q| {
+        q.borrow_mut().push((node_id, port, texture, width, height));
+    });
+}
+
+/// Set the per-node CPU consumer hint. Called by the eval loop for every
+/// GPU producer node before its render function runs.
+pub fn set_cpu_consumer_hint(node_id: NodeId, needs_cpu: bool) {
+    CPU_CONSUMER_HINTS.with(|m| { m.borrow_mut().insert(node_id, needs_cpu); });
+}
+
+/// Read the CPU consumer hint for a node. Returns `None` if not set
+/// (callers should default to `true` for safety).
+pub fn cpu_consumer_hint(node_id: NodeId) -> Option<bool> {
+    CPU_CONSUMER_HINTS.with(|m| m.borrow().get(&node_id).copied())
+}
+
+/// Clear all CPU consumer hints. Called at the top of every eval pass to
+/// avoid stale hints when graph topology changes.
+pub fn clear_cpu_consumer_hints() {
+    CPU_CONSUMER_HINTS.with(|m| m.borrow_mut().clear());
+}
+
+/// Maximum number of output ports per node we will sweep when invalidating.
+/// cache_node_output uses key = node_id*31 + port; we have to enumerate
+/// because we don't track which ports were ever cached.
+const MAX_NODE_PORTS_FOR_INVALIDATION: usize = 16;
 
 // ── GPU Texture Cache ───────────────────────────────────────────────────────
 // Avoids redundant CPU→GPU uploads when the same Arc<ImageData> flows through
@@ -34,6 +103,29 @@ impl GpuTextureCache {
         self.current_frame += 1;
         // Evict textures older than 2 frames
         self.entries.retain(|_, v| self.current_frame - v.frame <= 2);
+
+        // Drain any pending node-level invalidations queued from render
+        // functions that didn't have access to the cache directly
+        // (camera device switch, video file load, node deletion).
+        let pending: Vec<NodeId> = PENDING_NODE_INVALIDATIONS.with(|s| {
+            s.borrow_mut().drain().collect()
+        });
+        for nid in pending {
+            self.invalidate_node(nid, render_state);
+        }
+
+        // Drain pending GPU publishes from producers like WGSL Viewer that
+        // can't reach the cache directly. Done AFTER invalidation so a
+        // producer that was both invalidated and re-rendered in the same
+        // frame ends up with its fresh texture in the cache.
+        let pending_pubs: Vec<(NodeId, usize, wgpu::Texture, u32, u32)> =
+            PENDING_CACHE_PUBLISHES.with(|q| std::mem::take(&mut *q.borrow_mut()));
+        if let Some(rs) = render_state {
+            for (nid, port, tex, w, h) in pending_pubs {
+                self.publish(nid, port, tex, w, h, rs);
+            }
+        }
+
         // Clear prerendered display textures from previous frame
         if let Some(rs) = render_state {
             let mut renderer = rs.renderer.write();
@@ -41,6 +133,42 @@ impl GpuTextureCache {
                 store.prerendered.clear();
                 store.instances.clear();
             }
+        }
+    }
+
+    /// Drop every cached GPU texture and display-store entry that belongs
+    /// to a particular node. Call when the node's source changes (camera
+    /// device switch, video file open) or when the node is deleted so VRAM
+    /// is released immediately rather than waiting for frame-LRU.
+    ///
+    /// This also walks every per-node-type GPU pipeline store stashed
+    /// inside `egui_wgpu`'s callback_resources (Image Effects, Blend,
+    /// Color Curves, WGSL Viewer, Image Style) so that pipelines,
+    /// uniform buffers, samplers, and bind groups belonging to a deleted
+    /// node are released immediately rather than leaking forever.
+    pub fn invalidate_node(
+        &mut self,
+        node_id: NodeId,
+        render_state: Option<&eframe::egui_wgpu::RenderState>,
+    ) {
+        // Per-node-output entries from cache_node_output.
+        for port in 0..MAX_NODE_PORTS_FOR_INVALIDATION {
+            let key = (node_id as u64).wrapping_mul(31).wrapping_add(port as u64);
+            self.entries.remove(&key);
+        }
+        // Display + per-node-type pipeline store entries.
+        if let Some(rs) = render_state {
+            let mut renderer = rs.renderer.write();
+            let cr = &mut renderer.callback_resources;
+            if let Some(store) = cr.get_mut::<GpuDisplayStore>() {
+                store.prerendered.remove(&node_id);
+                store.instances.remove(&node_id);
+            }
+            crate::nodes::wgsl_viewer::cleanup_node(cr, node_id);
+            crate::nodes::color_curves::cleanup_node(cr, node_id);
+            crate::nodes::blend::cleanup_node(cr, node_id);
+            crate::nodes::image_effects::cleanup_node(cr, node_id);
+            crate::nodes::image_style_node::cleanup_node(cr, node_id);
         }
     }
 
@@ -114,6 +242,15 @@ impl GpuTextureCache {
         self.entries.get(&key).map(|c| (&c.view, c.width, c.height))
     }
 
+    /// Like `get_node_output`, but returns a cloned `wgpu::TextureView` so the caller
+    /// can hold the view across subsequent `&mut self` calls (e.g. `cache_node_output`).
+    /// `wgpu::TextureView` is Arc-reference-counted internally, so cloning is cheap and
+    /// the cache itself keeps the backing texture alive.
+    pub fn get_node_output_cloned(&self, node_id: crate::graph::NodeId, port: usize) -> Option<(wgpu::TextureView, u32, u32)> {
+        let key = (node_id as u64).wrapping_mul(31).wrapping_add(port as u64);
+        self.entries.get(&key).map(|c| (c.view.clone(), c.width, c.height))
+    }
+
     /// Store a pre-rendered output texture in the display callback resources,
     /// so the GpuImageDisplayCallback can render it without re-uploading.
     pub fn store_for_display(
@@ -166,6 +303,63 @@ impl GpuTextureCache {
                 let view = cached.texture.create_view(&Default::default());
                 store.prerendered.insert(node_id, (view, bg));
             }
+        }
+    }
+
+    /// Atomic publish: store the output texture by `(node_id, port)` AND
+    /// mirror it into `GpuDisplayStore::prerendered` so the display
+    /// paint callback can sample it without re-uploading. Replaces the
+    /// two-step `cache_node_output` + `store_for_display` pattern in
+    /// `process_gpu_cached` functions.
+    pub fn publish(
+        &mut self,
+        node_id: crate::graph::NodeId,
+        port: usize,
+        texture: wgpu::Texture,
+        width: u32,
+        height: u32,
+        render_state: &eframe::egui_wgpu::RenderState,
+    ) {
+        self.cache_node_output(node_id, port, texture, width, height);
+        // Only port 0 is mirrored to the display callback (matches the
+        // existing `store_for_display` behaviour).
+        if port == 0 {
+            self.store_for_display(node_id, render_state);
+        }
+    }
+
+    /// On-demand readback for CPU consumers that received a
+    /// `PortValue::GpuImage` they can't handle natively (Crop, Transform,
+    /// save-to-disk, ML, etc.). Returns `None` if the texture is no
+    /// longer cached (e.g. evicted by the frame-LRU).
+    pub fn readback_node_output(
+        &self,
+        node_id: crate::graph::NodeId,
+        port: usize,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) -> Option<Arc<ImageData>> {
+        let key = (node_id as u64).wrapping_mul(31).wrapping_add(port as u64);
+        let cached = self.entries.get(&key)?;
+        Some(readback_texture(device, queue, &cached.texture, cached.width, cached.height))
+    }
+
+    /// Per-`(node_id, port)` frame stamp used by the eval-loop param
+    /// cache to detect "the producer re-rendered this frame". Returns 0
+    /// if the entry is absent.
+    pub fn frame_stamp(&self, node_id: crate::graph::NodeId, port: usize) -> u64 {
+        let key = (node_id as u64).wrapping_mul(31).wrapping_add(port as u64);
+        self.entries.get(&key).map(|c| c.frame).unwrap_or(0)
+    }
+
+    /// Refresh a cached entry's frame stamp without re-rendering. Called
+    /// from the eval loop's param-cache HIT path so the still-live
+    /// texture isn't evicted by the 2-frame LRU even though its producer
+    /// was skipped this frame.
+    pub fn touch(&mut self, node_id: crate::graph::NodeId, port: usize) {
+        let key = (node_id as u64).wrapping_mul(31).wrapping_add(port as u64);
+        if let Some(entry) = self.entries.get_mut(&key) {
+            entry.frame = self.current_frame;
         }
     }
 }

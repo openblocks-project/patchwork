@@ -233,7 +233,9 @@ impl ImageStyleNode {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
         let output_view = output_tex.create_view(&Default::default());
@@ -285,6 +287,137 @@ impl ImageStyleNode {
         drop(renderer);
 
         Some(crate::gpu_image::readback_texture(device, queue, &output_tex, w, h))
+    }
+
+    /// GPU processing with output caching for zero-copy display.
+    /// Mirrors `process_gpu` but, after readback, hands the freshly rendered
+    /// `wgpu::Texture` directly to `GpuTextureCache::cache_node_output` so the
+    /// eval loop in `app/mod.rs` does not have to re-`upload_texture` the
+    /// pixels we already had in VRAM. Saves one CPU→GPU copy + one texture
+    /// allocation per frame whenever an Image Style node is in the chain.
+    pub fn process_gpu_cached(
+        &self,
+        img: &ImageData,
+        node_id: crate::graph::NodeId,
+        render_state: &eframe::egui_wgpu::RenderState,
+        tex_cache: &mut crate::gpu_image::GpuTextureCache,
+        gpu_source: Option<(crate::graph::NodeId, usize)>,
+        needs_readback: bool,
+    ) -> Option<crate::graph::PortValue> {
+        let device = &render_state.device;
+        let queue = &render_state.queue;
+        let w = img.width;
+        let h = img.height;
+        if w == 0 || h == 0 { return None; }
+
+        // Reuse pipeline from process_gpu (creating it on first call).
+        let has_pipeline = {
+            let renderer = render_state.renderer.read();
+            renderer.callback_resources.get::<ImageStyleStore>()
+                .and_then(|s| s.nodes.get(&node_id))
+                .is_some()
+        };
+        if !has_pipeline {
+            // First call: delegate to process_gpu, which creates the pipeline
+            // AND performs the render+readback. Returning here avoids the
+            // double-render bug where the cached body would re-execute the
+            // pipeline that was just used. The next frame's call hits the
+            // cached body. Mirrors image_effects::process_gpu_cached.
+            return self.process_gpu(img, node_id, render_state).map(crate::graph::PortValue::Image);
+        }
+
+        // Bind input from upstream GPU cache when available; only upload from
+        // CPU as a fallback. Saves one CPU→GPU upload per frame in fully GPU
+        // chains. The cached view's backing texture is kept alive by the
+        // cache itself; the upload-fallback's texture is held in
+        // `_input_keepalive` until command submission.
+        let need_upload = !img.pixels.is_empty();
+        let (input_view, _input_keepalive) = match gpu_source
+            .and_then(|(nid, p)| tex_cache.get_node_output_cloned(nid, p))
+            .filter(|(_, gw, gh)| *gw == w && *gh == h)
+        {
+            Some((view, _, _)) => (view, None),
+            None if need_upload => {
+                let tex = crate::gpu_image::upload_texture(device, queue, img, "image_style_input");
+                let v = tex.create_view(&Default::default());
+                (v, Some(tex))
+            }
+            None => return None,
+        };
+
+        // Output texture — TEXTURE_BINDING so the display callback can sample it
+        let output_tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("image_style_output_cached"),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let output_view = output_tex.create_view(&Default::default());
+
+        let renderer = render_state.renderer.read();
+        let store = renderer.callback_resources.get::<ImageStyleStore>()?;
+        let gpu = store.nodes.get(&node_id)?;
+
+        let mode_val = match self.mode {
+            StyleMode::Blur => 0.0f32,
+            StyleMode::Pixelate => 1.0,
+            StyleMode::Sharpen => 2.0,
+        };
+        let params = [mode_val, self.amount, w as f32, h as f32];
+        queue.write_buffer(&gpu.uniform_buffer, 0, bytemuck::cast_slice(&params));
+
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &gpu.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: gpu.uniform_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&input_view) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&gpu.sampler) },
+            ],
+        });
+
+        let mut encoder = device.create_command_encoder(&Default::default());
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("image_style_pass_cached"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &output_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                ..Default::default()
+            });
+            pass.set_pipeline(&gpu.pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        queue.submit(Some(encoder.finish()));
+        drop(renderer);
+
+        if needs_readback {
+            let result = crate::gpu_image::readback_texture(device, queue, &output_tex, w, h);
+            tex_cache.publish(node_id, 0, output_tex, w, h, render_state);
+            Some(crate::graph::PortValue::Image(result))
+        } else {
+            tex_cache.publish(node_id, 0, output_tex, w, h, render_state);
+            Some(crate::graph::PortValue::GpuImage(crate::graph::GpuImageHandle {
+                node_id,
+                port: 0,
+                width: w,
+                height: h,
+                frame_stamp: tex_cache.frame_stamp(node_id, 0),
+            }))
+        }
     }
 }
 
@@ -393,4 +526,16 @@ pub fn register(registry: &mut crate::node_trait::NodeRegistryInner) {
         if let Ok(n) = serde_json::from_value::<ImageStyleNode>(state.clone()) { Box::new(n) }
         else { Box::new(ImageStyleNode::default()) }
     });
+}
+
+/// Drop all GPU resources for a deleted Image Style node so VRAM is
+/// released immediately. Called from
+/// `crate::gpu_image::GpuTextureCache::invalidate_node`.
+pub(crate) fn cleanup_node(
+    callback_resources: &mut eframe::egui_wgpu::CallbackResources,
+    node_id: crate::graph::NodeId,
+) {
+    if let Some(store) = callback_resources.get_mut::<ImageStyleStore>() {
+        store.nodes.remove(&node_id);
+    }
 }

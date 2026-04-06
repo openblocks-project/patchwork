@@ -15,11 +15,26 @@ pub fn render(
         _ => return,
     };
 
-    // Check if there's an input image (for receiving processed images)
+    // Check if there's an input image (for receiving processed images).
+    // For GpuImage, store a stub Arc<ImageData> with empty pixels — the GPU
+    // display callback samples directly from gpu_tex_cache, and save-to-disk
+    // is gated below on non-empty pixels.
     let input_val = Graph::static_input_value(connections, values, node_id, 0);
-    if let PortValue::Image(img) = &input_val {
-        *image_data = Some(img.clone());
-    }
+    let input_gpu_source: Option<(NodeId, usize)> = match &input_val {
+        PortValue::Image(img) => {
+            *image_data = Some(img.clone());
+            None
+        }
+        PortValue::GpuImage(handle) => {
+            *image_data = Some(Arc::new(ImageData {
+                width: handle.width,
+                height: handle.height,
+                pixels: Vec::new(),
+            }));
+            Some((handle.node_id, handle.port))
+        }
+        _ => None,
+    };
 
     // Open / Save buttons
     ui.horizontal(|ui| {
@@ -33,7 +48,7 @@ pub fn render(
             }
         }
         if ui.button("Save...").clicked() {
-            if let Some(img) = image_data.as_ref() {
+            if let Some(img) = image_data.as_ref().filter(|i| !i.pixels.is_empty()) {
                 if let Some(p) = rfd::FileDialog::new()
                     .add_filter("PNG", &["png"])
                     .add_filter("JPEG", &["jpg", "jpeg"])
@@ -67,7 +82,7 @@ pub fn render(
 
     // Auto-save: if save_path is set and image exists, save when image changes
     if !save_path.is_empty() {
-        if let Some(img) = image_data.as_ref() {
+        if let Some(img) = image_data.as_ref().filter(|i| !i.pixels.is_empty()) {
             use std::collections::hash_map::DefaultHasher;
             use std::hash::{Hash, Hasher};
             let mut h = DefaultHasher::new();
@@ -89,7 +104,12 @@ pub fn render(
     // Preview
     if let Some(img) = image_data.as_ref() {
         ui.label(egui::RichText::new(format!("{}x{}", img.width, img.height)).small());
-        show_image_preview(ui, node_id, img, *preview_size);
+        if img.pixels.is_empty() || input_gpu_source.is_some() {
+            // GPU-resident path: sample from gpu_tex_cache via the paint callback.
+            show_image_gpu(ui, node_id, img, *preview_size, input_gpu_source);
+        } else {
+            show_image_preview(ui, node_id, img, *preview_size);
+        }
     } else {
         ui.colored_label(egui::Color32::GRAY, "No image loaded");
     }

@@ -1,4 +1,5 @@
-use crate::graph::{PortDef, PortKind, PortValue, Graph};
+use crate::graph::{PortDef, PortKind, PortValue, Graph, ImageData};
+use std::sync::Arc;
 use crate::node_trait::{NodeBehavior, RenderContext};
 use serde::{Serialize, Deserialize};
 use eframe::egui;
@@ -43,12 +44,26 @@ impl NodeBehavior for VisualOutputNode {
         });
 
         let input_val = Graph::static_input_value(ctx.connections, ctx.values, ctx.node_id, 0);
-        if let PortValue::Image(img) = &input_val {
+        // Normalise both Image and GpuImage variants to (img, gpu_source).
+        let img_and_src: Option<(Arc<ImageData>, Option<(crate::graph::NodeId, usize)>)> = match &input_val {
+            PortValue::Image(img) => {
+                let gpu_source = ctx.connections.iter()
+                    .find(|c| c.to_node == ctx.node_id && c.to_port == 0)
+                    .map(|c| (c.from_node, c.from_port));
+                Some((img.clone(), gpu_source))
+            }
+            PortValue::GpuImage(handle) => {
+                let stub = Arc::new(ImageData {
+                    width: handle.width,
+                    height: handle.height,
+                    pixels: Vec::new(),
+                });
+                Some((stub, Some((handle.node_id, handle.port))))
+            }
+            _ => None,
+        };
+        if let Some((img, gpu_source)) = img_and_src {
             ui.label(egui::RichText::new(format!("{}×{}", img.width, img.height)).small().color(dim));
-            // Use GPU paint callback — check if source node has a pre-rendered GPU texture
-            let gpu_source = ctx.connections.iter()
-                .find(|c| c.to_node == ctx.node_id && c.to_port == 0)
-                .map(|c| (c.from_node, c.from_port));
             crate::nodes::image_node::show_image_gpu(ui, ctx.node_id, &img, self.preview_size, gpu_source);
 
             // Size slider

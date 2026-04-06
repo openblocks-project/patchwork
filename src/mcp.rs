@@ -449,6 +449,7 @@ pub fn execute_command(
                         PortValue::Float(f) => json!(f),
                         PortValue::Text(s) => json!(s),
                         PortValue::Image(img) => json!(format!("[Image {}x{}]", img.width, img.height)),
+                        PortValue::GpuImage(h) => json!(format!("[GpuImage {}x{} @ node {}:{}]", h.width, h.height, h.node_id, h.port)),
                         PortValue::None => json!(null),
                     };
                     result.insert(key, v);

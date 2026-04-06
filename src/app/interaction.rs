@@ -161,6 +161,7 @@ impl super::PatchworkApp {
                 for id in to_delete {
                     self.audio.cleanup_node(id);
                     crate::nodes::video_player::cleanup_node(id);
+                    crate::gpu_image::request_node_invalidation(id);
                     self.graph.remove_node(id);
                 }
                 self.selected_nodes.clear();
@@ -358,6 +359,7 @@ impl super::PatchworkApp {
                     self.ob.cleanup_node(id);
                     self.audio.cleanup_node(id);
                     crate::nodes::video_player::cleanup_node(id);
+                    crate::gpu_image::request_node_invalidation(id);
                     self.graph.remove_node(id);
                 }
             }
@@ -523,6 +525,8 @@ impl super::PatchworkApp {
                                 self.osc.cleanup_node(id);
                                 self.ob.cleanup_node(id);
                                 self.audio.cleanup_node(id);
+                                crate::nodes::video_player::cleanup_node(id);
+                                crate::gpu_image::request_node_invalidation(id);
                                 self.graph.remove_node(id);
                             }
                             keep_open = false;

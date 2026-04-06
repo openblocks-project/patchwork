@@ -371,7 +371,10 @@ pub fn process_gpu_cached(
     a: &ImageData, b: &ImageData, mode: u8, mix: f32,
     node_id: NodeId, render_state: &egui_wgpu::RenderState,
     tex_cache: &mut crate::gpu_image::GpuTextureCache,
-) -> Option<Arc<ImageData>> {
+    gpu_source_a: Option<(NodeId, usize)>,
+    gpu_source_b: Option<(NodeId, usize)>,
+    needs_readback: bool,
+) -> Option<PortValue> {
     let device = &render_state.device;
     let queue = &render_state.queue;
     let w = a.width.min(b.width);
@@ -384,13 +387,38 @@ pub fn process_gpu_cached(
             .and_then(|s| s.nodes.get(&node_id)).is_some()
     };
     if !has_pipeline {
-        return process_gpu(a, b, mode, mix, node_id, render_state);
+        return process_gpu(a, b, mode, mix, node_id, render_state).map(PortValue::Image);
     }
 
-    let tex_a = crate::gpu_image::upload_texture(device, queue, a, "blend_a");
-    let tex_b = crate::gpu_image::upload_texture(device, queue, b, "blend_b");
-    let view_a = tex_a.create_view(&Default::default());
-    let view_b = tex_b.create_view(&Default::default());
+    // Bind both inputs from the upstream GPU cache when available; only
+    // upload from CPU as a fallback. Each input is checked independently.
+    // Dimension guards use the per-input source size, not the post-min `w/h`.
+    let need_upload_a = !a.pixels.is_empty();
+    let need_upload_b = !b.pixels.is_empty();
+    let (view_a, _keepalive_a) = match gpu_source_a
+        .and_then(|(nid, p)| tex_cache.get_node_output_cloned(nid, p))
+        .filter(|(_, gw, gh)| *gw == a.width && *gh == a.height)
+    {
+        Some((view, _, _)) => (view, None),
+        None if need_upload_a => {
+            let tex = crate::gpu_image::upload_texture(device, queue, a, "blend_a");
+            let v = tex.create_view(&Default::default());
+            (v, Some(tex))
+        }
+        None => return None,
+    };
+    let (view_b, _keepalive_b) = match gpu_source_b
+        .and_then(|(nid, p)| tex_cache.get_node_output_cloned(nid, p))
+        .filter(|(_, gw, gh)| *gw == b.width && *gh == b.height)
+    {
+        Some((view, _, _)) => (view, None),
+        None if need_upload_b => {
+            let tex = crate::gpu_image::upload_texture(device, queue, b, "blend_b");
+            let v = tex.create_view(&Default::default());
+            (v, Some(tex))
+        }
+        None => return None,
+    };
 
     let output_tex = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("blend_output"),
@@ -436,8 +464,30 @@ pub fn process_gpu_cached(
     queue.submit(Some(encoder.finish()));
     drop(renderer);
 
-    let result = crate::gpu_image::readback_texture(device, queue, &output_tex, w, h);
-    tex_cache.cache_node_output(node_id, 0, output_tex, w, h);
-    tex_cache.store_for_display(node_id, render_state);
-    Some(result)
+    if needs_readback {
+        let result = crate::gpu_image::readback_texture(device, queue, &output_tex, w, h);
+        tex_cache.publish(node_id, 0, output_tex, w, h, render_state);
+        Some(PortValue::Image(result))
+    } else {
+        tex_cache.publish(node_id, 0, output_tex, w, h, render_state);
+        Some(PortValue::GpuImage(GpuImageHandle {
+            node_id,
+            port: 0,
+            width: w,
+            height: h,
+            frame_stamp: tex_cache.frame_stamp(node_id, 0),
+        }))
+    }
+}
+
+/// Drop all GPU resources for a deleted Blend node so VRAM is
+/// released immediately. Called from
+/// `crate::gpu_image::GpuTextureCache::invalidate_node`.
+pub(crate) fn cleanup_node(
+    callback_resources: &mut eframe::egui_wgpu::CallbackResources,
+    node_id: crate::graph::NodeId,
+) {
+    if let Some(store) = callback_resources.get_mut::<BlendGpuStore>() {
+        store.nodes.remove(&node_id);
+    }
 }
