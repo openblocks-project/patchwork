@@ -377,4 +377,19 @@ impl AudioProcessor for EqProcessor {
     fn reset(&mut self) {
         for band in &mut self.bands { band.reset(); }
     }
+
+    fn set_eq_bands(&mut self, bands: Vec<crate::audio::biquad::BiquadFilter>, hash: u64) {
+        // Swap in the new band set. The old Vec is dropped on the audio thread,
+        // but this only happens when the user actually drags an EQ point — at
+        // human-interaction rate, not per-block — so the cost is negligible.
+        // Filter state (x1/x2/y1/y2) is intentionally NOT carried across:
+        // each new BiquadFilter starts with zero history. With biquads at
+        // moderate Q this produces a very brief envelope ramp on parameter
+        // change rather than the audible click you'd get from a coefficient
+        // jump on a stateful filter.
+        self.bands = bands;
+        self.curve_hash = hash;
+    }
+
+    fn eq_curve_hash(&self) -> u64 { self.curve_hash }
 }

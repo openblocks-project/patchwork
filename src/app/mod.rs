@@ -222,6 +222,15 @@ pub struct PatchworkApp {
     target_zoom: f32,
     /// Pointer position (screen coords) for zoom anchor during smooth interpolation.
     zoom_anchor_screen: Option<egui::Vec2>,
+    /// Last seen EQ curve hash per AudioEq node, used to skip redundant
+    /// `UpdateEqBands` commands. Pruned when the node is removed.
+    eq_curve_hashes: HashMap<NodeId, u64>,
+    /// Edge-triggered "user wants sound" tracker for the DSP auto-enable.
+    /// We only auto-flip the AudioDevice node from disabled→enabled on the
+    /// frame the intent rises (false→true). After that the user is back in
+    /// control of the toggle, so they can turn DSP off mid-playback without
+    /// us immediately overriding them.
+    prev_play_intent: bool,
 }
 
 /// Results from background device enumeration thread
@@ -339,6 +348,8 @@ impl PatchworkApp {
             session_accent: crate::nodes::theme::random_accent(),
             target_zoom: 1.0,
             zoom_anchor_screen: None,
+            eq_curve_hashes: HashMap::new(),
+            prev_play_intent: false,
         };
         // Always start MCP server thread — auto-detects if stdin is a pipe (Claude Desktop)
         // vs terminal (normal launch). If stdin is a terminal, the thread exits immediately.
@@ -384,31 +395,38 @@ impl PatchworkApp {
         let mut dsp_enabled = self.graph.nodes.values().any(|n| {
             matches!(n.node_type, NodeType::AudioDevice { enabled: true, .. })
         });
-        // Auto-enable DSP if the user has expressed an intent to make sound:
+
+        // Auto-enable DSP **on the rising edge** of "user wants sound":
         //   • pressed Play on any Audio Player (file_playing == true)
         //   • activated a Microphone (AudioInput.active == true)
-        //   • a Sampler is recording / playing
-        // …and an AudioDevice node exists in the graph (even if currently
-        // toggled off). This means dropping an MP3 + pressing Play "Just
-        // Works" without the user manually flipping DSP On.
-        if !dsp_enabled {
-            let has_audio_device = self.graph.nodes.values()
-                .any(|n| matches!(n.node_type, NodeType::AudioDevice { .. }));
-            let user_wants_sound = has_audio_device && (
-                self.audio.file_playing.values().any(|p| *p)
-                || self.graph.nodes.values().any(|n| matches!(
-                    &n.node_type,
-                    NodeType::AudioInput { active: true, .. }
-                ))
-            );
-            if user_wants_sound {
-                for node in self.graph.nodes.values_mut() {
-                    if let NodeType::AudioDevice { enabled, .. } = &mut node.node_type {
-                        *enabled = true;
-                    }
+        //
+        // We only flip the AudioDevice from disabled→enabled on the frame
+        // the intent transitions false→true, NOT every frame the intent
+        // remains true. Otherwise the user can never turn DSP off while
+        // audio is playing — the gate would re-enable it on the very next
+        // frame. With edge-triggering:
+        //   - drop MP3 + press Play with DSP off → DSP flips on once   ✓
+        //   - DSP on, audio playing, click DSP off → stays off          ✓
+        //   - then press Play again (after a stop)  → DSP flips on      ✓
+        let has_audio_device = self.graph.nodes.values()
+            .any(|n| matches!(n.node_type, NodeType::AudioDevice { .. }));
+        let play_intent = has_audio_device && (
+            self.audio.file_playing.values().any(|p| *p)
+            || self.graph.nodes.values().any(|n| matches!(
+                &n.node_type,
+                NodeType::AudioInput { active: true, .. }
+            ))
+        );
+        let intent_rising_edge = play_intent && !self.prev_play_intent;
+        self.prev_play_intent = play_intent;
+
+        if !dsp_enabled && intent_rising_edge {
+            for node in self.graph.nodes.values_mut() {
+                if let NodeType::AudioDevice { enabled, .. } = &mut node.node_type {
+                    *enabled = true;
                 }
-                dsp_enabled = true;
             }
+            dsp_enabled = true;
         }
         if !dsp_enabled {
             if self.audio.is_running() {
@@ -490,6 +508,33 @@ impl PatchworkApp {
                 _ => {}
             }
         }
+
+        // ── EQ curve sync ────────────────────────────────────────────────
+        // The EQ processor doesn't use the atomic-param channel — its "params"
+        // are the curve points themselves, which become biquad coefficients.
+        // Hash the points each frame and only ship a new band set when the
+        // hash changes (i.e. the user actually moved a control point). This
+        // is the missing piece that made the EQ feel like it "didn't do
+        // anything" — the curve was being edited, but the audio thread was
+        // still running the bands from the moment the processor was created.
+        let mut eq_updates: Vec<(NodeId, Vec<[f32; 2]>)> = Vec::new();
+        for (&nid, node) in &self.graph.nodes {
+            if !self.audio.has_processor(nid) { continue; }
+            if let NodeType::AudioEq { points } = &node.node_type {
+                let new_hash = crate::audio::eq_curve_hash(points);
+                let prev = self.eq_curve_hashes.get(&nid).copied();
+                if prev != Some(new_hash) {
+                    self.eq_curve_hashes.insert(nid, new_hash);
+                    eq_updates.push((nid, points.clone()));
+                }
+            }
+        }
+        for (nid, points) in eq_updates {
+            self.audio.update_eq_bands(nid, &points);
+        }
+        // Drop hash entries for nodes that no longer exist (prevents stale
+        // entries leaking forever as the user creates/deletes EQ nodes).
+        self.eq_curve_hashes.retain(|nid, _| self.graph.nodes.contains_key(nid));
 
         // Auto-register new audio nodes that don't have processors yet
         // (e.g., nodes added via palette after engine was started)

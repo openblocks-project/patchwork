@@ -314,6 +314,21 @@ impl AudioManager {
         self.send_command(super::engine::AudioCommand::Disconnect { to_node, to_port });
     }
 
+    /// Hot-swap the band coefficients of an existing EQ processor.
+    /// `points` is the raw curve from the `AudioEq` node; this function
+    /// computes the biquad bank and ships it to the audio thread.
+    /// Cheap enough to call every frame because the engine drops the
+    /// command on the floor if `node_id` doesn't refer to an EQ processor.
+    pub fn update_eq_bands(&self, node_id: NodeId, points: &[[f32; 2]]) {
+        let bands = crate::audio::curve_to_eq_bands(points, self.engine_sample_rate);
+        let hash = crate::audio::eq_curve_hash(points);
+        self.send_command(super::engine::AudioCommand::UpdateEqBands {
+            node_id,
+            bands,
+            hash,
+        });
+    }
+
     /// Write a parameter value directly to the node's atomic storage.
     /// No channel, no lock — just an atomic store. Called from node UI code.
     pub fn engine_write_param(&self, node_id: NodeId, param_index: usize, value: f32) {
@@ -364,7 +379,8 @@ impl AudioManager {
             }
             NodeType::AudioEq { points } => {
                 let bands = crate::audio::curve_to_eq_bands(points, self.engine_sample_rate);
-                Some((Box::new(effects::EqProcessor::new(bands, 0)), 0))
+                let hash = crate::audio::eq_curve_hash(points);
+                Some((Box::new(effects::EqProcessor::new(bands, hash)), 0))
             }
             NodeType::AudioMixer { .. } => {
                 // Allocate max 8 param slots so adding channels doesn't require re-registration

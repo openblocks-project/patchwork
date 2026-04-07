@@ -137,6 +137,28 @@ pub fn curve_to_eq_bands(points: &[[f32; 2]], sample_rate: f32) -> Vec<BiquadFil
     bands
 }
 
+/// Deterministic hash of a list of EQ curve points. Used to detect when the
+/// user has actually moved a point so we can skip redundant `UpdateEqBands`
+/// commands. Must be stable across calls within a session — std `DefaultHasher`
+/// is randomly seeded, so we roll a tiny FNV-1a here instead.
+/// f32 → bits cast is fine: NaN/±0 don't occur for UI-driven points clamped to [0,1].
+pub fn eq_curve_hash(points: &[[f32; 2]]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325; // FNV offset basis
+    let prime: u64 = 0x100_0000_01b3;        // FNV prime
+    let mut mix = |word: u32, h: &mut u64| {
+        for byte in word.to_le_bytes() {
+            *h ^= byte as u64;
+            *h = h.wrapping_mul(prime);
+        }
+    };
+    mix(points.len() as u32, &mut h);
+    for p in points {
+        mix(p[0].to_bits(), &mut h);
+        mix(p[1].to_bits(), &mut h);
+    }
+    h
+}
+
 /// Simple cubic Hermite interpolation of a curve defined by sorted [x,y] points.
 fn evaluate_curve_at(points: &[[f32; 2]], x: f32) -> f32 {
     if points.is_empty() { return 0.5; } // flat (0dB)

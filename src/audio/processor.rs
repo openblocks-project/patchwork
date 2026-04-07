@@ -80,4 +80,18 @@ pub trait AudioProcessor: Send {
     /// Most processors produce 1 (mono). Speaker produces 2 (interleaved stereo).
     /// The engine allocates `output_channels() * max_block_size` for the output buffer.
     fn output_channels(&self) -> usize { 1 }
+
+    /// Replace the EQ band coefficients in-place.
+    /// Default no-op; only `EqProcessor` overrides this.
+    /// Called from the audio thread in response to `AudioCommand::UpdateEqBands`.
+    /// The old `Vec` is dropped on the audio thread, but this only happens when
+    /// the user moves an EQ point — i.e. interactively, not per-frame — so the
+    /// occasional deallocation is acceptable (same pattern as add/remove
+    /// processor commands).
+    fn set_eq_bands(&mut self, _bands: Vec<super::biquad::BiquadFilter>, _hash: u64) {}
+
+    /// Current EQ curve hash (only meaningful for `EqProcessor`). Used to skip
+    /// redundant `UpdateEqBands` commands when the user hasn't actually moved
+    /// a point. Default 0 means "always update".
+    fn eq_curve_hash(&self) -> u64 { 0 }
 }

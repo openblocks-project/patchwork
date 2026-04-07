@@ -47,6 +47,15 @@ pub enum AudioCommand {
         node_id: NodeId,
         active: bool,
     },
+    /// Hot-swap the band coefficients of an existing EQ processor.
+    /// Used by `AudioEq` nodes when the user drags points on the curve —
+    /// the alternative (remove + re-add the processor) would drop all
+    /// connections and create a click.
+    UpdateEqBands {
+        node_id: NodeId,
+        bands: Vec<super::biquad::BiquadFilter>,
+        hash: u64,
+    },
 }
 
 // ── Engine Internals ─────────────────────────────────────────────────────────
@@ -166,6 +175,11 @@ impl AudioEngine {
                         slot.is_speaker = active;
                     }
                     self.ids_dirty = true;
+                }
+                AudioCommand::UpdateEqBands { node_id, bands, hash } => {
+                    if let Some(slot) = self.slots.get_mut(&node_id) {
+                        slot.processor.set_eq_bands(bands, hash);
+                    }
                 }
             }
         }

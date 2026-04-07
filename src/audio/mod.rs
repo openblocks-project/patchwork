@@ -19,6 +19,6 @@ pub mod clap_host;
 
 // Re-export what external code uses
 pub use waveform::Waveform;
-pub use biquad::curve_to_eq_bands;
+pub use biquad::{curve_to_eq_bands, eq_curve_hash};
 pub use decode::probe_file_duration;
 pub use manager::AudioManager;
