@@ -238,6 +238,11 @@ struct DeviceRefreshResult {
 impl PatchworkApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         crate::icons::setup(&cc.egui_ctx);
+
+        // Apply persisted user settings — currently runs LRU eviction
+        // on the image cache so it can't grow without bound across
+        // sessions. Failures here are non-fatal (defaults are sane).
+        crate::settings::Settings::load().apply_image_cache();
         let wgpu_render_state = cc.wgpu_render_state.clone();
         let (ml_tx, ml_rx) = std::sync::mpsc::channel();
         let mut app = Self {
@@ -376,9 +381,35 @@ impl PatchworkApp {
         }
 
         // ── Gate: require an enabled AudioDevice node for any audio to flow ──
-        let dsp_enabled = self.graph.nodes.values().any(|n| {
+        let mut dsp_enabled = self.graph.nodes.values().any(|n| {
             matches!(n.node_type, NodeType::AudioDevice { enabled: true, .. })
         });
+        // Auto-enable DSP if the user has expressed an intent to make sound:
+        //   • pressed Play on any Audio Player (file_playing == true)
+        //   • activated a Microphone (AudioInput.active == true)
+        //   • a Sampler is recording / playing
+        // …and an AudioDevice node exists in the graph (even if currently
+        // toggled off). This means dropping an MP3 + pressing Play "Just
+        // Works" without the user manually flipping DSP On.
+        if !dsp_enabled {
+            let has_audio_device = self.graph.nodes.values()
+                .any(|n| matches!(n.node_type, NodeType::AudioDevice { .. }));
+            let user_wants_sound = has_audio_device && (
+                self.audio.file_playing.values().any(|p| *p)
+                || self.graph.nodes.values().any(|n| matches!(
+                    &n.node_type,
+                    NodeType::AudioInput { active: true, .. }
+                ))
+            );
+            if user_wants_sound {
+                for node in self.graph.nodes.values_mut() {
+                    if let NodeType::AudioDevice { enabled, .. } = &mut node.node_type {
+                        *enabled = true;
+                    }
+                }
+                dsp_enabled = true;
+            }
+        }
         if !dsp_enabled {
             if self.audio.is_running() {
                 self.audio.stop_output();
@@ -1674,6 +1705,65 @@ impl eframe::App for PatchworkApp {
                 values.insert((id, 3), PortValue::Float(bass));
                 values.insert((id, 4), PortValue::Float(mid));
                 values.insert((id, 5), PortValue::Float(treble));
+            }
+
+            // ── Spectrum Analyzer injection ────────────────────────────
+            let spectrum_ids: Vec<NodeId> = self.graph.nodes.iter()
+                .filter(|(_, n)| matches!(n.node_type, NodeType::SpectrumAnalyzer))
+                .map(|(&id, _)| id).collect();
+            for id in spectrum_ids {
+                let sample_rate = self.audio.engine_sample_rate.max(1.0);
+                let (bins, peak_hz, centroid_hz, energy) = self.audio.spectrum_results.get(&id)
+                    .and_then(|s| s.try_lock().ok())
+                    .map(|s| {
+                        let bins = s.bins.clone();
+                        let n = bins.len().max(1);
+                        // Map bin index → frequency using same log-spaced 30 Hz → Nyquist scheme
+                        // as the analysis pass.
+                        let min_f = 30.0f32;
+                        let max_f = (sample_rate * 0.5).max(min_f + 1.0);
+                        let lmin = min_f.ln();
+                        let lmax = max_f.ln();
+                        let bin_to_hz = |b: usize| -> f32 {
+                            let t = (b as f32 + 0.5) / n as f32;
+                            (lmin + (lmax - lmin) * t).exp()
+                        };
+                        // Peak bin
+                        let mut peak_idx = 0usize;
+                        let mut peak_val = 0.0f32;
+                        let mut sum_w = 0.0f32;
+                        let mut sum_wf = 0.0f32;
+                        let mut sum = 0.0f32;
+                        for (i, &v) in bins.iter().enumerate() {
+                            if v > peak_val { peak_val = v; peak_idx = i; }
+                            let f = bin_to_hz(i);
+                            sum_w += v;
+                            sum_wf += v * f;
+                            sum += v;
+                        }
+                        let peak_hz = bin_to_hz(peak_idx);
+                        let centroid_hz = if sum_w > 1e-6 { sum_wf / sum_w } else { 0.0 };
+                        let energy = (sum / n as f32).clamp(0.0, 1.0);
+                        (bins, peak_hz, centroid_hz, energy)
+                    })
+                    .unwrap_or_else(|| (vec![0.0f32; crate::audio::analysis::SPECTRUM_BINS], 0.0, 0.0, 0.0));
+
+                let source_name = connections.iter()
+                    .find(|c| c.to_node == id && c.to_port == 0)
+                    .and_then(|c| self.graph.nodes.get(&c.from_node))
+                    .map(|n| n.node_type.title().to_string())
+                    .unwrap_or_default();
+                ctx.data_mut(|d| {
+                    d.insert_temp(egui::Id::new(("spectrum_bins", id)), bins.clone());
+                    d.insert_temp(egui::Id::new(("spectrum_scalars", id)), [peak_hz, centroid_hz, energy]);
+                    d.insert_temp(egui::Id::new(("spectrum_source", id)), source_name);
+                });
+                // Image output (port 1) — rasterize bars off the audio thread.
+                let img = crate::nodes::spectrum_analyzer::rasterize_bins(&bins, 256, 96);
+                values.insert((id, 1), PortValue::Image(std::sync::Arc::new(img)));
+                values.insert((id, 2), PortValue::Float(peak_hz));
+                values.insert((id, 3), PortValue::Float(centroid_hz));
+                values.insert((id, 4), PortValue::Float(energy));
             }
         }
         for (&id, node) in &self.graph.nodes {

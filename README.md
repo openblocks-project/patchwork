@@ -1,9 +1,11 @@
-# Patchwork
+# Patchwork [Work In Progress]
 
 A node-based visual programming environment built with Rust and [egui](https://github.com/emilk/egui).
 The project started as a routing/mapping software to interface between custom hardware nodes and other creative technology environments.
 
-Connect nodes to build data pipelines route numbers through math, load and edit files, WGSL shaders, MIDI, OSC, Serial, custom scripts, and more. Everything is a node as much as possible.
+Connect nodes to build data pipelines route signals and numbers through math, load files, edit text, WGSL shaders, MIDI, OSC, Serial, custom scripts, audio synth and player and a lot more being added.
+
+Aiming to have usable and functional nodes. More coming soooon!!!
 
 ![Patchwork Screenshot](assets/screenshot2.png)
 ![Patchwork Screenshot](assets/screenshot.png)

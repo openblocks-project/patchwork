@@ -61,6 +61,8 @@ pub struct AudioManager {
     pub engine_needs_rebuild: bool,
     /// Per-analyzer shared analysis results. UI reads, engine writes.
     pub analyzer_results: HashMap<NodeId, Arc<std::sync::Mutex<super::analysis::AudioAnalysis>>>,
+    /// Per-spectrum-analyzer FFT bins. UI reads, engine writes.
+    pub spectrum_results: HashMap<NodeId, Arc<std::sync::Mutex<super::analysis::Spectrum>>>,
     /// CLAP plugin GUI handles — stored here so we can close all GUIs before stopping DSP.
     pub clap_gui_handles: HashMap<NodeId, Arc<std::sync::Mutex<super::clap_host::ClapGuiHandle>>>,
     /// Number of output channels on the current primary device.
@@ -104,6 +106,7 @@ impl AudioManager {
             engine_tx: None, node_params: HashMap::new(),
             engine_sample_rate: 44100.0, engine_needs_rebuild: false,
             analyzer_results: HashMap::new(),
+            spectrum_results: HashMap::new(),
             clap_gui_handles: HashMap::new(),
             output_channel_count: 2,
             device_channel_counts: HashMap::new(),
@@ -135,6 +138,7 @@ impl AudioManager {
             engine_tx: None, node_params: HashMap::new(),
             engine_sample_rate: 44100.0, engine_needs_rebuild: false,
             analyzer_results: HashMap::new(),
+            spectrum_results: HashMap::new(),
             clap_gui_handles: HashMap::new(),
             output_channel_count: 2,
             device_channel_counts: HashMap::new(),
@@ -371,6 +375,11 @@ impl AudioManager {
                 self.analyzer_results.insert(nid, analysis);
                 Some((Box::new(proc), 0))
             }
+            NodeType::SpectrumAnalyzer => {
+                let (proc, spectrum) = spectrum::SpectrumProcessor::new();
+                self.spectrum_results.insert(nid, spectrum);
+                Some((Box::new(proc), 0))
+            }
             NodeType::AudioInput { gain, .. } => {
                 if let Some(buf) = self.input_buffers.get(&nid) {
                     Some((Box::new(input::LiveInputProcessor { buffer: buf.clone(), gain: *gain }), 1))
@@ -579,13 +588,20 @@ impl AudioManager {
         self.file_threads.insert(node_id, handle);
         self.file_playing.insert(node_id, true);
 
-        // Register processor in the engine (if running)
+        // Register processor in the engine (if running).
+        // If engine_tx is None, the auto-register in build_audio_chains will catch it.
         if self.engine_tx.is_some() && !self.has_processor(node_id) {
             let processor = Box::new(super::processors::input::FilePlayerProcessor {
                 buffer: buffer.clone(),
                 volume: 1.0,
             });
             self.add_processor(node_id, processor, 1);
+            // The engine's initial connection walk happened before this
+            // processor existed, so any AudioPlayer→Speaker edges were
+            // silently dropped. Mark this node for connection replay on
+            // the next eval frame so the chain wires up without the user
+            // having to toggle DSP off/on.
+            self.pending_connection_sync.insert(node_id);
         }
 
         Ok(())
@@ -693,6 +709,7 @@ impl AudioManager {
         self.sampler_buffers.remove(&node_id);
         self.sampler_input_sources.remove(&node_id);
         self.analyzer_results.remove(&node_id);
+        self.spectrum_results.remove(&node_id);
         self.clap_gui_handles.remove(&node_id);
     }
 

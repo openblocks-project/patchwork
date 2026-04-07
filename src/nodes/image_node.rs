@@ -2,16 +2,25 @@ use crate::graph::*;
 use eframe::egui;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Per-fetch result: optional decoded image + optional local cache file
 /// path written for remote URLs (so we can survive URL expiry).
 type FetchResult = (Option<Arc<ImageData>>, Option<String>);
 
 /// Async fetch state stored in egui temp data per node.
+///
+/// `gen` is a monotonically increasing counter — every spawned fetch
+/// captures the current value. When a fetch completes it only writes
+/// to the slot if its captured generation still matches; otherwise a
+/// newer fetch has superseded it and the result is dropped. This
+/// prevents an in-flight slow fetch from overwriting a fresher one
+/// (e.g. mashing the AI Send button back-to-back).
 #[derive(Clone)]
 struct ImgFetchState {
     loaded_url: String,
     pending_url: String,
+    generation: Arc<AtomicU64>,
     pending_result: Arc<Mutex<Option<FetchResult>>>,
 }
 
@@ -38,6 +47,66 @@ fn cache_dir() -> Option<std::path::PathBuf> {
     let dir = dirs::home_dir()?.join(".patchwork").join("image_cache");
     std::fs::create_dir_all(&dir).ok()?;
     Some(dir)
+}
+
+/// Returns `(file_count, total_bytes)` for the image cache directory.
+pub fn image_cache_stats() -> (usize, u64) {
+    let Some(dir) = cache_dir() else { return (0, 0); };
+    let mut count = 0usize;
+    let mut bytes = 0u64;
+    if let Ok(rd) = std::fs::read_dir(&dir) {
+        for e in rd.flatten() {
+            if let Ok(meta) = e.metadata() {
+                if meta.is_file() {
+                    count += 1;
+                    bytes += meta.len();
+                }
+            }
+        }
+    }
+    (count, bytes)
+}
+
+/// Evict oldest cache files until both `max_bytes` and `max_files` are
+/// respected. Sort key is mtime (newest kept first). Safe to run on app
+/// startup, after settings changes, or after each new download.
+pub fn evict_image_cache(max_bytes: u64, max_files: usize) {
+    let Some(dir) = cache_dir() else { return; };
+    let mut entries: Vec<(std::path::PathBuf, std::time::SystemTime, u64)> = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(&dir) {
+        for e in rd.flatten() {
+            if let Ok(meta) = e.metadata() {
+                if meta.is_file() {
+                    let mt = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                    entries.push((e.path(), mt, meta.len()));
+                }
+            }
+        }
+    }
+    // Newest first; iterate keeping until limits are exhausted, delete the rest.
+    entries.sort_by(|a, b| b.1.cmp(&a.1));
+    let mut total: u64 = 0;
+    let mut kept: usize = 0;
+    for (path, _mt, len) in &entries {
+        let would_overflow = kept >= max_files || total.saturating_add(*len) > max_bytes;
+        if would_overflow {
+            let _ = std::fs::remove_file(path);
+        } else {
+            total += *len;
+            kept += 1;
+        }
+    }
+}
+
+/// Wipe every file in the image cache. Used by the Settings node's
+/// "Clear cache" button.
+pub fn clear_image_cache() {
+    let Some(dir) = cache_dir() else { return; };
+    if let Ok(rd) = std::fs::read_dir(&dir) {
+        for e in rd.flatten() {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
 }
 
 /// Download a remote URL, decode it, and persist the original bytes to
@@ -74,6 +143,14 @@ fn fetch_and_cache(url: &str) -> FetchResult {
         Some(file.display().to_string())
     });
 
+    // Re-enforce the LRU cap mid-session — without this, a long
+    // generative session could blow past the limit between startups.
+    let s = crate::settings::Settings::load();
+    evict_image_cache(
+        (s.image_cache_max_mb as u64) * 1_048_576,
+        s.image_cache_max_files as usize,
+    );
+
     (Some(data), cache_path)
 }
 
@@ -99,6 +176,7 @@ fn maybe_load_async(
         .unwrap_or_else(|| ImgFetchState {
             loaded_url: String::new(),
             pending_url: String::new(),
+            generation: Arc::new(AtomicU64::new(0)),
             pending_result: Arc::new(Mutex::new(None)),
         });
 
@@ -136,13 +214,21 @@ fn maybe_load_async(
     let is_remote = trimmed.starts_with("http://") || trimmed.starts_with("https://");
     if is_remote {
         state.pending_url = trimmed.clone();
+        // Bump the generation: any in-flight fetch from a previous URL
+        // will see a stale gen at completion and discard its result.
+        let my_gen = state.generation.fetch_add(1, Ordering::SeqCst) + 1;
         // Reset the slot so any stale value doesn't fool us.
         if let Ok(mut g) = state.pending_result.lock() { *g = None; }
         let slot = state.pending_result.clone();
+        let gen_ref = state.generation.clone();
         let ctx_clone = ctx.clone();
         let url = trimmed.clone();
         std::thread::spawn(move || {
             let result = fetch_and_cache(&url);
+            // Drop result if a newer fetch was started after us.
+            if gen_ref.load(Ordering::SeqCst) != my_gen {
+                return;
+            }
             if let Ok(mut g) = slot.lock() {
                 *g = Some(result);
             }
@@ -173,9 +259,23 @@ pub fn render(
         _ => return,
     };
 
+    // ── Bug A: clear stale GPU stub when upstream disconnects ────
+    // When `Image In` (port 0) was wired to a GpuImage we stored a
+    // 0-pixel stub in `image_data`. If the upstream is then unwired
+    // the stub stays around and downstream Effects/Blend see a 0-pixel
+    // image (process_gpu_cached bails). Detect that case and reset so
+    // the cold-load + path-reload paths below can refill from disk.
+    let image_in_wired = connections.iter().any(|c| c.to_node == node_id && c.to_port == 0);
+    let is_stale_stub = matches!(image_data.as_ref(), Some(img) if img.pixels.is_empty());
+    if !image_in_wired && is_stale_stub {
+        *image_data = None;
+    }
+
     // Cold-load: after deserialize, image_data is None. If we have a
     // local cache file from a previous session (e.g. an expired DALL·E
-    // URL), prefer it over the original `path`.
+    // URL), prefer it over the original `path`. This also runs after
+    // the stub-clear above so a disconnected GpuImage upstream falls
+    // back to the cached image instead of going blank.
     if image_data.is_none() && !cached_file.is_empty() {
         if let Some(img) = load_image_from_path(cached_file) {
             *image_data = Some(img);

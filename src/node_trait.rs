@@ -127,6 +127,7 @@ pub static NODE_REGISTRY: std::sync::LazyLock<std::sync::Mutex<NodeRegistryInner
         crate::nodes::transform_node::register(&mut r);
         crate::nodes::image_style_node::register(&mut r);
         crate::nodes::color_channel_node::register(&mut r);
+        crate::nodes::settings_node::register(&mut r);
         std::sync::Mutex::new(r)
     });
 

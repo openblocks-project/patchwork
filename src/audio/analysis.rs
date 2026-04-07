@@ -1,3 +1,166 @@
+/// FFT size for the spectrum analyzer. Power of two; ~21 ms at 48 kHz.
+pub const SPECTRUM_FFT_SIZE: usize = 1024;
+/// Number of log-spaced display bins shown by the spectrum analyzer.
+pub const SPECTRUM_BINS: usize = 64;
+
+/// Real-time spectrum analysis — log-spaced FFT magnitude bins (0..1).
+///
+/// Sits next to `AudioAnalysis` (which is 3-band scalar reactivity)
+/// and is consumed by the Spectrum Analyzer node. Audio threads call
+/// [`Spectrum::update`] every block; the UI thread reads `bins` via
+/// `try_lock`.
+#[derive(Clone, Debug)]
+pub struct Spectrum {
+    /// Log-spaced, normalized magnitudes (length = `SPECTRUM_BINS`).
+    /// Indexed low → high frequency. Values are dB-scaled into 0..1.
+    pub bins: Vec<f32>,
+    /// Sliding sample buffer accumulated from the audio thread until
+    /// `SPECTRUM_FFT_SIZE` samples are collected, then drained.
+    buf: Vec<f32>,
+    /// Precomputed Hann window.
+    window: Vec<f32>,
+}
+
+impl Default for Spectrum {
+    fn default() -> Self {
+        let window: Vec<f32> = (0..SPECTRUM_FFT_SIZE)
+            .map(|i| {
+                let x = (i as f32) / ((SPECTRUM_FFT_SIZE - 1) as f32);
+                0.5 - 0.5 * (std::f32::consts::TAU * x).cos()
+            })
+            .collect();
+        Self {
+            bins: vec![0.0; SPECTRUM_BINS],
+            buf: Vec::with_capacity(SPECTRUM_FFT_SIZE),
+            window,
+        }
+    }
+}
+
+impl Spectrum {
+    /// Push new audio samples; runs an FFT every `SPECTRUM_FFT_SIZE`
+    /// samples and updates `bins`.
+    pub fn update(&mut self, data: &[f32], channels: usize, sample_rate: f32) {
+        let ch = channels.max(1);
+        let num_frames = data.len() / ch;
+        if num_frames == 0 || sample_rate <= 0.0 {
+            return;
+        }
+        for frame in 0..num_frames {
+            let mut s = 0.0f32;
+            for c in 0..ch {
+                s += data[frame * ch + c];
+            }
+            s /= ch as f32;
+            self.buf.push(s);
+            if self.buf.len() >= SPECTRUM_FFT_SIZE {
+                self.compute(sample_rate);
+                self.buf.clear();
+            }
+        }
+    }
+
+    fn compute(&mut self, sample_rate: f32) {
+        let n = SPECTRUM_FFT_SIZE;
+        let mut re = vec![0.0f32; n];
+        let mut im = vec![0.0f32; n];
+        for i in 0..n {
+            re[i] = self.buf[i] * self.window[i];
+        }
+        fft_radix2(&mut re, &mut im);
+
+        // Half-spectrum magnitudes, normalized by N/2.
+        let half = n / 2;
+        let mut mags = vec![0.0f32; half];
+        let norm = 1.0 / (n as f32 * 0.5);
+        for i in 0..half {
+            mags[i] = (re[i] * re[i] + im[i] * im[i]).sqrt() * norm;
+        }
+
+        // Log-spaced grouping into display bins, 30 Hz → Nyquist.
+        let min_freq = 30.0f32.max(1.0);
+        let max_freq = (sample_rate * 0.5).max(min_freq + 1.0);
+        let log_min = min_freq.ln();
+        let log_max = max_freq.ln();
+
+        let attack = 0.7f32;
+        let decay = 0.15f32;
+        for b in 0..SPECTRUM_BINS {
+            let f0 = (log_min + (log_max - log_min) * (b as f32) / (SPECTRUM_BINS as f32)).exp();
+            let f1 = (log_min + (log_max - log_min) * ((b + 1) as f32) / (SPECTRUM_BINS as f32)).exp();
+            let i0 = ((f0 / max_freq) * (half as f32)) as usize;
+            let i1 = (((f1 / max_freq) * (half as f32)) as usize).max(i0 + 1).min(half);
+            let mut sum = 0.0f32;
+            let mut count = 0usize;
+            for i in i0..i1 {
+                sum += mags[i];
+                count += 1;
+            }
+            let raw = if count == 0 { 0.0 } else { sum / count as f32 };
+            // dB scale: 20·log10(m + ε) into roughly [-90 dB, 0 dB] → 0..1.
+            let db = 20.0 * (raw + 1e-6).log10();
+            let v = ((db + 90.0) / 90.0).clamp(0.0, 1.0);
+            let old = self.bins[b];
+            self.bins[b] = if v > old {
+                old + attack * (v - old)
+            } else {
+                old + decay * (v - old)
+            };
+        }
+    }
+}
+
+/// In-place radix-2 Cooley-Tukey FFT. `re.len()` must equal `im.len()`
+/// and be a power of two. Sufficient for the small (1024-point)
+/// per-block FFT the Spectrum node needs — no external FFT crate.
+fn fft_radix2(re: &mut [f32], im: &mut [f32]) {
+    let n = re.len();
+    debug_assert_eq!(n, im.len());
+    debug_assert!(n.is_power_of_two());
+    let bits = n.trailing_zeros();
+
+    // Bit-reversal permutation.
+    for i in 0..n {
+        let mut x = i;
+        let mut j = 0usize;
+        for _ in 0..bits {
+            j = (j << 1) | (x & 1);
+            x >>= 1;
+        }
+        if j > i {
+            re.swap(i, j);
+            im.swap(i, j);
+        }
+    }
+
+    // Butterflies.
+    let mut size = 2usize;
+    while size <= n {
+        let half = size / 2;
+        let theta = -std::f32::consts::TAU / size as f32;
+        let wr_step = theta.cos();
+        let wi_step = theta.sin();
+        let mut k = 0;
+        while k < n {
+            let mut wr = 1.0f32;
+            let mut wi = 0.0f32;
+            for j in 0..half {
+                let tr = wr * re[k + j + half] - wi * im[k + j + half];
+                let ti = wr * im[k + j + half] + wi * re[k + j + half];
+                re[k + j + half] = re[k + j] - tr;
+                im[k + j + half] = im[k + j] - ti;
+                re[k + j] += tr;
+                im[k + j] += ti;
+                let nwr = wr * wr_step - wi * wi_step;
+                wi = wr * wi_step + wi * wr_step;
+                wr = nwr;
+            }
+            k += size;
+        }
+        size *= 2;
+    }
+}
+
 /// Real-time audio analysis — computed per audio block.
 /// All values are 0.0–1.0 (smoothed).
 #[derive(Clone, Debug)]

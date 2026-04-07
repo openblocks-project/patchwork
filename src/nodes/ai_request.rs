@@ -464,9 +464,21 @@ pub fn render(
         None
     };
 
-    // Helper to dispatch a request
+    // Frame-local dispatch guard. `is_pending` only reflects requests
+    // the HttpManager has *already accepted*; an action pushed earlier
+    // in this same frame is still invisible to it. Without this flag,
+    // a Send-button click + a trigger-port rising edge + an MCP trigger
+    // could all fire in the same frame and queue duplicate API calls.
+    let dispatched = std::cell::Cell::new(false);
+
+    // Helper to dispatch a request. Single chokepoint for all three
+    // entry points (button / trigger port / MCP), so duplicate
+    // suppression lives in exactly one place.
     let dispatch =
         |actions: &mut Vec<HttpAction>| {
+            if is_pending || dispatched.get() {
+                return;
+            }
             let img_b64 = eff_image.as_ref().and_then(|img| encode_image_to_jpeg_b64(img));
             let (url, headers, body) = build_request(
                 provider,
@@ -486,12 +498,16 @@ pub fn render(
                 headers,
                 body,
             });
+            dispatched.set(true);
         };
 
     // ── Send button ──
     ui.horizontal(|ui| {
-        let can_send = !eff_prompt.is_empty() && !api_key.is_empty() && !is_pending;
-        let btn_text = if is_pending { "\u{23f3} Thinking..." } else { "\u{25b6} Send" };
+        // Visual gate: also disables the button if we already
+        // dispatched earlier this frame (e.g. from a trigger port).
+        let in_flight = is_pending || dispatched.get();
+        let can_send = !eff_prompt.is_empty() && !api_key.is_empty() && !in_flight;
+        let btn_text = if in_flight { "\u{23f3} Thinking..." } else { "\u{25b6} Send" };
         if ui.add_enabled(can_send, egui::Button::new(btn_text)).clicked() {
             dispatch(actions);
         }
@@ -520,6 +536,8 @@ pub fn render(
     });
 
     // ── Trigger port auto-send (rising edge) ──
+    // No need to gate on `is_pending` here — `dispatch` handles
+    // that internally and also de-dups against same-frame dispatches.
     if trigger_wired {
         let trigger_val = match Graph::static_input_value(connections, values, node_id, 2) {
             PortValue::Float(v) => v,
@@ -529,7 +547,6 @@ pub fn render(
             && *last_trigger <= 0.5
             && !eff_prompt.is_empty()
             && !api_key.is_empty()
-            && !is_pending
         {
             dispatch(actions);
         }
@@ -537,11 +554,16 @@ pub fn render(
     }
 
     // ── MCP auto-trigger ──
-    if status == "mcp_trigger" && !eff_prompt.is_empty() && !api_key.is_empty() && !is_pending {
+    if status == "mcp_trigger" && !eff_prompt.is_empty() && !api_key.is_empty() {
         dispatch(actions);
-        ui.ctx().data_mut(|d| {
-            d.insert_temp(egui::Id::new(("mcp_ai_triggered", node_id)), true)
-        });
+        // Only mark the trigger as consumed if we actually dispatched —
+        // otherwise a request mid-flight would silently swallow the MCP
+        // event and the model would never run.
+        if dispatched.get() {
+            ui.ctx().data_mut(|d| {
+                d.insert_temp(egui::Id::new(("mcp_ai_triggered", node_id)), true)
+            });
+        }
     }
 
     // ── Output ports ──

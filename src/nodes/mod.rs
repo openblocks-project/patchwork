@@ -38,6 +38,7 @@ pub mod speaker;
 pub mod audio_mixer;
 pub mod audio_input;
 pub mod audio_analyzer;
+pub mod spectrum_analyzer;
 pub mod audio_reverb;
 pub mod clap_plugin;
 pub mod audio_sampler;
@@ -84,6 +85,7 @@ pub mod video_player;
 pub mod timer;
 pub mod sample_hold;
 pub mod select;
+pub mod settings_node;
 
 use crate::graph::*;
 use crate::midi::MidiAction;
@@ -366,6 +368,8 @@ pub fn catalog() -> Vec<NodeCatalogEntry> {
             factory: || NodeType::ClapPlugin { plugin_path: String::new(), plugin_name: String::new(), param_names: Vec::new(), param_ranges: Vec::new(), param_flags: Vec::new(), param_values: Vec::new(), param_labels: Vec::new(), is_instrument: false } },
         NodeCatalogEntry { label: "Audio Analyzer", category: "Audio",
             factory: || NodeType::AudioAnalyzer },
+        NodeCatalogEntry { label: "Spectrum Analyzer", category: "Audio",
+            factory: || NodeType::SpectrumAnalyzer },
         NodeCatalogEntry { label: "Audio Device", category: "Audio",
             factory: || NodeType::AudioDevice { selected_output: String::new(), selected_input: String::new(), master_volume: 0.8, enabled: false } },
 
@@ -465,6 +469,8 @@ pub fn catalog() -> Vec<NodeCatalogEntry> {
             factory: || NodeType::Palette { search: String::new() } },
         NodeCatalogEntry { label: "MCP Server", category: "System",
             factory: || NodeType::McpServer },
+        NodeCatalogEntry { label: "Settings", category: "System",
+            factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(settings_node::SettingsNode::default()) } } },
     ]
 }
 
@@ -558,6 +564,7 @@ pub fn render_content(
         NodeType::AudioPlayer { .. } => audio_player::render(ui, node_id, node_type, values, connections, audio_manager, port_positions, dragging_from, pending_disconnects),
         NodeType::AudioInput { .. } => audio_input::render(ui, node_id, node_type, values, connections, audio_manager, port_positions, dragging_from, pending_disconnects),
         NodeType::AudioAnalyzer => audio_analyzer::render(ui, node_id, values, audio_manager, port_positions, dragging_from, connections, pending_disconnects),
+        NodeType::SpectrumAnalyzer => spectrum_analyzer::render(ui, node_id, values, audio_manager, port_positions, dragging_from, connections, pending_disconnects),
         NodeType::AudioDevice { .. } => audio_device::render(ui, node_id, node_type, audio_manager),
         NodeType::AudioDelay { time_ms, feedback } => audio_delay::render(ui, time_ms, feedback, node_id, values, connections, port_positions, dragging_from, pending_disconnects),
         NodeType::AudioDistortion { drive } => audio_distortion::render(ui, drive, node_id, values, connections, port_positions, dragging_from, pending_disconnects),

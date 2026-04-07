@@ -723,6 +723,9 @@ pub enum NodeType {
     },
     /// Real-time audio analysis — outputs amplitude, bass, mid, treble from the master mix.
     AudioAnalyzer,
+    /// FFT-based spectrum analyzer — visualizes log-spaced frequency bins
+    /// and emits peak/centroid frequencies plus an Image of the bar display.
+    SpectrumAnalyzer,
     AudioDevice {
         #[serde(default)]
         selected_output: String,
@@ -1178,6 +1181,7 @@ impl NodeBehavior for NodeType {
             NodeType::AudioPlayer { .. } => "Audio Player",
             NodeType::AudioInput { .. } => "Microphone",
             NodeType::AudioAnalyzer => "Audio Analyzer",
+            NodeType::SpectrumAnalyzer => "Spectrum Analyzer",
             NodeType::AudioDevice { .. } => "Audio Manager",
             NodeType::AudioDelay { .. } => "Delay",
             NodeType::AudioDistortion { .. } => "Distortion",
@@ -1286,6 +1290,7 @@ impl NodeBehavior for NodeType {
             NodeType::AudioPlayer { .. } => vec![PortDef::new("Play", Trigger), PortDef::new("Volume", Normalized), PortDef::new("Seek", Normalized), PortDef::new("Speed", Number)],
             NodeType::AudioInput { .. } => vec![PortDef::new("Gain", Normalized)],
             NodeType::AudioAnalyzer => vec![PortDef::new("Audio", Audio)],
+            NodeType::SpectrumAnalyzer => vec![PortDef::new("Audio", Audio)],
             NodeType::AudioDevice { .. } => vec![],
             NodeType::AudioDelay { .. } => vec![PortDef::new("Audio", Audio), PortDef::new("Time", Number), PortDef::new("Feedback", Normalized)],
             NodeType::AudioDistortion { .. } => vec![PortDef::new("Audio", Audio), PortDef::new("Drive", Number)],
@@ -1475,6 +1480,13 @@ impl NodeBehavior for NodeType {
                 PortDef::new("Bass", Normalized), PortDef::new("Mid", Normalized),
                 PortDef::new("Treble", Normalized),
             ],
+            NodeType::SpectrumAnalyzer => vec![
+                PortDef::new("Audio", Audio),
+                PortDef::new("Image", Image),
+                PortDef::new("Peak Hz", Number),
+                PortDef::new("Centroid Hz", Number),
+                PortDef::new("Energy", Normalized),
+            ],
             NodeType::AudioDevice { .. } => vec![],
             NodeType::AudioDelay { .. } => vec![PortDef::new("Audio", Audio)],
             NodeType::AudioDistortion { .. } => vec![PortDef::new("Audio", Audio)],
@@ -1542,6 +1554,7 @@ impl NodeBehavior for NodeType {
             NodeType::AudioPlayer { .. } => [180, 100, 220],
             NodeType::AudioInput { .. } => [220, 80, 120],
             NodeType::AudioAnalyzer => [255, 180, 60],
+            NodeType::SpectrumAnalyzer => [255, 200, 90],
             NodeType::AudioDevice { .. } => [220, 180, 100],
             NodeType::AudioDelay { .. } => [180, 120, 200],
             NodeType::AudioDistortion { .. } => [220, 80, 80],

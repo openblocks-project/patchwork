@@ -11,6 +11,7 @@ mod nodes;
 mod ob;
 mod osc;
 mod serial;
+mod settings;
 pub mod system_log;
 
 use eframe::egui;
