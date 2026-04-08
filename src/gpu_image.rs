@@ -291,6 +291,23 @@ impl GpuTextureCache {
         &self.entries.get(&key).unwrap().view
     }
 
+    /// Tag a previously-uploaded `get_or_upload` entry with its source
+    /// `(node_id, port)` so it shows up in the per-frame thread-local snapshot
+    /// used by WGSL Viewer External image inputs.
+    ///
+    /// `get_or_upload` keys entries by `Arc<ImageData>` pointer and leaves
+    /// `src_node = None`, which means by default Camera/Video frames live in
+    /// the cache but are invisible to `frame_snapshot_get_view`. Producers
+    /// (Camera, VideoPlayer, ML, etc.) should call this immediately after
+    /// `get_or_upload` so downstream External slots can resolve them.
+    pub fn mark_node_source(&mut self, img: &Arc<ImageData>, node_id: crate::graph::NodeId, port: usize) {
+        let key = Arc::as_ptr(img) as u64;
+        if let Some(entry) = self.entries.get_mut(&key) {
+            entry.src_node = Some(node_id);
+            entry.src_port = port;
+        }
+    }
+
     /// Store a rendered output texture in the cache, keyed by the output Arc<ImageData>.
     /// Call after readback — the next node in the chain can reuse this texture.
     pub fn cache_output(

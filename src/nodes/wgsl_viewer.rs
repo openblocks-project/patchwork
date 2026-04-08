@@ -384,12 +384,19 @@ struct WgslNodeGpu {
     dummy_black_view: wgpu::TextureView,
 }
 
-/// Per-node feedback hints, populated each frame by `render()` and consumed
+/// Per-node image-input hints, populated each frame by `render()` and consumed
 /// by `WgslPaintCallback::prepare()` to rebuild on-screen bind groups so the
-/// inline canvas can sample the offscreen ping-pong textures.
+/// inline canvas can sample the right textures for both LastFrame feedback
+/// and External (upstream wired) inputs. Without this, the on-screen pipeline
+/// would only ever see dummy black for `image_a`/`image_b`.
 #[derive(Default)]
 struct WgslFeedbackHints {
-    nodes: HashMap<NodeId, [bool; 2]>, // [image_a_lastframe, image_b_lastframe]
+    /// [image_a_lastframe, image_b_lastframe] — true ⇒ sample ping-pong.
+    nodes: HashMap<NodeId, [bool; 2]>,
+    /// Per-node external texture views resolved from `frame_snapshot_get_view`.
+    /// Slot 0 = image_a, slot 1 = image_b. `None` ⇒ slot is not in External
+    /// mode or upstream isn't published yet (fall back to dummy black).
+    external_views: HashMap<NodeId, [Option<wgpu::TextureView>; 2]>,
 }
 
 /// Per-node GPU resources, keyed by NodeId
@@ -430,52 +437,68 @@ impl egui_wgpu::CallbackTrait for WgslPaintCallback {
             }
         }
 
-        // 2) Feedback aware re-bind. If LastFrame is enabled for either slot,
-        //    sample the offscreen ping-pong texture (which `render_offscreen`
-        //    has just refreshed in this same frame) and rebuild the on-screen
-        //    bind group so the inline canvas shows the trail.
-        let feedback_flags = resources
-            .get::<WgslFeedbackHints>()
-            .and_then(|h| h.nodes.get(&self.node_id).copied())
-            .unwrap_or([false, false]);
+        // 2) Per-frame on-screen bind group rebuild for image inputs.
+        //
+        // The on-screen pipeline's "default" bind group binds dummy black for
+        // image_a / image_b. Two situations need a different binding:
+        //   * LastFrame ⇒ sample the offscreen ping-pong (the `read_idx` slot)
+        //   * External  ⇒ sample the upstream wire's published texture, taken
+        //                 from `WgslFeedbackHints::external_views`
+        // We resolve both per slot, and rebuild the bind group only when at
+        // least one slot is non-dummy. Without this, "Input A: External"
+        // showed dummy black on the inline canvas even though the offscreen
+        // path resolved it correctly — leaving e.g. a Camera Grade preset
+        // showing only the vignette/tint with no camera image.
+        let (feedback_flags, ext_views): ([bool; 2], [Option<wgpu::TextureView>; 2]) = {
+            let hints = resources.get::<WgslFeedbackHints>();
+            let fb = hints
+                .and_then(|h| h.nodes.get(&self.node_id).copied())
+                .unwrap_or([false, false]);
+            let ext = hints
+                .and_then(|h| h.external_views.get(&self.node_id).cloned())
+                .unwrap_or([None, None]);
+            (fb, ext)
+        };
 
-        if feedback_flags[0] || feedback_flags[1] {
-            // Snapshot the previous-frame views from the offscreen store.
-            // After `render_offscreen`, the just-rendered texture sits at
-            // `prev_textures[1 - write_index]` (the new "read" slot).
-            let snapshot = resources
+        let needs_rebuild = feedback_flags[0] || feedback_flags[1]
+            || ext_views[0].is_some() || ext_views[1].is_some();
+
+        if needs_rebuild {
+            // Previous-frame ping-pong view (only needed for LastFrame slots).
+            // After `render_offscreen` runs this frame, the just-written
+            // texture sits at `prev_views[1 - write_index]`.
+            let prev_view: Option<wgpu::TextureView> = resources
                 .get::<WgslOffscreenStore>()
                 .and_then(|s| s.nodes.get(&self.node_id))
                 .and_then(|gpu| {
                     let read_idx = 1usize.wrapping_sub(gpu.write_index) & 1;
-                    gpu.prev_views[read_idx].clone().map(|v| v)
+                    gpu.prev_views[read_idx].clone()
                 });
 
-            if let Some(prev_view) = snapshot {
-                if let Some(gpu_store) = resources.get_mut::<WgslGpuStore>() {
-                    if let Some(node_gpu) = gpu_store.nodes.get_mut(&self.node_id) {
-                        let view_a = if feedback_flags[0] {
-                            &prev_view
+            if let Some(gpu_store) = resources.get_mut::<WgslGpuStore>() {
+                if let Some(node_gpu) = gpu_store.nodes.get_mut(&self.node_id) {
+                    let pick = |slot: usize| -> wgpu::TextureView {
+                        if feedback_flags[slot] {
+                            prev_view.clone().unwrap_or_else(|| node_gpu.dummy_black_view.clone())
+                        } else if let Some(v) = &ext_views[slot] {
+                            v.clone()
                         } else {
-                            &node_gpu.dummy_black_view
-                        };
-                        let view_b = if feedback_flags[1] {
-                            &prev_view
-                        } else {
-                            &node_gpu.dummy_black_view
-                        };
-                        let new_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                            label: Some("wgsl_onscreen_bg_feedback"),
-                            layout: &node_gpu.bind_group_layout,
-                            entries: &[
-                                wgpu::BindGroupEntry { binding: 0, resource: node_gpu.uniform_buffer.as_entire_binding() },
-                                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&node_gpu.sampler) },
-                                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(view_a) },
-                                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(view_b) },
-                            ],
-                        });
-                        node_gpu.bind_group = new_bg;
-                    }
+                            node_gpu.dummy_black_view.clone()
+                        }
+                    };
+                    let view_a = pick(0);
+                    let view_b = pick(1);
+                    let new_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("wgsl_onscreen_bg_per_frame"),
+                        layout: &node_gpu.bind_group_layout,
+                        entries: &[
+                            wgpu::BindGroupEntry { binding: 0, resource: node_gpu.uniform_buffer.as_entire_binding() },
+                            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&node_gpu.sampler) },
+                            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&view_a) },
+                            wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&view_b) },
+                        ],
+                    });
+                    node_gpu.bind_group = new_bg;
                 }
             }
         }
@@ -1097,8 +1120,24 @@ pub fn render(
     let feedback_active = *image_a_mode == crate::graph::ImageInputMode::LastFrame
         || *image_b_mode == crate::graph::ImageInputMode::LastFrame;
 
-    // Publish per-frame feedback hints for the on-screen paint callback.
+    // Publish per-frame image-input hints for the on-screen paint callback.
+    // Includes both LastFrame flags and resolved External texture views, so
+    // the callback can rebuild the on-screen bind group to sample whatever
+    // the user wired (camera, image, last frame, etc).
     if let Some(render_state) = wgpu_render_state {
+        // Resolve External wires to texture views OUTSIDE the renderer lock.
+        let resolve_ext = |port_idx: usize, mode: crate::graph::ImageInputMode|
+            -> Option<wgpu::TextureView>
+        {
+            if mode != crate::graph::ImageInputMode::External { return None; }
+            let src = connections.iter()
+                .find(|c| c.to_node == node_id && c.to_port == port_idx)
+                .map(|c| (c.from_node, c.from_port))?;
+            crate::gpu_image::frame_snapshot_get_view(src.0, src.1).map(|(v, _, _)| v)
+        };
+        let ext_a_view = resolve_ext(input_a_port, *image_a_mode);
+        let ext_b_view = resolve_ext(input_b_port, *image_b_mode);
+
         let mut renderer = render_state.renderer.write();
         let store = match renderer.callback_resources.get_mut::<WgslFeedbackHints>() {
             Some(s) => s,
@@ -1114,6 +1153,7 @@ pub fn render(
                 *image_b_mode == crate::graph::ImageInputMode::LastFrame,
             ],
         );
+        store.external_views.insert(node_id, [ext_a_view, ext_b_view]);
     }
     if (output_connected || feedback_active) && !final_code.is_empty() {
         if let Some(render_state) = wgpu_render_state {

@@ -2393,6 +2393,7 @@ impl eframe::App for PatchworkApp {
                             values.insert((id, 0), PortValue::Image(frame.clone()));
                             if let Some(rs) = &self.wgpu_render_state {
                                 self.gpu_tex_cache.get_or_upload(&rs.device, &rs.queue, frame);
+                                self.gpu_tex_cache.mark_node_source(frame, id, 0);
                             }
                             if *duration > 0.0 {
                                 // Progress output would need frame counting — skip for now
@@ -2403,9 +2404,12 @@ impl eframe::App for PatchworkApp {
                     NodeType::Camera { current_frame, .. } => {
                         if let Some(frame) = current_frame {
                             values.insert((id, 0), PortValue::Image(frame.clone()));
-                            // Pre-upload to GPU cache so downstream GPU nodes skip upload
+                            // Pre-upload to GPU cache so downstream GPU nodes skip upload.
+                            // Tag the entry with (node_id, 0) so the per-frame snapshot
+                            // exports it for WGSL Viewer External image inputs to resolve.
                             if let Some(rs) = &self.wgpu_render_state {
                                 self.gpu_tex_cache.get_or_upload(&rs.device, &rs.queue, frame);
+                                self.gpu_tex_cache.mark_node_source(frame, id, 0);
                             }
                         }
                     }
