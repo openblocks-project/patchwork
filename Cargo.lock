@@ -3222,6 +3222,7 @@ dependencies = [
  "open",
  "ort",
  "pollster",
+ "rayon",
  "regex",
  "reqwest",
  "rfd",

@@ -70,6 +70,12 @@ impl super::PatchworkApp {
             self.node_rects.clear();
             self.selected_nodes.clear();
             self.selected_connection = None;
+            // Restoring a previous snapshot reuses the same node ids,
+            // so any per-(node_id, port) GPU texture or egui temp data
+            // belonging to the *current* state would silently shadow
+            // the restored node until the next interaction. Wipe both
+            // at the top of the next frame.
+            self.caches_dirty = true;
         }
     }
 
@@ -85,6 +91,7 @@ impl super::PatchworkApp {
             self.node_rects.clear();
             self.selected_nodes.clear();
             self.selected_connection = None;
+            self.caches_dirty = true;
         }
     }
 }

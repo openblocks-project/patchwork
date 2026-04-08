@@ -32,6 +32,7 @@ dirs = "6"
 typetag = "0.2"
 crossbeam-channel = "0.5"
 clap-sys = "0.5"
+rayon = "1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.5"
@@ -43,7 +44,7 @@ product-name = "PatchWork"
 identifier = "com.openblocks.patchwork"
 before-packaging-command = "cargo build --release"
 formats = ["app", "dmg"]
-icons = ["icons/icon.icns"]
+icons = ["assets/icons/icon.icns"]
 binaries = [{ path = "PatchWork", main = true }]
 
 [package.metadata.packager.macos]

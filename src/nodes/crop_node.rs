@@ -87,6 +87,12 @@ impl NodeBehavior for CropNode {
         let result = match inputs.first() {
             Some(PortValue::Image(img)) => PortValue::Image(self.crop_image(img)),
             Some(PortValue::Text(text)) => PortValue::Text(self.crop_text(text)),
+            // GpuImage should never reach here in practice — the image-eval
+            // dispatch in app/mod.rs reads it back to a CPU `Image` first.
+            // If it does, return None rather than the previous silent
+            // identity passthrough (`other.clone()`) which would have made
+            // the crop sliders look broken to the user.
+            Some(PortValue::GpuImage(_)) => PortValue::None,
             Some(other) => other.clone(),
             None => PortValue::None,
         };
@@ -110,11 +116,17 @@ impl NodeBehavior for CropNode {
             ui.label(egui::RichText::new("Input").small());
         });
 
-        // Preview crop region
+        // Preview crop region. Accept dimensions from either CPU `Image`
+        // or `GpuImage` so the preview rect renders for GPU-resident chains.
         let input_val = Graph::static_input_value(ctx.connections, ctx.values, ctx.node_id, 0);
-        if let PortValue::Image(img) = &input_val {
+        let img_dims: Option<(u32, u32)> = match &input_val {
+            PortValue::Image(img) => Some((img.width, img.height)),
+            PortValue::GpuImage(h) => Some((h.width, h.height)),
+            _ => None,
+        };
+        if let Some((iw, ih)) = img_dims {
             let max_w = ui.available_width().min(200.0);
-            let aspect = img.height as f32 / img.width as f32;
+            let aspect = ih as f32 / iw as f32;
             let preview_h = max_w * aspect;
             let (rect, _) = ui.allocate_exact_size(egui::vec2(max_w, preview_h), egui::Sense::hover());
             let painter = ui.painter();
@@ -126,9 +138,9 @@ impl NodeBehavior for CropNode {
             painter.rect_filled(crop_rect, 0.0, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 40));
             painter.rect_stroke(crop_rect, 0.0, egui::Stroke::new(1.5, accent), egui::StrokeKind::Outside);
 
-            let out_w = ((1.0 - self.left - self.right).max(0.01) * img.width as f32) as u32;
-            let out_h = ((1.0 - self.top - self.bottom).max(0.01) * img.height as f32) as u32;
-            ui.label(egui::RichText::new(format!("{}×{} → {}×{}", img.width, img.height, out_w, out_h)).small().color(dim));
+            let out_w = ((1.0 - self.left - self.right).max(0.01) * iw as f32) as u32;
+            let out_h = ((1.0 - self.top - self.bottom).max(0.01) * ih as f32) as u32;
+            ui.label(egui::RichText::new(format!("{}×{} → {}×{}", iw, ih, out_w, out_h)).small().color(dim));
         } else if let PortValue::Text(text) = &input_val {
             let start = (self.left * text.len() as f32) as usize;
             let end = text.len().saturating_sub((self.right * text.len() as f32) as usize);

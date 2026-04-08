@@ -240,6 +240,15 @@ fn node_type_for_file(path: &str, ext: &str) -> Option<NodeType> {
                 uniform_names: Vec::new(), uniform_values: Vec::new(),
                 uniform_types: Vec::new(), uniform_min: Vec::new(),
                 uniform_max: Vec::new(), resolution: 512, expanded: false,
+                image_a_mode: crate::graph::ImageInputMode::Unused,
+                image_b_mode: crate::graph::ImageInputMode::Unused,
+                feedback_reset_pending: false,
+                last_compile_ok: false,
+                pending_shader_hash: 0,
+                pending_shader_since_ms: 0,
+                image_a_hint_shown: false,
+                image_b_hint_shown: false,
+                last_auto_reset_ms: 0,
             })
         }
         _ => {

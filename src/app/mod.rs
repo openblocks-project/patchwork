@@ -205,6 +205,15 @@ pub struct PatchworkApp {
     // WGPU render state for shader nodes
     wgpu_render_state: Option<egui_wgpu::RenderState>,
     gpu_tex_cache: crate::gpu_image::GpuTextureCache,
+    /// Set whenever the graph is replaced wholesale (load, restore,
+    /// undo, redo) or a node is deleted. Consumed at the top of the
+    /// next `update()` to wipe the GPU texture cache and all egui
+    /// per-node temp data so a fresh project's nodes can't read back
+    /// the previous project's cached image / GPU handle / fetch state.
+    /// We use a deferred flag rather than calling the cleanup inline
+    /// because most mutation sites don't have an `egui::Context` in
+    /// scope, and `update()` is the natural chokepoint that does.
+    caches_dirty: bool,
     // Undo / Redo
     undo_history: UndoHistory,
     drag_undo_pushed: bool,
@@ -341,6 +350,7 @@ impl PatchworkApp {
             },
             wgpu_render_state,
             gpu_tex_cache: crate::gpu_image::GpuTextureCache::new(),
+            caches_dirty: false,
             undo_history: UndoHistory::new(50),
             drag_undo_pushed: false,
             property_undo_pushed: false,
@@ -1005,6 +1015,47 @@ impl PatchworkApp {
                     );
                 }
 
+                // Error badge — red border + ⚠ corner icon when this node has a
+                // recorded evaluation error. Click/hover to read the message.
+                if let Some(err) = crate::node_errors::get(node_id) {
+                    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("node_errors")));
+                    let err_red = egui::Color32::from_rgb(230, 80, 80);
+                    // Red border around the whole node
+                    painter.rect_stroke(
+                        r.response.rect.expand(2.0),
+                        4.0,
+                        egui::Stroke::new(2.0, err_red),
+                        egui::StrokeKind::Outside,
+                    );
+                    // Warning badge at the top-right corner
+                    let badge_center = egui::pos2(r.response.rect.right() - 12.0, r.response.rect.top() - 4.0);
+                    painter.circle_filled(badge_center, 10.0, err_red);
+                    painter.circle_stroke(badge_center, 10.0, egui::Stroke::new(1.0, egui::Color32::WHITE));
+                    painter.text(
+                        badge_center,
+                        egui::Align2::CENTER_CENTER,
+                        "!",
+                        egui::FontId::proportional(13.0),
+                        egui::Color32::WHITE,
+                    );
+                    // Hover tooltip with the full error message — shown when
+                    // the pointer is over the node window or its badge.
+                    let pointer_over = ctx.pointer_latest_pos()
+                        .map(|p| r.response.rect.expand(4.0).contains(p))
+                        .unwrap_or(false);
+                    if pointer_over {
+                        egui::show_tooltip_at_pointer(
+                            ctx,
+                            egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("node_err_tip_layer")),
+                            egui::Id::new(("node_err_tip", node_id)),
+                            |ui| {
+                                ui.colored_label(err_red, "⚠ Node error");
+                                ui.label(egui::RichText::new(&err.message).monospace().size(11.0));
+                            },
+                        );
+                    }
+                }
+
                 // Collapsed node: populate fallback port positions so wires still draw
                 let is_collapsed = r.inner.is_none();
                 if is_collapsed {
@@ -1198,6 +1249,7 @@ impl PatchworkApp {
             || !pending_connections.is_empty() {
             self.push_undo();
         }
+        let any_deleted = !nodes_to_delete.is_empty();
         for id in nodes_to_delete {
             // Clear opt-drag state if the source or duplicated node is being deleted
             if self.opt_drag_source == Some(id) { self.opt_drag_source = None; }
@@ -1212,6 +1264,16 @@ impl PatchworkApp {
             // Clean up UI state for deleted node
             self.node_rects.remove(&id);
             self.port_positions.retain(|&(nid, _, _), _| nid != id);
+        }
+        if any_deleted {
+            // Per-node `invalidate_node` clears the GPU cache, but the
+            // egui temp data keys (`("dyn_img_cache", id)`, etc.) are
+            // still alive. If the user then undoes the delete, the
+            // restored node would short-circuit on the stale cache and
+            // hand out a `PortValue::GpuImage` whose backing texture
+            // was already invalidated, rendering blank until they
+            // touched a parameter. Schedule a wholesale wipe.
+            self.caches_dirty = true;
         }
         for (nid, port) in &pending_disconnects {
             // Skip mixer gain ports — they're graph-layer, not engine connections
@@ -1343,6 +1405,66 @@ impl PatchworkApp {
             crate::system_log::log(format!("Auto-created {} for u.{}", req.source_type, req.uniform_name));
         }
 
+        // Handle WGSL Presets "+" button: spawn a paired WGSL Viewer
+        // to the right of the picker and auto-wire Shader -> WGSL.
+        if let Some(req) = ctx.data_mut(|d| d.get_temp::<crate::nodes::wgsl_presets::WgslPresetsSpawnRequest>(egui::Id::new("wgsl_presets_spawn_request"))) {
+            ctx.data_mut(|d| d.remove::<crate::nodes::wgsl_presets::WgslPresetsSpawnRequest>(egui::Id::new("wgsl_presets_spawn_request")));
+
+            let src_pos = self.graph.nodes.get(&req.source_node).map(|n| n.pos).unwrap_or([0.0, 0.0]);
+            let spawn_pos = [src_pos[0] + 320.0, src_pos[1]];
+
+            // Refinement H: if the picker's current preset relies on
+            // self-feedback (samples image_a / image_b), pre-set Input A to
+            // LastFrame so the paired viewer renders correctly with no extra clicks.
+            let is_feedback = self
+                .graph
+                .nodes
+                .get(&req.source_node)
+                .and_then(|n| match &n.node_type {
+                    NodeType::Dynamic { inner } => {
+                        let st = inner.node.save_state();
+                        st.get("preset_key")
+                            .and_then(|v| v.as_str())
+                            .map(|k| crate::nodes::wgsl_presets::is_feedback_preset(k))
+                    }
+                    _ => None,
+                })
+                .unwrap_or(false);
+            let initial_image_a_mode = if is_feedback {
+                crate::graph::ImageInputMode::LastFrame
+            } else {
+                crate::graph::ImageInputMode::Unused
+            };
+
+            let viewer_id = self.graph.add_node(
+                NodeType::WgslViewer {
+                    wgsl_code: String::new(),
+                    uniform_names: vec![],
+                    uniform_types: vec![],
+                    uniform_values: vec![],
+                    uniform_min: vec![],
+                    uniform_max: vec![],
+                    canvas_w: 400.0,
+                    canvas_h: 300.0,
+                    resolution: 120,
+                    expanded: false,
+                    image_a_mode: initial_image_a_mode,
+                    image_b_mode: crate::graph::ImageInputMode::Unused,
+                    feedback_reset_pending: false,
+                    last_compile_ok: false,
+                    pending_shader_hash: 0,
+                    pending_shader_since_ms: 0,
+                    image_a_hint_shown: false,
+                    image_b_hint_shown: false,
+                    last_auto_reset_ms: 0,
+                },
+                spawn_pos,
+            );
+            // Auto-connect picker port 0 (Shader) -> viewer port 0 (WGSL)
+            self.graph.add_connection(req.source_node, 0, viewer_id, 0);
+            crate::system_log::log("Spawned paired WGSL Viewer for Formula Preset Picker".to_string());
+        }
+
         self.midi.process(midi_actions);
         self.serial.process(serial_actions);
         self.osc.process(osc_actions);
@@ -1352,6 +1474,18 @@ impl PatchworkApp {
 
 impl eframe::App for PatchworkApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Drain any pending wholesale-cache wipe queued by load /
+        // restore / undo / redo / delete on the previous frame.
+        //
+        // Must run BEFORE the menu bar — otherwise a fresh File→Open
+        // click on this same frame would write `file_action_load`
+        // into temp data and the wipe (which clears all temp data)
+        // would eat it before `handle_system_node_actions` runs.
+        // It also runs before `gpu_tex_cache.begin_frame` further
+        // down, so the cache LRU doesn't see the previous project's
+        // entries.
+        self.clear_caches_if_dirty(ctx);
+
         // ── OS-level menu bar (always visible) ──
         egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
@@ -1678,13 +1812,18 @@ impl eframe::App for PatchworkApp {
         // a stale hint after a graph edit causes one extra readback and
         // self-recovers next frame.
         crate::gpu_image::clear_cpu_consumer_hints();
-        for (&id, node) in &self.graph.nodes {
-            if matches!(node.node_type, NodeType::WgslViewer { .. }) {
-                let needs = self.graph.has_cpu_consumer(id, 0);
-                crate::gpu_image::set_cpu_consumer_hint(id, needs);
+        // Iterate in topo order so results are deterministic across
+        // runs (HashMap iteration is hash-seed dependent and was a
+        // source of post-load flicker).
+        let topo = self.graph.ensure_topo_order();
+        for &id in &topo {
+            if let Some(node) = self.graph.nodes.get(&id) {
+                if matches!(node.node_type, NodeType::WgslViewer { .. }) {
+                    let needs = self.graph.has_cpu_consumer(id, 0);
+                    crate::gpu_image::set_cpu_consumer_hint(id, needs);
+                }
             }
         }
-
         // Inject WGSL Viewer Image output BEFORE image evaluation loop
         // so downstream image nodes (Effects, Style, Blend) can see it.
         // The producer (`render_offscreen`) publishes its texture into
@@ -1693,12 +1832,31 @@ impl eframe::App for PatchworkApp {
         // entry, we inject `PortValue::GpuImage` (zero-copy GPU handoff);
         // otherwise we fall back to the legacy `PortValue::Image` path
         // (which carries CPU bytes for downstream CPU consumers).
-        for (&id, node) in &self.graph.nodes {
-            if matches!(node.node_type, NodeType::WgslViewer { .. }) {
+        for &id in &topo {
+            let is_viewer = self.graph.nodes.get(&id)
+                .map(|n| matches!(n.node_type, NodeType::WgslViewer { .. }))
+                .unwrap_or(false);
+            if is_viewer {
                 if let Some(img) = ctx.data_mut(|d| d.get_temp::<std::sync::Arc<ImageData>>(egui::Id::new(("wgsl_image_output", id)))) {
                     let has_gpu_entry = self.gpu_tex_cache
                         .get_node_output_cloned(id, 0)
                         .is_some();
+                    // If any downstream consumer needs CPU pixels (Transform,
+                    // Crop, ColorChannel, AI Request, ML Model, save-to-disk,
+                    // Theme BG, …) we must readback the GPU texture into a CPU
+                    // ImageData here. Otherwise we'd hand them a GpuImage stub
+                    // they silently drop.
+                    let needs_cpu = self.graph.has_cpu_consumer(id, 0);
+                    if has_gpu_entry && img.pixels.is_empty() && needs_cpu {
+                        if let Some(rs) = &self.wgpu_render_state {
+                            if let Some(cpu_img) = self.gpu_tex_cache.readback_node_output(id, 0, &rs.device, &rs.queue) {
+                                values.insert((id, 0), PortValue::Image(cpu_img));
+                                continue;
+                            }
+                        }
+                        // Readback unavailable — fall through to GpuImage so
+                        // GPU consumers still work; CPU consumers will skip.
+                    }
                     if has_gpu_entry && img.pixels.is_empty() {
                         // Fully GPU-resident path: emit a GpuImage handle.
                         let handle = crate::graph::GpuImageHandle {
@@ -1822,14 +1980,22 @@ impl eframe::App for PatchworkApp {
         // Re-evaluate Dynamic nodes that depend on freshly injected values
         // (e.g., Map Range reading from Audio Analyzer → feeds into Image Style).
         // Only re-evaluate nodes whose inputs changed since graph.evaluate().
+        // Iterate in topo order so a chain of trait nodes propagates in
+        // a single pass (HashMap order would leave deeper nodes one
+        // frame behind).
         {
-            let node_ids: Vec<NodeId> = self.graph.nodes.keys().copied().collect();
+            let node_ids = self.graph.ensure_topo_order();
             for nid in node_ids {
                 let is_dynamic = matches!(self.graph.nodes.get(&nid).map(|n| &n.node_type), Some(NodeType::Dynamic { .. }));
                 if !is_dynamic { continue; }
                 let inputs: Vec<PortValue> = self.graph.collect_inputs(nid, &values);
-                // Skip nodes with image inputs (handled in the image loop below)
-                if inputs.iter().any(|v| matches!(v, PortValue::Image(_))) { continue; }
+                // Skip nodes with image inputs (handled in the image loop below).
+                // Must include GpuImage too — otherwise a Dynamic node with a
+                // GpuImage input is re-evaluated here via the generic
+                // `inner.node.evaluate(&inputs)` path which only matches
+                // PortValue::Image and stamps `None` into `values`, racing
+                // with the image loop's correct evaluation below.
+                if inputs.iter().any(|v| matches!(v, PortValue::Image(_) | PortValue::GpuImage(_))) { continue; }
                 // Only re-evaluate if any input is non-None (connected)
                 if inputs.iter().all(|v| matches!(v, PortValue::None)) { continue; }
                 if let Some(mut node) = self.graph.nodes.remove(&nid) {
@@ -1844,10 +2010,17 @@ impl eframe::App for PatchworkApp {
             }
         }
 
-        // Evaluate image nodes (with caching — only reprocess when inputs change)
-        // Run 2 passes so downstream nodes (e.g., Image receiver) see upstream results (e.g., Effects output)
-        for _img_pass in 0..2 {
-            let image_ids: Vec<NodeId> = self.graph.nodes.keys().copied().collect();
+        // Evaluate image nodes (with caching — only reprocess when inputs change).
+        //
+        // Iterate in topological order so a chain of arbitrary depth
+        // (Source → Blend → Effects → Blend → Effects → Display) finishes
+        // in a SINGLE pass. The previous code iterated `nodes.keys()`
+        // (HashMap order, hash-seed dependent) and ran two fixed passes,
+        // which only saturated depth-2 chains and left deeper graphs
+        // permanently one frame behind per extra hop, plus visible
+        // flicker on reload depending on iteration order.
+        let image_ids = self.graph.ensure_topo_order();
+        {
             for id in image_ids {
                 let inputs: Vec<PortValue> = self.graph.collect_inputs(id, &values);
                 // Identity (producer NodeId, port) of each connected input. Lets GPU
@@ -1903,6 +2076,35 @@ impl eframe::App for PatchworkApp {
                     }
                     // Cache miss — reprocess (GPU path for ImageStyleNode, CPU for others)
                     let needs_readback = self.graph.has_cpu_consumer(id, 0);
+
+                    // For trait nodes that take the CPU `evaluate()` fallback
+                    // (Transform, Crop, ColorChannel, etc. — anything that
+                    // isn't `image_style`), `evaluate()` only matches
+                    // `PortValue::Image` and silently drops `GpuImage`. So we
+                    // do an on-demand readback here, transforming any
+                    // `GpuImage` input into a CPU `PortValue::Image` *before*
+                    // calling evaluate. The fast `image_style` GPU path keeps
+                    // the original inputs (it consumes GpuImage stubs via
+                    // gpu_source lookups).
+                    let peek_tag = self.graph.nodes.get(&id).and_then(|n| match &n.node_type {
+                        NodeType::Dynamic { inner } => Some(inner.node.type_tag().to_string()),
+                        _ => None,
+                    }).unwrap_or_default();
+                    let cpu_inputs: Vec<PortValue> = if peek_tag == "image_style" {
+                        inputs.clone()
+                    } else {
+                        inputs.iter().map(|v| match v {
+                            PortValue::GpuImage(h) => {
+                                if let Some(rs) = &self.wgpu_render_state {
+                                    self.gpu_tex_cache.readback_node_output(h.node_id, h.port, &rs.device, &rs.queue)
+                                        .map(PortValue::Image)
+                                        .unwrap_or(PortValue::None)
+                                } else { PortValue::None }
+                            }
+                            other => other.clone(),
+                        }).collect()
+                    };
+
                     if let Some(mut node_mut) = self.graph.nodes.remove(&id) {
                         if let NodeType::Dynamic { ref mut inner } = node_mut.node_type {
                             let tag = inner.node.type_tag().to_string();
@@ -1911,7 +2113,9 @@ impl eframe::App for PatchworkApp {
                             // Apply port inputs to node state BEFORE GPU processing.
                             // This ensures connected values (e.g., Amount from Map Range)
                             // override the slider value in the node's internal state.
-                            inner.node.evaluate(&inputs);
+                            // Use `cpu_inputs` so trait nodes that need CPU pixels
+                            // see readback Images instead of GpuImage stubs.
+                            inner.node.evaluate(&cpu_inputs);
 
                             // Try GPU path for supported nodes
                             let gpu_results: Option<Vec<(usize, PortValue)>> = match tag.as_str() {
@@ -1942,7 +2146,7 @@ impl eframe::App for PatchworkApp {
                                 _ => None,
                             };
 
-                            let results = gpu_results.unwrap_or_else(|| inner.node.evaluate(&inputs));
+                            let results = gpu_results.unwrap_or_else(|| inner.node.evaluate(&cpu_inputs));
                             for &(port, ref val) in &results {
                                 values.insert((id, port), val.clone());
                             }
@@ -1957,10 +2161,31 @@ impl eframe::App for PatchworkApp {
                 match &node.node_type {
                     NodeType::ImageNode { image_data, .. } => {
                         // Pass-through any image variant; downstream may be CPU
-                        // (forces upstream readback via has_cpu_consumer) or GPU.
+                        // or GPU. ImageNode itself returns false from
+                        // `needs_cpu_image_input`, so its upstream may emit a
+                        // GpuImage stub. If a downstream of THIS node needs
+                        // CPU pixels (AI Request, ML Model, Theme BG, save-
+                        // to-disk, …) we readback the GpuImage here so the
+                        // forwarded value is a real `Image`. Otherwise the
+                        // CPU consumer would silently see no image.
+                        let needs_cpu_downstream = self.graph.has_cpu_consumer(id, 0);
                         let out = match inputs.first() {
                             Some(PortValue::Image(img)) => PortValue::Image(img.clone()),
-                            Some(PortValue::GpuImage(h)) => PortValue::GpuImage(*h),
+                            Some(PortValue::GpuImage(h)) => {
+                                if needs_cpu_downstream {
+                                    if let Some(rs) = &self.wgpu_render_state {
+                                        if let Some(cpu_img) = self.gpu_tex_cache.readback_node_output(h.node_id, h.port, &rs.device, &rs.queue) {
+                                            PortValue::Image(cpu_img)
+                                        } else {
+                                            PortValue::GpuImage(*h)
+                                        }
+                                    } else {
+                                        PortValue::GpuImage(*h)
+                                    }
+                                } else {
+                                    PortValue::GpuImage(*h)
+                                }
+                            }
                             _ => image_data.as_ref().map(|img| PortValue::Image(img.clone())).unwrap_or(PortValue::None),
                         };
                         values.insert((id, 0), out);
@@ -2076,7 +2301,17 @@ impl eframe::App for PatchworkApp {
                     NodeType::Curve { points, .. } => {
                         // Y/Phase/End are computed in graph.evaluate().
                         // Here we generate the Image LUT output (port 3).
-                        let pts_hash = points.iter().map(|p| (p[0].to_bits() as u64) ^ (p[1].to_bits() as u64)).fold(0u64, |a, b| a.wrapping_add(b));
+                        // Order-sensitive `*31 + bits` (the same chain
+                        // every other cache key uses). The previous XOR-
+                        // then-sum collapsed under point reorder and
+                        // had a high collision rate, so two distinct
+                        // curve edits could share a hash and yield a
+                        // stale LUT.
+                        let mut pts_hash: u64 = points.len() as u64;
+                        for p in points.iter() {
+                            pts_hash = pts_hash.wrapping_mul(31).wrapping_add(p[0].to_bits() as u64);
+                            pts_hash = pts_hash.wrapping_mul(31).wrapping_add(p[1].to_bits() as u64);
+                        }
                         let cache_id = egui::Id::new(("curve_lut_cache", id));
                         let cached: Option<(u64, std::sync::Arc<ImageData>)> = ctx.data_mut(|d| d.get_temp(cache_id));
                         let need_regen = cached.as_ref().map(|(h, _)| *h != pts_hash).unwrap_or(true);
@@ -2189,7 +2424,7 @@ impl eframe::App for PatchworkApp {
                     _ => {}
                 }
             }
-        } // end img_pass loop
+        } // end image-pass topo iteration
 
         // AudioAnalyzer + AudioPlayer values already injected before the image evaluation loop above.
 
@@ -2329,9 +2564,24 @@ impl eframe::App for PatchworkApp {
                         bg_wgsl_node = Some(source_node);
                     } else {
                         // Regular image source (Image node, ImageEffects, Blend, etc.)
-                        // Read from the source node's output via the values HashMap
+                        // Read from the source node's output via the values HashMap.
+                        // GpuImage handles get on-demand readback from the GPU
+                        // texture cache so chains that ran fully on-GPU still
+                        // produce a CPU-side BG image for the canvas painter.
                         if let Some(val) = values.get(&(conn.from_node, conn.from_port)) {
-                            if let PortValue::Image(img) = val { bg_img = Some(img.clone()); }
+                            match val {
+                                PortValue::Image(img) => { bg_img = Some(img.clone()); }
+                                PortValue::GpuImage(h) => {
+                                    if let Some(rs) = &self.wgpu_render_state {
+                                        if let Some(img) = self.gpu_tex_cache.readback_node_output(
+                                            h.node_id, h.port, &rs.device, &rs.queue,
+                                        ) {
+                                            bg_img = Some(img);
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            }
                         }
                     }
                 }

@@ -507,6 +507,11 @@ impl super::PatchworkApp {
                         Some(PortValue::Float(f)) => (*f * 10000.0) as i64,
                         Some(PortValue::Text(s)) => s.len() as i64 * 31 + s.bytes().next().unwrap_or(0) as i64,
                         Some(PortValue::Image(img)) => img.width as i64 * img.height as i64 + img.pixels.first().copied().unwrap_or(0) as i64,
+                        // GpuImage wires animate via the per-frame `frame_stamp`
+                        // counter so the wiggle still pulses even though pixels
+                        // never touch the CPU.
+                        Some(PortValue::GpuImage(h)) => (h.frame_stamp as i64).wrapping_mul(1_000_003)
+                            ^ (h.width as i64 * h.height as i64),
                         _ => 0i64,
                     };
                     let prev_hash = ctx.data_mut(|d| d.get_temp::<i64>(val_id).unwrap_or(0));

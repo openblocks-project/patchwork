@@ -29,6 +29,35 @@ fn default_temperature() -> f32 { 0.7 }
 
 pub type NodeId = u64;
 
+// ── WGSL Viewer image input modes ──────────────────────────────────────────
+//
+// Each WGSL Viewer has two generic image input slots (`Input A`, `Input B`).
+// Per-slot mode controls what gets bound to `image_a` / `image_b` in the
+// shader bind group:
+//
+//   * `Unused`    → bound to a 1×1 black dummy texture
+//   * `External`  → sampled from the connected upstream image port
+//   * `LastFrame` → sampled from this viewer's previous frame (ping-pong feedback)
+//
+// See plan: ~/.claude/plans/wgsl-feedback-feature.md
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum ImageInputMode {
+    #[default]
+    Unused,
+    External,
+    LastFrame,
+}
+
+impl ImageInputMode {
+    pub fn label(&self) -> &'static str {
+        match self {
+            ImageInputMode::Unused => "Unused",
+            ImageInputMode::External => "External",
+            ImageInputMode::LastFrame => "Last frame",
+        }
+    }
+}
+
 // ── ML Model Presets ────────────────────────────────────────────────────────
 
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -440,6 +469,34 @@ pub enum NodeType {
         resolution: u32,
         #[serde(default)]
         expanded: bool,
+        // ── Image input feedback (see plan: wgsl-feedback-feature.md) ──
+        /// Mode for `Input A` (`image_a` in WGSL): Unused / External / LastFrame.
+        #[serde(default)]
+        image_a_mode: ImageInputMode,
+        /// Mode for `Input B` (`image_b` in WGSL): Unused / External / LastFrame.
+        #[serde(default)]
+        image_b_mode: ImageInputMode,
+        /// Set to true to clear ping-pong feedback textures on the next render.
+        #[serde(skip)]
+        feedback_reset_pending: bool,
+        /// Whether the most recent shader compile succeeded (gates auto-reset).
+        #[serde(skip)]
+        last_compile_ok: bool,
+        /// Hash of the shader currently being typed (for debounced auto-reset).
+        #[serde(skip)]
+        pending_shader_hash: u64,
+        /// Millisecond timestamp when `pending_shader_hash` was last seen change.
+        #[serde(skip)]
+        pending_shader_since_ms: u64,
+        /// Whether the inline "how to use feedback" hint has been dismissed for Input A.
+        #[serde(skip)]
+        image_a_hint_shown: bool,
+        /// Whether the inline "how to use feedback" hint has been dismissed for Input B.
+        #[serde(skip)]
+        image_b_hint_shown: bool,
+        /// Millisecond timestamp of last auto-reset event (for ~300ms button flash).
+        #[serde(skip)]
+        last_auto_reset_ms: u64,
     },
     MidiOut {
         port_name: String,
@@ -912,15 +969,24 @@ pub enum NodeType {
     Curve {
         #[serde(default = "default_curve_points")]
         points: Vec<[f32; 2]>,
-        /// 0=Manual (X input), 1=Envelope (trigger+speed), 2=LFO (looping)
+        /// 0 = Lookup (X→Y), 1 = Played (time-driven).
+        /// Legacy: 2 = LFO is auto-migrated to 1 + looping=true on first eval.
         #[serde(default)]
         mode: u8,
-        /// Playback speed: 1.0 = 1 second to traverse full curve
+        /// Playback speed: 1.0 = 1 second to traverse full curve (Played only)
         #[serde(default = "default_one")]
         speed: f32,
-        /// Whether envelope loops at the end
+        /// Whether playback loops at the end
         #[serde(default)]
         looping: bool,
+        /// Manual gate state when no Gate input is wired (used for sustain hold).
+        #[serde(default)]
+        manual_gate: bool,
+        /// Index of the curve point that acts as the sustain hold boundary.
+        /// `None` = no sustain (A→D→R only). When set, Played mode pauses
+        /// phase at `points[sustain_index].x` while the Gate input is high.
+        #[serde(default)]
+        sustain_index: Option<u8>,
         /// Current playback position 0→1 (runtime only)
         #[serde(skip)]
         phase: f32,
@@ -930,6 +996,19 @@ pub enum NodeType {
         /// Last trigger input value for rising-edge detection (runtime only)
         #[serde(skip)]
         last_trigger: f32,
+        /// Previous frame's phase for step crossing detection.
+        /// -1.0 = "fresh" (re-fire any point at x=0 on the next frame).
+        #[serde(skip, default = "default_neg_one")]
+        last_phase: f32,
+        /// Index of the most recently crossed curve point. Drives Step
+        /// Value (sample-and-hold). -1 = none crossed yet.
+        #[serde(skip, default = "default_neg_one_i8")]
+        last_step_index: i8,
+        /// True when phase is currently held at the sustain marker.
+        /// Distinct from `playing` so we resume on gate-low instead of
+        /// starting fresh on the next trigger.
+        #[serde(skip)]
+        sustain_held: bool,
     },
     Draw {
         #[serde(default)]
@@ -1133,6 +1212,8 @@ fn default_preview_size() -> f32 { 150.0 }
 fn default_draw_size() -> f32 { 200.0 }
 fn default_draw_width() -> f32 { 2.0 }
 fn default_curve_points() -> Vec<[f32; 2]> { vec![[0.0, 0.0], [1.0, 1.0]] }
+fn default_neg_one() -> f32 { -1.0 }
+fn default_neg_one_i8() -> i8 { -1 }
 /// Flat EQ: 5 points at 0dB (y=0.5) across the frequency range
 fn default_eq_points() -> Vec<[f32; 2]> { vec![[0.0, 0.5], [0.25, 0.5], [0.5, 0.5], [0.75, 0.5], [1.0, 0.5]] }
 fn default_sampler_duration() -> f32 { 5.0 }
@@ -1235,6 +1316,10 @@ impl NodeBehavior for NodeType {
                         ports.push(PortDef::dynamic(n.clone(), Number));
                     }
                 }
+                // Image input slots — appended last so existing port indices for
+                // the WGSL/uniform ports remain stable. See feedback plan §1/§7.
+                ports.push(PortDef::new("Input A", Image));
+                ports.push(PortDef::new("Input B", Image));
                 ports
             }
             NodeType::MidiOut { mode, .. } => match mode {
@@ -1510,6 +1595,7 @@ impl NodeBehavior for NodeType {
             NodeType::Curve { .. } => vec![
                 PortDef::new("Y", Normalized), PortDef::new("Phase", Normalized),
                 PortDef::new("End", Trigger), PortDef::new("Image", Image),
+                PortDef::new("Step Value", Normalized), PortDef::new("Step Trigger", Trigger),
             ],
             NodeType::Draw { .. } => vec![PortDef::new("Image", Image), PortDef::new("Points", Text)],
             NodeType::ColorCurves { .. } => vec![PortDef::new("Image", Image)],
@@ -1738,6 +1824,7 @@ impl Graph {
         }
         self.nodes.remove(&id);
         self.connections.retain(|c| c.from_node != id && c.to_node != id);
+        crate::node_errors::remove_for(id);
         self.topo_dirty = true;
         self.audio_topology_dirty = true;
     }
@@ -1752,6 +1839,29 @@ impl Graph {
         self.audio_topology_dirty = true;
     }
     pub fn add_connection(&mut self, from_node: NodeId, from_port: usize, to_node: NodeId, to_port: usize) {
+        // ── Self-loop guard for WGSL Viewer image input ports ──
+        // Self-feedback is expressed via the per-port "Last frame" dropdown,
+        // not via a wire to the viewer's own output (refinement A in the
+        // feedback plan). Reject such wires here so the UI can never reach an
+        // ambiguous state.
+        if from_node == to_node {
+            if let Some(node) = self.nodes.get(&from_node) {
+                if let NodeType::WgslViewer { .. } = &node.node_type {
+                    // Resolve port name; if it matches one of the image inputs, drop.
+                    let inputs = node.node_type.inputs();
+                    if let Some(p) = inputs.get(to_port) {
+                        if p.name == "Input A" || p.name == "Input B" {
+                            crate::system_log::log(
+                                "Self-loop on WGSL Viewer image input rejected. \
+                                 Use the Last frame option in the Input dropdown instead."
+                                    .to_string(),
+                            );
+                            return;
+                        }
+                    }
+                }
+            }
+        }
         self.connections.retain(|c| !(c.to_node == to_node && c.to_port == to_port));
         self.connections.push(Connection { from_node, from_port, to_node, to_port, label: String::new() });
         self.topo_dirty = true;
@@ -1825,6 +1935,20 @@ impl Graph {
         self.topo_dirty = false;
     }
 
+    /// Return the cached topological evaluation order, rebuilding it
+    /// first if the graph topology has changed. Used by the image
+    /// evaluation pass in `app/mod.rs` so deeper chains
+    /// (Source → Blend → Effects → Blend → Effects → Display) propagate
+    /// in a single pass instead of one frame per hop, and so iteration
+    /// is deterministic across runs (HashMap order is hash-seed
+    /// dependent and was producing visible flicker on reload).
+    pub fn ensure_topo_order(&mut self) -> Vec<NodeId> {
+        if self.topo_dirty || self.topo_order.is_empty() {
+            self.rebuild_topo_order();
+        }
+        self.topo_order.clone()
+    }
+
     /// Re-evaluate with pre-existing values (for injected hardware data).
     /// Evaluates in topological order so downstream nodes see fresh values in one pass.
     pub fn evaluate_with_existing(&mut self, values: &mut HashMap<(NodeId, usize), PortValue>, _now_secs: f64) {
@@ -1857,7 +1981,40 @@ impl Graph {
     /// Per-node evaluation kernel — contains all node logic.
     /// Extracted so that topo-ordered and cyclic-fallback passes share the same code.
     /// `continue` in the original match block is replaced by `return` here.
+    ///
+    /// Wraps the kernel in `catch_unwind` so a panicking node can't crash the
+    /// whole app — the panic message is recorded against the node id via
+    /// `crate::node_errors`, and the graph keeps evaluating the rest of the
+    /// nodes. Successful evaluations clear any prior error for the node so
+    /// the red badge disappears once it recovers.
     fn evaluate_node(
+        id: NodeId,
+        node_type: &mut NodeType,
+        inputs: &[PortValue],
+        values: &mut HashMap<(NodeId, usize), PortValue>,
+        real_dt: f32,
+        now_secs: f64,
+    ) {
+        crate::node_errors::clear(id);
+        crate::node_errors::set_current_node(Some(id));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            Self::evaluate_node_inner(id, node_type, inputs, values, real_dt, now_secs);
+        }));
+        crate::node_errors::set_current_node(None);
+        if let Err(payload) = result {
+            let msg = if let Some(s) = payload.downcast_ref::<&'static str>() {
+                (*s).to_string()
+            } else if let Some(s) = payload.downcast_ref::<String>() {
+                s.clone()
+            } else {
+                "panic during node evaluation".to_string()
+            };
+            crate::node_errors::report_for(id, format!("panic: {}", msg));
+        }
+    }
+
+    /// Inner evaluation kernel — wrapped by `evaluate_node` for panic safety.
+    fn evaluate_node_inner(
         id: NodeId,
         node_type: &mut NodeType,
         inputs: &[PortValue],
@@ -1976,22 +2133,44 @@ impl Graph {
                         values.insert((id, 0), output);
                         values.insert((id, 1), PortValue::Float(if b_active { 1.0 } else { 0.0 }));
                     }
-                    NodeType::Curve { points, mode, speed, looping, phase, playing, last_trigger, .. } => {
+                    NodeType::Curve {
+                        points, mode, speed, looping, manual_gate, sustain_index,
+                        phase, playing, last_trigger, last_phase,
+                        last_step_index, sustain_held,
+                    } => {
+                        // ── Backward-compat migration: legacy LFO mode ──
+                        if *mode == 2 {
+                            *mode = 1;
+                            *looping = true;
+                        }
+                        // Sustain index invariant: clear if it points past the
+                        // end (e.g. user removed the marked point).
+                        if let Some(idx) = *sustain_index {
+                            if idx as usize >= points.len() { *sustain_index = None; }
+                        }
+
                         // Override speed from input port 2
                         if let Some(pv) = inputs.get(2) {
                             let v = pv.as_float();
                             if v > 0.0 { *speed = v; }
                         }
-                        // Gate input (port 3) — freeze phase while high
-                        let gate_high = inputs.get(3).map(|v| v.as_float() > 0.5).unwrap_or(false);
+                        // Gate input (port 3) — falls back to manual_gate checkbox
+                        // when nothing is wired. The renderer hides the checkbox
+                        // while the port is wired so the manual value is dormant.
+                        let gate_input_high = inputs.get(3).map(|v| v.as_float() > 0.5).unwrap_or(false);
+                        let gate_high = gate_input_high || *manual_gate;
+
+                        let prev_phase = *last_phase;
 
                         let x_pos = match *mode {
                             0 => {
-                                // Manual: use X input directly
+                                // ── Lookup mode: X input drives Y, no playback ──
+                                *playing = false;
+                                *sustain_held = false;
                                 inputs.first().map(|v| v.as_float()).unwrap_or(0.0).clamp(0.0, 1.0)
                             }
-                            1 | 2 => {
-                                // Envelope / LFO: trigger-driven playback
+                            _ => {
+                                // ── Played mode: trigger-driven playback ──
                                 let trig_val = inputs.get(1).map(|v| v.as_float()).unwrap_or(0.0);
                                 let rising = trig_val > 0.5 && *last_trigger <= 0.5;
                                 *last_trigger = trig_val;
@@ -1999,31 +2178,77 @@ impl Graph {
                                 if rising {
                                     *phase = 0.0;
                                     *playing = true;
+                                    *sustain_held = false;
+                                    *last_phase = -1.0;     // re-fire crossings from x=0
+                                    *last_step_index = -1;
                                 }
 
-                                if *playing && !gate_high {
-                                    *phase += real_dt * *speed;
-                                    if *phase >= 1.0 {
-                                        if *mode == 2 || *looping {
-                                            *phase = *phase % 1.0; // loop
-                                        } else {
-                                            *phase = 1.0;
-                                            *playing = false;
+                                if *playing {
+                                    // Sustain logic: clamp at the marked point
+                                    // while gate is held high.
+                                    if let Some(idx) = *sustain_index {
+                                        let sx = points[idx as usize][0];
+                                        if *sustain_held {
+                                            if !gate_high { *sustain_held = false; }
+                                        } else if gate_high
+                                            && *phase < sx
+                                            && *phase + real_dt * *speed >= sx
+                                        {
+                                            *phase = sx;
+                                            *sustain_held = true;
+                                        }
+                                    }
+
+                                    if !*sustain_held {
+                                        *phase += real_dt * *speed;
+                                        if *phase >= 1.0 {
+                                            if *looping {
+                                                *phase %= 1.0;
+                                                // Wrap: reset crossing tracker so the
+                                                // first points of the new cycle re-fire.
+                                                *last_phase = -1.0;
+                                                *last_step_index = -1;
+                                            } else {
+                                                *phase = 1.0;
+                                                *playing = false;
+                                            }
                                         }
                                     }
                                 }
                                 *phase
                             }
-                            _ => 0.0,
                         };
 
                         let y_val = crate::nodes::curve::evaluate_curve(points, x_pos);
-                        let at_end = !*playing && *phase >= 1.0 && *mode >= 1;
+
+                        // ── Step crossing detection (Played mode only) ──
+                        let mut step_trigger = 0.0f32;
+                        if *mode != 0 && *playing {
+                            // Note: we use the local prev_phase (not *last_phase)
+                            // because *last_phase was reset to -1.0 above on
+                            // trigger / wrap to force the new-cycle re-fire.
+                            let scan_prev = if *last_phase < 0.0 { -1.0 } else { prev_phase };
+                            for (i, pt) in points.iter().enumerate() {
+                                let px = pt[0];
+                                if px > scan_prev && px <= x_pos {
+                                    step_trigger = 1.0;
+                                    *last_step_index = i as i8;
+                                }
+                            }
+                        }
+                        let step_value = if *mode != 0 && *last_step_index >= 0 {
+                            points.get(*last_step_index as usize).map(|p| p[1]).unwrap_or(0.0)
+                        } else { 0.0 };
+                        *last_phase = x_pos;
+
+                        let at_end = !*playing && *phase >= 1.0 && *mode != 0;
 
                         values.insert((id, 0), PortValue::Float(y_val));
                         values.insert((id, 1), PortValue::Float(x_pos));
                         values.insert((id, 2), PortValue::Float(if at_end { 1.0 } else { 0.0 }));
-                        // Image (port 3) handled in app.rs image pass
+                        // (id, 3) Image handled in app.rs image pass
+                        values.insert((id, 4), PortValue::Float(step_value));
+                        values.insert((id, 5), PortValue::Float(step_trigger));
                     }
                     NodeType::FolderBrowser { selected_file, .. } => {
                         // Output the selected file path and name

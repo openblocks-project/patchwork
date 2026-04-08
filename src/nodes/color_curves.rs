@@ -166,10 +166,14 @@ pub fn render(
 
     // Input status
     let input_val = Graph::static_input_value(connections, values, node_id, 0);
-    if let PortValue::Image(img) = &input_val {
-        ui.label(egui::RichText::new(format!("Input: {}x{}", img.width, img.height)).small());
-    } else {
-        ui.colored_label(egui::Color32::GRAY, "Connect image input");
+    match &input_val {
+        PortValue::Image(img) => {
+            ui.label(egui::RichText::new(format!("Input: {}x{}", img.width, img.height)).small());
+        }
+        PortValue::GpuImage(h) => {
+            ui.label(egui::RichText::new(format!("Input: {}x{} (gpu)", h.width, h.height)).small());
+        }
+        _ => { ui.colored_label(egui::Color32::GRAY, "Connect image input"); }
     }
 }
 
@@ -296,6 +300,94 @@ fn build_lut_texture(
     texture
 }
 
+/// Create the per-node Color Curves pipeline if not already cached.
+/// Same rationale as `blend::ensure_pipeline` — exists so
+/// `process_gpu_cached` can ensure the pipeline without falling back to
+/// the CPU-upload `process_gpu` path, which would corrupt stub
+/// `GpuImage` inputs (empty `pixels`) into a solid black 1×1 texture.
+fn ensure_pipeline(
+    node_id: NodeId,
+    render_state: &eframe::egui_wgpu::RenderState,
+) -> bool {
+    let device = &render_state.device;
+    let already = {
+        let renderer = render_state.renderer.read();
+        renderer.callback_resources.get::<CurvesGpuStore>()
+            .and_then(|s| s.nodes.get(&node_id))
+            .is_some()
+    };
+    if already { return true; }
+
+    device.push_error_scope(wgpu::ErrorFilter::Validation);
+
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("curves_shader"),
+        source: wgpu::ShaderSource::Wgsl(CURVES_SHADER.into()),
+    });
+
+    let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("curves_bgl"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0, visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1, visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2, visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 3, visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+        ],
+    });
+
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: None, bind_group_layouts: &[&bind_group_layout], push_constant_ranges: &[],
+    });
+
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("curves_pipeline"),
+        layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs_main"), buffers: &[], compilation_options: wgpu::PipelineCompilationOptions::default() },
+        fragment: Some(wgpu::FragmentState { module: &shader, entry_point: Some("fs_main"), targets: &[Some(wgpu::TextureFormat::Rgba8UnormSrgb.into())], compilation_options: wgpu::PipelineCompilationOptions::default() }),
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None, multisample: wgpu::MultisampleState::default(), multiview: None, cache: None,
+    });
+
+    let error = pollster::block_on(device.pop_error_scope());
+    if error.is_some() { return false; }
+
+    let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("curves_ub"), size: 16, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false,
+    });
+
+    let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, ..Default::default()
+    });
+
+    let gpu = CurvesGpu { pipeline, bind_group_layout, uniform_buffer, sampler };
+    let mut renderer = render_state.renderer.write();
+    if let Some(store) = renderer.callback_resources.get_mut::<CurvesGpuStore>() {
+        store.nodes.insert(node_id, gpu);
+    } else {
+        let mut nodes = HashMap::new();
+        nodes.insert(node_id, gpu);
+        renderer.callback_resources.insert(CurvesGpuStore { nodes });
+    }
+    true
+}
+
+#[allow(dead_code)]
 pub fn process_gpu(
     img: &ImageData,
     master: &[[f32; 2]], red: &[[f32; 2]], green: &[[f32; 2]], blue: &[[f32; 2]],
@@ -308,81 +400,7 @@ pub fn process_gpu(
     let h = img.height;
     if w == 0 || h == 0 { return None; }
 
-    let has_pipeline = {
-        let renderer = render_state.renderer.read();
-        renderer.callback_resources.get::<CurvesGpuStore>()
-            .and_then(|s| s.nodes.get(&node_id))
-            .is_some()
-    };
-
-    if !has_pipeline {
-        device.push_error_scope(wgpu::ErrorFilter::Validation);
-
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("curves_shader"),
-            source: wgpu::ShaderSource::Wgsl(CURVES_SHADER.into()),
-        });
-
-        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("curves_bgl"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0, visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1, visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2, visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 3, visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
-        });
-
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: None, bind_group_layouts: &[&bind_group_layout], push_constant_ranges: &[],
-        });
-
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("curves_pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs_main"), buffers: &[], compilation_options: wgpu::PipelineCompilationOptions::default() },
-            fragment: Some(wgpu::FragmentState { module: &shader, entry_point: Some("fs_main"), targets: &[Some(wgpu::TextureFormat::Rgba8UnormSrgb.into())], compilation_options: wgpu::PipelineCompilationOptions::default() }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None, multisample: wgpu::MultisampleState::default(), multiview: None, cache: None,
-        });
-
-        let error = pollster::block_on(device.pop_error_scope());
-        if error.is_some() { return None; }
-
-        let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("curves_ub"), size: 16, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false,
-        });
-
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, ..Default::default()
-        });
-
-        let gpu = CurvesGpu { pipeline, bind_group_layout, uniform_buffer, sampler };
-        let mut renderer = render_state.renderer.write();
-        if let Some(store) = renderer.callback_resources.get_mut::<CurvesGpuStore>() {
-            store.nodes.insert(node_id, gpu);
-        } else {
-            let mut nodes = HashMap::new();
-            nodes.insert(node_id, gpu);
-            renderer.callback_resources.insert(CurvesGpuStore { nodes });
-        }
-    }
+    if !ensure_pipeline(node_id, render_state) { return None; }
 
     // Upload input image + LUT
     let input_tex = crate::gpu_image::upload_texture(device, queue, img, "curves_input");
@@ -456,18 +474,13 @@ pub fn process_gpu_cached(
     let h = img.height;
     if w == 0 || h == 0 { return None; }
 
-    // Ensure pipeline cached (same as process_gpu)
-    let has_pipeline = {
-        let renderer = render_state.renderer.read();
-        renderer.callback_resources.get::<CurvesGpuStore>()
-            .and_then(|s| s.nodes.get(&node_id))
-            .is_some()
-    };
-
-    if !has_pipeline {
-        // Delegate to process_gpu for pipeline creation (first call only)
-        return process_gpu(img, master, red, green, blue, node_id, render_state).map(PortValue::Image);
-    }
+    // Ensure pipeline exists. We must NOT fall back to `process_gpu`:
+    // it CPU-uploads `img` via `upload_texture`, which silently produces
+    // a black 1×1 texture if `img.pixels` is empty (which is the case
+    // when the input arrived as a `GpuImage` stub from an upstream GPU
+    // node). The black result then poisons the per-node `("cc_cache",
+    // id)` param cache for the rest of the session.
+    if !ensure_pipeline(node_id, render_state) { return None; }
 
     // Bind input from upstream GPU cache when available; only upload from CPU as fallback.
     let need_upload = !img.pixels.is_empty();
@@ -556,5 +569,15 @@ pub(crate) fn cleanup_node(
 ) {
     if let Some(store) = callback_resources.get_mut::<CurvesGpuStore>() {
         store.nodes.remove(&node_id);
+    }
+}
+
+/// Wipe every Color Curves GPU pipeline. See
+/// `GpuTextureCache::clear_all`.
+pub(crate) fn cleanup_all(
+    callback_resources: &mut eframe::egui_wgpu::CallbackResources,
+) {
+    if let Some(store) = callback_resources.get_mut::<CurvesGpuStore>() {
+        store.nodes.clear();
     }
 }

@@ -102,7 +102,124 @@ struct ImageStyleStore {
     nodes: HashMap<crate::graph::NodeId, ImageStyleGpu>,
 }
 
+/// Create the per-node Image Style pipeline if not already cached.
+/// Same rationale as `blend::ensure_pipeline` — exists so
+/// `process_gpu_cached` can ensure the pipeline without falling back to
+/// the CPU-upload `process_gpu` path, which would corrupt stub
+/// `GpuImage` inputs (empty `pixels`) into a solid black 1×1 texture.
+fn ensure_pipeline(
+    node_id: crate::graph::NodeId,
+    render_state: &eframe::egui_wgpu::RenderState,
+) -> bool {
+    let device = &render_state.device;
+    let already = {
+        let renderer = render_state.renderer.read();
+        renderer.callback_resources.get::<ImageStyleStore>()
+            .and_then(|s| s.nodes.get(&node_id))
+            .is_some()
+    };
+    if already { return true; }
+
+    device.push_error_scope(wgpu::ErrorFilter::Validation);
+
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("image_style_shader"),
+        source: wgpu::ShaderSource::Wgsl(EFFECT_SHADER.into()),
+    });
+
+    let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("image_style_bgl"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+        ],
+    });
+
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: None,
+        bind_group_layouts: &[&bind_group_layout],
+        push_constant_ranges: &[],
+    });
+
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("image_style_pipeline"),
+        layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs_main"),
+            buffers: &[],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs_main"),
+            targets: &[Some(wgpu::TextureFormat::Rgba8UnormSrgb.into())],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        }),
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview: None,
+        cache: None,
+    });
+
+    let error = pollster::block_on(device.pop_error_scope());
+    if error.is_some() {
+        crate::system_log::error("Image Style GPU pipeline creation failed".to_string());
+        return false;
+    }
+
+    let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("image_style_ub"),
+        size: 16, // 4 floats × 4 bytes
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+
+    let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        ..Default::default()
+    });
+
+    let gpu = ImageStyleGpu { pipeline, bind_group_layout, uniform_buffer, sampler };
+    let mut renderer = render_state.renderer.write();
+    if let Some(store) = renderer.callback_resources.get_mut::<ImageStyleStore>() {
+        store.nodes.insert(node_id, gpu);
+    } else {
+        let mut nodes = HashMap::new();
+        nodes.insert(node_id, gpu);
+        renderer.callback_resources.insert(ImageStyleStore { nodes });
+    }
+    true
+}
+
 impl ImageStyleNode {
+    #[allow(dead_code)]
     pub fn process_gpu(
         &self,
         img: &ImageData,
@@ -115,111 +232,7 @@ impl ImageStyleNode {
         let h = img.height;
         if w == 0 || h == 0 { return None; }
 
-        // Ensure pipeline is cached
-        let has_pipeline = {
-            let renderer = render_state.renderer.read();
-            renderer.callback_resources.get::<ImageStyleStore>()
-                .and_then(|s| s.nodes.get(&node_id))
-                .is_some()
-        };
-
-        if !has_pipeline {
-            device.push_error_scope(wgpu::ErrorFilter::Validation);
-
-            let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("image_style_shader"),
-                source: wgpu::ShaderSource::Wgsl(EFFECT_SHADER.into()),
-            });
-
-            let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("image_style_bgl"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            multisampled: false,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 2,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                        count: None,
-                    },
-                ],
-            });
-
-            let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: None,
-                bind_group_layouts: &[&bind_group_layout],
-                push_constant_ranges: &[],
-            });
-
-            let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("image_style_pipeline"),
-                layout: Some(&pipeline_layout),
-                vertex: wgpu::VertexState {
-                    module: &shader,
-                    entry_point: Some("vs_main"),
-                    buffers: &[],
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: &shader,
-                    entry_point: Some("fs_main"),
-                    targets: &[Some(wgpu::TextureFormat::Rgba8UnormSrgb.into())],
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                }),
-                primitive: wgpu::PrimitiveState::default(),
-                depth_stencil: None,
-                multisample: wgpu::MultisampleState::default(),
-                multiview: None,
-                cache: None,
-            });
-
-            let error = pollster::block_on(device.pop_error_scope());
-            if error.is_some() {
-                crate::system_log::error("Image Style GPU pipeline creation failed".to_string());
-                return None;
-            }
-
-            let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("image_style_ub"),
-                size: 16, // 4 floats × 4 bytes
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-
-            let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-                mag_filter: wgpu::FilterMode::Linear,
-                min_filter: wgpu::FilterMode::Linear,
-                ..Default::default()
-            });
-
-            let gpu = ImageStyleGpu { pipeline, bind_group_layout, uniform_buffer, sampler };
-            let mut renderer = render_state.renderer.write();
-            if let Some(store) = renderer.callback_resources.get_mut::<ImageStyleStore>() {
-                store.nodes.insert(node_id, gpu);
-            } else {
-                let mut nodes = HashMap::new();
-                nodes.insert(node_id, gpu);
-                renderer.callback_resources.insert(ImageStyleStore { nodes });
-            }
-        }
+        if !ensure_pipeline(node_id, render_state) { return None; }
 
         // Upload input image as texture
         let input_tex = crate::gpu_image::upload_texture(device, queue, img, "image_style_input");
@@ -310,21 +323,14 @@ impl ImageStyleNode {
         let h = img.height;
         if w == 0 || h == 0 { return None; }
 
-        // Reuse pipeline from process_gpu (creating it on first call).
-        let has_pipeline = {
-            let renderer = render_state.renderer.read();
-            renderer.callback_resources.get::<ImageStyleStore>()
-                .and_then(|s| s.nodes.get(&node_id))
-                .is_some()
-        };
-        if !has_pipeline {
-            // First call: delegate to process_gpu, which creates the pipeline
-            // AND performs the render+readback. Returning here avoids the
-            // double-render bug where the cached body would re-execute the
-            // pipeline that was just used. The next frame's call hits the
-            // cached body. Mirrors image_effects::process_gpu_cached.
-            return self.process_gpu(img, node_id, render_state).map(crate::graph::PortValue::Image);
-        }
+        // Ensure pipeline exists. We must NOT fall back to `process_gpu`:
+        // it CPU-uploads `img` via `upload_texture`, which silently
+        // produces a black 1×1 texture if `img.pixels` is empty (which
+        // is the case when the input arrived as a `GpuImage` stub from
+        // an upstream GPU node like WGSL Viewer or Blend). The black
+        // result then poisons the per-node `("dyn_img_cache", id)`
+        // param cache for the rest of the session.
+        if !ensure_pipeline(node_id, render_state) { return None; }
 
         // Bind input from upstream GPU cache when available; only upload from
         // CPU as a fallback. Saves one CPU→GPU upload per frame in fully GPU
@@ -537,5 +543,15 @@ pub(crate) fn cleanup_node(
 ) {
     if let Some(store) = callback_resources.get_mut::<ImageStyleStore>() {
         store.nodes.remove(&node_id);
+    }
+}
+
+/// Wipe every Image Style GPU pipeline. See
+/// `GpuTextureCache::clear_all`.
+pub(crate) fn cleanup_all(
+    callback_resources: &mut eframe::egui_wgpu::CallbackResources,
+) {
+    if let Some(store) = callback_resources.get_mut::<ImageStyleStore>() {
+        store.nodes.clear();
     }
 }

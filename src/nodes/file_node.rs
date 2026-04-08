@@ -64,6 +64,14 @@ impl FileType {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileNode {
     pub path: String,
+    /// Hot reload: when true (default), every `evaluate()` cheaply stats the
+    /// file and re-reads it if mtime advanced. Lets users edit a `.wgsl` file
+    /// in VS Code and see the WGSL Viewer update on save without re-clicking
+    /// anything in the graph.
+    #[serde(default = "default_true")]
+    pub auto_reload: bool,
+    #[serde(skip)]
+    pub last_mtime: Option<std::time::SystemTime>,
     #[serde(skip)]
     pub content: String,
     #[serde(skip)]
@@ -74,24 +82,40 @@ pub struct FileNode {
     pub file_size: u64,
     #[serde(skip)]
     pub loaded: bool,
+    /// Last load-time failure, surfaced on every subsequent `evaluate()` call
+    /// via `node_errors::report()`. Populated by `load_file` regardless of
+    /// whether the trigger was a synchronous click in `render_ui` or the
+    /// first-eval auto-load — evaluate() is the only place where the
+    /// thread-local "current node" is set, so we re-raise the error from
+    /// there on every tick.
+    #[serde(skip)]
+    pub last_error: Option<String>,
 }
+
+fn default_true() -> bool { true }
 
 impl Default for FileNode {
     fn default() -> Self {
         Self {
             path: String::new(),
+            auto_reload: true,
+            last_mtime: None,
             content: String::new(),
             image_data: None,
             file_type: FileType::Unknown,
             file_size: 0,
             loaded: false,
+            last_error: None,
         }
     }
 }
 
 impl FileNode {
     pub fn load_file(&mut self) {
-        if self.path.is_empty() { return; }
+        if self.path.is_empty() {
+            self.last_error = None;
+            return;
+        }
 
         let ext = std::path::Path::new(&self.path)
             .extension()
@@ -99,12 +123,34 @@ impl FileNode {
             .unwrap_or_default();
 
         self.file_type = FileType::from_extension(&ext);
-        self.file_size = std::fs::metadata(&self.path).map(|m| m.len()).unwrap_or(0);
+        // metadata() failing usually means the path is wrong or unreadable —
+        // capture that as the error for this load attempt so we don't silently
+        // fall back to a size of 0.
+        match std::fs::metadata(&self.path) {
+            Ok(m) => {
+                self.file_size = m.len();
+                self.last_mtime = m.modified().ok();
+                self.last_error = None;
+            }
+            Err(e) => {
+                self.file_size = 0;
+                self.last_mtime = None;
+                self.last_error = Some(format!("File stat failed: {}", e));
+            }
+        }
 
         match self.file_type {
             FileType::Text | FileType::Unknown => {
-                self.content = std::fs::read_to_string(&self.path)
-                    .unwrap_or_else(|e| format!("Error: {}", e));
+                match std::fs::read_to_string(&self.path) {
+                    Ok(s) => {
+                        self.content = s;
+                        self.last_error = None;
+                    }
+                    Err(e) => {
+                        self.content = format!("Error: {}", e);
+                        self.last_error = Some(format!("Read failed: {}", e));
+                    }
+                }
                 self.image_data = None;
             }
             FileType::Image => {
@@ -116,15 +162,19 @@ impl FileNode {
                         self.image_data = Some(Arc::new(ImageData {
                             width: w, height: h, pixels: rgba.into_raw(),
                         }));
+                        self.last_error = None;
                     }
                     Err(e) => {
                         self.content = format!("Image error: {}", e);
                         self.image_data = None;
+                        self.last_error = Some(format!("Image decode failed: {}", e));
                     }
                 }
             }
             FileType::Audio | FileType::Video | FileType::Data => {
-                // Don't load content — output the path for downstream nodes
+                // Don't load content — output the path for downstream nodes.
+                // These types only carry the path forward, so the only way
+                // they can fail is the metadata check above.
                 self.content.clear();
                 self.image_data = None;
             }
@@ -150,6 +200,28 @@ impl NodeBehavior for FileNode {
         // Auto-load on first evaluate if path is set but not loaded
         if !self.path.is_empty() && !self.loaded {
             self.load_file();
+        }
+
+        // Hot reload: cheap mtime poll on every eval. If the file on disk has
+        // been touched since we last loaded it, re-read. This is what makes
+        // editing a `.wgsl` (or any text file) in VS Code show up live in the
+        // downstream WGSL Viewer / consumer the moment you save.
+        if self.auto_reload && !self.path.is_empty() {
+            if let Ok(meta) = std::fs::metadata(&self.path) {
+                if let Ok(m) = meta.modified() {
+                    if Some(m) != self.last_mtime {
+                        self.load_file();
+                    }
+                }
+            }
+        }
+
+        // Re-raise any sticky load error on every eval tick so the canvas
+        // badge + Console reflect the current failure state. `evaluate_node`
+        // in the graph clears the error before calling us, so a successful
+        // load implicitly clears the badge just by not calling report().
+        if let Some(msg) = &self.last_error {
+            crate::node_errors::report(msg.clone());
         }
 
         let primary = match self.file_type {
@@ -178,13 +250,19 @@ impl NodeBehavior for FileNode {
     fn type_tag(&self) -> &str { "file" }
 
     fn save_state(&self) -> serde_json::Value {
-        serde_json::json!({ "path": self.path })
+        serde_json::json!({
+            "path": self.path,
+            "auto_reload": self.auto_reload,
+        })
     }
 
     fn load_state(&mut self, state: &serde_json::Value) {
         if let Some(p) = state.get("path").and_then(|v| v.as_str()) {
             self.path = p.to_string();
             self.loaded = false; // will reload on next evaluate
+        }
+        if let Some(b) = state.get("auto_reload").and_then(|v| v.as_bool()) {
+            self.auto_reload = b;
         }
     }
 
@@ -234,6 +312,8 @@ impl NodeBehavior for FileNode {
                 if ui.small_button("↻").on_hover_text("Reload").clicked() {
                     self.load_file();
                 }
+                ui.checkbox(&mut self.auto_reload, "Auto")
+                    .on_hover_text("Hot reload: re-read file when it changes on disk");
             }
         });
 

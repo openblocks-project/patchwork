@@ -33,16 +33,24 @@ pub fn render(
 
     let a = Graph::static_input_value(connections, values, node_id, 0);
     let b = Graph::static_input_value(connections, values, node_id, 1);
-    let has_a = matches!(&a, PortValue::Image(_));
-    let has_b = matches!(&b, PortValue::Image(_));
+    let has_a = matches!(&a, PortValue::Image(_) | PortValue::GpuImage(_));
+    let has_b = matches!(&b, PortValue::Image(_) | PortValue::GpuImage(_));
+
+    fn dim_label(v: &PortValue) -> Option<(u32, u32)> {
+        match v {
+            PortValue::Image(img) => Some((img.width, img.height)),
+            PortValue::GpuImage(h) => Some((h.width, h.height)),
+            _ => None,
+        }
+    }
 
     // Port 0: Image A
     ui.horizontal(|ui| {
         inline_port_circle(ui, node_id, 0, true, connections, port_positions, dragging_from, pending_disconnects, PortKind::Image);
         ui.label(egui::RichText::new("A:").small());
-        match &a {
-            PortValue::Image(img) => { ui.label(egui::RichText::new(format!("[{}x{}]", img.width, img.height)).small().color(egui::Color32::from_rgb(80, 170, 255))); }
-            _ => { ui.label(egui::RichText::new("—").small().color(egui::Color32::GRAY)); }
+        match dim_label(&a) {
+            Some((w, h)) => { ui.label(egui::RichText::new(format!("[{}x{}]", w, h)).small().color(egui::Color32::from_rgb(80, 170, 255))); }
+            None => { ui.label(egui::RichText::new("—").small().color(egui::Color32::GRAY)); }
         }
     });
 
@@ -50,9 +58,9 @@ pub fn render(
     ui.horizontal(|ui| {
         inline_port_circle(ui, node_id, 1, true, connections, port_positions, dragging_from, pending_disconnects, PortKind::Image);
         ui.label(egui::RichText::new("B:").small());
-        match &b {
-            PortValue::Image(img) => { ui.label(egui::RichText::new(format!("[{}x{}]", img.width, img.height)).small().color(egui::Color32::from_rgb(80, 170, 255))); }
-            _ => { ui.label(egui::RichText::new("—").small().color(egui::Color32::GRAY)); }
+        match dim_label(&b) {
+            Some((w, h)) => { ui.label(egui::RichText::new(format!("[{}x{}]", w, h)).small().color(egui::Color32::from_rgb(80, 170, 255))); }
+            None => { ui.label(egui::RichText::new("—").small().color(egui::Color32::GRAY)); }
         }
     });
 
@@ -113,10 +121,10 @@ pub fn render(
 
     // Output port
     ui.separator();
-    let out_val = if let Some(PortValue::Image(img)) = values.get(&(node_id, 0)) {
-        format!("[{}x{}]", img.width, img.height)
-    } else {
-        "—".into()
+    let out_val = match values.get(&(node_id, 0)) {
+        Some(PortValue::Image(img)) => format!("[{}x{}]", img.width, img.height),
+        Some(PortValue::GpuImage(h)) => format!("[{}x{}]", h.width, h.height),
+        _ => "—".into(),
     };
     output_port_row(ui, "Image", &out_val, node_id, 0, port_positions, dragging_from, connections, pending_disconnects, PortKind::Image);
 }
@@ -230,6 +238,93 @@ struct BlendGpuStore {
     nodes: HashMap<NodeId, BlendGpu>,
 }
 
+/// Create the per-node blend pipeline if it isn't already cached in
+/// `callback_resources`. Returns `true` on success (pipeline now
+/// present) or `false` if shader/pipeline validation failed. Extracted
+/// so `process_gpu_cached` can ensure the pipeline without falling back
+/// to the CPU-upload-heavy `process_gpu` path, which would corrupt
+/// stub `GpuImage` inputs (empty pixels) into solid black textures.
+fn ensure_pipeline(
+    node_id: NodeId,
+    render_state: &egui_wgpu::RenderState,
+) -> bool {
+    let device = &render_state.device;
+    let already = {
+        let renderer = render_state.renderer.read();
+        renderer.callback_resources.get::<BlendGpuStore>()
+            .and_then(|s| s.nodes.get(&node_id))
+            .is_some()
+    };
+    if already { return true; }
+
+    device.push_error_scope(wgpu::ErrorFilter::Validation);
+
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("blend_gpu_shader"),
+        source: wgpu::ShaderSource::Wgsl(BLEND_SHADER.into()),
+    });
+
+    let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("blend_gpu_bgl"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0, visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1, visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2, visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 3, visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+        ],
+    });
+
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: None, bind_group_layouts: &[&bind_group_layout], push_constant_ranges: &[],
+    });
+
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("blend_gpu_pipeline"),
+        layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs_main"), buffers: &[], compilation_options: wgpu::PipelineCompilationOptions::default() },
+        fragment: Some(wgpu::FragmentState { module: &shader, entry_point: Some("fs_main"), targets: &[Some(wgpu::TextureFormat::Rgba8UnormSrgb.into())], compilation_options: wgpu::PipelineCompilationOptions::default() }),
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None, multisample: wgpu::MultisampleState::default(), multiview: None, cache: None,
+    });
+
+    let error = pollster::block_on(device.pop_error_scope());
+    if error.is_some() { return false; }
+
+    let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("blend_gpu_ub"), size: 16, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false,
+    });
+
+    let sampler = device.create_sampler(&wgpu::SamplerDescriptor { mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, ..Default::default() });
+
+    let gpu = BlendGpu { pipeline, bind_group_layout, uniform_buffer, sampler };
+    let mut renderer = render_state.renderer.write();
+    if let Some(store) = renderer.callback_resources.get_mut::<BlendGpuStore>() {
+        store.nodes.insert(node_id, gpu);
+    } else {
+        let mut nodes = HashMap::new();
+        nodes.insert(node_id, gpu);
+        renderer.callback_resources.insert(BlendGpuStore { nodes });
+    }
+    true
+}
+
+#[allow(dead_code)]
 pub fn process_gpu(
     a: &ImageData, b: &ImageData,
     mode: u8, mix: f32,
@@ -242,79 +337,7 @@ pub fn process_gpu(
     let h = a.height.min(b.height);
     if w == 0 || h == 0 { return None; }
 
-    let has_pipeline = {
-        let renderer = render_state.renderer.read();
-        renderer.callback_resources.get::<BlendGpuStore>()
-            .and_then(|s| s.nodes.get(&node_id))
-            .is_some()
-    };
-
-    if !has_pipeline {
-        device.push_error_scope(wgpu::ErrorFilter::Validation);
-
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("blend_gpu_shader"),
-            source: wgpu::ShaderSource::Wgsl(BLEND_SHADER.into()),
-        });
-
-        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("blend_gpu_bgl"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0, visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1, visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2, visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 3, visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
-        });
-
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: None, bind_group_layouts: &[&bind_group_layout], push_constant_ranges: &[],
-        });
-
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("blend_gpu_pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs_main"), buffers: &[], compilation_options: wgpu::PipelineCompilationOptions::default() },
-            fragment: Some(wgpu::FragmentState { module: &shader, entry_point: Some("fs_main"), targets: &[Some(wgpu::TextureFormat::Rgba8UnormSrgb.into())], compilation_options: wgpu::PipelineCompilationOptions::default() }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None, multisample: wgpu::MultisampleState::default(), multiview: None, cache: None,
-        });
-
-        let error = pollster::block_on(device.pop_error_scope());
-        if error.is_some() { return None; }
-
-        let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("blend_gpu_ub"), size: 16, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false,
-        });
-
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor { mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, ..Default::default() });
-
-        let gpu = BlendGpu { pipeline, bind_group_layout, uniform_buffer, sampler };
-        let mut renderer = render_state.renderer.write();
-        if let Some(store) = renderer.callback_resources.get_mut::<BlendGpuStore>() {
-            store.nodes.insert(node_id, gpu);
-        } else {
-            let mut nodes = HashMap::new();
-            nodes.insert(node_id, gpu);
-            renderer.callback_resources.insert(BlendGpuStore { nodes });
-        }
-    }
+    if !ensure_pipeline(node_id, render_state) { return None; }
 
     let tex_a = crate::gpu_image::upload_texture(device, queue, a, "blend_a");
     let tex_b = crate::gpu_image::upload_texture(device, queue, b, "blend_b");
@@ -381,14 +404,14 @@ pub fn process_gpu_cached(
     let h = a.height.min(b.height);
     if w == 0 || h == 0 { return None; }
 
-    let has_pipeline = {
-        let renderer = render_state.renderer.read();
-        renderer.callback_resources.get::<BlendGpuStore>()
-            .and_then(|s| s.nodes.get(&node_id)).is_some()
-    };
-    if !has_pipeline {
-        return process_gpu(a, b, mode, mix, node_id, render_state).map(PortValue::Image);
-    }
+    // Ensure pipeline exists. We must NOT fall back to `process_gpu` here:
+    // it CPU-uploads `a`/`b` via `upload_texture`, which silently produces a
+    // black 1×1 texture for any input that arrived as a `GpuImage` stub
+    // (empty `pixels`). That is the post-reload "background goes black"
+    // bug — on the first frame after load, the upstream WGSL Viewer hands
+    // Blend a stub, the no-pipeline branch black-uploads it, and the
+    // result poisons the param-cache for the rest of the session.
+    if !ensure_pipeline(node_id, render_state) { return None; }
 
     // Bind both inputs from the upstream GPU cache when available; only
     // upload from CPU as a fallback. Each input is checked independently.
@@ -489,5 +512,17 @@ pub(crate) fn cleanup_node(
 ) {
     if let Some(store) = callback_resources.get_mut::<BlendGpuStore>() {
         store.nodes.remove(&node_id);
+    }
+}
+
+/// Wipe every Blend GPU pipeline. Called by
+/// `GpuTextureCache::clear_all` when a new project is loaded so VRAM
+/// from the previous project doesn't leak forever (and node-id
+/// collisions can't reuse stale pipelines).
+pub(crate) fn cleanup_all(
+    callback_resources: &mut eframe::egui_wgpu::CallbackResources,
+) {
+    if let Some(store) = callback_resources.get_mut::<BlendGpuStore>() {
+        store.nodes.clear();
     }
 }

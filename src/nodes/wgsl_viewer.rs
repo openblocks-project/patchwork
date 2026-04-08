@@ -37,6 +37,14 @@ pub fn slider_defaults_for_uniform(name: &str) -> (f32, f32, f32, f32) {
         (0.0, 20.0, 1.0, 5.0)       // integers
     } else if lower.contains("speed") || lower.contains("rate") {
         (0.0, 10.0, 0.1, 1.0)
+    } else if lower.contains("fade") || lower.contains("decay") || lower.contains("persist") {
+        (0.80, 1.0, 0.001, 0.97)
+    } else if lower.contains("dot") {
+        (0.0, 0.15, 0.001, 0.04)
+    } else if lower.contains("ratio") {
+        (0.5, 8.0, 0.01, 3.0)
+    } else if lower.contains("thick") || lower.contains("width") {
+        (0.001, 0.05, 0.0005, 0.008)
     } else if lower.contains("size") || lower.contains("scale") || lower.contains("radius") {
         (0.0, 2.0, 0.01, 0.5)
     } else if lower.contains("freq") {
@@ -58,6 +66,118 @@ const BUILTINS: &[&str] = &[
     "_p0", "_p1", "_p2",
 ];
 
+/// Auto-injected image-input bindings for the WGSL Viewer feedback feature.
+///
+/// Every shader rendered by WGSL Viewer is prefixed with this block so that
+/// authors can sample `image_a` / `image_b` (and any feedback ping-pong) using
+/// a fixed contract. The bindings are always present in the pipeline layout
+/// even when unused — naga and wgpu both allow declared-but-unused globals.
+///
+/// See plan: ~/.claude/plans/wgsl-feedback-feature.md
+const IMAGE_INPUT_BLOCK: &str = r#"
+@group(0) @binding(1) var img_sampler: sampler;
+@group(0) @binding(2) var image_a: texture_2d<f32>;
+@group(0) @binding(3) var image_b: texture_2d<f32>;
+"#;
+
+/// Bind group layout entries for the WGSL Viewer's 4-binding contract.
+/// `@binding(0)` is the existing flat-f32 uniform buffer.
+fn wgsl_viewer_bgl_entries() -> [wgpu::BindGroupLayoutEntry; 4] {
+    [
+        // @binding(0): uniform buffer (existing)
+        wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        },
+        // @binding(1): img_sampler
+        wgpu::BindGroupLayoutEntry {
+            binding: 1,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+            count: None,
+        },
+        // @binding(2): image_a
+        wgpu::BindGroupLayoutEntry {
+            binding: 2,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        },
+        // @binding(3): image_b
+        wgpu::BindGroupLayoutEntry {
+            binding: 3,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        },
+    ]
+}
+
+/// Create a 1×1 transparent-black texture used as the default bind for
+/// `image_a` / `image_b` when a slot is `Unused` or unwired. wgpu requires
+/// SOMETHING bound; this is the cheapest valid option.
+fn create_dummy_black_texture(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+) -> (wgpu::Texture, wgpu::TextureView) {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("wgsl_viewer_dummy_black_1x1"),
+        size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        &[0u8, 0u8, 0u8, 255u8],
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(4),
+            rows_per_image: Some(1),
+        },
+        wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+    );
+    let view = texture.create_view(&Default::default());
+    (texture, view)
+}
+
+/// Create the default sampler used by WGSL Viewer for `img_sampler`.
+/// Linear-clamp; matches the typical "stretch fill" expectation.
+fn create_default_image_sampler(device: &wgpu::Device) -> wgpu::Sampler {
+    device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("wgsl_viewer_img_sampler"),
+        address_mode_u: wgpu::AddressMode::ClampToEdge,
+        address_mode_v: wgpu::AddressMode::ClampToEdge,
+        address_mode_w: wgpu::AddressMode::ClampToEdge,
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        mipmap_filter: wgpu::FilterMode::Nearest,
+        ..Default::default()
+    })
+}
+
 /// Built-in vertex shader for fragment-only shaders (fullscreen triangle)
 const BUILTIN_VS: &str = r#"
 struct VertexOutput {
@@ -75,6 +195,20 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VertexOutput {
     return out;
 }
 "#;
+
+// ── Image Input Sample Detection ─────────────────────────────────────────────
+
+/// Returns `(uses_image_a, uses_image_b)` — whether the user shader text
+/// references the auto-injected `image_a` / `image_b` texture bindings.
+/// Used by the UI to surface a warning when a slot is `Unused` despite
+/// being sampled. Conservative substring match — false positives on
+/// `image_ax`-style identifiers are tolerated since the warning is
+/// non-blocking.
+fn detect_image_samples(code: &str) -> (bool, bool) {
+    let uses_a = code.contains("image_a");
+    let uses_b = code.contains("image_b");
+    (uses_a, uses_b)
+}
 
 // ── Uniform Detection ────────────────────────────────────────────────────────
 
@@ -238,6 +372,24 @@ struct WgslNodeGpu {
     uniform_buffer: wgpu::Buffer,
     vertex_count: u32,
     shader_hash: u64,
+    // Phase 2: every WGSL Viewer pipeline now carries the image-input contract
+    // bindings (sampler + image_a + image_b). The on-screen path normally binds
+    // dummy black for image_a/image_b. When LastFrame feedback is enabled, the
+    // paint callback rebuilds `bind_group` per frame to sample the offscreen
+    // ping-pong texture so the inline canvas shows the trail too.
+    bind_group_layout: wgpu::BindGroupLayout,
+    sampler: wgpu::Sampler,
+    #[allow(dead_code)]
+    dummy_black_texture: wgpu::Texture,
+    dummy_black_view: wgpu::TextureView,
+}
+
+/// Per-node feedback hints, populated each frame by `render()` and consumed
+/// by `WgslPaintCallback::prepare()` to rebuild on-screen bind groups so the
+/// inline canvas can sample the offscreen ping-pong textures.
+#[derive(Default)]
+struct WgslFeedbackHints {
+    nodes: HashMap<NodeId, [bool; 2]>, // [image_a_lastframe, image_b_lastframe]
 }
 
 /// Per-node GPU resources, keyed by NodeId
@@ -258,18 +410,73 @@ struct WgslPaintCallback {
 impl egui_wgpu::CallbackTrait for WgslPaintCallback {
     fn prepare(
         &self,
-        _device: &wgpu::Device,
+        device: &wgpu::Device,
         queue: &wgpu::Queue,
         _screen_descriptor: &egui_wgpu::ScreenDescriptor,
         _encoder: &mut wgpu::CommandEncoder,
         resources: &mut egui_wgpu::CallbackResources,
     ) -> Vec<wgpu::CommandBuffer> {
-        let uni_store = resources.get::<WgslUniformStore>();
-        let gpu_store = resources.get::<WgslGpuStore>();
-        if let (Some(unis), Some(gpus)) = (uni_store, gpu_store) {
-            if let (Some(data), Some(node_gpu)) = (unis.data.get(&self.node_id), gpus.nodes.get(&self.node_id)) {
+        // 1) Upload uniforms.
+        if let (Some(unis), Some(gpus)) = (
+            resources.get::<WgslUniformStore>(),
+            resources.get::<WgslGpuStore>(),
+        ) {
+            if let (Some(data), Some(node_gpu)) = (
+                unis.data.get(&self.node_id),
+                gpus.nodes.get(&self.node_id),
+            ) {
                 let bytes: &[u8] = bytemuck::cast_slice(data);
                 queue.write_buffer(&node_gpu.uniform_buffer, 0, bytes);
+            }
+        }
+
+        // 2) Feedback aware re-bind. If LastFrame is enabled for either slot,
+        //    sample the offscreen ping-pong texture (which `render_offscreen`
+        //    has just refreshed in this same frame) and rebuild the on-screen
+        //    bind group so the inline canvas shows the trail.
+        let feedback_flags = resources
+            .get::<WgslFeedbackHints>()
+            .and_then(|h| h.nodes.get(&self.node_id).copied())
+            .unwrap_or([false, false]);
+
+        if feedback_flags[0] || feedback_flags[1] {
+            // Snapshot the previous-frame views from the offscreen store.
+            // After `render_offscreen`, the just-rendered texture sits at
+            // `prev_textures[1 - write_index]` (the new "read" slot).
+            let snapshot = resources
+                .get::<WgslOffscreenStore>()
+                .and_then(|s| s.nodes.get(&self.node_id))
+                .and_then(|gpu| {
+                    let read_idx = 1usize.wrapping_sub(gpu.write_index) & 1;
+                    gpu.prev_views[read_idx].clone().map(|v| v)
+                });
+
+            if let Some(prev_view) = snapshot {
+                if let Some(gpu_store) = resources.get_mut::<WgslGpuStore>() {
+                    if let Some(node_gpu) = gpu_store.nodes.get_mut(&self.node_id) {
+                        let view_a = if feedback_flags[0] {
+                            &prev_view
+                        } else {
+                            &node_gpu.dummy_black_view
+                        };
+                        let view_b = if feedback_flags[1] {
+                            &prev_view
+                        } else {
+                            &node_gpu.dummy_black_view
+                        };
+                        let new_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                            label: Some("wgsl_onscreen_bg_feedback"),
+                            layout: &node_gpu.bind_group_layout,
+                            entries: &[
+                                wgpu::BindGroupEntry { binding: 0, resource: node_gpu.uniform_buffer.as_entire_binding() },
+                                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&node_gpu.sampler) },
+                                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(view_a) },
+                                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(view_b) },
+                            ],
+                        });
+                        node_gpu.bind_group = new_bg;
+                    }
+                }
             }
         }
         Vec::new()
@@ -352,6 +559,17 @@ pub fn render(
     pending_disconnects: &mut Vec<(NodeId, usize)>,
     port_positions: &mut HashMap<(NodeId, usize, bool), egui::Pos2>,
     dragging_from: &mut Option<(NodeId, usize, bool)>,
+    // ── Phase 3: image-input feedback state ──
+    image_a_mode: &mut crate::graph::ImageInputMode,
+    image_b_mode: &mut crate::graph::ImageInputMode,
+    feedback_reset_pending: &mut bool,
+    // ── Phase 4: debounced auto-reset + reset-flash bookkeeping ──
+    last_compile_ok: &mut bool,
+    pending_shader_hash: &mut u64,
+    pending_shader_since_ms: &mut u64,
+    last_auto_reset_ms: &mut u64,
+    image_a_hint_shown: &mut bool,
+    image_b_hint_shown: &mut bool,
 ) {
     // ── Port 0: WGSL code input (inline) ────────────────────────────
     {
@@ -424,11 +642,37 @@ pub fn render(
     *uniform_names = detected_names;
     *uniform_types = detected_types;
 
-    // Ensure uniform_values matches detected uniforms size
+    // Ensure uniform_values matches detected uniforms size. NEW entries
+    // (introduced by a shader edit / preset switch) get smart defaults from
+    // `slider_defaults_for_uniform` so the shader looks right immediately
+    // — without this, every new uniform starts at 0.0 and presets like
+    // Smear render as a frozen single dot until the user touches every slider.
     let total_floats: usize = uniform_names.iter().enumerate().map(|(i, _)| {
         let t = uniform_types.get(i).map(|s| s.as_str()).unwrap_or("float");
         if t == "color" { 3 } else { 1 }
     }).sum();
+    if uniform_values.len() < total_floats {
+        // Walk uniforms in declared order and append defaults for the
+        // newly-introduced trailing entries.
+        let mut idx = 0usize;
+        for (i, name) in uniform_names.iter().enumerate() {
+            let t = uniform_types.get(i).map(|s| s.as_str()).unwrap_or("float");
+            let comps = if t == "color" { 3 } else { 1 };
+            for c in 0..comps {
+                if idx >= uniform_values.len() {
+                    let default = if t == "color" {
+                        // Color components default to 0.5 (mid-gray)
+                        0.5
+                    } else {
+                        slider_defaults_for_uniform(name).3
+                    };
+                    let _ = c;
+                    uniform_values.push(default);
+                }
+                idx += 1;
+            }
+        }
+    }
     uniform_values.resize(total_floats, 0.0);
 
     // Read user uniform values: prefer connected port, else use inline uniform_values
@@ -479,10 +723,15 @@ pub fn render(
         build_uniform_block(uniform_names, uniform_types)
     };
 
+    // Auto-inject the image-input bindings unless the user already declared
+    // them. We look for the exact `image_a` token to avoid double-defining.
+    let has_image_inputs = code.contains("image_a") && code.contains("@binding(2)");
+    let image_block = if has_image_inputs { "" } else { IMAGE_INPUT_BLOCK };
+
     let final_code = if has_vs {
-        format!("{}{}", uniform_block, code)
+        format!("{}{}{}", uniform_block, image_block, code)
     } else {
-        format!("{}{}\n{}", uniform_block, BUILTIN_VS, code)
+        format!("{}{}{}\n{}", uniform_block, image_block, BUILTIN_VS, code)
     };
 
     let vertex_count = if has_vs && (code.contains(", 6>") || code.contains(",6>")) {
@@ -579,8 +828,165 @@ pub fn render(
         }
     }
 
+    // ── Image input slots UI (Phase 4) ────────────────────────────────────
+    // Compute Input A / Input B port indices (must match graph.rs port order).
+    let uniform_port_count_ui: usize = uniform_types.iter()
+        .map(|t| if t == "color" { 3 } else { 1 })
+        .sum();
+    let ui_input_a_port = 1 + uniform_port_count_ui;
+    let ui_input_b_port = 2 + uniform_port_count_ui;
+
+    let (uses_image_a, uses_image_b) = detect_image_samples(&code);
+
+    let now_ms = (ui.ctx().input(|i| i.time) * 1000.0) as u64;
+    let reset_flash_active = *last_auto_reset_ms != 0
+        && now_ms.saturating_sub(*last_auto_reset_ms) < 300;
+
+    ui.separator();
+    ui.label(egui::RichText::new("Image inputs").small().strong());
+
+    // Render one input row. Returns true if the dropdown was just changed
+    // to LastFrame (so the caller can fire the first-use hint).
+    fn input_row(
+        ui: &mut egui::Ui,
+        node_id: NodeId,
+        port: usize,
+        label: &str,
+        mode: &mut crate::graph::ImageInputMode,
+        connections: &[Connection],
+        port_positions: &mut HashMap<(NodeId, usize, bool), egui::Pos2>,
+        dragging_from: &mut Option<(NodeId, usize, bool)>,
+        pending_disconnects: &mut Vec<(NodeId, usize)>,
+    ) -> bool {
+        let mut just_set_lastframe = false;
+        ui.horizontal(|ui| {
+            super::inline_port_circle(ui, node_id, port, true, connections, port_positions, dragging_from, pending_disconnects, PortKind::Image);
+            // Loop glyph when LastFrame mode is active (refinement D, light version).
+            let glyph = if *mode == crate::graph::ImageInputMode::LastFrame { "↻" } else { " " };
+            ui.label(egui::RichText::new(glyph).small().color(egui::Color32::from_rgb(120, 200, 255)));
+            ui.label(egui::RichText::new(label).small());
+
+            let prev = *mode;
+            egui::ComboBox::from_id_salt(("wgsl_image_mode", node_id, port))
+                .selected_text(prev.label())
+                .width(90.0)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(mode, crate::graph::ImageInputMode::Unused, "Unused");
+                    ui.selectable_value(mode, crate::graph::ImageInputMode::External, "External");
+                    ui.selectable_value(mode, crate::graph::ImageInputMode::LastFrame, "Last frame")
+                        .on_hover_text(
+                            "Sample this viewer's previous frame as feedback.\n\
+                             WGSL Viewer is single-pass — for multi-buffer\n\
+                             simulations (two-buffer fluid sims), chain two viewers."
+                        );
+                })
+                .response
+                .on_hover_text("How to bind this image input slot.");
+            if prev != *mode && *mode == crate::graph::ImageInputMode::LastFrame {
+                just_set_lastframe = true;
+            }
+        });
+        just_set_lastframe
+    }
+
+    let just_set_a = input_row(ui, node_id, ui_input_a_port, "Input A",
+        image_a_mode, connections, port_positions, dragging_from, pending_disconnects);
+    let just_set_b = input_row(ui, node_id, ui_input_b_port, "Input B",
+        image_b_mode, connections, port_positions, dragging_from, pending_disconnects);
+
+    // ── Refinement J: warn when shader samples a slot that's Unused ──
+    if uses_image_a && *image_a_mode == crate::graph::ImageInputMode::Unused {
+        ui.colored_label(
+            egui::Color32::from_rgb(220, 180, 60),
+            "⚠ Shader samples image_a but Input A is Unused. Set to Last frame or wire an image source.",
+        );
+    }
+    if uses_image_b && *image_b_mode == crate::graph::ImageInputMode::Unused {
+        ui.colored_label(
+            egui::Color32::from_rgb(220, 180, 60),
+            "⚠ Shader samples image_b but Input B is Unused. Set to Last frame or wire an image source.",
+        );
+    }
+
+    // ── Refinement M: first-use inline hint when newly switching to LastFrame ──
+    if just_set_a { *image_a_hint_shown = false; }
+    if just_set_b { *image_b_hint_shown = false; }
+    let hint_for = |ui: &mut egui::Ui, slot: &str, shown: &mut bool| {
+        if !*shown {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(format!(
+                    "// In your shader: textureSample({}, img_sampler, in.uv)", slot
+                )).small().monospace().color(egui::Color32::from_rgb(150, 200, 150)));
+                if ui.small_button("copy").clicked() {
+                    ui.ctx().copy_text(format!(
+                        "textureSample({}, img_sampler, in.uv)", slot
+                    ));
+                }
+                if ui.small_button("✕").on_hover_text("dismiss").clicked() {
+                    *shown = true;
+                }
+            });
+        }
+    };
+    if *image_a_mode == crate::graph::ImageInputMode::LastFrame {
+        hint_for(ui, "image_a", image_a_hint_shown);
+    }
+    if *image_b_mode == crate::graph::ImageInputMode::LastFrame {
+        hint_for(ui, "image_b", image_b_hint_shown);
+    }
+
+    // ── Reset feedback button (with auto-reset flash, refinement K) ──
+    let any_feedback_active =
+        *image_a_mode == crate::graph::ImageInputMode::LastFrame ||
+        *image_b_mode == crate::graph::ImageInputMode::LastFrame;
+    if any_feedback_active {
+        let reset_btn = if reset_flash_active {
+            egui::Button::new("Reset feedback ⟳")
+                .fill(egui::Color32::from_rgb(80, 130, 200))
+        } else {
+            egui::Button::new("Reset feedback")
+        };
+        if ui.add(reset_btn).on_hover_text("Clear feedback ping-pong textures to black.").clicked() {
+            *feedback_reset_pending = true;
+        }
+        if reset_flash_active {
+            ui.ctx().request_repaint();
+        }
+    }
+
+    // ── Refinement K: debounced auto-reset on shader edit ──
+    // Compute a hash of the user shader text and compare against the
+    // pending hash. When the hash changes we reset the "stable since"
+    // timer; when it has been stable for >500ms AND the shader compiles
+    // successfully (`last_compile_ok` from validate_wgsl_naga below)
+    // we fire a reset.
+    let current_hash = {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut h = DefaultHasher::new();
+        code.hash(&mut h);
+        h.finish()
+    };
+    if current_hash != *pending_shader_hash {
+        *pending_shader_hash = current_hash;
+        *pending_shader_since_ms = now_ms;
+    } else if *last_compile_ok
+        && any_feedback_active
+        && *pending_shader_since_ms != 0
+        && now_ms.saturating_sub(*pending_shader_since_ms) >= 500
+        && !*feedback_reset_pending
+    {
+        // Only fire once per stable shader: zero out the timer so we
+        // don't keep resetting every frame after the debounce window.
+        *feedback_reset_pending = true;
+        *last_auto_reset_ms = now_ms;
+        *pending_shader_since_ms = 0;
+    }
+
     // Validate with naga
-    match validate_wgsl_naga(&final_code) {
+    let validation_result = validate_wgsl_naga(&final_code);
+    *last_compile_ok = validation_result.is_ok();
+    match validation_result {
         Err(e) => {
             ui.colored_label(egui::Color32::from_rgb(255, 100, 100), format!("Error: {}", e));
             let (rect, _) = ui.allocate_exact_size(egui::vec2(*canvas_w, *canvas_h), egui::Sense::hover());
@@ -589,11 +995,16 @@ pub fn render(
             let err_id = egui::Id::new(("wgsl_last_err", node_id));
             let prev: Option<String> = ui.ctx().data_mut(|d| d.get_temp(err_id));
             if prev.as_deref() != Some(&e) {
-                crate::system_log::error(format!("WGSL (id:{}): {}", node_id, e));
-                ui.ctx().data_mut(|d| d.insert_temp(err_id, e));
+                ui.ctx().data_mut(|d| d.insert_temp(err_id, e.clone()));
             }
+            // Raise a sticky node error so the canvas badge + Console reflect it.
+            // `report_for` dedupes internally (only new messages hit the log).
+            crate::node_errors::report_for(node_id, format!("WGSL compile: {}", e));
         }
         Ok(()) => {
+            // Shader compiled cleanly — drop any stale error badge from a
+            // previous frame (e.g. the user just fixed a typo).
+            crate::node_errors::clear(node_id);
             if let Some(render_state) = wgpu_render_state {
                 // Use connected Time node value if "time" uniform port is wired,
                 // otherwise fall back to egui's internal clock.
@@ -612,11 +1023,30 @@ pub fn render(
                         ui.ctx().input(|i| i.time) as f32
                     }
                 };
-                // Filter "time" from user_values for GPU buffer — it's in the header at buf[0]
-                let gpu_values: Vec<f32> = uniform_names.iter().zip(user_values.iter())
-                    .filter(|(name, _)| name.as_str() != "time")
-                    .map(|(_, &v)| v)
-                    .collect();
+                // Build GPU values by walking uniforms in declared order, expanding
+                // colors to 3 components and skipping "time" (which lives in the
+                // header at buf[0], not in the user-uniform tail). The previous
+                // zip-based filter silently dropped entries when colors and floats
+                // were mixed, because user_values has 3 slots per color while
+                // uniform_names has 1 slot per color — the indices misaligned and
+                // every uniform after the first color came out as 0.
+                let gpu_values: Vec<f32> = {
+                    let mut out = Vec::with_capacity(user_values.len());
+                    let mut vi = 0usize;
+                    for (i, name) in uniform_names.iter().enumerate() {
+                        let t = uniform_types.get(i).map(|s| s.as_str()).unwrap_or("float");
+                        let comps = if t == "color" { 3 } else { 1 };
+                        if name != "time" {
+                            for c in 0..comps {
+                                if vi + c < user_values.len() {
+                                    out.push(user_values[vi + c]);
+                                }
+                            }
+                        }
+                        vi += comps;
+                    }
+                    out
+                };
                 let packed = pack_uniforms(
                     time, *canvas_w, *canvas_h,
                     0.0, 0.0,
@@ -642,10 +1072,50 @@ pub fn render(
     // Image output port (right-aligned)
     super::audio_port_row(ui, "Image", node_id, 0, false, port_positions, dragging_from, connections, pending_disconnects, PortKind::Image);
 
+    // ── Compute the Input A / Input B port indices ──
+    // Layout: [0=WGSL, 1..uniform_port_count=uniforms, then Input A, then Input B]
+    let uniform_port_count: usize = uniform_types.iter()
+        .map(|t| if t == "color" { 3 } else { 1 })
+        .sum();
+    let input_a_port = 1 + uniform_port_count;
+    let input_b_port = 2 + uniform_port_count;
+
+    // ── Auto-promote Unused → External when a wire arrives (refinement I) ──
+    let input_a_wired = connections.iter().any(|c| c.to_node == node_id && c.to_port == input_a_port);
+    let input_b_wired = connections.iter().any(|c| c.to_node == node_id && c.to_port == input_b_port);
+    if input_a_wired && *image_a_mode == crate::graph::ImageInputMode::Unused {
+        *image_a_mode = crate::graph::ImageInputMode::External;
+    }
+    if input_b_wired && *image_b_mode == crate::graph::ImageInputMode::Unused {
+        *image_b_mode = crate::graph::ImageInputMode::External;
+    }
+
     // GPU readback: render to offscreen texture and produce PortValue::Image
-    // Only when the Image output port is connected (avoids cost otherwise)
+    // Run when the Image output is connected OR when LastFrame feedback is
+    // active for either slot (so the inline canvas can sample the ping-pong).
     let output_connected = connections.iter().any(|c| c.from_node == node_id && c.from_port == 0);
-    if output_connected && !final_code.is_empty() {
+    let feedback_active = *image_a_mode == crate::graph::ImageInputMode::LastFrame
+        || *image_b_mode == crate::graph::ImageInputMode::LastFrame;
+
+    // Publish per-frame feedback hints for the on-screen paint callback.
+    if let Some(render_state) = wgpu_render_state {
+        let mut renderer = render_state.renderer.write();
+        let store = match renderer.callback_resources.get_mut::<WgslFeedbackHints>() {
+            Some(s) => s,
+            None => {
+                renderer.callback_resources.insert(WgslFeedbackHints::default());
+                renderer.callback_resources.get_mut::<WgslFeedbackHints>().unwrap()
+            }
+        };
+        store.nodes.insert(
+            node_id,
+            [
+                *image_a_mode == crate::graph::ImageInputMode::LastFrame,
+                *image_b_mode == crate::graph::ImageInputMode::LastFrame,
+            ],
+        );
+    }
+    if (output_connected || feedback_active) && !final_code.is_empty() {
         if let Some(render_state) = wgpu_render_state {
             let readback_w = (*canvas_w as u32).max(1).min(800);
             let readback_h = (*canvas_h as u32).max(1).min(600);
@@ -659,11 +1129,50 @@ pub fn render(
                     else { ui.ctx().input(|i| i.time) as f32 }
                 } else { ui.ctx().input(|i| i.time) as f32 }
             };
-            let rb_gpu_values: Vec<f32> = uniform_names.iter().zip(user_values.iter())
-                .filter(|(name, _)| name.as_str() != "time")
-                .map(|(_, &v)| v).collect();
+            let rb_gpu_values: Vec<f32> = {
+                let mut out = Vec::with_capacity(user_values.len());
+                let mut vi = 0usize;
+                for (i, name) in uniform_names.iter().enumerate() {
+                    let t = uniform_types.get(i).map(|s| s.as_str()).unwrap_or("float");
+                    let comps = if t == "color" { 3 } else { 1 };
+                    if name != "time" {
+                        for c in 0..comps {
+                            if vi + c < user_values.len() {
+                                out.push(user_values[vi + c]);
+                            }
+                        }
+                    }
+                    vi += comps;
+                }
+                out
+            };
             let packed = pack_uniforms(rb_time, readback_w as f32, readback_h as f32, 0.0, 0.0, &rb_gpu_values);
-            if let Some(img) = render_offscreen(render_state, &final_code, node_id, packed, readback_w, readback_h) {
+
+            // ── Resolve image_a / image_b sources ──
+            // External slots look up the upstream wire and snapshot the producer's
+            // output via the per-frame thread-local snapshot. Last-frame slots use
+            // the ping-pong texture (resolved inside render_offscreen). Unused
+            // slots and unwired-External slots fall back to dummy black.
+            let resolve_external = |port_idx: usize| -> Option<(NodeId, usize)> {
+                connections.iter()
+                    .find(|c| c.to_node == node_id && c.to_port == port_idx)
+                    .map(|c| (c.from_node, c.from_port))
+            };
+            let image_a_source = match *image_a_mode {
+                crate::graph::ImageInputMode::External => resolve_external(input_a_port),
+                _ => None,
+            };
+            let image_b_source = match *image_b_mode {
+                crate::graph::ImageInputMode::External => resolve_external(input_b_port),
+                _ => None,
+            };
+
+            if let Some(img) = render_offscreen(
+                render_state, &final_code, node_id, packed, readback_w, readback_h,
+                *image_a_mode, *image_b_mode,
+                image_a_source, image_b_source,
+                feedback_reset_pending,
+            ) {
                 ui.ctx().data_mut(|d| {
                     d.insert_temp(egui::Id::new(("wgsl_image_output", node_id)), img);
                 });
@@ -685,6 +1194,9 @@ pub fn render(
 
 /// Render the shader to an offscreen RGBA8 texture and read back to CPU.
 /// Returns None if the shader fails to compile or render.
+///
+/// Phase 3: this path now owns ping-pong textures per node and resolves
+/// `Input A` / `Input B` slots from the dropdown mode + upstream wires.
 fn render_offscreen(
     render_state: &egui_wgpu::RenderState,
     shader_code: &str,
@@ -692,6 +1204,11 @@ fn render_offscreen(
     packed_uniforms: Vec<f32>,
     width: u32,
     height: u32,
+    image_a_mode: crate::graph::ImageInputMode,
+    image_b_mode: crate::graph::ImageInputMode,
+    image_a_source: Option<(NodeId, usize)>,
+    image_b_source: Option<(NodeId, usize)>,
+    feedback_reset_pending: &mut bool,
 ) -> Option<std::sync::Arc<ImageData>> {
     let device = &render_state.device;
     let queue = &render_state.queue;
@@ -725,18 +1242,10 @@ fn render_offscreen(
             source: wgpu::ShaderSource::Wgsl(shader_code.into()),
         });
 
+        let bgl_entries = wgsl_viewer_bgl_entries();
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("wgsl_offscreen_bgl"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            }],
+            entries: &bgl_entries,
         });
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -777,17 +1286,37 @@ fn render_offscreen(
             mapped_at_creation: false,
         });
 
+        // Phase 2: build the image-input infrastructure for this node. The
+        // initial bind group binds dummy black for both image_a and image_b;
+        // Phase 3 will rebuild the bind group per frame as the dropdown
+        // sources resolve to ping-pong textures or external images.
+        let sampler = create_default_image_sampler(device);
+        let (dummy_black_texture, dummy_black_view) = create_dummy_black_texture(device, queue);
+
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None,
+            label: Some("wgsl_offscreen_bg_initial"),
             layout: &bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: uniform_buffer.as_entire_binding(),
-            }],
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: uniform_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&dummy_black_view) },
+                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&dummy_black_view) },
+            ],
         });
 
         let node_gpu = WgslOffscreenGpu {
-            pipeline, bind_group, uniform_buffer, shader_hash,
+            pipeline,
+            bind_group,
+            uniform_buffer,
+            shader_hash,
+            bind_group_layout,
+            sampler,
+            dummy_black_texture,
+            dummy_black_view,
+            prev_textures: [None, None],
+            prev_views: [None, None],
+            prev_size: (0, 0),
+            write_index: 0,
         };
 
         let mut renderer = render_state.renderer.write();
@@ -800,59 +1329,158 @@ fn render_offscreen(
         }
     }
 
-    // Create offscreen texture
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("wgsl_offscreen_tex"),
-        size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: readback_format,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-            | wgpu::TextureUsages::COPY_SRC
-            | wgpu::TextureUsages::TEXTURE_BINDING,
-        view_formats: &[],
-    });
-    let view = texture.create_view(&Default::default());
+    // ── Phase 3: ping-pong texture management + per-frame bind group ──
+    //
+    // The offscreen render now targets one of two persistent ping-pong
+    // textures owned by the per-node WgslOffscreenGpu. The OTHER texture
+    // (the previous frame's output) is what `LastFrame` mode samples for
+    // self-feedback. After rendering we swap `write_index` so next frame
+    // writes to the now-stale slot and reads from the just-written one.
 
-    // Upload uniforms and render
-    let renderer = render_state.renderer.read();
-    let store = renderer.callback_resources.get::<WgslOffscreenStore>()?;
-    let gpu = store.nodes.get(&node_id)?;
+    // Resolve external image inputs from the per-frame snapshot. This is
+    // done OUTSIDE the renderer write-lock to keep the critical section short.
+    let ext_a_view: Option<wgpu::TextureView> = image_a_source
+        .and_then(|(nid, p)| crate::gpu_image::frame_snapshot_get_view(nid, p))
+        .map(|(v, _, _)| v);
+    let ext_b_view: Option<wgpu::TextureView> = image_b_source
+        .and_then(|(nid, p)| crate::gpu_image::frame_snapshot_get_view(nid, p))
+        .map(|(v, _, _)| v);
 
-    let mut padded = packed_uniforms;
-    padded.resize(MAX_UNIFORM_FLOATS, 0.0);
-    queue.write_buffer(&gpu.uniform_buffer, 0, bytemuck::cast_slice(&padded));
+    // ── Acquire per-frame ping-pong target ──
+    // We need a write lock on the renderer to (re)allocate the ping-pong
+    // textures and rebuild the per-frame bind group, then keep it long
+    // enough to encode the render pass.
+    let (write_texture, write_view, read_view, swap_after) = {
+        let mut renderer = render_state.renderer.write();
+        let store = renderer.callback_resources.get_mut::<WgslOffscreenStore>()?;
+        let gpu = store.nodes.get_mut(&node_id)?;
 
-    let mut encoder = device.create_command_encoder(&Default::default());
-    {
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("wgsl_offscreen_pass"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &view,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: None,
-            ..Default::default()
+        // (Re)allocate ping-pong textures if size changed, missing, or a
+        // feedback reset was requested. Allocating drops the previous
+        // pair, which is the cheapest way to "clear to black" — first
+        // sample of any newly created texture is undefined though, so we
+        // explicitly clear-load on first use via LoadOp::Clear below.
+        let need_alloc = gpu.prev_textures[0].is_none()
+            || gpu.prev_textures[1].is_none()
+            || gpu.prev_size != (width, height)
+            || *feedback_reset_pending;
+
+        if need_alloc {
+            for i in 0..2 {
+                let tex = device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("wgsl_offscreen_pingpong"),
+                    size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: readback_format,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                        | wgpu::TextureUsages::COPY_SRC
+                        | wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                });
+                let v = tex.create_view(&Default::default());
+                gpu.prev_textures[i] = Some(tex);
+                gpu.prev_views[i] = Some(v);
+            }
+            gpu.prev_size = (width, height);
+            gpu.write_index = 0;
+            *feedback_reset_pending = false;
+        }
+
+        let write_index = gpu.write_index;
+        let read_index = 1 - write_index;
+
+        // Clone the views/textures we'll need outside the lock for the
+        // render pass + publish + readback.
+        let write_tex = gpu.prev_textures[write_index].as_ref()?.clone();
+        let write_view_local = gpu.prev_views[write_index].as_ref()?.clone();
+        let prev_view_local = gpu.prev_views[read_index].as_ref()?.clone();
+
+        // ── Build the per-frame bind group ──
+        // image_a / image_b are resolved per the dropdown mode:
+        //   * Unused        → dummy black
+        //   * External      → upstream wire snapshot, falling back to dummy
+        //                     black if the source isn't published yet
+        //   * LastFrame     → the previous-frame ping-pong texture (read_index)
+        let view_for = |mode: crate::graph::ImageInputMode,
+                        ext: &Option<wgpu::TextureView>|
+         -> wgpu::TextureView {
+            match mode {
+                crate::graph::ImageInputMode::Unused => gpu.dummy_black_view.clone(),
+                crate::graph::ImageInputMode::External => {
+                    ext.clone().unwrap_or_else(|| gpu.dummy_black_view.clone())
+                }
+                crate::graph::ImageInputMode::LastFrame => prev_view_local.clone(),
+            }
+        };
+        let bind_a_view = view_for(image_a_mode, &ext_a_view);
+        let bind_b_view = view_for(image_b_mode, &ext_b_view);
+
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("wgsl_offscreen_bg_per_frame"),
+            layout: &gpu.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: gpu.uniform_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&gpu.sampler) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&bind_a_view) },
+                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&bind_b_view) },
+            ],
         });
-        pass.set_pipeline(&gpu.pipeline);
-        pass.set_bind_group(0, &gpu.bind_group, &[]);
-        pass.draw(0..3, 0..1);
-    }
-    queue.submit(Some(encoder.finish()));
-    drop(renderer); // Release the read lock before readback
 
-    // Publish the freshly rendered texture into the GPU cache so downstream
-    // GPU consumers can sample it directly without a re-upload. The drain
-    // happens at the top of the next frame's `begin_frame` (1 frame of
-    // latency, matching the existing WGSL injection latency).
-    // wgpu::Texture is reference-counted internally, so the clone is cheap
-    // and both refer to the same GPU resource.
-    crate::gpu_image::queue_publish_node_output(node_id, 0, texture.clone(), width, height);
+        // Upload uniforms.
+        let mut padded = packed_uniforms;
+        padded.resize(MAX_UNIFORM_FLOATS, 0.0);
+        queue.write_buffer(&gpu.uniform_buffer, 0, bytemuck::cast_slice(&padded));
+
+        // Encode the render pass.
+        let mut encoder = device.create_command_encoder(&Default::default());
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("wgsl_offscreen_pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &write_view_local,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                ..Default::default()
+            });
+            pass.set_pipeline(&gpu.pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        queue.submit(Some(encoder.finish()));
+
+        // Stash the freshly built bind group on the gpu struct so it stays
+        // alive for the duration of any in-flight GPU work referencing the
+        // bound views. (egui_wgpu drops the old `gpu.bind_group` here.)
+        gpu.bind_group = bind_group;
+
+        (write_tex, write_view_local, prev_view_local, write_index)
+    }; // renderer write lock released here
+
+    // Swap write_index for next frame: we just rendered into `write_index`,
+    // so next frame should write into the other slot and read this one.
+    {
+        let mut renderer = render_state.renderer.write();
+        if let Some(store) = renderer.callback_resources.get_mut::<WgslOffscreenStore>() {
+            if let Some(gpu) = store.nodes.get_mut(&node_id) {
+                gpu.write_index = 1 - swap_after;
+            }
+        }
+    }
+
+    let _ = read_view; // explicitly held only for documentation; drops here
+
+    // Publish the freshly rendered ping-pong texture into the GPU cache so
+    // downstream consumers can sample it directly. wgpu::Texture is
+    // Arc-counted internally so this clone is cheap.
+    crate::gpu_image::queue_publish_node_output(node_id, 0, write_texture.clone(), width, height);
+    let _ = write_view;
 
     // Conditional readback: only stall the CPU on `device.poll(Wait)` if
     // some downstream node actually needs CPU pixel bytes. Default-true
@@ -860,7 +1488,7 @@ fn render_offscreen(
     // changed), we readback once and recover next frame.
     let needs_readback = crate::gpu_image::cpu_consumer_hint(node_id).unwrap_or(true);
     if needs_readback {
-        Some(crate::gpu_image::readback_texture(device, queue, &texture, width, height))
+        Some(crate::gpu_image::readback_texture(device, queue, &write_texture, width, height))
     } else {
         // Return a zero-pixel stub so the existing eval-loop injection path
         // keeps working without the readback stall.
@@ -874,9 +1502,34 @@ fn render_offscreen(
 
 struct WgslOffscreenGpu {
     pipeline: wgpu::RenderPipeline,
+    /// The currently bound bind group. Phase 3 rebuilds this per frame as the
+    /// image_a / image_b sources change. Phase 2 still uses a single static
+    /// dummy-black bind group.
     bind_group: wgpu::BindGroup,
     uniform_buffer: wgpu::Buffer,
     shader_hash: u64,
+
+    // ── Phase 2 additions: image input infrastructure ──
+    /// Persistent BGL — per-frame bind groups in Phase 3 will be built against this.
+    bind_group_layout: wgpu::BindGroupLayout,
+    sampler: wgpu::Sampler,
+    /// 1×1 black texture used as the default bind for `Unused` slots and as
+    /// the fallback when an `External` slot has nothing wired.
+    #[allow(dead_code)]
+    dummy_black_texture: wgpu::Texture,
+    dummy_black_view: wgpu::TextureView,
+
+    // ── Phase 2 scaffolding for Phase 3 ping-pong feedback ──
+    /// Two textures used as the alternating render target for self-feedback.
+    /// Allocated lazily on the first frame that needs them at the active
+    /// canvas size. `None` until needed; reset on size change or shader edit.
+    prev_textures: [Option<wgpu::Texture>; 2],
+    prev_views: [Option<wgpu::TextureView>; 2],
+    /// Allocated size of the ping-pong pair (used to detect resizes).
+    prev_size: (u32, u32),
+    /// Index of the texture we will render INTO this frame (the other index
+    /// is the "previous frame" sampled by `LastFrame` mode).
+    write_index: usize,
 }
 
 struct WgslOffscreenStore {
@@ -927,18 +1580,10 @@ fn render_with_wgpu(
             source: wgpu::ShaderSource::Wgsl(shader_code.into()),
         });
 
+        let bgl_entries = wgsl_viewer_bgl_entries();
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("wgsl_uniform_layout"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            }],
+            entries: &bgl_entries,
         });
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -984,13 +1629,21 @@ fn render_with_wgpu(
             mapped_at_creation: false,
         });
 
+        // Phase 2: every WGSL Viewer pipeline now has a sampler + 2 image
+        // bindings. The on-screen path always binds dummy black for image_a/b
+        // — feedback only flows through the offscreen path in v1.
+        let sampler = create_default_image_sampler(device);
+        let (dummy_black_texture, dummy_black_view) = create_dummy_black_texture(device, &render_state.queue);
+
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("wgsl_uniform_bind_group"),
             layout: &bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: uniform_buffer.as_entire_binding(),
-            }],
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: uniform_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&dummy_black_view) },
+                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&dummy_black_view) },
+            ],
         });
 
         let node_gpu = WgslNodeGpu {
@@ -999,6 +1652,10 @@ fn render_with_wgpu(
             uniform_buffer,
             vertex_count,
             shader_hash,
+            bind_group_layout,
+            sampler,
+            dummy_black_texture,
+            dummy_black_view,
         };
 
         let mut renderer = render_state.renderer.write();
@@ -1146,5 +1803,21 @@ pub(crate) fn cleanup_node(
     }
     if let Some(store) = callback_resources.get_mut::<WgslUniformStore>() {
         store.data.remove(&node_id);
+    }
+}
+
+/// Wipe every WGSL Viewer GPU pipeline + offscreen target +
+/// uniform buffer. See `GpuTextureCache::clear_all`.
+pub(crate) fn cleanup_all(
+    callback_resources: &mut eframe::egui_wgpu::CallbackResources,
+) {
+    if let Some(store) = callback_resources.get_mut::<WgslGpuStore>() {
+        store.nodes.clear();
+    }
+    if let Some(store) = callback_resources.get_mut::<WgslOffscreenStore>() {
+        store.nodes.clear();
+    }
+    if let Some(store) = callback_resources.get_mut::<WgslUniformStore>() {
+        store.data.clear();
     }
 }

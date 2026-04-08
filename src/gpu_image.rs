@@ -30,6 +30,31 @@ thread_local! {
     /// so the producer must readback this frame. Default `true` (safe).
     static CPU_CONSUMER_HINTS: RefCell<HashMap<NodeId, bool>>
         = RefCell::new(HashMap::new());
+
+    /// Per-frame snapshot of the GPU texture cache, indexed by `(NodeId, port)`.
+    /// Populated by `GpuTextureCache::snapshot_for_render_frame` at the end of
+    /// `begin_frame`, and read by render-time consumers (specifically the
+    /// WGSL Viewer's `render_offscreen`, which needs to resolve `External`
+    /// image input slots without having the cache plumbed as a parameter).
+    /// Cleared at the start of each `begin_frame`.
+    static FRAME_TEX_SNAPSHOT: RefCell<HashMap<(NodeId, usize), (wgpu::TextureView, u32, u32)>>
+        = RefCell::new(HashMap::new());
+}
+
+/// Read a per-frame snapshot of an upstream GPU output texture by
+/// `(node_id, port)`. Returns `None` if the source did not produce a
+/// cached entry by snapshot time.
+///
+/// Used by WGSL Viewer's offscreen render path to resolve `External`
+/// image inputs without needing direct access to `GpuTextureCache`.
+/// The snapshot has the same 1-frame latency as the rest of the GPU
+/// publish-queue path: a node that publishes during frame N becomes
+/// readable from this function during frame N+1.
+pub fn frame_snapshot_get_view(
+    node_id: NodeId,
+    port: usize,
+) -> Option<(wgpu::TextureView, u32, u32)> {
+    FRAME_TEX_SNAPSHOT.with(|m| m.borrow().get(&(node_id, port)).cloned())
 }
 
 /// Mark a node's GPU cache entries as stale. Safe to call from anywhere on
@@ -86,6 +111,14 @@ struct CachedTexture {
     width: u32,
     height: u32,
     frame: u64,
+    /// Original (node_id, port) used for the snapshot rebuild.
+    /// `Some` for entries inserted via `cache_node_output` (per-node-output
+    /// cache); `None` for entries keyed by `Arc<ImageData>` pointer (the
+    /// upload-cache path used by `get_or_upload`/`cache_output`). Only the
+    /// `Some` entries are exported into the per-frame thread-local
+    /// snapshot used by the WGSL Viewer's image-input feedback feature.
+    src_node: Option<NodeId>,
+    src_port: usize,
 }
 
 pub struct GpuTextureCache {
@@ -101,6 +134,12 @@ impl GpuTextureCache {
     /// Call at start of each frame
     pub fn begin_frame(&mut self, render_state: Option<&eframe::egui_wgpu::RenderState>) {
         self.current_frame += 1;
+        // Drop the previous frame's read snapshot before any new
+        // publishes/invalidations land. The WGSL Viewer's image-input
+        // resolution reads from this snapshot during render_content; we
+        // repopulate it at the end of begin_frame so consumers see all
+        // freshly drained publishes from the previous frame.
+        FRAME_TEX_SNAPSHOT.with(|m| m.borrow_mut().clear());
         // Evict textures older than 2 frames
         self.entries.retain(|_, v| self.current_frame - v.frame <= 2);
 
@@ -112,6 +151,21 @@ impl GpuTextureCache {
         });
         for nid in pending {
             self.invalidate_node(nid, render_state);
+        }
+
+        // Clear prerendered display textures from previous frame BEFORE
+        // draining pending publishes. The drain calls `publish` which
+        // calls `store_for_display`, which writes into `prerendered`; if
+        // we cleared after the drain we'd immediately wipe the entries we
+        // just published, leaving GPU producers (anything using
+        // `queue_publish_node_output`) invisible to
+        // `GpuImageDisplayCallback`.
+        if let Some(rs) = render_state {
+            let mut renderer = rs.renderer.write();
+            if let Some(store) = renderer.callback_resources.get_mut::<GpuDisplayStore>() {
+                store.prerendered.clear();
+                store.instances.clear();
+            }
         }
 
         // Drain pending GPU publishes from producers like WGSL Viewer that
@@ -126,14 +180,22 @@ impl GpuTextureCache {
             }
         }
 
-        // Clear prerendered display textures from previous frame
-        if let Some(rs) = render_state {
-            let mut renderer = rs.renderer.write();
-            if let Some(store) = renderer.callback_resources.get_mut::<GpuDisplayStore>() {
-                store.prerendered.clear();
-                store.instances.clear();
+        // Snapshot every cached entry into the per-frame thread-local map so
+        // render-time consumers (WGSL Viewer image inputs) can resolve
+        // upstream textures without needing &GpuTextureCache plumbed through
+        // render_content. wgpu::TextureView clones are cheap (Arc-counted).
+        FRAME_TEX_SNAPSHOT.with(|m| {
+            let mut map = m.borrow_mut();
+            map.clear();
+            for ct in self.entries.values() {
+                if let Some(nid) = ct.src_node {
+                    map.insert(
+                        (nid, ct.src_port),
+                        (ct.view.clone(), ct.width, ct.height),
+                    );
+                }
             }
-        }
+        });
     }
 
     /// Drop every cached GPU texture and display-store entry that belongs
@@ -172,6 +234,33 @@ impl GpuTextureCache {
         }
     }
 
+    /// Wipe every cached entry and every per-pipeline store. Called
+    /// from `PatchworkApp::clear_caches_if_dirty` whenever the graph
+    /// is replaced wholesale (load, restore, undo, redo) so a fresh
+    /// project's nodes can't read back the previous project's textures
+    /// keyed by `(node_id, port)` — `fix_next_id` restarts ids at 1,
+    /// so without this every Open would race the 2-frame LRU and
+    /// briefly leak the old project's pixels into the new one.
+    pub fn clear_all(
+        &mut self,
+        render_state: Option<&eframe::egui_wgpu::RenderState>,
+    ) {
+        self.entries.clear();
+        if let Some(rs) = render_state {
+            let mut renderer = rs.renderer.write();
+            let cr = &mut renderer.callback_resources;
+            if let Some(store) = cr.get_mut::<GpuDisplayStore>() {
+                store.prerendered.clear();
+                store.instances.clear();
+            }
+            crate::nodes::wgsl_viewer::cleanup_all(cr);
+            crate::nodes::color_curves::cleanup_all(cr);
+            crate::nodes::blend::cleanup_all(cr);
+            crate::nodes::image_effects::cleanup_all(cr);
+            crate::nodes::image_style_node::cleanup_all(cr);
+        }
+    }
+
     /// Get a cached GPU texture for an Arc<ImageData>, or upload it.
     /// Returns a texture view that can be bound to a shader.
     pub fn get_or_upload(
@@ -191,6 +280,7 @@ impl GpuTextureCache {
             let view = texture.create_view(&Default::default());
             self.entries.insert(key, CachedTexture {
                 texture, view, width: img.width, height: img.height, frame: self.current_frame,
+                src_node: None, src_port: 0,
             });
         } else {
             // Update frame stamp to prevent eviction
@@ -212,6 +302,7 @@ impl GpuTextureCache {
         let view = texture.create_view(&Default::default());
         self.entries.insert(key, CachedTexture {
             texture, view, width: img.width, height: img.height, frame: self.current_frame,
+            src_node: None, src_port: 0,
         });
     }
 
@@ -233,7 +324,10 @@ impl GpuTextureCache {
     pub fn cache_node_output(&mut self, node_id: crate::graph::NodeId, port: usize, texture: wgpu::Texture, width: u32, height: u32) {
         let key = (node_id as u64).wrapping_mul(31).wrapping_add(port as u64);
         let view = texture.create_view(&Default::default());
-        self.entries.insert(key, CachedTexture { texture, view, width, height, frame: self.current_frame });
+        self.entries.insert(key, CachedTexture {
+            texture, view, width, height, frame: self.current_frame,
+            src_node: Some(node_id), src_port: port,
+        });
     }
 
     /// Get a GPU texture by (NodeId, port) — for reading a previous node's GPU output.

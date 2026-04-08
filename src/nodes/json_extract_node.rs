@@ -32,11 +32,30 @@ impl NodeBehavior for JsonExtractNode {
             Some(PortValue::Text(s)) => s.clone(),
             _ => String::new(),
         };
-        let extracted = if !json_text.is_empty() && !self.path.is_empty() {
-            crate::graph::extract_json_path_pub(&json_text, &self.path)
-        } else {
-            String::new()
-        };
+        // Idle states (no input yet, no path yet) are not errors — just
+        // pass an empty string through and let the badge stay cleared.
+        if json_text.is_empty() || self.path.is_empty() {
+            return vec![(0, PortValue::Text(String::new()))];
+        }
+
+        // Validate the JSON ourselves so a parse failure becomes a real
+        // node error instead of the legacy "(parse error)" sentinel.
+        // `extract_json_path_pub` returns that literal on failure today,
+        // but surfacing it via `node_errors::report` makes it show up on
+        // the canvas badge + Console.
+        if let Err(e) = serde_json::from_str::<serde_json::Value>(&json_text) {
+            crate::node_errors::report(format!("JSON parse: {}", e));
+            return vec![(0, PortValue::Text(String::new()))];
+        }
+
+        let extracted = crate::graph::extract_json_path_pub(&json_text, &self.path);
+        // `extract_json_path` walks missing keys silently and returns "".
+        // A truly-empty result when both inputs are non-empty almost always
+        // means the path didn't match — surface it so the user knows their
+        // dot-path is wrong rather than staring at a blank Value port.
+        if extracted.is_empty() {
+            crate::node_errors::report(format!("JSON path not found: {}", self.path));
+        }
         vec![(0, PortValue::Text(extracted))]
     }
 

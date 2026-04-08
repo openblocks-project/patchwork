@@ -1,6 +1,7 @@
 /target
 .DS_Store
 *.icns
-icons/icon.iconset/
+# …but keep the bundled app icon tracked so fresh clones can package
+!assets/icons/icon.icns
 .claude/
 examples/api-test/

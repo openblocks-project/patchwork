@@ -111,25 +111,45 @@ pub fn clear_image_cache() {
 
 /// Download a remote URL, decode it, and persist the original bytes to
 /// the local image cache. Returns the decoded image and the cache path.
-fn fetch_and_cache(url: &str) -> FetchResult {
+///
+/// Failures are reported to `crate::node_errors` against `node_id` so the
+/// caller's canvas badge + Console pick them up. The return type stays
+/// `(None, None)` on failure to keep the calling state-machine simple.
+fn fetch_and_cache(node_id: NodeId, url: &str) -> FetchResult {
     let client = match reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(20))
         .build()
     {
         Ok(c) => c,
-        Err(_) => return (None, None),
+        Err(e) => {
+            crate::node_errors::report_for(node_id, format!("Image fetch: HTTP client init failed: {}", e));
+            return (None, None);
+        }
     };
     let resp = match client.get(url).send() {
         Ok(r) if r.status().is_success() => r,
-        _ => return (None, None),
+        Ok(r) => {
+            crate::node_errors::report_for(node_id, format!("Image fetch: HTTP {}", r.status()));
+            return (None, None);
+        }
+        Err(e) => {
+            crate::node_errors::report_for(node_id, format!("Image fetch: {}", e));
+            return (None, None);
+        }
     };
     let bytes = match resp.bytes() {
         Ok(b) => b,
-        Err(_) => return (None, None),
+        Err(e) => {
+            crate::node_errors::report_for(node_id, format!("Image fetch: body read failed: {}", e));
+            return (None, None);
+        }
     };
     let img = match image::load_from_memory(&bytes) {
         Ok(i) => i,
-        Err(_) => return (None, None),
+        Err(e) => {
+            crate::node_errors::report_for(node_id, format!("Image decode failed: {}", e));
+            return (None, None);
+        }
     };
     let rgba = img.to_rgba8();
     let (w, h) = rgba.dimensions();
@@ -224,10 +244,15 @@ fn maybe_load_async(
         let ctx_clone = ctx.clone();
         let url = trimmed.clone();
         std::thread::spawn(move || {
-            let result = fetch_and_cache(&url);
+            let result = fetch_and_cache(node_id, &url);
             // Drop result if a newer fetch was started after us.
             if gen_ref.load(Ordering::SeqCst) != my_gen {
                 return;
+            }
+            // Successful decode clears any stale error badge from a
+            // previous failed URL on the same node.
+            if result.0.is_some() {
+                crate::node_errors::clear(node_id);
             }
             if let Ok(mut g) = slot.lock() {
                 *g = Some(result);

@@ -202,9 +202,19 @@ pub fn render(
     // ── Evaluate ───────────────────────────────────────────
     if !formula.is_empty() {
         match evaluate_formula(formula, &var_values) {
-            Ok(val) => { *result = val; error.clear(); }
-            Err(e) => { *error = e; }
+            Ok(val) => {
+                *result = val;
+                error.clear();
+                crate::node_errors::clear(node_id);
+            }
+            Err(e) => {
+                crate::node_errors::report_for(node_id, format!("Formula: {}", e));
+                *error = e;
+            }
         }
+    } else {
+        // Empty formula is not an error — drop any sticky badge.
+        crate::node_errors::clear(node_id);
     }
 
     // ── Result ─────────────────────────────────────────────

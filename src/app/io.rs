@@ -2,6 +2,19 @@ use super::*;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+/// Clip a long error body (HTTP response, backend message, …) so the node
+/// tooltip and Console line stay readable. Keeps the first ~160 chars.
+fn truncate_for_error(s: &str) -> String {
+    let trimmed = s.trim();
+    if trimmed.len() <= 160 {
+        trimmed.to_string()
+    } else {
+        let mut end = 160;
+        while !trimmed.is_char_boundary(end) && end > 0 { end -= 1; }
+        format!("{}…", &trimmed[..end])
+    }
+}
+
 /// Convert an absolute asset path to relative (relative to project directory).
 fn make_relative(abs_path: &str, project_dir: &str) -> String {
     if abs_path.is_empty() { return String::new(); }
@@ -167,7 +180,34 @@ impl super::PatchworkApp {
         self.port_positions.clear();
         self.node_rects.clear();
         self.undo_history.clear();
+        // See `load_project` — same node-id-collision concern after
+        // a session restore. Cleared on the next frame in update().
+        self.caches_dirty = true;
         true
+    }
+
+    /// Wipe the GPU texture cache and all egui per-node temp data.
+    /// Called from `update()` when `caches_dirty` is set (load,
+    /// restore, undo, redo, delete). The new project's nodes get
+    /// node ids starting from 1 (`fix_next_id`), and several caches
+    /// are keyed by `(node_id, port)` or `Id::new(("xxx", node_id))`,
+    /// so without an explicit wipe a fresh node could pick up the
+    /// previous project's image / GPU handle / pending HTTP fetch.
+    ///
+    /// We use the heavy hammer (`d.clear()`) instead of removing each
+    /// well-known key by name because every cache stores a different
+    /// concrete type, and `egui::IdTypeMap::remove::<T>` is type-erased
+    /// — there's no way to enumerate without knowing every type. The
+    /// next frame just rebuilds whatever it needs.
+    pub(super) fn clear_caches_if_dirty(&mut self, ctx: &egui::Context) {
+        if !self.caches_dirty { return; }
+        self.caches_dirty = false;
+        self.gpu_tex_cache.clear_all(self.wgpu_render_state.as_ref());
+        ctx.data_mut(|d| d.clear());
+        // Theme settings rely on `theme_accent` in temp data; re-emit
+        // it immediately so the very next render doesn't flash a
+        // default-color frame before `apply_theme` runs again.
+        self.apply_theme(ctx);
     }
     pub(super) fn handle_file_drop(&mut self, ctx: &egui::Context) {
         // Capture pointer position BEFORE processing drops (macOS clears it during drop)
@@ -323,7 +363,23 @@ impl super::PatchworkApp {
                     match &mut node.node_type {
                         NodeType::HttpRequest { response, status, .. } => {
                             *status = format!("{}", resp.status);
-                            *response = resp.body;
+                            *response = resp.body.clone();
+                            // Surface non-2xx and network errors as node errors.
+                            // status == 0 means the request never reached the server
+                            // (DNS, connect, TLS, …); body holds the underlying message.
+                            if resp.status == 0 {
+                                crate::node_errors::report_for(
+                                    nid,
+                                    format!("HTTP request failed: {}", truncate_for_error(&resp.body)),
+                                );
+                            } else if !(200..300).contains(&resp.status) {
+                                crate::node_errors::report_for(
+                                    nid,
+                                    format!("HTTP {}: {}", resp.status, truncate_for_error(&resp.body)),
+                                );
+                            } else {
+                                crate::node_errors::clear(nid);
+                            }
                         }
                         NodeType::AiRequest { provider, response, status, .. } => {
                             if resp.status >= 200 && resp.status < 300 {
@@ -337,9 +393,16 @@ impl super::PatchworkApp {
                                 };
                                 *response = crate::nodes::ai_request::extract_ai_response(prov, &resp.body);
                                 *status = "done".into();
+                                crate::node_errors::clear(nid);
                             } else {
-                                *response = resp.body;
+                                *response = resp.body.clone();
                                 *status = format!("error: {}", resp.status);
+                                let label = if resp.status == 0 { "AI request failed".to_string() }
+                                            else { format!("AI HTTP {}", resp.status) };
+                                crate::node_errors::report_for(
+                                    nid,
+                                    format!("{}: {}", label, truncate_for_error(&resp.body)),
+                                );
                             }
                         }
                         _ => {}
@@ -353,12 +416,22 @@ impl super::PatchworkApp {
     pub(super) fn poll_ml_inference(&mut self, ctx: &egui::Context) {
         // Receive completed results
         while let Ok(result) = self.ml_rx.try_recv() {
-            if let Some(node) = self.graph.nodes.get_mut(&result.node_id) {
+            let nid = result.node_id;
+            if let Some(node) = self.graph.nodes.get_mut(&nid) {
                 if let NodeType::MlModel { result_text, result_json, annotated_frame, status, .. } = &mut node.node_type {
                     *result_text = result.result_text;
                     *result_json = result.result_json;
                     *annotated_frame = result.annotated_frame;
-                    *status = result.status;
+                    // The background `run_inference` worker writes failures into
+                    // `status` as `Error: …`. Promote those to node errors so the
+                    // canvas badge + Console pick them up; clear on success.
+                    let s = result.status.clone();
+                    *status = s;
+                    if status.starts_with("Error") || status.starts_with("error") {
+                        crate::node_errors::report_for(nid, format!("ML inference: {}", status));
+                    } else {
+                        crate::node_errors::clear(nid);
+                    }
                 }
             }
         }
@@ -515,6 +588,12 @@ impl super::PatchworkApp {
                         self.dragging_from = None;
                         self.show_node_menu = false;
                         self.show_context_menu = false;
+                        // The previous project's GPU textures and per-node
+                        // egui temp data must be wiped before any node from
+                        // the new project (whose ids restart at 1 after
+                        // `fix_next_id`) reads them back. Done at the top
+                        // of the next `update()` where ctx is in scope.
+                        self.caches_dirty = true;
                         crate::system_log::log(format!("Loaded {}", path.display()));
                     }
                     Err(e) => {

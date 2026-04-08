@@ -86,6 +86,7 @@ pub mod timer;
 pub mod sample_hold;
 pub mod select;
 pub mod settings_node;
+pub mod wgsl_presets;
 
 use crate::graph::*;
 use crate::midi::MidiAction;
@@ -303,6 +304,15 @@ pub fn catalog() -> Vec<NodeCatalogEntry> {
             wgsl_code: String::new(),
             uniform_names: vec![], uniform_types: vec![], uniform_values: vec![], uniform_min: vec![], uniform_max: vec![],
             canvas_w: 400.0, canvas_h: 300.0, resolution: 120, expanded: false,
+            image_a_mode: crate::graph::ImageInputMode::Unused,
+            image_b_mode: crate::graph::ImageInputMode::Unused,
+            feedback_reset_pending: false,
+            last_compile_ok: false,
+            pending_shader_hash: 0,
+            pending_shader_since_ms: 0,
+            image_a_hint_shown: false,
+            image_b_hint_shown: false,
+            last_auto_reset_ms: 0,
         } },
 
         // ── Image ────────────────────────────────────────────
@@ -322,10 +332,12 @@ pub fn catalog() -> Vec<NodeCatalogEntry> {
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(image_style_node::ImageStyleNode::default()) } } },
         NodeCatalogEntry { label: "Color Channel", category: "Image",
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(color_channel_node::ColorChannelNode::default()) } } },
+        NodeCatalogEntry { label: "WGSL Presets", category: "Shader",
+            factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(wgsl_presets::WgslPresetsNode::default()) } } },
 
         // ── Signal ───────────────────────────────────────────
         NodeCatalogEntry { label: "Curve", category: "Signal",
-            factory: || NodeType::Curve { points: vec![[0.0, 0.0], [1.0, 1.0]], mode: 0, speed: 1.0, looping: false, phase: 0.0, playing: false, last_trigger: 0.0 } },
+            factory: || NodeType::Curve { points: vec![[0.0, 0.0], [1.0, 1.0]], mode: 0, speed: 1.0, looping: false, manual_gate: false, sustain_index: None, phase: 0.0, playing: false, last_trigger: 0.0, last_phase: -1.0, last_step_index: -1, sustain_held: false } },
         NodeCatalogEntry { label: "Draw", category: "Signal",
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(draw_node::DrawNode::default()) } } },
         NodeCatalogEntry { label: "Noise", category: "Signal",
@@ -520,8 +532,20 @@ pub fn render_content(
             math_formula::render(ui, formula, variables, result, error, node_id, values, connections, port_positions, dragging_from, pending_disconnects),
         // File migrated to trait-based node
         // TextEditor migrated to trait-based node
-        NodeType::WgslViewer { wgsl_code, uniform_names, uniform_types, uniform_values, canvas_w, canvas_h, .. } =>
-            wgsl_viewer::render(ui, wgsl_code, uniform_names, uniform_types, uniform_values, canvas_w, canvas_h, node_id, values, connections, wgpu_render_state, pending_disconnects, port_positions, dragging_from),
+        NodeType::WgslViewer {
+            wgsl_code, uniform_names, uniform_types, uniform_values, canvas_w, canvas_h,
+            image_a_mode, image_b_mode, feedback_reset_pending,
+            last_compile_ok, pending_shader_hash, pending_shader_since_ms, last_auto_reset_ms,
+            image_a_hint_shown, image_b_hint_shown, ..
+        } =>
+            wgsl_viewer::render(
+                ui, wgsl_code, uniform_names, uniform_types, uniform_values, canvas_w, canvas_h,
+                node_id, values, connections, wgpu_render_state, pending_disconnects,
+                port_positions, dragging_from,
+                image_a_mode, image_b_mode, feedback_reset_pending,
+                last_compile_ok, pending_shader_hash, pending_shader_since_ms, last_auto_reset_ms,
+                image_a_hint_shown, image_b_hint_shown,
+            ),
         // Time migrated to trait-based node
         // Color migrated to trait-based node
         // MouseTracker migrated to trait-based node

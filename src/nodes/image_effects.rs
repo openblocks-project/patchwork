@@ -33,6 +33,10 @@ pub fn render(
                         ui.label(egui::RichText::new(format!("[{}x{}]", img.width, img.height))
                             .small().color(egui::Color32::from_rgb(80, 170, 255)));
                     }
+                    PortValue::GpuImage(h) => {
+                        ui.label(egui::RichText::new(format!("[{}x{} gpu]", h.width, h.height))
+                            .small().color(egui::Color32::from_rgb(80, 170, 255)));
+                    }
                     _ => { ui.label(egui::RichText::new("—").small()); }
                 }
             } else {
@@ -93,6 +97,7 @@ pub fn render(
         let v = values.get(&(node_id, 0));
         let val_str = match v {
             Some(PortValue::Image(img)) => format!("[{}x{}]", img.width, img.height),
+            Some(PortValue::GpuImage(h)) => format!("[{}x{} gpu]", h.width, h.height),
             _ => "—".to_string(),
         };
         super::output_port_row(ui, "Image", &val_str, node_id, 0, port_positions, dragging_from, connections, pending_disconnects, PortKind::Image);
@@ -100,10 +105,14 @@ pub fn render(
 
     // Preview info
     let input_val = Graph::static_input_value(connections, values, node_id, 0);
-    if let PortValue::Image(img) = &input_val {
-        ui.label(egui::RichText::new(format!("{}x{}", img.width, img.height)).small().color(egui::Color32::GRAY));
-    } else {
-        ui.colored_label(egui::Color32::GRAY, "Connect image input");
+    match &input_val {
+        PortValue::Image(img) => {
+            ui.label(egui::RichText::new(format!("{}x{}", img.width, img.height)).small().color(egui::Color32::GRAY));
+        }
+        PortValue::GpuImage(h) => {
+            ui.label(egui::RichText::new(format!("{}x{} (gpu)", h.width, h.height)).small().color(egui::Color32::GRAY));
+        }
+        _ => { ui.colored_label(egui::Color32::GRAY, "Connect image input"); }
     }
 }
 
@@ -252,6 +261,124 @@ struct ImageEffectsStore {
     nodes: HashMap<NodeId, ImageEffectsGpu>,
 }
 
+/// Create the per-node Image Effects pipeline if not already cached in
+/// `callback_resources`. Returns `true` on success. Extracted so
+/// `process_gpu_cached` can ensure the pipeline without falling back to
+/// the CPU-upload-heavy `process_gpu` path, which would corrupt stub
+/// `GpuImage` inputs (empty pixels) into solid black textures and
+/// poison the per-node param cache for the rest of the session.
+fn ensure_pipeline(
+    node_id: NodeId,
+    render_state: &eframe::egui_wgpu::RenderState,
+) -> bool {
+    let device = &render_state.device;
+    let already = {
+        let renderer = render_state.renderer.read();
+        renderer.callback_resources.get::<ImageEffectsStore>()
+            .and_then(|s| s.nodes.get(&node_id))
+            .is_some()
+    };
+    if already { return true; }
+
+    device.push_error_scope(wgpu::ErrorFilter::Validation);
+
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("image_effects_shader"),
+        source: wgpu::ShaderSource::Wgsl(EFFECTS_SHADER.into()),
+    });
+
+    let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("image_effects_bgl"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+        ],
+    });
+
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: None,
+        bind_group_layouts: &[&bind_group_layout],
+        push_constant_ranges: &[],
+    });
+
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("image_effects_pipeline"),
+        layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs_main"),
+            buffers: &[],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs_main"),
+            targets: &[Some(wgpu::TextureFormat::Rgba8UnormSrgb.into())],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        }),
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview: None,
+        cache: None,
+    });
+
+    let error = pollster::block_on(device.pop_error_scope());
+    if error.is_some() {
+        crate::system_log::error("Image Effects GPU pipeline creation failed".to_string());
+        return false;
+    }
+
+    let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("image_effects_ub"),
+        size: 32, // 8 floats × 4 bytes
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+
+    let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        ..Default::default()
+    });
+
+    let gpu = ImageEffectsGpu { pipeline, bind_group_layout, uniform_buffer, sampler };
+    let mut renderer = render_state.renderer.write();
+    if let Some(store) = renderer.callback_resources.get_mut::<ImageEffectsStore>() {
+        store.nodes.insert(node_id, gpu);
+    } else {
+        let mut nodes = HashMap::new();
+        nodes.insert(node_id, gpu);
+        renderer.callback_resources.insert(ImageEffectsStore { nodes });
+    }
+    true
+}
+
+#[allow(dead_code)]
 pub fn process_gpu(
     img: &ImageData,
     brightness: f32, contrast: f32, saturation: f32,
@@ -265,111 +392,7 @@ pub fn process_gpu(
     let h = img.height;
     if w == 0 || h == 0 { return None; }
 
-    // Ensure pipeline is cached
-    let has_pipeline = {
-        let renderer = render_state.renderer.read();
-        renderer.callback_resources.get::<ImageEffectsStore>()
-            .and_then(|s| s.nodes.get(&node_id))
-            .is_some()
-    };
-
-    if !has_pipeline {
-        device.push_error_scope(wgpu::ErrorFilter::Validation);
-
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("image_effects_shader"),
-            source: wgpu::ShaderSource::Wgsl(EFFECTS_SHADER.into()),
-        });
-
-        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("image_effects_bgl"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
-        });
-
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: None,
-            bind_group_layouts: &[&bind_group_layout],
-            push_constant_ranges: &[],
-        });
-
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("image_effects_pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                buffers: &[],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::TextureFormat::Rgba8UnormSrgb.into())],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview: None,
-            cache: None,
-        });
-
-        let error = pollster::block_on(device.pop_error_scope());
-        if error.is_some() {
-            crate::system_log::error("Image Effects GPU pipeline creation failed".to_string());
-            return None;
-        }
-
-        let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("image_effects_ub"),
-            size: 32, // 8 floats × 4 bytes
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            ..Default::default()
-        });
-
-        let gpu = ImageEffectsGpu { pipeline, bind_group_layout, uniform_buffer, sampler };
-        let mut renderer = render_state.renderer.write();
-        if let Some(store) = renderer.callback_resources.get_mut::<ImageEffectsStore>() {
-            store.nodes.insert(node_id, gpu);
-        } else {
-            let mut nodes = HashMap::new();
-            nodes.insert(node_id, gpu);
-            renderer.callback_resources.insert(ImageEffectsStore { nodes });
-        }
-    }
+    if !ensure_pipeline(node_id, render_state) { return None; }
 
     // Upload input image
     let input_tex = crate::gpu_image::upload_texture(device, queue, img, "img_fx_input");
@@ -448,16 +471,13 @@ pub fn process_gpu_cached(
     let h = img.height;
     if w == 0 || h == 0 { return None; }
 
-    // Reuse pipeline from process_gpu (ensure it exists)
-    let has_pipeline = {
-        let renderer = render_state.renderer.read();
-        renderer.callback_resources.get::<ImageEffectsStore>()
-            .and_then(|s| s.nodes.get(&node_id)).is_some()
-    };
-    if !has_pipeline {
-        return process_gpu(img, brightness, contrast, saturation, hue, exposure, gamma, node_id, render_state)
-            .map(PortValue::Image);
-    }
+    // Ensure pipeline exists. We must NOT fall back to `process_gpu` here:
+    // it CPU-uploads `img` via `upload_texture`, which silently produces a
+    // black 1×1 texture if `img.pixels` is empty (which is the case when
+    // the input arrived as a `GpuImage` stub from an upstream GPU node).
+    // The black result then poisons the per-node `("img_fx_cache", id)`
+    // param cache for the rest of the session.
+    if !ensure_pipeline(node_id, render_state) { return None; }
 
     // Bind input from upstream GPU cache when available; only upload from
     // CPU as a fallback (saves one CPU→GPU upload per frame in GPU chains).
@@ -551,5 +571,16 @@ pub(crate) fn cleanup_node(
 ) {
     if let Some(store) = callback_resources.get_mut::<ImageEffectsStore>() {
         store.nodes.remove(&node_id);
+    }
+}
+
+/// Wipe every Image Effects GPU pipeline. Called by
+/// `GpuTextureCache::clear_all` on project load/undo/redo so the new
+/// project can't reuse pipelines indexed by colliding node ids.
+pub(crate) fn cleanup_all(
+    callback_resources: &mut eframe::egui_wgpu::CallbackResources,
+) {
+    if let Some(store) = callback_resources.get_mut::<ImageEffectsStore>() {
+        store.nodes.clear();
     }
 }

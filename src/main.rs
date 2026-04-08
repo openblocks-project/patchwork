@@ -7,6 +7,7 @@ mod http;
 pub mod icons;
 mod mcp;
 mod midi;
+mod node_errors;
 mod nodes;
 mod ob;
 mod osc;
@@ -19,7 +20,7 @@ use std::sync::Arc;
 
 fn main() -> eframe::Result {
     audio::clap_host::init_main_thread();
-    let icon = eframe::icon_data::from_png_bytes(include_bytes!("../icons/icon.png"))
+    let icon = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icons/icon.png"))
         .expect("Failed to decode embedded icon PNG");
 
     let options = eframe::NativeOptions {

@@ -78,6 +78,26 @@ pub trait NodeBehavior: Send + Sync {
         let _ = ctx;
         self.render_ui(ui);
     }
+
+    /// Optional GPU rendering hook for nodes that publish their output as a
+    /// `PortValue::GpuImage`. Called once per frame from the eval loop when a
+    /// `wgpu::Device`/`Queue` are available. Implementations should:
+    ///   1. Run their wgpu pipelines into an offscreen texture.
+    ///   2. Call `gpu_image::queue_publish_node_output(node_id, port, tex, w, h)`.
+    ///   3. Return `Some((width, height))` so the dispatcher can publish a
+    ///      `GpuImageHandle` into the value map.
+    /// Default returns `None` (CPU node).
+    fn render_gpu(
+        &mut self,
+        _render_state: &eframe::egui_wgpu::RenderState,
+        _node_id: crate::graph::NodeId,
+        _time: f32,
+    ) -> Option<(u32, u32)> { None }
+
+    /// Monotonically-increasing frame stamp for GPU producer nodes. Bumped
+    /// whenever the node re-renders, used by downstream `GpuImage` consumers
+    /// to invalidate their parameter caches. Default `0` for CPU nodes.
+    fn frame_stamp(&self) -> u64 { 0 }
 }
 
 /// Context passed to render_with_context — gives nodes access to
@@ -128,6 +148,7 @@ pub static NODE_REGISTRY: std::sync::LazyLock<std::sync::Mutex<NodeRegistryInner
         crate::nodes::image_style_node::register(&mut r);
         crate::nodes::color_channel_node::register(&mut r);
         crate::nodes::settings_node::register(&mut r);
+        crate::nodes::wgsl_presets::register(&mut r);
         std::sync::Mutex::new(r)
     });
 
