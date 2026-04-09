@@ -10,9 +10,10 @@ pub fn render(
     values: &HashMap<(NodeId, usize), PortValue>,
     connections: &[Connection],
 ) {
-    let (model_path, labels_path, confidence, preset, result_text, status, last_input_hash) = match node_type {
-        NodeType::MlModel { model_path, labels_path, confidence, preset, result_text, status, last_input_hash, .. } => {
-            (model_path, labels_path, confidence, preset, result_text, status, last_input_hash)
+    let (model_path, labels_path, confidence, preset, result_text, status, last_input_hash, interval_secs, last_inference_secs) = match node_type {
+        NodeType::MlModel { model_path, labels_path, confidence, preset, result_text, status,
+            last_input_hash, interval_secs, last_inference_secs, .. } => {
+            (model_path, labels_path, confidence, preset, result_text, status, last_input_hash, interval_secs, last_inference_secs)
         }
         _ => return,
     };
@@ -83,6 +84,18 @@ pub fn render(
         ui.add(egui::Slider::new(confidence, 0.01..=1.0).step_by(0.01));
     });
 
+    // Run interval (FPS control)
+    ui.horizontal(|ui| {
+        ui.label("Every:");
+        ui.add(egui::Slider::new(interval_secs, 0.05..=5.0)
+            .step_by(0.05)
+            .suffix("s")
+            .logarithmic(true));
+        let fps = 1.0 / *interval_secs;
+        ui.label(egui::RichText::new(format!("({:.1} fps)", fps)).small()
+            .color(ui.visuals().widgets.noninteractive.fg_stroke.color));
+    });
+
     // Input size info
     ui.label(egui::RichText::new(format!("Input: {}×{}", preset.input_size(), preset.input_size())).small().color(egui::Color32::from_rgb(140, 140, 160)));
 
@@ -120,9 +133,13 @@ pub fn render(
             img.pixels[img.pixels.len()-16..].hash(&mut h);
         }
         let hash = h.finish();
+        let now = ui.ctx().input(|i| i.time);
 
-        if hash != *last_input_hash && !model_path.is_empty() {
+        // Only trigger if: image changed OR enough time has passed since last inference
+        let time_ok = now - *last_inference_secs >= *interval_secs as f64;
+        if time_ok && !model_path.is_empty() {
             *last_input_hash = hash;
+            *last_inference_secs = now;
             *status = "Running inference...".into();
 
             let inference_id = egui::Id::new(("ml_inference", node_id));
@@ -429,6 +446,16 @@ fn parse_object_detection(req: &MlInferenceRequest, outputs: &ort::session::Sess
     let img_h = req.image.height as f32;
     let input_size = req.preset.input_size() as f32;
 
+    // Detect whether model outputs normalized (0-1) or pixel-space (0-input_size) coords.
+    // Sample the first 20 cx/cy values — if all are <= 1.5, treat as normalized.
+    let sample_count = num_detections.min(20);
+    let mut max_cx: f32 = 0.0;
+    for i in 0..sample_count {
+        let cx_sample = if transposed { raw[0 * num_detections + i] } else { raw[i * num_values] };
+        max_cx = max_cx.max(cx_sample.abs());
+    }
+    let coord_scale = if max_cx <= 1.5 { input_size } else { 1.0 };
+
     let mut detections: Vec<Detection> = Vec::new();
 
     for i in 0..num_detections {
@@ -436,7 +463,8 @@ fn parse_object_detection(req: &MlInferenceRequest, outputs: &ort::session::Sess
             if transposed { raw[j * num_detections + i] } else { raw[i * num_values + j] }
         };
 
-        let (cx, cy, w, h) = (get(0), get(1), get(2), get(3));
+        let (cx, cy, w, h) = (get(0) * coord_scale, get(1) * coord_scale,
+                               get(2) * coord_scale, get(3) * coord_scale);
 
         // v5 has objectness at index 4; v8 has no objectness (class score IS confidence)
         let obj_conf = if is_v8 { 1.0 } else { get(4) };
@@ -453,7 +481,7 @@ fn parse_object_detection(req: &MlInferenceRequest, outputs: &ort::session::Sess
 
         if best_score < req.confidence { continue; }
 
-        // Convert from model coords (0..input_size) to image pixel coords
+        // Convert from model pixel space (0..input_size) to original image pixel coords
         let x1 = ((cx - w / 2.0) / input_size * img_w).max(0.0);
         let y1 = ((cy - h / 2.0) / input_size * img_h).max(0.0);
         let x2 = ((cx + w / 2.0) / input_size * img_w).min(img_w);
@@ -490,10 +518,27 @@ fn parse_object_detection(req: &MlInferenceRequest, outputs: &ort::session::Sess
             label, det.confidence, det.x1, det.y1, det.x2, det.y2
         ));
 
-        // Draw bounding box (2px thick)
+        // Draw bounding box (3px thick)
         draw_rect(&mut annotated, req.image.width, req.image.height,
                    det.x1 as i32, det.y1 as i32, det.x2 as i32, det.y2 as i32,
-                   color[0], color[1], color[2], 2);
+                   color[0], color[1], color[2], 3);
+
+        // Draw label text with background strip above the box
+        let tag = format!("{} {:.0}%", label, det.confidence * 100.0);
+        let char_w = 6i32;
+        let char_h = 8i32;
+        let text_w = tag.len() as i32 * char_w;
+        let tx = det.x1 as i32;
+        let ty = (det.y1 as i32 - char_h - 2).max(0);
+        // Filled background rect
+        draw_filled_rect(&mut annotated, req.image.width, req.image.height,
+            tx, ty, tx + text_w, ty + char_h + 2,
+            color[0], color[1], color[2]);
+        // Text in white (or dark if color is bright)
+        let brightness = color[0] as u16 + color[1] as u16 + color[2] as u16;
+        let (tr, tg, tb) = if brightness > 400 { (0u8, 0u8, 0u8) } else { (255u8, 255u8, 255u8) };
+        draw_text(&mut annotated, req.image.width, req.image.height,
+            tx + 1, ty + 1, &tag, tr, tg, tb);
     }
 
     if result.is_empty() {
@@ -710,6 +755,106 @@ fn nms(dets: &[Detection], iou_threshold: f32) -> Vec<&Detection> {
         }
     }
     keep
+}
+
+/// Draw a filled rectangle on RGBA pixels
+fn draw_filled_rect(pixels: &mut [u8], w: u32, h: u32, x1: i32, y1: i32, x2: i32, y2: i32, r: u8, g: u8, b: u8) {
+    for y in y1..=y2 {
+        for x in x1..=x2 {
+            set_pixel(pixels, w, h, x, y, r, g, b);
+        }
+    }
+}
+
+/// Draw ASCII text using a minimal 5×7 pixel font
+fn draw_text(pixels: &mut [u8], w: u32, h: u32, x: i32, y: i32, text: &str, r: u8, g: u8, b: u8) {
+    for (i, ch) in text.chars().enumerate() {
+        let glyph = get_glyph(ch);
+        let cx = x + i as i32 * 6;
+        for row in 0..7i32 {
+            let bits = glyph[row as usize];
+            for col in 0..5i32 {
+                if bits & (1 << (4 - col)) != 0 {
+                    set_pixel(pixels, w, h, cx + col, y + row, r, g, b);
+                }
+            }
+        }
+    }
+}
+
+/// Minimal 5×7 bitmap font — returns 7 rows of 5-bit masks
+fn get_glyph(ch: char) -> [u8; 7] {
+    match ch {
+        'A' => [0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b00000],
+        'B' => [0b11110, 0b10001, 0b11110, 0b10001, 0b10001, 0b11110, 0b00000],
+        'C' => [0b01111, 0b10000, 0b10000, 0b10000, 0b10000, 0b01111, 0b00000],
+        'D' => [0b11110, 0b10001, 0b10001, 0b10001, 0b10001, 0b11110, 0b00000],
+        'E' => [0b11111, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111, 0b00000],
+        'F' => [0b11111, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000, 0b00000],
+        'G' => [0b01111, 0b10000, 0b10011, 0b10001, 0b10001, 0b01111, 0b00000],
+        'H' => [0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001, 0b00000],
+        'I' => [0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b11111, 0b00000],
+        'J' => [0b11111, 0b00010, 0b00010, 0b00010, 0b10010, 0b01100, 0b00000],
+        'K' => [0b10001, 0b10010, 0b11100, 0b10010, 0b10001, 0b10001, 0b00000],
+        'L' => [0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111, 0b00000],
+        'M' => [0b10001, 0b11011, 0b10101, 0b10001, 0b10001, 0b10001, 0b00000],
+        'N' => [0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001, 0b00000],
+        'O' => [0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110, 0b00000],
+        'P' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b00000],
+        'Q' => [0b01110, 0b10001, 0b10001, 0b10101, 0b10010, 0b01101, 0b00000],
+        'R' => [0b11110, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001, 0b00000],
+        'S' => [0b01111, 0b10000, 0b01110, 0b00001, 0b00001, 0b11110, 0b00000],
+        'T' => [0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00000],
+        'U' => [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110, 0b00000],
+        'V' => [0b10001, 0b10001, 0b10001, 0b01010, 0b01010, 0b00100, 0b00000],
+        'W' => [0b10001, 0b10001, 0b10001, 0b10101, 0b11011, 0b10001, 0b00000],
+        'X' => [0b10001, 0b01010, 0b00100, 0b00100, 0b01010, 0b10001, 0b00000],
+        'Y' => [0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100, 0b00000],
+        'Z' => [0b11111, 0b00010, 0b00100, 0b01000, 0b10000, 0b11111, 0b00000],
+        'a' => [0b00000, 0b01110, 0b00001, 0b01111, 0b10001, 0b01111, 0b00000],
+        'b' => [0b10000, 0b10000, 0b11110, 0b10001, 0b10001, 0b11110, 0b00000],
+        'c' => [0b00000, 0b01111, 0b10000, 0b10000, 0b10000, 0b01111, 0b00000],
+        'd' => [0b00001, 0b00001, 0b01111, 0b10001, 0b10001, 0b01111, 0b00000],
+        'e' => [0b00000, 0b01110, 0b10001, 0b11111, 0b10000, 0b01111, 0b00000],
+        'f' => [0b00110, 0b01000, 0b11100, 0b01000, 0b01000, 0b01000, 0b00000],
+        'g' => [0b00000, 0b01111, 0b10001, 0b01111, 0b00001, 0b01110, 0b00000],
+        'h' => [0b10000, 0b10000, 0b11110, 0b10001, 0b10001, 0b10001, 0b00000],
+        'i' => [0b00100, 0b00000, 0b00100, 0b00100, 0b00100, 0b00110, 0b00000],
+        'j' => [0b00010, 0b00000, 0b00010, 0b00010, 0b10010, 0b01100, 0b00000],
+        'k' => [0b10000, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0b00000],
+        'l' => [0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110, 0b00000],
+        'm' => [0b00000, 0b11010, 0b10101, 0b10101, 0b10001, 0b10001, 0b00000],
+        'n' => [0b00000, 0b11110, 0b10001, 0b10001, 0b10001, 0b10001, 0b00000],
+        'o' => [0b00000, 0b01110, 0b10001, 0b10001, 0b10001, 0b01110, 0b00000],
+        'p' => [0b00000, 0b11110, 0b10001, 0b11110, 0b10000, 0b10000, 0b00000],
+        'q' => [0b00000, 0b01111, 0b10001, 0b01111, 0b00001, 0b00001, 0b00000],
+        'r' => [0b00000, 0b01110, 0b10001, 0b10000, 0b10000, 0b10000, 0b00000],
+        's' => [0b00000, 0b01111, 0b10000, 0b01110, 0b00001, 0b11110, 0b00000],
+        't' => [0b01000, 0b11100, 0b01000, 0b01000, 0b01001, 0b00110, 0b00000],
+        'u' => [0b00000, 0b10001, 0b10001, 0b10001, 0b10001, 0b01111, 0b00000],
+        'v' => [0b00000, 0b10001, 0b10001, 0b01010, 0b01010, 0b00100, 0b00000],
+        'w' => [0b00000, 0b10001, 0b10001, 0b10101, 0b10101, 0b01010, 0b00000],
+        'x' => [0b00000, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001, 0b00000],
+        'y' => [0b00000, 0b10001, 0b01010, 0b00100, 0b01000, 0b10000, 0b00000],
+        'z' => [0b00000, 0b11111, 0b00010, 0b00100, 0b01000, 0b11111, 0b00000],
+        '0' => [0b01110, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110, 0b00000],
+        '1' => [0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b01110, 0b00000],
+        '2' => [0b01110, 0b10001, 0b00010, 0b00100, 0b01000, 0b11111, 0b00000],
+        '3' => [0b11110, 0b00001, 0b01110, 0b00001, 0b00001, 0b11110, 0b00000],
+        '4' => [0b00010, 0b00110, 0b01010, 0b11111, 0b00010, 0b00010, 0b00000],
+        '5' => [0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b11110, 0b00000],
+        '6' => [0b00110, 0b01000, 0b11110, 0b10001, 0b10001, 0b01110, 0b00000],
+        '7' => [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b00000],
+        '8' => [0b01110, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110, 0b00000],
+        '9' => [0b01110, 0b10001, 0b01111, 0b00001, 0b00010, 0b01100, 0b00000],
+        '%' => [0b11000, 0b11001, 0b00010, 0b00100, 0b01001, 0b00011, 0b00000],
+        ' ' => [0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000],
+        '_' => [0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b11111, 0b00000],
+        '-' => [0b00000, 0b00000, 0b11111, 0b00000, 0b00000, 0b00000, 0b00000],
+        '.' => [0b00000, 0b00000, 0b00000, 0b00000, 0b00110, 0b00110, 0b00000],
+        ':' => [0b00110, 0b00110, 0b00000, 0b00110, 0b00110, 0b00000, 0b00000],
+        _ =>  [0b11111, 0b10001, 0b10001, 0b10001, 0b10001, 0b11111, 0b00000],
+    }
 }
 
 /// Draw a rectangle outline on RGBA pixels

@@ -1085,6 +1085,10 @@ pub enum NodeType {
         status: String,
         #[serde(skip)]
         last_input_hash: u64,
+        #[serde(default = "default_ml_interval")]
+        interval_secs: f32,
+        #[serde(skip)]
+        last_inference_secs: f64,
     },
     /// Gate: Compare + pass/block in one node.
     /// Timer/Interval: periodic pulse every N seconds.
@@ -1242,6 +1246,7 @@ impl<'de> serde::Deserialize<'de> for DynNode {
 
 fn default_pulse_width() -> f32 { 0.1 }
 fn default_confidence() -> f32 { 0.05 }
+fn default_ml_interval() -> f32 { 0.5 }
 fn default_video_w() -> u32 { 640 }
 fn default_video_h() -> u32 { 480 }
 fn default_speed() -> f32 { 1.0 }

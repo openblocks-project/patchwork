@@ -203,6 +203,10 @@ pub struct PatchworkApp {
     // ML inference
     ml_rx: std::sync::mpsc::Receiver<crate::nodes::ml_model::MlInferenceResult>,
     ml_tx: std::sync::mpsc::Sender<crate::nodes::ml_model::MlInferenceResult>,
+    ml_running: std::collections::HashSet<NodeId>,
+    // TTS synthesis
+    tts_rx: std::sync::mpsc::Receiver<crate::nodes::tts_node::TtsSynthResult>,
+    tts_tx: std::sync::mpsc::Sender<crate::nodes::tts_node::TtsSynthResult>,
     // Background device refresh
     device_refresh_rx: std::sync::mpsc::Receiver<DeviceRefreshResult>,
     // WGPU render state for shader nodes
@@ -266,6 +270,7 @@ impl PatchworkApp {
         crate::settings::Settings::load().apply_image_cache();
         let wgpu_render_state = cc.wgpu_render_state.clone();
         let (ml_tx, ml_rx) = std::sync::mpsc::channel();
+        let (tts_tx, tts_rx) = std::sync::mpsc::channel();
         let mut app = Self {
             graph: Graph::new(),
             port_positions: HashMap::new(),
@@ -314,6 +319,9 @@ impl PatchworkApp {
             mcp_rx: None,
             ml_rx: ml_rx,
             ml_tx: ml_tx,
+            ml_running: std::collections::HashSet::new(),
+            tts_rx,
+            tts_tx,
             device_refresh_rx: {
                 let (tx, rx) = std::sync::mpsc::channel();
                 // Background thread enumerates devices every 5 seconds — never blocks UI
@@ -1325,6 +1333,51 @@ impl PatchworkApp {
                 }
             }
         }
+        // Route / Switch stale-connection sweep: prune output-side connections
+        // whose from_port falls outside the node's current valid output count,
+        // and input-side connections beyond the Switch's valid input count.
+        // Mirrors the Script sweep above.
+        {
+            let route_info: Vec<(NodeId, usize, &'static str)> = self.graph.nodes.iter()
+                .filter_map(|(id, n)| match &n.node_type {
+                    NodeType::Dynamic { inner } => {
+                        let tag = inner.node.type_tag();
+                        if tag == "route" || tag == "switch" {
+                            let n_out = inner.node.outputs().len();
+                            Some((*id, n_out, if tag == "route" { "route" } else { "switch" }))
+                        } else { None }
+                    }
+                    _ => None,
+                }).collect();
+
+            // Rebuild with in-count for switch (inputs().len() includes selector port)
+            let switch_in_info: Vec<(NodeId, usize)> = self.graph.nodes.iter()
+                .filter_map(|(id, n)| match &n.node_type {
+                    NodeType::Dynamic { inner } if inner.node.type_tag() == "switch" =>
+                        Some((*id, inner.node.inputs().len())),
+                    _ => None,
+                }).collect();
+
+            if !route_info.is_empty() {
+                let before = self.graph.connections.len();
+                for (rid, n_out, _) in &route_info {
+                    self.graph.connections.retain(|c| {
+                        if c.from_node == *rid && c.from_port >= *n_out { return false; }
+                        true
+                    });
+                }
+                for (sid, max_in) in &switch_in_info {
+                    self.graph.connections.retain(|c| {
+                        if c.to_node == *sid && c.to_port >= *max_in { return false; }
+                        true
+                    });
+                }
+                if self.graph.connections.len() != before {
+                    self.graph.mark_topo_dirty();
+                }
+            }
+        }
+
         for &(fn_, fp, tn, tp) in &pending_connections {
             let from_name = self.graph.nodes.get(&fn_).map(|n| n.node_type.title()).unwrap_or("?");
             let to_name = self.graph.nodes.get(&tn).map(|n| n.node_type.title()).unwrap_or("?");
@@ -1540,6 +1593,7 @@ impl eframe::App for PatchworkApp {
         self.poll_http_responses();
         self.ob.poll_all();
         self.poll_ml_inference(ctx);
+        self.poll_tts_synthesis(ctx);
 
         self.frame_count += 1;
         // Receive device lists from background enumeration thread (non-blocking)

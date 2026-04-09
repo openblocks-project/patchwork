@@ -89,6 +89,8 @@ pub mod network_send;
 pub mod network_receive;
 pub mod settings_node;
 pub mod wgsl_presets;
+pub mod route_node;
+pub mod tts_node;
 
 use crate::graph::*;
 use crate::midi::MidiAction;
@@ -285,6 +287,10 @@ pub fn catalog() -> Vec<NodeCatalogEntry> {
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(sample_hold_node::SampleHoldNode::default()) } } },
         NodeCatalogEntry { label: "Select", category: "Logic",
             factory: || NodeType::Select { mode: 0 } },
+        NodeCatalogEntry { label: "Route", category: "Logic",
+            factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(route_node::RouteNode::default()) } } },
+        NodeCatalogEntry { label: "Switch", category: "Logic",
+            factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(route_node::SwitchNode::default()) } } },
 
         // ── IO ───────────────────────────────────────────────
         NodeCatalogEntry { label: "File", category: "IO",
@@ -387,6 +393,8 @@ pub fn catalog() -> Vec<NodeCatalogEntry> {
             factory: || NodeType::SpectrumAnalyzer },
         NodeCatalogEntry { label: "Audio Device", category: "Audio",
             factory: || NodeType::AudioDevice { selected_output: String::new(), selected_input: String::new(), master_volume: 0.8, enabled: false } },
+        NodeCatalogEntry { label: "TTS", category: "Audio",
+            factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(tts_node::TtsNode::default()) } } },
 
         // ── MIDI ─────────────────────────────────────────────
         NodeCatalogEntry { label: "MIDI Out", category: "MIDI",
@@ -463,7 +471,7 @@ pub fn catalog() -> Vec<NodeCatalogEntry> {
 
         // ── ML / AI ──────────────────────────────────────────
         NodeCatalogEntry { label: "ML Model", category: "ML",
-            factory: || NodeType::MlModel { model_path: String::new(), labels_path: String::new(), confidence: 0.05, preset: MlPreset::default(), result_text: String::new(), result_json: String::new(), annotated_frame: None, status: String::new(), last_input_hash: 0 } },
+            factory: || NodeType::MlModel { model_path: String::new(), labels_path: String::new(), confidence: 0.05, preset: MlPreset::default(), result_text: String::new(), result_json: String::new(), annotated_frame: None, status: String::new(), last_input_hash: 0, interval_secs: 0.5, last_inference_secs: 0.0 } },
 
         // ── Utility ──────────────────────────────────────────
         NodeCatalogEntry { label: "Comment", category: "Utility",

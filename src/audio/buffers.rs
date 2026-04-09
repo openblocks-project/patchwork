@@ -225,6 +225,16 @@ impl FilePlayerBuffer {
         unsafe { *self.frac_read_pos.get() = 0.0; }
     }
 
+    /// Replay from the beginning without erasing data.
+    /// Moves the read head back to 0 so the audio callback re-reads the existing
+    /// waveform. Safe to call from the UI thread — the audio thread will pick up
+    /// the updated read_pos on its next callback. `frac_read_pos` stays intact;
+    /// on the next variable-rate read the int_pos=0 path picks up from the start.
+    pub fn replay(&self) {
+        self.read_pos.store(0, Ordering::Release);
+        self.finished.store(false, Ordering::Release);
+    }
+
     /// How many output samples are available but not yet consumed by the callback.
     pub fn buffered(&self) -> usize {
         let wp = self.write_pos.load(Ordering::Relaxed);

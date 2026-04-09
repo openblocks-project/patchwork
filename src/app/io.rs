@@ -490,14 +490,13 @@ impl super::PatchworkApp {
         // Receive completed results
         while let Ok(result) = self.ml_rx.try_recv() {
             let nid = result.node_id;
+            // Mark this node as no longer running so next request can be dispatched
+            self.ml_running.remove(&nid);
             if let Some(node) = self.graph.nodes.get_mut(&nid) {
                 if let NodeType::MlModel { result_text, result_json, annotated_frame, status, .. } = &mut node.node_type {
                     *result_text = result.result_text;
                     *result_json = result.result_json;
                     *annotated_frame = result.annotated_frame;
-                    // The background `run_inference` worker writes failures into
-                    // `status` as `Error: …`. Promote those to node errors so the
-                    // canvas badge + Console pick them up; clear on success.
                     let s = result.status.clone();
                     *status = s;
                     if status.starts_with("Error") || status.starts_with("error") {
@@ -509,17 +508,102 @@ impl super::PatchworkApp {
             }
         }
 
-        // Check for new inference requests (stored in egui temp data by ml_model::render)
+        // Check for new inference requests (stored in egui temp data by ml_model::render).
+        // Only dispatch if no inference is already running for this node — prevents
+        // thread flooding when inference is slower than the frame rate.
         let node_ids: Vec<NodeId> = self.graph.nodes.keys().copied().collect();
         for nid in node_ids {
+            if self.ml_running.contains(&nid) {
+                // Still running — consume and discard any queued request so it
+                // doesn't accumulate across frames.
+                let inference_id = egui::Id::new(("ml_inference", nid));
+                ctx.data_mut(|d| d.remove::<crate::nodes::ml_model::MlInferenceRequest>(inference_id));
+                continue;
+            }
             let inference_id = egui::Id::new(("ml_inference", nid));
             if let Some(req) = ctx.data_mut(|d| d.get_temp::<crate::nodes::ml_model::MlInferenceRequest>(inference_id)) {
                 ctx.data_mut(|d| d.remove::<crate::nodes::ml_model::MlInferenceRequest>(inference_id));
+                self.ml_running.insert(nid);
                 let tx = self.ml_tx.clone();
                 std::thread::spawn(move || {
                     let result = crate::nodes::ml_model::run_inference(&req);
                     let _ = tx.send(result);
                 });
+            }
+        }
+    }
+
+    /// Poll TTS synthesis results and dispatch new requests.
+    /// Mirrors poll_ml_inference — uses egui temp data for requests, mpsc for results.
+    pub(super) fn poll_tts_synthesis(&mut self, ctx: &egui::Context) {
+        // Receive completed results
+        while let Ok(result) = self.tts_rx.try_recv() {
+            let nid = result.node_id;
+            self.audio.tts_running.remove(&nid);
+            // Write status + done flag back into the node via egui temp data
+            // (the node reads these in render_with_context on the next frame)
+            ctx.data_mut(|d| {
+                d.insert_temp(
+                    egui::Id::new(("tts_result", nid)),
+                    (result.status, result.success),
+                );
+            });
+        }
+
+        // Check for Play button presses — replay without re-synthesizing
+        let node_ids_play: Vec<NodeId> = self.graph.nodes.keys().copied().collect();
+        for nid in node_ids_play {
+            let play_id = egui::Id::new(("tts_play", nid));
+            if ctx.data_mut(|d| d.get_temp::<bool>(play_id)).is_some() {
+                ctx.data_mut(|d| d.remove::<bool>(play_id));
+                // Reset buffer read head so audio plays from the beginning
+                if let Some(buf) = self.audio.tts_buffers.get(&nid) {
+                    buf.replay();
+                }
+                // Re-send connect command so the engine is wired if it was cleaned up
+                let outgoing: Vec<(NodeId, NodeId, usize)> = self.graph.connections.iter()
+                    .filter(|c| c.from_node == nid && self.audio.node_params.contains_key(&c.to_node))
+                    .map(|c| (c.from_node, c.to_node, c.to_port))
+                    .collect();
+                for (fn_, tn, tp) in outgoing {
+                    let engine_port = if matches!(
+                        self.graph.nodes.get(&tn).map(|n| &n.node_type),
+                        Some(crate::graph::NodeType::AudioMixer { .. })
+                    ) { tp / 2 } else { tp };
+                    self.audio.connect_audio(fn_, tn, engine_port);
+                }
+            }
+        }
+
+        // Check for new synthesis requests stored by TtsNode::render_with_context
+        let node_ids: Vec<NodeId> = self.graph.nodes.keys().copied().collect();
+        for nid in node_ids {
+            if self.audio.tts_running.contains(&nid) {
+                // Still running — consume and discard queued request to avoid accumulation
+                let req_id = egui::Id::new(("tts_request", nid));
+                ctx.data_mut(|d| d.remove::<crate::nodes::tts_node::TtsSynthRequest>(req_id));
+                continue;
+            }
+            let req_id = egui::Id::new(("tts_request", nid));
+            if let Some(req) = ctx.data_mut(|d| d.get_temp::<crate::nodes::tts_node::TtsSynthRequest>(req_id)) {
+                ctx.data_mut(|d| d.remove::<crate::nodes::tts_node::TtsSynthRequest>(req_id));
+                let tts_tx = self.tts_tx.clone();
+                self.audio.start_tts_synthesis(nid, &req, &tts_tx);
+
+                // Immediately wire TTS → downstream audio connections.
+                // pending_connection_sync fires 1 frame later; doing it here ensures
+                // the engine connection is live before the first audio callback reads.
+                let outgoing: Vec<(NodeId, usize, NodeId, usize)> = self.graph.connections.iter()
+                    .filter(|c| c.from_node == nid && self.audio.node_params.contains_key(&c.to_node))
+                    .map(|c| (c.from_node, c.from_port, c.to_node, c.to_port))
+                    .collect();
+                for (fn_, _fp, tn, tp) in outgoing {
+                    let engine_port = if matches!(
+                        self.graph.nodes.get(&tn).map(|n| &n.node_type),
+                        Some(crate::graph::NodeType::AudioMixer { .. })
+                    ) { tp / 2 } else { tp };
+                    self.audio.connect_audio(fn_, tn, engine_port);
+                }
             }
         }
     }

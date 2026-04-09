@@ -81,6 +81,9 @@ pub struct AudioManager {
     /// Without this, `start_input` adds a processor but the audio edges
     /// from this node remain dangling, producing silence downstream.
     pub pending_connection_sync: std::collections::HashSet<NodeId>,
+    // TTS synthesis
+    pub tts_buffers: HashMap<NodeId, Arc<FilePlayerBuffer>>,
+    pub tts_running: std::collections::HashSet<NodeId>,
 }
 
 impl AudioManager {
@@ -112,6 +115,8 @@ impl AudioManager {
             device_channel_counts: HashMap::new(),
             secondary_streams: HashMap::new(),
             pending_connection_sync: std::collections::HashSet::new(),
+            tts_buffers: HashMap::new(),
+            tts_running: std::collections::HashSet::new(),
         }
     }
 
@@ -144,6 +149,8 @@ impl AudioManager {
             device_channel_counts: HashMap::new(),
             secondary_streams: HashMap::new(),
             pending_connection_sync: std::collections::HashSet::new(),
+            tts_buffers: HashMap::new(),
+            tts_running: std::collections::HashSet::new(),
         }
     }
 
@@ -550,6 +557,65 @@ impl AudioManager {
         self.input_streams.remove(&node_id);
         self.input_buffers.remove(&node_id);
         self.remove_processor(node_id);
+    }
+
+    // ── TTS (Piper ONNX) ────────────────────────────────────────────────────
+
+    /// Start a TTS synthesis job for the given node.
+    /// Creates a FilePlayerBuffer, spawns the synthesis thread, and registers
+    /// a FilePlayerProcessor so the synthesized audio flows into the audio engine.
+    pub fn start_tts_synthesis(
+        &mut self,
+        node_id: NodeId,
+        req: &crate::nodes::tts_node::TtsSynthRequest,
+        tts_tx: &std::sync::mpsc::Sender<crate::nodes::tts_node::TtsSynthResult>,
+    ) {
+        // Stop any existing TTS playback for this node
+        if let Some(old_buf) = self.tts_buffers.get(&node_id) {
+            old_buf.stop_requested.store(true, Ordering::Relaxed);
+        }
+
+        // 30s capacity at engine sample rate
+        let capacity = (self.engine_sample_rate * 30.0) as usize;
+        let buffer = Arc::new(FilePlayerBuffer::new(capacity));
+        let buf_clone = buffer.clone();
+
+        let mut req_owned = req.clone();
+        req_owned.engine_sample_rate = self.engine_sample_rate;
+        let tx = tts_tx.clone();
+
+        std::thread::Builder::new()
+            .name(format!("tts-synth-{}", node_id))
+            .spawn(move || {
+                let result = crate::nodes::tts_node::run_tts_synthesis(buf_clone, req_owned);
+                let _ = tx.send(result);
+            })
+            .ok();
+
+        self.tts_buffers.insert(node_id, buffer.clone());
+
+        // Register or hot-swap processor in the audio engine
+        if self.engine_tx.is_some() {
+            if self.has_processor(node_id) {
+                // Hot-swap: remove old, add fresh with new buffer
+                self.send_command(super::engine::AudioCommand::RemoveProcessor { node_id });
+                self.node_params.remove(&node_id);
+            }
+            let processor = Box::new(super::processors::input::FilePlayerProcessor {
+                buffer: buffer.clone(),
+                volume: 1.0,
+            });
+            // Register with param_count=1, then immediately write volume=1.0.
+            // add_processor() initialises all param slots to AtomicF32(0.0).
+            // The engine reads params[0] and calls set_params([params[0]]) every block,
+            // which would set FilePlayerProcessor::volume = 0.0 → silence.
+            // Writing 1.0 here ensures the engine always reads 1.0.
+            let tts_params = self.add_processor(node_id, processor, 1);
+            if let Some(p) = tts_params.get(0) { p.store(1.0); }
+            self.pending_connection_sync.insert(node_id);
+        }
+
+        self.tts_running.insert(node_id);
     }
 
     /// Play an audio file — if paused, resume; if stopped/new, start fresh.
