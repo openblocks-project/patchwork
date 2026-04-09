@@ -32,9 +32,7 @@ dirs = "6"
 typetag = "0.2"
 crossbeam-channel = "0.5"
 clap-sys = "0.5"
-<<<<<<< Updated upstream
 rayon = "1"
-=======
 iroh = "0.97"
 iroh-gossip = { version = "0.97", features = ["net"] }
 postcard = { version = "1", features = ["alloc"] }
@@ -43,7 +41,6 @@ data-encoding = "2"
 bytes = "1"
 futures-lite = "2"
 rand = "0.9"
->>>>>>> Stashed changes
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.5"
