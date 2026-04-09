@@ -355,6 +355,79 @@ impl super::PatchworkApp {
         }
     }
 
+    pub(super) fn poll_network_events(&mut self) {
+        let events = self.network.poll();
+        for event in events {
+            match event {
+                crate::network::NetworkEvent::LinkReady { node_id, link, secret_hex } => {
+                    if let Some(node) = self.graph.nodes.get_mut(&node_id) {
+                        if let NodeType::NetworkSend { last_link, persistent_secret, identity_mode, .. } = &mut node.node_type {
+                            *last_link = Some(link);
+                            if *identity_mode == 1 && !secret_hex.is_empty() {
+                                *persistent_secret = Some(secret_hex);
+                            }
+                        }
+                    }
+                }
+                crate::network::NetworkEvent::SendStatus { node_id, peers } => {
+                    if let Some(node) = self.graph.nodes.get_mut(&node_id) {
+                        if let NodeType::NetworkSend { last_peer_count, .. } = &mut node.node_type {
+                            *last_peer_count = peers;
+                        }
+                    }
+                }
+                crate::network::NetworkEvent::Received { node_id, values, sender_short_id } => {
+                    if let Some(node) = self.graph.nodes.get_mut(&node_id) {
+                        if let NodeType::NetworkReceive { last_values, last_values_text, last_sender, status, connected, imported_schema, .. } = &mut node.node_type {
+                            // Update values from received data
+                            last_values.clear();
+                            last_values_text.clear();
+                            for val in values.iter() {
+                                match val {
+                                    crate::network::NetPort::Float(f) => {
+                                        last_values.push(*f);
+                                        last_values_text.push(format!("{:.4}", f));
+                                    }
+                                    crate::network::NetPort::Text(t) => {
+                                        last_values.push(0.0);
+                                        last_values_text.push(t.clone());
+                                    }
+                                    crate::network::NetPort::Image { .. } => {
+                                        last_values.push(0.0);
+                                        last_values_text.push("<image>".into());
+                                    }
+                                    crate::network::NetPort::None => {
+                                        last_values.push(0.0);
+                                        last_values_text.push(String::new());
+                                    }
+                                }
+                            }
+                            // Format sender short ID
+                            *last_sender = sender_short_id.iter().map(|b| format!("{:02x}", b)).collect::<String>();
+                            *connected = true;
+                            let port_count = imported_schema.len();
+                            *status = format!("Connected ({} ports)", port_count);
+                        }
+                    }
+                }
+                crate::network::NetworkEvent::Error { node_id, error } => {
+                    if let Some(node) = self.graph.nodes.get_mut(&node_id) {
+                        match &mut node.node_type {
+                            NodeType::NetworkSend { .. } => {
+                                eprintln!("Network send error for node {}: {}", node_id, error);
+                            }
+                            NodeType::NetworkReceive { status, connected, .. } => {
+                                *status = format!("Error: {}", error);
+                                *connected = false;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     pub(super) fn poll_http_responses(&mut self) {
         let node_ids: Vec<NodeId> = self.graph.nodes.keys().copied().collect();
         for nid in node_ids {

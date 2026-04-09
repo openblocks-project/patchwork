@@ -10,6 +10,7 @@ mod midi;
 mod node_errors;
 mod nodes;
 mod ob;
+mod network;
 mod osc;
 mod serial;
 mod settings;

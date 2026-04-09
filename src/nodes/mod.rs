@@ -85,6 +85,8 @@ pub mod video_player;
 pub mod timer;
 pub mod sample_hold;
 pub mod select;
+pub mod network_send;
+pub mod network_receive;
 pub mod settings_node;
 pub mod wgsl_presets;
 
@@ -93,6 +95,7 @@ use crate::midi::MidiAction;
 use crate::serial::SerialAction;
 use crate::osc::OscAction;
 use crate::http::HttpAction;
+use crate::network::NetworkAction;
 use crate::ob::ObManager;
 use crate::audio::AudioManager;
 use eframe::egui;
@@ -420,6 +423,19 @@ pub fn catalog() -> Vec<NodeCatalogEntry> {
             } },
         NodeCatalogEntry { label: "JSON Extract", category: "Network",
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(json_extract_node::JsonExtractNode::default()) } } },
+        NodeCatalogEntry { label: "Net Send", category: "Network",
+            factory: || NodeType::NetworkSend {
+                schema: vec![NetPortSchema { name: "value".into(), kind: NetPortKind::Float }],
+                identity_mode: 0, persistent_secret: None, label: String::new(),
+                last_link: None, last_peer_count: 0, initialized: false,
+            } },
+        NodeCatalogEntry { label: "Net Receive", category: "Network",
+            factory: || NodeType::NetworkReceive {
+                link: String::new(), imported_schema: Vec::new(),
+                last_values: Vec::new(), last_values_text: Vec::new(),
+                last_sender: String::new(), status: "Paste link to connect".into(),
+                connected: false,
+            } },
 
         // ── Hardware ─────────────────────────────────────────
         NodeCatalogEntry { label: "OB Hub", category: "Hardware",
@@ -504,6 +520,7 @@ pub fn render_content(
     _monitor_state: &monitor::MonitorState,
     osc_listening: bool,
     osc_actions: &mut Vec<OscAction>,
+    network_actions: &mut Vec<NetworkAction>,
     port_positions: &mut HashMap<(NodeId, usize, bool), egui::Pos2>,
     dragging_from: &mut Option<(NodeId, usize, bool)>,
     http_actions: &mut Vec<HttpAction>,
@@ -624,6 +641,10 @@ pub fn render_content(
             select::render(ui, mode, node_id, values, connections, port_positions, dragging_from, pending_disconnects),
         NodeType::FolderBrowser { .. } => {} // migrated to trait — legacy fallback
         NodeType::SampleHold { .. } => {} // migrated to trait — legacy enum fallback
+        NodeType::NetworkSend { schema, identity_mode, persistent_secret, label, last_link, last_peer_count, initialized, .. } =>
+            network_send::render(ui, schema, identity_mode, persistent_secret, label, last_link, last_peer_count, initialized, node_id, values, connections, network_actions),
+        NodeType::NetworkReceive { link, imported_schema, last_values, last_values_text, last_sender, status, connected, .. } =>
+            network_receive::render(ui, link, imported_schema, last_values, last_values_text, last_sender, status, connected, node_id, network_actions),
         NodeType::Dynamic { inner } => {
             let mut ctx = crate::node_trait::RenderContext {
                 node_id, values, connections,

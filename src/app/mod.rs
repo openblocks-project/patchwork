@@ -4,6 +4,7 @@ use crate::http::{HttpAction, HttpManager};
 use crate::midi::{MidiAction, MidiManager};
 use crate::serial::{SerialAction, SerialManager};
 use crate::osc::{OscAction, OscManager};
+use crate::network::{NetworkAction, NetworkManager};
 use crate::ob::ObManager;
 use crate::audio::AudioManager;
 use crate::nodes;
@@ -189,6 +190,8 @@ pub struct PatchworkApp {
     pinned_nodes: std::collections::HashSet<NodeId>,
     // HTTP & API
     http: HttpManager,
+    // Network (iroh P2P)
+    network: NetworkManager,
     api_keys: HashMap<String, String>,
     // OB Hardware
     ob: ObManager,
@@ -302,6 +305,7 @@ impl PatchworkApp {
             panning: false,
             pinned_nodes: std::collections::HashSet::new(),
             http: HttpManager::new(),
+            network: NetworkManager::new(),
             api_keys: HashMap::new(),
             ob: ObManager::new(),
             audio: AudioManager::new(),
@@ -656,6 +660,7 @@ impl PatchworkApp {
         let mut pending_connections: Vec<(NodeId, usize, NodeId, usize)> = Vec::new();
         let mut nodes_to_delete: Vec<NodeId> = Vec::new();
         let mut osc_actions: Vec<OscAction> = Vec::new();
+        let mut network_actions: Vec<NetworkAction> = Vec::new();
         let mut dragging_from = self.dragging_from;
         let mut palette_spawns: Vec<([f32; 2], NodeType)> = Vec::new();
         let mut midi_actions: Vec<MidiAction> = Vec::new();
@@ -864,7 +869,7 @@ impl PatchworkApp {
                     nodes::render_content(ui, &mut node.node_type, node_id, values, &connections,
                         &midi_out_ports, &midi_in_ports, midi_conn_out, midi_conn_in, &mut midi_actions,
                         &serial_ports, serial_conn, &mut serial_actions, &monitor_state,
-                        osc_listening, &mut osc_actions, &mut port_positions, &mut dragging_from,
+                        osc_listening, &mut osc_actions, &mut network_actions, &mut port_positions, &mut dragging_from,
                         &mut http_actions, http_pending, &api_keys, &wgpu_render_state,
                         &mut pending_disconnects, &mut ob_manager, &mut audio_manager,
                         &self.mcp_log, self.mcp_rx.is_some());
@@ -1256,6 +1261,7 @@ impl PatchworkApp {
             if self.opt_drag_created == Some(id) { self.opt_drag_created = None; }
             self.audio.remove_processor(id); // Remove from engine before graph
             self.midi.cleanup_node(id); self.serial.cleanup_node(id); self.osc.cleanup_node(id);
+            self.network.cleanup_node(id);
             self.ob.cleanup_node(id); self.audio.cleanup_node(id); crate::nodes::video_player::cleanup_node(id);
             // Drop GPU textures owned by this node immediately so VRAM
             // doesn't balloon when users rapidly spawn/delete image nodes.
@@ -1468,6 +1474,7 @@ impl PatchworkApp {
         self.midi.process(midi_actions);
         self.serial.process(serial_actions);
         self.osc.process(osc_actions);
+        self.network.process(network_actions);
         self.http.process(http_actions);
     }
 }
@@ -1529,6 +1536,7 @@ impl eframe::App for PatchworkApp {
         self.poll_midi_inputs();
         self.poll_serial_inputs();
         self.poll_osc_inputs();
+        self.poll_network_events();
         self.poll_http_responses();
         self.ob.poll_all();
         self.poll_ml_inference(ctx);

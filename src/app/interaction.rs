@@ -160,6 +160,7 @@ impl super::PatchworkApp {
                 let to_delete: Vec<_> = self.selected_nodes.iter().copied().collect();
                 for id in to_delete {
                     self.audio.cleanup_node(id);
+                    self.network.cleanup_node(id);
                     crate::nodes::video_player::cleanup_node(id);
                     crate::gpu_image::request_node_invalidation(id);
                     self.graph.remove_node(id);
@@ -356,6 +357,7 @@ impl super::PatchworkApp {
                     self.midi.cleanup_node(id);
                     self.serial.cleanup_node(id);
                     self.osc.cleanup_node(id);
+                    self.network.cleanup_node(id);
                     self.ob.cleanup_node(id);
                     self.audio.cleanup_node(id);
                     crate::nodes::video_player::cleanup_node(id);
@@ -523,6 +525,7 @@ impl super::PatchworkApp {
                                 self.midi.cleanup_node(id);
                                 self.serial.cleanup_node(id);
                                 self.osc.cleanup_node(id);
+                                self.network.cleanup_node(id);
                                 self.ob.cleanup_node(id);
                                 self.audio.cleanup_node(id);
                                 crate::nodes::video_player::cleanup_node(id);

@@ -1133,6 +1133,41 @@ pub enum NodeType {
         #[serde(default)]
         mode: u8,
     },
+    /// Network Send — broadcasts values to connected peers via iroh-gossip.
+    NetworkSend {
+        #[serde(default)]
+        schema: Vec<NetPortSchema>,
+        /// 0 = Ephemeral, 1 = Permanent
+        #[serde(default)]
+        identity_mode: u8,
+        #[serde(default)]
+        persistent_secret: Option<String>,
+        #[serde(default)]
+        label: String,
+        #[serde(default)]
+        last_link: Option<String>,
+        #[serde(default)]
+        last_peer_count: usize,
+        #[serde(default)]
+        initialized: bool,
+    },
+    /// Network Receive — receives values from a peer via iroh-gossip link.
+    NetworkReceive {
+        #[serde(default)]
+        link: String,
+        #[serde(default)]
+        imported_schema: Vec<NetPortSchema>,
+        #[serde(default)]
+        last_values: Vec<f32>,
+        #[serde(default)]
+        last_values_text: Vec<String>,
+        #[serde(default)]
+        last_sender: String,
+        #[serde(default)]
+        status: String,
+        #[serde(default)]
+        connected: bool,
+    },
     /// Trait-based node — standalone struct implementing NodeBehavior.
     /// This is the plugin pathway: external nodes use this variant.
     /// Serialization is handled by DynNode's custom Serialize/Deserialize impl
@@ -1140,6 +1175,19 @@ pub enum NodeType {
     Dynamic {
         inner: DynNode,
     },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NetPortSchema {
+    pub name: String,
+    pub kind: NetPortKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum NetPortKind {
+    Float,
+    Text,
+    Image,
 }
 
 /// Wrapper around Box<dyn NodeBehavior> that implements Clone + Debug.
@@ -1290,6 +1338,8 @@ impl NodeBehavior for NodeType {
             NodeType::Timer { .. } => "Timer",
             NodeType::SampleHold { .. } => "Sample & Hold",
             NodeType::Select { .. } => "Select",
+            NodeType::NetworkSend { .. } => "Net Send",
+            NodeType::NetworkReceive { .. } => "Net Receive",
             NodeType::Dynamic { inner } => inner.node.title(),
         }
     }
@@ -1446,6 +1496,14 @@ impl NodeBehavior for NodeType {
             NodeType::Timer { .. } => vec![PortDef::new("Interval", Number), PortDef::new("BPM", Number)],
             NodeType::SampleHold { .. } => vec![PortDef::new("Value", Generic), PortDef::new("Trigger", Trigger)],
             NodeType::Select { .. } => vec![PortDef::new("A", Generic), PortDef::new("B", Generic), PortDef::new("Selector", Normalized)],
+            NodeType::NetworkSend { schema, .. } => {
+                schema.iter().map(|s| PortDef::dynamic(s.name.clone(), match s.kind {
+                    NetPortKind::Float => Number,
+                    NetPortKind::Text => Text,
+                    NetPortKind::Image => Image,
+                })).collect()
+            }
+            NodeType::NetworkReceive { .. } => vec![],
             NodeType::Script { input_names, continuous, .. } => {
                 let mut ports: Vec<PortDef> = Vec::new();
                 if !continuous { ports.push(PortDef::new("Exec", Trigger)); }
@@ -1605,6 +1663,18 @@ impl NodeBehavior for NodeType {
             NodeType::Timer { .. } => vec![PortDef::new("Trigger", Trigger), PortDef::new("Phase", Normalized), PortDef::new("BPM", Number)],
             NodeType::SampleHold { .. } => vec![PortDef::new("Out", Generic), PortDef::new("Trigger", Trigger)],
             NodeType::Select { .. } => vec![PortDef::new("Out", Generic), PortDef::new("Active", Gate)],
+            NodeType::NetworkSend { .. } => vec![],
+            NodeType::NetworkReceive { imported_schema, .. } => {
+                let mut ports: Vec<PortDef> = imported_schema.iter().map(|s| {
+                    PortDef::dynamic(s.name.clone(), match s.kind {
+                        NetPortKind::Float => Number,
+                        NetPortKind::Text => Text,
+                        NetPortKind::Image => Image,
+                    })
+                }).collect();
+                ports.push(PortDef::new("Status", Text));
+                ports
+            }
             NodeType::Dynamic { inner } => inner.node.outputs(),
         }
     }
@@ -1668,6 +1738,8 @@ impl NodeBehavior for NodeType {
             NodeType::Timer { .. } => [100, 200, 180],
             NodeType::SampleHold { .. } => [120, 200, 160],
             NodeType::Select { .. } => [200, 160, 120],
+            NodeType::NetworkSend { .. } => [80, 200, 160],
+            NodeType::NetworkReceive { .. } => [160, 80, 200],
             NodeType::Dynamic { inner } => inner.node.color_hint(),
         }
     }
@@ -2410,6 +2482,29 @@ impl Graph {
                         values.insert((id, *arg_count), PortValue::Text(raw));
                         // Address output
                         values.insert((id, *arg_count + 1), PortValue::Text(address_filter.clone()));
+                    }
+                    NodeType::NetworkSend { .. } => {}
+                    NodeType::NetworkReceive { imported_schema, last_values, last_values_text, status, .. } => {
+                        for (i, s) in imported_schema.iter().enumerate() {
+                            match s.kind {
+                                NetPortKind::Float => {
+                                    let v = last_values.get(i).copied().unwrap_or(0.0);
+                                    values.insert((id, i), PortValue::Float(v));
+                                }
+                                NetPortKind::Text => {
+                                    let t = last_values_text.get(i).cloned().unwrap_or_default();
+                                    values.insert((id, i), PortValue::Text(t));
+                                }
+                                NetPortKind::Image => {
+                                    // Image data is handled via last_values_text as base64
+                                    // For now, output as text
+                                    let t = last_values_text.get(i).cloned().unwrap_or_default();
+                                    values.insert((id, i), PortValue::Text(t));
+                                }
+                            }
+                        }
+                        // Status output (last port)
+                        values.insert((id, imported_schema.len()), PortValue::Text(status.clone()));
                     }
                     NodeType::Dynamic { inner } => {
                         let results = inner.node.evaluate(inputs);
