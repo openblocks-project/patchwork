@@ -393,3 +393,116 @@ impl AudioProcessor for EqProcessor {
 
     fn eq_curve_hash(&self) -> u64 { self.curve_hash }
 }
+
+// ── Pitch Shift (granular overlap-add) ───────────────────────────────────────
+//
+// Two overlapping Hann-windowed grains read from a circular ring buffer.
+// Each grain's read pointer advances at pitch_ratio = 2^(semitones/12) per
+// sample, while the write pointer always advances at 1.0 per sample — so
+// the tempo is preserved and only the pitch changes.
+// Grain size ≈ 46 ms, 50% overlap → continuous coverage with no clicks.
+
+pub struct PitchShiftProcessor {
+    semitones: SmoothedParam,
+    ring: Vec<f32>,
+    write: usize,
+    grain_size: usize,
+    /// Phase (0..grain_size) and fractional read offset for each of the 2 grains.
+    grain_phase: [f64; 2],
+    grain_read:  [f64; 2],
+}
+
+impl PitchShiftProcessor {
+    pub fn new(semitones: f32) -> Self {
+        Self {
+            semitones: SmoothedParam::new(semitones, 30.0),
+            ring: Vec::new(),
+            write: 0,
+            grain_size: 2048,
+            grain_phase: [0.0, 0.0],
+            grain_read:  [0.0, 0.0],
+        }
+    }
+
+    #[inline]
+    fn read_lerp(&self, pos: f64) -> f32 {
+        let n = self.ring.len();
+        let pos = pos.rem_euclid(n as f64);
+        let i0 = pos as usize % n;
+        let i1 = (i0 + 1) % n;
+        let frac = (pos - pos.floor()) as f32;
+        self.ring[i0] * (1.0 - frac) + self.ring[i1] * frac
+    }
+}
+
+impl AudioProcessor for PitchShiftProcessor {
+    fn type_id(&self) -> &str { "pitchshift" }
+    fn kind(&self) -> ProcessorKind { ProcessorKind::Effect }
+
+    fn process_block(&mut self, input: &[f32], output: &mut [f32], _ctx: &ProcessContext) {
+        if self.ring.is_empty() { return; }
+        let n = self.ring.len();
+        let gs = self.grain_size as f64;
+
+        for i in 0..input.len() {
+            // Write input into ring
+            self.ring[self.write] = input[i];
+            let write_f = self.write as f64;
+            self.write = (self.write + 1) % n;
+
+            let ratio = 2.0f64.powf(self.semitones.tick() as f64 / 12.0);
+            let mut out = 0.0f32;
+
+            for g in 0..2 {
+                // Hann window: rises from 0 → 1 → 0 over the grain
+                let t = self.grain_phase[g] / gs;
+                let win = (std::f64::consts::PI * t).sin() as f32;
+                let win = win * win;
+
+                // Read from ring: start of grain is `grain_size` samples behind
+                // the write head; the grain's internal read cursor advances at ratio.
+                let read_pos = (write_f - gs + self.grain_read[g]).rem_euclid(n as f64);
+                out += self.read_lerp(read_pos) * win;
+
+                self.grain_phase[g] += 1.0;
+                self.grain_read[g]  += ratio;
+
+                // When grain completes, restart it
+                if self.grain_phase[g] >= gs {
+                    self.grain_phase[g] = 0.0;
+                    self.grain_read[g]  = 0.0;
+                }
+            }
+
+            output[i] = out;
+        }
+    }
+
+    fn set_params(&mut self, params: &[f32]) {
+        if let Some(&v) = params.first() {
+            self.semitones.set(v.clamp(-12.0, 12.0));
+        }
+    }
+
+    fn param_count(&self) -> usize { 1 }
+
+    fn prepare(&mut self, sample_rate: f32, _max_block_size: usize) {
+        // ~46 ms grain, rounded to next power of two
+        self.grain_size = ((sample_rate * 0.046) as usize).next_power_of_two().max(512);
+        // Ring must fit at least 2× the grain so the read head never overtakes write
+        let ring_size = self.grain_size * 4;
+        self.ring = vec![0.0; ring_size];
+        self.write = 0;
+        // Stagger the two grains by half a grain so one is always at full window
+        self.grain_phase = [0.0, self.grain_size as f64 / 2.0];
+        self.grain_read  = [0.0, self.grain_size as f64 / 2.0];
+        self.semitones = SmoothedParam::new(self.semitones.target, 30.0);
+    }
+
+    fn reset(&mut self) {
+        self.ring.fill(0.0);
+        self.write = 0;
+        self.grain_phase = [0.0, self.grain_size as f64 / 2.0];
+        self.grain_read  = [0.0, self.grain_size as f64 / 2.0];
+    }
+}

@@ -152,6 +152,8 @@ pub static NODE_REGISTRY: std::sync::LazyLock<std::sync::Mutex<NodeRegistryInner
         crate::nodes::route_node::register_route(&mut r);
         crate::nodes::route_node::register_switch(&mut r);
         crate::nodes::tts_node::register(&mut r);
+        crate::nodes::terminal_node::register(&mut r);
+        crate::nodes::text_ops_node::register(&mut r);
         std::sync::Mutex::new(r)
     });
 

@@ -59,6 +59,8 @@ impl AudioProcessor for SamplerProcessor {
         // params[0] = volume
         // params[1] = record trigger (>0.5 = record)
         // params[2] = play trigger (>0.5 = play)
+        // params[3] = speed multiplier (1.0 = normal, 0.5 = half, 2.0 = double)
+        // params[4] = seek normalized (0.0–1.0); negative = no seek this frame
         if let Some(&v) = params.first() { self.volume = v.max(0.0); }
 
         if params.len() >= 2 {
@@ -81,9 +83,21 @@ impl AudioProcessor for SamplerProcessor {
             }
             self.prev_play = play_on;
         }
+
+        if params.len() >= 4 {
+            let speed = params[3].clamp(0.1, 8.0);
+            self.buffer.playback_rate_x1000.store(
+                (speed * 1000.0) as u32,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+        }
+
+        if params.len() >= 5 && params[4] >= 0.0 {
+            self.buffer.seek_to_normalized(params[4]);
+        }
     }
 
-    fn param_count(&self) -> usize { 3 }
+    fn param_count(&self) -> usize { 5 }
     fn prepare(&mut self, _sample_rate: f32, _max_block_size: usize) {}
     fn reset(&mut self) {
         self.prev_record = false;

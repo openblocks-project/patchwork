@@ -63,9 +63,9 @@ pub fn render(
     dragging_from: &mut Option<(NodeId, usize, bool)>,
     pending_disconnects: &mut Vec<(NodeId, usize)>,
 ) {
-    let (record_duration, trim_start, trim_end, volume, looping, reverse, play_mode, range_as_duration) = match node_type {
-        NodeType::AudioSampler { record_duration, trim_start, trim_end, volume, looping, reverse, play_mode, range_as_duration } =>
-            (record_duration, trim_start, trim_end, volume, looping, reverse, play_mode, range_as_duration),
+    let (record_duration, trim_start, trim_end, volume, looping, reverse, play_mode, range_as_duration, speed, seek) = match node_type {
+        NodeType::AudioSampler { record_duration, trim_start, trim_end, volume, looping, reverse, play_mode, range_as_duration, speed, seek } =>
+            (record_duration, trim_start, trim_end, volume, looping, reverse, play_mode, range_as_duration, speed, seek),
         _ => return,
     };
 
@@ -170,6 +170,25 @@ pub fn render(
     }
     // Write volume to ParamStore
     audio.engine_write_param(node_id, 0, *volume);
+
+    // Speed override (port 6)
+    let speed_wired = connections.iter().any(|c| c.to_node == node_id && c.to_port == 6);
+    if speed_wired {
+        *speed = Graph::static_input_value(connections, values, node_id, 6).as_float().clamp(0.1, 8.0);
+    }
+    audio.engine_write_param(node_id, 3, *speed);
+
+    // Seek override (port 7) — continuously sets playhead when wired (scrubbing)
+    let seek_wired = connections.iter().any(|c| c.to_node == node_id && c.to_port == 7);
+    if seek_wired {
+        *seek = Graph::static_input_value(connections, values, node_id, 7).as_float().clamp(0.0, 1.0);
+        // Write the seek value; processor will call seek_to_normalized each frame
+        audio.engine_write_param(node_id, 4, *seek);
+    } else {
+        // No seek pending this frame — use sentinel -1.0
+        // (UI slider writes directly via engine_write_param when changed)
+        audio.engine_write_param(node_id, 4, -1.0);
+    }
 
     // ── Input ports ──────────────────────────────────────────────
     ui.horizontal(|ui| {
@@ -508,6 +527,32 @@ pub fn render(
                     audio.engine_write_param(node_id, 0, *volume);
                 }
                 ui.label(egui::RichText::new(format!("{:.0}%", *volume * 100.0)).small().color(egui::Color32::GRAY));
+            });
+
+            // Speed slider — port 6
+            ui.horizontal(|ui| {
+                crate::nodes::inline_port_circle(ui, node_id, 6, true, connections, port_positions, dragging_from, pending_disconnects, PortKind::Number);
+                ui.label(egui::RichText::new("Spd").small().color(egui::Color32::GRAY));
+                ui.add_enabled(
+                    !speed_wired,
+                    egui::Slider::new(speed, 0.1_f32..=4.0_f32).show_value(false).logarithmic(true),
+                );
+                ui.label(egui::RichText::new(format!("{:.2}x", *speed)).small().color(egui::Color32::GRAY));
+            });
+
+            // Seek slider — port 7
+            ui.horizontal(|ui| {
+                crate::nodes::inline_port_circle(ui, node_id, 7, true, connections, port_positions, dragging_from, pending_disconnects, PortKind::Normalized);
+                ui.label(egui::RichText::new("Seek").small().color(egui::Color32::GRAY));
+                let seek_resp = ui.add_enabled(
+                    !seek_wired && !is_recording,
+                    egui::Slider::new(seek, 0.0_f32..=1.0_f32).show_value(false),
+                );
+                if seek_resp.changed() {
+                    // One-shot seek from UI slider drag
+                    audio.engine_write_param(node_id, 4, *seek);
+                }
+                ui.label(egui::RichText::new(format!("{:.0}%", *seek * 100.0)).small().color(egui::Color32::GRAY));
             });
         });
     });

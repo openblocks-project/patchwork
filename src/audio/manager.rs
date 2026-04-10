@@ -372,6 +372,9 @@ impl AudioManager {
             NodeType::AudioDistortion { drive } => {
                 Some((Box::new(effects::DistortionProcessor::new(*drive)), 1))
             }
+            NodeType::AudioPitchShift { semitones } => {
+                Some((Box::new(effects::PitchShiftProcessor::new(*semitones)), 1))
+            }
             NodeType::AudioReverb { room_size, damping, mix } => {
                 Some((Box::new(effects::ReverbProcessor::new(*room_size, *damping, *mix)), 3))
             }
@@ -426,7 +429,7 @@ impl AudioManager {
                     self.sampler_buffers.insert(nid, buf.clone());
                     buf
                 };
-                Some((Box::new(sampler::SamplerProcessor::new(buf, *volume)), 3))
+                Some((Box::new(sampler::SamplerProcessor::new(buf, *volume)), 5))
             }
             _ => None,
         }
@@ -483,7 +486,7 @@ impl AudioManager {
         // Register processor in the engine (if running)
         if self.engine_tx.is_some() && !self.has_processor(node_id) {
             let processor = Box::new(super::processors::sampler::SamplerProcessor::new(buf.clone(), 1.0));
-            self.add_processor(node_id, processor, 3);
+            self.add_processor(node_id, processor, 5);
         }
 
         buf

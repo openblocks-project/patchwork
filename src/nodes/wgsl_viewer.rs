@@ -1232,6 +1232,195 @@ pub fn render(
     });
 }
 
+/// Run the offscreen GPU render pass for a WGSL node that is currently collapsed.
+///
+/// When a WGSL Viewer window is minimized, egui's `win.show()` closure does not
+/// execute, so `render()` is never called and the offscreen texture is never
+/// updated.  That breaks multi-pass chains: downstream viewers see stale / blank
+/// image data.
+///
+/// This function re-derives everything that the offscreen block inside `render()`
+/// needs and calls `render_offscreen()` directly, without touching any UI.  It is
+/// called from `app/mod.rs` immediately after the collapsed-port-position fallback
+/// whenever the node is a `WgslViewer`.
+#[allow(clippy::too_many_arguments)]
+pub fn render_offscreen_pass(
+    ctx: &egui::Context,
+    node_id: NodeId,
+    wgsl_code: &str,
+    uniform_names: &[String],
+    uniform_types: &[String],
+    uniform_values: &[f32],
+    canvas_w: f32,
+    canvas_h: f32,
+    image_a_mode: crate::graph::ImageInputMode,
+    image_b_mode: crate::graph::ImageInputMode,
+    feedback_reset_pending: &mut bool,
+    connections: &[Connection],
+    values: &HashMap<(NodeId, usize), PortValue>,
+    wgpu_render_state: &Option<egui_wgpu::RenderState>,
+) {
+    if wgsl_code.is_empty() { return; }
+
+    // ── Rebuild final_code (same logic as in render()) ──
+    let has_vs = wgsl_code.contains("@vertex");
+    let has_uniforms_decl = wgsl_code.contains("var<uniform>");
+    let uniform_block = if has_uniforms_decl {
+        String::new()
+    } else {
+        build_uniform_block(uniform_names, uniform_types)
+    };
+    let has_image_inputs = wgsl_code.contains("image_a") && wgsl_code.contains("@binding(2)");
+    let image_block = if has_image_inputs { "" } else { IMAGE_INPUT_BLOCK };
+    let final_code = if has_vs {
+        format!("{}{}{}", uniform_block, image_block, wgsl_code)
+    } else {
+        format!("{}{}{}\n{}", uniform_block, image_block, BUILTIN_VS, wgsl_code)
+    };
+    if final_code.is_empty() { return; }
+
+    // ── Port indices ──
+    let uniform_port_count: usize = uniform_types.iter()
+        .map(|t| if t == "color" { 3 } else { 1 })
+        .sum();
+    let input_a_port = 1 + uniform_port_count;
+    let input_b_port = 2 + uniform_port_count;
+
+    // ── Check whether the offscreen pass is actually needed ──
+    let output_connected = connections.iter().any(|c| c.from_node == node_id && c.from_port == 0);
+    let feedback_active = image_a_mode == crate::graph::ImageInputMode::LastFrame
+        || image_b_mode == crate::graph::ImageInputMode::LastFrame;
+    if !output_connected && !feedback_active { return; }
+
+    // ── Update WgslFeedbackHints store (external texture views) ──
+    if let Some(render_state) = wgpu_render_state {
+        let resolve_ext = |port_idx: usize, mode: crate::graph::ImageInputMode|
+            -> Option<wgpu::TextureView>
+        {
+            if mode != crate::graph::ImageInputMode::External { return None; }
+            let src = connections.iter()
+                .find(|c| c.to_node == node_id && c.to_port == port_idx)
+                .map(|c| (c.from_node, c.from_port))?;
+            crate::gpu_image::frame_snapshot_get_view(src.0, src.1).map(|(v, _, _)| v)
+        };
+        let ext_a_view = resolve_ext(input_a_port, image_a_mode);
+        let ext_b_view = resolve_ext(input_b_port, image_b_mode);
+
+        let mut renderer = render_state.renderer.write();
+        let store = match renderer.callback_resources.get_mut::<WgslFeedbackHints>() {
+            Some(s) => s,
+            None => {
+                renderer.callback_resources.insert(WgslFeedbackHints::default());
+                renderer.callback_resources.get_mut::<WgslFeedbackHints>().unwrap()
+            }
+        };
+        store.nodes.insert(node_id, [
+            image_a_mode == crate::graph::ImageInputMode::LastFrame,
+            image_b_mode == crate::graph::ImageInputMode::LastFrame,
+        ]);
+        store.external_views.insert(node_id, [ext_a_view, ext_b_view]);
+    } else {
+        return;
+    }
+
+    let render_state = wgpu_render_state.as_ref().unwrap();
+    let readback_w = (canvas_w as u32).max(1).min(800);
+    let readback_h = (canvas_h as u32).max(1).min(600);
+
+    // ── Resolve user_values from connections / stored values ──
+    let mut user_values: Vec<f32> = Vec::new();
+    {
+        let mut port_idx = 1usize;
+        let mut value_idx = 0usize;
+        for (i, _name) in uniform_names.iter().enumerate() {
+            let t = uniform_types.get(i).map(|s| s.as_str()).unwrap_or("float");
+            if t == "color" {
+                for c in 0..3 {
+                    let port_connected = connections.iter().any(|cn| cn.to_node == node_id && cn.to_port == port_idx);
+                    let fv = if port_connected {
+                        let v = Graph::static_input_value(connections, values, node_id, port_idx);
+                        v.as_float() / 255.0
+                    } else {
+                        if value_idx + c < uniform_values.len() { uniform_values[value_idx + c] } else { 0.0 }
+                    };
+                    user_values.push(fv);
+                    port_idx += 1;
+                }
+                value_idx += 3;
+            } else {
+                let port_connected = connections.iter().any(|cn| cn.to_node == node_id && cn.to_port == port_idx);
+                let fv = if port_connected {
+                    let v = Graph::static_input_value(connections, values, node_id, port_idx);
+                    v.as_float()
+                } else {
+                    if value_idx < uniform_values.len() { uniform_values[value_idx] } else { 0.0 }
+                };
+                user_values.push(fv);
+                port_idx += 1;
+                value_idx += 1;
+            }
+        }
+    }
+
+    // ── Time uniform ──
+    let rb_time = {
+        let time_idx = uniform_names.iter().position(|n| n == "time");
+        if let Some(idx) = time_idx {
+            let time_port = 1 + idx;
+            let connected = connections.iter().any(|c| c.to_node == node_id && c.to_port == time_port);
+            if connected { user_values.get(idx).copied().unwrap_or(0.0) }
+            else { ctx.input(|i| i.time) as f32 }
+        } else { ctx.input(|i| i.time) as f32 }
+    };
+
+    // ── GPU values (skip time, expand colors) ──
+    let rb_gpu_values: Vec<f32> = {
+        let mut out = Vec::with_capacity(user_values.len());
+        let mut vi = 0usize;
+        for (i, name) in uniform_names.iter().enumerate() {
+            let t = uniform_types.get(i).map(|s| s.as_str()).unwrap_or("float");
+            let comps = if t == "color" { 3 } else { 1 };
+            if name != "time" {
+                for c in 0..comps {
+                    if vi + c < user_values.len() { out.push(user_values[vi + c]); }
+                }
+            }
+            vi += comps;
+        }
+        out
+    };
+    let packed = pack_uniforms(rb_time, readback_w as f32, readback_h as f32, 0.0, 0.0, &rb_gpu_values);
+
+    // ── Resolve image sources ──
+    let resolve_external = |port_idx: usize| -> Option<(NodeId, usize)> {
+        connections.iter()
+            .find(|c| c.to_node == node_id && c.to_port == port_idx)
+            .map(|c| (c.from_node, c.from_port))
+    };
+    let image_a_source = match image_a_mode {
+        crate::graph::ImageInputMode::External => resolve_external(input_a_port),
+        _ => None,
+    };
+    let image_b_source = match image_b_mode {
+        crate::graph::ImageInputMode::External => resolve_external(input_b_port),
+        _ => None,
+    };
+
+    if let Some(img) = render_offscreen(
+        render_state, &final_code, node_id, packed, readback_w, readback_h,
+        image_a_mode, image_b_mode,
+        image_a_source, image_b_source,
+        feedback_reset_pending,
+    ) {
+        ctx.data_mut(|d| {
+            d.insert_temp(egui::Id::new(("wgsl_image_output", node_id)), img);
+        });
+    }
+
+    // Keep animation alive while collapsed
+    ctx.request_repaint();
+}
+
 /// Render the shader to an offscreen RGBA8 texture and read back to CPU.
 /// Returns None if the shader fails to compile or render.
 ///

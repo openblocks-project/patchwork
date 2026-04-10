@@ -31,6 +31,7 @@ pub mod audio_player;
 pub mod audio_device;
 pub mod audio_delay;
 pub mod audio_distortion;
+pub mod audio_pitchshift;
 pub mod audio_filter;
 pub mod audio_gain;
 pub mod audio_eq;
@@ -91,6 +92,8 @@ pub mod settings_node;
 pub mod wgsl_presets;
 pub mod route_node;
 pub mod tts_node;
+pub mod terminal_node;
+pub mod text_ops_node;
 
 use crate::graph::*;
 use crate::midi::MidiAction;
@@ -299,6 +302,10 @@ pub fn catalog() -> Vec<NodeCatalogEntry> {
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(folder_browser_node::FolderBrowserNode::default()) } } },
         NodeCatalogEntry { label: "Text Editor", category: "IO",
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(text_editor_node::TextEditorNode::default()) } } },
+        NodeCatalogEntry { label: "Terminal", category: "IO",
+            factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(terminal_node::TerminalNode::default()) } } },
+        NodeCatalogEntry { label: "Text Ops", category: "IO",
+            factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(text_ops_node::TextOpsNode::default()) } } },
 
         // ── Output ───────────────────────────────────────────
         NodeCatalogEntry { label: "Scope", category: "Output",
@@ -365,6 +372,8 @@ pub fn catalog() -> Vec<NodeCatalogEntry> {
             factory: || NodeType::AudioDelay { time_ms: 250.0, feedback: 0.5 } },
         NodeCatalogEntry { label: "Distortion", category: "Audio",
             factory: || NodeType::AudioDistortion { drive: 4.0 } },
+        NodeCatalogEntry { label: "Pitch Shift", category: "Audio",
+            factory: || NodeType::AudioPitchShift { semitones: 0.0 } },
         NodeCatalogEntry { label: "Reverb", category: "Audio",
             factory: || NodeType::AudioReverb { room_size: 0.5, damping: 0.5, mix: 0.3 } },
         NodeCatalogEntry { label: "Low Pass", category: "Audio",
@@ -384,7 +393,7 @@ pub fn catalog() -> Vec<NodeCatalogEntry> {
         NodeCatalogEntry { label: "Microphone", category: "Audio",
             factory: || NodeType::AudioInput { selected_device: String::new(), gain: 1.0, active: false } },
         NodeCatalogEntry { label: "Audio Sampler", category: "Audio",
-            factory: || NodeType::AudioSampler { record_duration: 5.0, trim_start: 0.0, trim_end: 0.0, volume: 1.0, looping: false, reverse: false, play_mode: 0, range_as_duration: false } },
+            factory: || NodeType::AudioSampler { record_duration: 5.0, trim_start: 0.0, trim_end: 0.0, volume: 1.0, looping: false, reverse: false, play_mode: 0, range_as_duration: false, speed: 1.0, seek: 0.0 } },
         NodeCatalogEntry { label: "CLAP Plugin", category: "Audio",
             factory: || NodeType::ClapPlugin { plugin_path: String::new(), plugin_name: String::new(), param_names: Vec::new(), param_ranges: Vec::new(), param_flags: Vec::new(), param_values: Vec::new(), param_labels: Vec::new(), is_instrument: false } },
         NodeCatalogEntry { label: "Audio Analyzer", category: "Audio",
@@ -617,6 +626,7 @@ pub fn render_content(
         NodeType::AudioDevice { .. } => audio_device::render(ui, node_id, node_type, audio_manager),
         NodeType::AudioDelay { time_ms, feedback } => audio_delay::render(ui, time_ms, feedback, node_id, values, connections, port_positions, dragging_from, pending_disconnects),
         NodeType::AudioDistortion { drive } => audio_distortion::render(ui, drive, node_id, values, connections, port_positions, dragging_from, pending_disconnects),
+        NodeType::AudioPitchShift { semitones } => audio_pitchshift::render(ui, semitones, node_id, values, connections, port_positions, dragging_from, pending_disconnects),
         NodeType::AudioReverb { room_size, damping, mix } => audio_reverb::render(ui, node_id, room_size, damping, mix, values, connections, port_positions, dragging_from, pending_disconnects),
         NodeType::AudioLowPass { cutoff } => audio_filter::render_lpf(ui, cutoff, node_id, values, connections, port_positions, dragging_from, pending_disconnects),
         NodeType::AudioHighPass { cutoff } => audio_filter::render_hpf(ui, cutoff, node_id, values, connections, port_positions, dragging_from, pending_disconnects),

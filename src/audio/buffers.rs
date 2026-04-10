@@ -276,6 +276,15 @@ pub struct SamplerBuffer {
     pub sample_rate: AtomicU32,
     /// Play direction: false = forward, true = reverse.
     pub reverse: AtomicBool,
+    /// Playback rate multiplier × 1000 (1000 = 1.0x, 500 = 0.5x, 2000 = 2.0x).
+    /// Set by UI/param sync; read by audio thread in play_into.
+    pub playback_rate_x1000: AtomicU32,
+    /// Fractional read position accumulator for variable-rate linear interpolation.
+    /// Only accessed by the audio thread (play_into). UnsafeCell for interior mutability.
+    frac_read_pos: UnsafeCell<f64>,
+    /// Pending seek target in samples. usize::MAX = no seek pending.
+    /// Set by UI thread via seek_to_normalized(); consumed atomically in play_into.
+    pub pending_seek: AtomicUsize,
 }
 
 unsafe impl Send for SamplerBuffer {}
@@ -298,7 +307,23 @@ impl SamplerBuffer {
             trim_end: AtomicUsize::new(0),
             sample_rate: AtomicU32::new(sample_rate),
             reverse: AtomicBool::new(false),
+            playback_rate_x1000: AtomicU32::new(1000),
+            frac_read_pos: UnsafeCell::new(0.0),
+            pending_seek: AtomicUsize::new(usize::MAX),
         }
+    }
+
+    /// Schedule a seek to a normalized position within the trim range.
+    /// 0.0 = trim_start, 1.0 = trim_end. Safe to call from the UI thread.
+    /// Takes effect at the start of the next play_into call (even while paused,
+    /// so next play() starts from the seeked position).
+    pub fn seek_to_normalized(&self, t: f32) {
+        let trim_start = self.trim_start.load(Ordering::Relaxed);
+        let trim_end = self.effective_end();
+        if trim_end <= trim_start { return; }
+        let t = t.clamp(0.0, 1.0) as f64;
+        let target = trim_start + ((trim_end - trim_start) as f64 * t) as usize;
+        self.pending_seek.store(target, Ordering::Release);
     }
 
     /// Start recording — resets write position, playhead, trim, and clears
@@ -317,6 +342,9 @@ impl SamplerBuffer {
         // be heard if play is retriggered before a new recording finishes.
         let data = unsafe { &mut *self.data.get() };
         for s in data.iter_mut() { *s = 0.0; }
+        // Clear any stale seek so the new recording starts clean.
+        self.pending_seek.store(usize::MAX, Ordering::Release);
+        unsafe { *self.frac_read_pos.get() = 0.0; }
         self.recording.store(true, Ordering::Release);
     }
 
@@ -361,6 +389,8 @@ impl SamplerBuffer {
             self.read_pos.store(start, Ordering::Release);
         }
         self.recording.store(false, Ordering::Release);
+        // Reset fractional position so variable-rate interpolation starts clean.
+        unsafe { *self.frac_read_pos.get() = 0.0; }
         self.playing.store(true, Ordering::Release);
     }
 
@@ -370,10 +400,21 @@ impl SamplerBuffer {
     }
 
     /// Read samples for playback (called from audio thread).
-    /// Respects trim start/end and reverse direction. Returns silence when not playing.
+    /// Respects trim start/end, reverse direction, and variable playback rate.
+    /// Returns silence when not playing. Applies any pending seek first.
     pub fn play_into(&self, buf: &mut [f32], num_frames: usize) {
+        let n = num_frames.min(buf.len());
+
+        // ── Apply pending seek FIRST — even while paused, so next play starts there ──
+        let seek_target = self.pending_seek.load(Ordering::Acquire);
+        if seek_target != usize::MAX {
+            self.read_pos.store(seek_target, Ordering::Release);
+            unsafe { *self.frac_read_pos.get() = 0.0; }
+            self.pending_seek.store(usize::MAX, Ordering::Release);
+        }
+
         if !self.playing.load(Ordering::Relaxed) {
-            for i in 0..num_frames.min(buf.len()) { buf[i] = 0.0; }
+            for i in 0..n { buf[i] = 0.0; }
             return;
         }
 
@@ -382,38 +423,116 @@ impl SamplerBuffer {
         let trim_start = self.trim_start.load(Ordering::Relaxed);
         let looping = self.looping.load(Ordering::Relaxed);
         let reverse = self.reverse.load(Ordering::Relaxed);
+        let rate = self.playback_rate_x1000.load(Ordering::Relaxed) as f64 / 1000.0;
+        let frac_pos = unsafe { &mut *self.frac_read_pos.get() };
         let mut rp = self.read_pos.load(Ordering::Relaxed);
 
-        if reverse {
-            for i in 0..num_frames.min(buf.len()) {
-                if rp <= trim_start || rp == 0 {
-                    if looping {
-                        rp = if trim_end > 0 { trim_end - 1 } else { 0 };
-                    } else {
-                        for j in i..num_frames.min(buf.len()) { buf[j] = 0.0; }
-                        self.playing.store(false, Ordering::Release);
-                        break;
-                    }
-                }
-                buf[i] = if rp < self.capacity { data[rp] } else { 0.0 };
-                rp = rp.saturating_sub(1);
-            }
-        } else {
-            for i in 0..num_frames.min(buf.len()) {
-                if rp >= trim_end {
-                    if looping {
-                        rp = trim_start;
-                    } else {
-                        for j in i..num_frames.min(buf.len()) { buf[j] = 0.0; }
-                        self.playing.store(false, Ordering::Release);
-                        break;
-                    }
-                }
-                buf[i] = if rp < self.capacity { data[rp] } else { 0.0 };
-                rp += 1;
-            }
+        // Guard against degenerate trim range
+        if trim_end <= trim_start {
+            for i in 0..n { buf[i] = 0.0; }
+            return;
         }
-        self.read_pos.store(rp, Ordering::Release);
+        let range_len = trim_end - trim_start;
+
+        let safe_sample = |pos: usize| -> f32 {
+            if pos < self.capacity { data[pos] } else { 0.0 }
+        };
+
+        if (rate - 1.0).abs() < 0.001 {
+            // ── Fast path: 1.0x speed, integer stepping (original logic) ──────
+            if reverse {
+                for i in 0..n {
+                    if rp <= trim_start || rp == 0 {
+                        if looping {
+                            rp = if trim_end > 0 { trim_end - 1 } else { 0 };
+                        } else {
+                            for j in i..n { buf[j] = 0.0; }
+                            self.playing.store(false, Ordering::Release);
+                            break;
+                        }
+                    }
+                    buf[i] = safe_sample(rp);
+                    rp = rp.saturating_sub(1);
+                }
+            } else {
+                for i in 0..n {
+                    if rp >= trim_end {
+                        if looping {
+                            rp = trim_start;
+                        } else {
+                            for j in i..n { buf[j] = 0.0; }
+                            self.playing.store(false, Ordering::Release);
+                            break;
+                        }
+                    }
+                    buf[i] = safe_sample(rp);
+                    rp += 1;
+                }
+            }
+            self.read_pos.store(rp, Ordering::Release);
+        } else {
+            // ── Variable-rate path: linear interpolation ──────────────────────
+            if !reverse {
+                // Forward variable rate
+                for i in 0..n {
+                    // How many whole samples ahead of rp we are
+                    let int_off = *frac_pos as usize;
+                    let pos0 = rp + int_off;
+
+                    if pos0 >= trim_end {
+                        if looping {
+                            // Wrap: consume integer part, reset within trim range
+                            let consumed = *frac_pos as usize;
+                            let overshoot = (rp + consumed).saturating_sub(trim_start);
+                            rp = trim_start + (overshoot % range_len.max(1));
+                            *frac_pos -= consumed as f64;
+                        } else {
+                            for j in i..n { buf[j] = 0.0; }
+                            self.playing.store(false, Ordering::Release);
+                            break;
+                        }
+                        continue;
+                    }
+
+                    let frac = (*frac_pos - int_off as f64) as f32;
+                    let pos1 = (pos0 + 1).min(trim_end - 1);
+                    buf[i] = safe_sample(pos0) + (safe_sample(pos1) - safe_sample(pos0)) * frac;
+                    *frac_pos += rate;
+                }
+                // Commit integer part of frac_pos into rp
+                let consumed = *frac_pos as usize;
+                rp = rp.wrapping_add(consumed);
+                *frac_pos -= consumed as f64;
+            } else {
+                // Reverse variable rate — frac_pos accumulates forward but we walk backward
+                for i in 0..n {
+                    let int_off = *frac_pos as usize;
+
+                    if rp < int_off || rp - int_off <= trim_start {
+                        if looping {
+                            rp = trim_end.saturating_sub(1);
+                            *frac_pos = 0.0;
+                        } else {
+                            for j in i..n { buf[j] = 0.0; }
+                            self.playing.store(false, Ordering::Release);
+                            break;
+                        }
+                        continue;
+                    }
+
+                    let pos0 = rp - int_off;
+                    let frac = (*frac_pos - int_off as f64) as f32;
+                    let pos1 = pos0.saturating_sub(1).max(trim_start);
+                    buf[i] = safe_sample(pos0) + (safe_sample(pos1) - safe_sample(pos0)) * frac;
+                    *frac_pos += rate;
+                }
+                // Commit integer part backward
+                let consumed = *frac_pos as usize;
+                rp = rp.saturating_sub(consumed);
+                *frac_pos -= consumed as f64;
+            }
+            self.read_pos.store(rp, Ordering::Release);
+        }
     }
 
     /// Effective end position (trim_end if set, else recorded_length).

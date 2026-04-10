@@ -499,6 +499,9 @@ impl PatchworkApp {
                 NodeType::AudioDistortion { drive } => {
                     self.audio.engine_write_param(nid, 0, *drive);
                 }
+                NodeType::AudioPitchShift { semitones } => {
+                    self.audio.engine_write_param(nid, 0, *semitones);
+                }
                 NodeType::AudioReverb { room_size, damping, mix } => {
                     self.audio.engine_write_param(nid, 0, *room_size);
                     self.audio.engine_write_param(nid, 1, *damping);
@@ -797,7 +800,7 @@ impl PatchworkApp {
                 .id(egui::Id::new(("node", node_id, zoom_bucket)))
                 .current_pos(egui::pos2(egui_x, egui_y))
                 .default_width(node_width)
-                .resizable(is_display || (!is_custom_render && !is_comment && !is_monitor && !is_audio_player && !is_math))
+                .resizable(is_display)
                 .constrain(false)
                 .collapsible(!is_custom_render && !no_title && !is_pinned)
                 .title_bar(!is_custom_render && !no_title);
@@ -1087,6 +1090,34 @@ impl PatchworkApp {
                         let pos = egui::pos2(rect.right() + PORT_RADIUS, rect.center().y + y_off);
                         port_positions.insert((node_id, i, false), pos);
                         fg.circle_filled(pos, 3.0, egui::Color32::from_rgb(60, 140, 255));
+                    }
+
+                    // For WGSL nodes: run the offscreen render pass even when collapsed
+                    // so downstream multi-pass chains keep receiving image data.
+                    if let NodeType::WgslViewer {
+                        wgsl_code,
+                        uniform_names,
+                        uniform_types,
+                        uniform_values,
+                        canvas_w,
+                        canvas_h,
+                        image_a_mode,
+                        image_b_mode,
+                        feedback_reset_pending,
+                        ..
+                    } = &mut node.node_type {
+                        crate::nodes::wgsl_viewer::render_offscreen_pass(
+                            ctx, node_id,
+                            wgsl_code,
+                            uniform_names,
+                            uniform_types,
+                            uniform_values,
+                            *canvas_w, *canvas_h,
+                            *image_a_mode, *image_b_mode,
+                            feedback_reset_pending,
+                            &connections, values,
+                            &wgpu_render_state,
+                        );
                     }
                 }
 
@@ -1380,8 +1411,16 @@ impl PatchworkApp {
 
         for &(fn_, fp, tn, tp) in &pending_connections {
             let from_name = self.graph.nodes.get(&fn_).map(|n| n.node_type.title()).unwrap_or("?");
+            let from_port = self.graph.nodes.get(&fn_)
+                .and_then(|n| n.node_type.outputs().get(fp).map(|p| p.name.clone()))
+                .unwrap_or_else(|| fp.to_string().into());
             let to_name = self.graph.nodes.get(&tn).map(|n| n.node_type.title()).unwrap_or("?");
-            crate::system_log::log(format!("Connected {} (id:{}) → {} (id:{})", from_name, fn_, to_name, tn));
+            let to_port = self.graph.nodes.get(&tn)
+                .and_then(|n| n.node_type.inputs().get(tp).map(|p| p.name.clone()))
+                .unwrap_or_else(|| tp.to_string().into());
+            crate::system_log::log(format!(
+                "Connected {}.{} → {}.{}", from_name, from_port, to_name, to_port
+            ));
             self.graph.add_connection(fn_, fp, tn, tp);
             // Only send engine connect/disconnect for audio ports
             // For mixer nodes, skip gain control ports (odd: 1, 3, 5)

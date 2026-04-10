@@ -805,6 +805,10 @@ pub enum NodeType {
         #[serde(default = "default_distortion_drive")]
         drive: f32,
     },
+    AudioPitchShift {
+        #[serde(default)]  // 0.0 semitones = no shift
+        semitones: f32,
+    },
     AudioLowPass {
         #[serde(default = "default_lpf_cutoff")]
         cutoff: f32,
@@ -886,6 +890,14 @@ pub enum NodeType {
         /// an absolute end position. UI label for the port flips accordingly.
         #[serde(default)]
         range_as_duration: bool,
+        /// Playback speed multiplier. 1.0 = normal, 2.0 = double, 0.5 = half.
+        /// Can be overridden by port 6 (Speed input).
+        #[serde(default = "default_one")]
+        speed: f32,
+        /// Last seek position (0.0–1.0 normalized within trim range).
+        /// Serialized so UI slider shows the last used value on reload.
+        #[serde(default)]
+        seek: f32,
     },
     /// CLAP audio plugin — loaded from a .clap file.
     ClapPlugin {
@@ -1319,6 +1331,7 @@ impl NodeBehavior for NodeType {
             NodeType::AudioDevice { .. } => "Audio Manager",
             NodeType::AudioDelay { .. } => "Delay",
             NodeType::AudioDistortion { .. } => "Distortion",
+            NodeType::AudioPitchShift { .. } => "Pitch Shift",
             NodeType::AudioReverb { .. } => "Reverb",
             NodeType::AudioLowPass { .. } => "Low Pass",
             NodeType::AudioHighPass { .. } => "High Pass",
@@ -1434,6 +1447,7 @@ impl NodeBehavior for NodeType {
             NodeType::AudioDevice { .. } => vec![],
             NodeType::AudioDelay { .. } => vec![PortDef::new("Audio", Audio), PortDef::new("Time", Number), PortDef::new("Feedback", Normalized)],
             NodeType::AudioDistortion { .. } => vec![PortDef::new("Audio", Audio), PortDef::new("Drive", Number)],
+            NodeType::AudioPitchShift { .. } => vec![PortDef::new("Audio", Audio), PortDef::new("Semitones", Number)],
             NodeType::AudioReverb { .. } => vec![PortDef::new("Audio", Audio), PortDef::new("Room", Normalized), PortDef::new("Damp", Normalized), PortDef::new("Mix", Normalized)],
             NodeType::AudioLowPass { .. } => vec![PortDef::new("Audio", Audio), PortDef::new("Cutoff", Number)],
             NodeType::AudioHighPass { .. } => vec![PortDef::new("Audio", Audio), PortDef::new("Cutoff", Number)],
@@ -1460,6 +1474,8 @@ impl NodeBehavior for NodeType {
                 } else {
                     PortDef::new("End", Number)
                 },
+                PortDef::new("Speed", Number),
+                PortDef::new("Seek", Normalized),
             ],
             NodeType::ClapPlugin { param_names, is_instrument, .. } => {
                 let mut ports = Vec::new();
@@ -1638,6 +1654,7 @@ impl NodeBehavior for NodeType {
             NodeType::AudioDevice { .. } => vec![],
             NodeType::AudioDelay { .. } => vec![PortDef::new("Audio", Audio)],
             NodeType::AudioDistortion { .. } => vec![PortDef::new("Audio", Audio)],
+            NodeType::AudioPitchShift { .. } => vec![PortDef::new("Audio", Audio)],
             NodeType::AudioReverb { .. } => vec![PortDef::new("Audio", Audio)],
             NodeType::AudioLowPass { .. } => vec![PortDef::new("Audio", Audio)],
             NodeType::AudioHighPass { .. } => vec![PortDef::new("Audio", Audio)],
@@ -1719,6 +1736,7 @@ impl NodeBehavior for NodeType {
             NodeType::AudioDevice { .. } => [220, 180, 100],
             NodeType::AudioDelay { .. } => [180, 120, 200],
             NodeType::AudioDistortion { .. } => [220, 80, 80],
+            NodeType::AudioPitchShift { .. } => [80, 200, 160],
             NodeType::AudioReverb { .. } => [120, 140, 220],
             NodeType::AudioLowPass { .. } => [100, 160, 200],
             NodeType::AudioHighPass { .. } => [200, 160, 100],
