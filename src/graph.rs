@@ -71,13 +71,21 @@ pub enum MlPreset {
     /// Pose estimation (e.g., MoveNet, MediaPipe Pose). Outputs keypoints.
     /// Input: 192×192 or 256×256, NHWC or NCHW, 0–1 norm.
     PoseEstimation,
+    /// MediaPipe-style SSD hand/palm detection. Outputs anchors + scores.
+    /// Input: 256×256, NCHW, 0–1 norm. Output: [1, N, 18] boxes+keypoints + [1, N, 1] scores.
+    HandDetection,
+    /// MediaPipe BlazeFace short-range face detection. Outputs anchors + scores.
+    /// Input: 128×128, NHWC, [-1,1] norm. Output: [1, 896, 16] + [1, 896, 1].
+    FaceDetection,
     /// Custom model — user sets input size and normalization manually.
     Custom,
 }
 
 impl MlPreset {
     pub fn all() -> &'static [MlPreset] {
-        &[MlPreset::Classification, MlPreset::ObjectDetection, MlPreset::PoseEstimation, MlPreset::Custom]
+        // Only show presets relevant to the generic ML Model node.
+        // Hand/Face/Pose have dedicated tracking nodes now.
+        &[MlPreset::Classification, MlPreset::ObjectDetection, MlPreset::Custom]
     }
 
     pub fn name(&self) -> &'static str {
@@ -85,6 +93,8 @@ impl MlPreset {
             MlPreset::Classification => "Classification",
             MlPreset::ObjectDetection => "Object Detection",
             MlPreset::PoseEstimation => "Pose Estimation",
+            MlPreset::HandDetection => "Hand Detection",
+            MlPreset::FaceDetection => "Face Detection",
             MlPreset::Custom => "Custom",
         }
     }
@@ -95,6 +105,8 @@ impl MlPreset {
             MlPreset::Classification => 224,
             MlPreset::ObjectDetection => 640,
             MlPreset::PoseEstimation => 128,  // MediaPipe pose detector uses 128
+            MlPreset::HandDetection => 256,   // MediaPipe palm detector uses 256×256
+            MlPreset::FaceDetection => 128,   // BlazeFace short-range uses 128×128
             MlPreset::Custom => 224,
         }
     }
@@ -425,19 +437,6 @@ pub enum NodeType {
         slider_color: [u8; 3],
         #[serde(default)]
         label: String,
-    },
-    /// Formula-based math node with auto-detected variable ports (A-Z)
-    Math {
-        formula: String,
-        /// Detected variable names (sorted A-Z), drives input port count
-        #[serde(default)]
-        variables: Vec<char>,
-        /// Last computed result
-        #[serde(default)]
-        result: f64,
-        /// Error message from last evaluation
-        #[serde(default)]
-        error: String,
     },
     /// Folder browser: lists files in a directory, click to open
     FolderBrowser {
@@ -770,6 +769,20 @@ pub enum NodeType {
         #[serde(default)]
         duration_secs: f64,
     },
+    AudioPlaylist {
+        #[serde(default)]
+        tracks: Vec<String>,
+        #[serde(default)]
+        current_index: usize,
+        #[serde(default = "default_one")]
+        volume: f32,
+        /// Loop the whole playlist (wraps from last to first)
+        #[serde(default)]
+        loop_playlist: bool,
+        /// Duration of the currently loaded track in seconds
+        #[serde(default)]
+        duration_secs: f64,
+    },
     AudioInput {
         #[serde(default)]
         selected_device: String,
@@ -972,12 +985,6 @@ pub enum NodeType {
         #[serde(default = "default_one")]
         gamma: f32,
     },
-    Blend {
-        #[serde(default)]
-        mode: u8,
-        #[serde(default = "default_half")]
-        mix: f32,
-    },
     Curve {
         #[serde(default = "default_curve_points")]
         points: Vec<[f32; 2]>,
@@ -1143,12 +1150,6 @@ pub enum NodeType {
         #[serde(default)]
         history: Vec<f32>,
     },
-    /// Select/Switch: route input A or B based on selector
-    Select {
-        /// 0 = hard switch, 1 = crossfade (float only)
-        #[serde(default)]
-        mode: u8,
-    },
     /// Network Send — broadcasts values to connected peers via iroh-gossip.
     NetworkSend {
         #[serde(default)]
@@ -1299,7 +1300,6 @@ impl NodeBehavior for NodeType {
     fn title(&self) -> &str {
         match self {
             NodeType::Slider { .. } => "Slider",
-            NodeType::Math { .. } => "Math",
             NodeType::FolderBrowser { .. } => "Folder",
             NodeType::WgslViewer { .. } => "WGSL Viewer",
             NodeType::MidiOut { .. } => "MIDI Out",
@@ -1325,6 +1325,7 @@ impl NodeBehavior for NodeType {
             NodeType::ObOrb { .. } => "OB Orb",
             NodeType::Synth { .. } => "Synth",
             NodeType::AudioPlayer { .. } => "Audio Player",
+            NodeType::AudioPlaylist { .. } => "Playlist",
             NodeType::AudioInput { .. } => "Microphone",
             NodeType::AudioAnalyzer => "Audio Analyzer",
             NodeType::SpectrumAnalyzer => "Spectrum Analyzer",
@@ -1346,7 +1347,6 @@ impl NodeBehavior for NodeType {
             NodeType::HtmlViewer => "HTML Viewer",
             NodeType::ImageNode { .. } => "Image",
             NodeType::ImageEffects { .. } => "Image Effects",
-            NodeType::Blend { .. } => "Blend",
             NodeType::Curve { .. } => "Curve",
             NodeType::Draw { .. } => "Draw",
             NodeType::ColorCurves { .. } => "Color Curves",
@@ -1355,7 +1355,6 @@ impl NodeBehavior for NodeType {
             NodeType::MlModel { .. } => "ML Model",
             NodeType::Timer { .. } => "Timer",
             NodeType::SampleHold { .. } => "Sample & Hold",
-            NodeType::Select { .. } => "Select",
             NodeType::NetworkSend { .. } => "Net Send",
             NodeType::NetworkReceive { .. } => "Net Receive",
             NodeType::Dynamic { inner } => inner.node.title(),
@@ -1366,11 +1365,6 @@ impl NodeBehavior for NodeType {
         use PortKind::*;
         match self {
             NodeType::Slider { .. } => vec![PortDef::new("In", Number), PortDef::new("Min", Number), PortDef::new("Max", Number)],
-            NodeType::Math { variables, .. } => {
-                variables.iter().map(|c| {
-                    PortDef::dynamic(format!("{}", c), Number)
-                }).collect()
-            }
             NodeType::FolderBrowser { .. } => vec![],
             NodeType::WgslViewer { uniform_names, uniform_types, .. } => {
                 let mut ports = vec![PortDef::new("WGSL", Text)];
@@ -1441,6 +1435,14 @@ impl NodeBehavior for NodeType {
             },
             NodeType::Synth { .. } => vec![PortDef::new("Freq", Number), PortDef::new("Amp", Normalized), PortDef::new("Gate", Gate), PortDef::new("FM Wt", Normalized)],
             NodeType::AudioPlayer { .. } => vec![PortDef::new("Play", Trigger), PortDef::new("Volume", Normalized), PortDef::new("Seek", Normalized), PortDef::new("Speed", Number)],
+            NodeType::AudioPlaylist { .. } => vec![
+                PortDef::new("Play",   Trigger),
+                PortDef::new("Stop",   Trigger),
+                PortDef::new("Next",   Trigger),
+                PortDef::new("Prev",   Trigger),
+                PortDef::new("Index",  Number),
+                PortDef::new("Volume", Normalized),
+            ],
             NodeType::AudioInput { .. } => vec![PortDef::new("Gain", Normalized)],
             NodeType::AudioAnalyzer => vec![PortDef::new("Audio", Audio)],
             NodeType::SpectrumAnalyzer => vec![PortDef::new("Audio", Audio)],
@@ -1504,7 +1506,6 @@ impl NodeBehavior for NodeType {
                 PortDef::new("Image", Image), PortDef::new("Brightness", Normalized), PortDef::new("Contrast", Normalized),
                 PortDef::new("Saturation", Normalized), PortDef::new("Hue", Number), PortDef::new("Exposure", Number), PortDef::new("Gamma", Number),
             ],
-            NodeType::Blend { .. } => vec![PortDef::new("A", Image), PortDef::new("B", Image), PortDef::new("Mix", Normalized)],
             NodeType::Curve { .. } => vec![
                 PortDef::new("X", Normalized), PortDef::new("Trigger", Trigger),
                 PortDef::new("Speed", Number), PortDef::new("Gate", Gate),
@@ -1516,7 +1517,6 @@ impl NodeBehavior for NodeType {
             NodeType::MlModel { .. } => vec![PortDef::new("Image", Image)],
             NodeType::Timer { .. } => vec![PortDef::new("Interval", Number), PortDef::new("BPM", Number)],
             NodeType::SampleHold { .. } => vec![PortDef::new("Value", Generic), PortDef::new("Trigger", Trigger)],
-            NodeType::Select { .. } => vec![PortDef::new("A", Generic), PortDef::new("B", Generic), PortDef::new("Selector", Normalized)],
             NodeType::NetworkSend { schema, .. } => {
                 schema.iter().map(|s| PortDef::dynamic(s.name.clone(), match s.kind {
                     NetPortKind::Float => Number,
@@ -1542,7 +1542,6 @@ impl NodeBehavior for NodeType {
         use PortKind::*;
         match self {
             NodeType::Slider { .. } => vec![PortDef::new("Value", Number)],
-            NodeType::Math { .. } => vec![PortDef::new("Result", Number)],
             NodeType::FolderBrowser { .. } => vec![PortDef::new("Path", Text), PortDef::new("Name", Text), PortDef::new("Content", Text)],
             NodeType::WgslViewer { .. } => vec![PortDef::new("Image", Image)],
             NodeType::MidiOut { .. } => vec![],
@@ -1637,6 +1636,12 @@ impl NodeBehavior for NodeType {
             ],
             NodeType::Synth { .. } => vec![PortDef::new("Audio", Audio)],
             NodeType::AudioPlayer { .. } => vec![PortDef::new("Audio", Audio), PortDef::new("Progress", Normalized)],
+            NodeType::AudioPlaylist { .. } => vec![
+                PortDef::new("Audio",    Audio),
+                PortDef::new("Progress", Normalized),
+                PortDef::new("Index",    Number),
+                PortDef::new("Name",     Text),
+            ],
             NodeType::AudioInput { .. } => vec![PortDef::new("Audio", Audio)],
             NodeType::AudioAnalyzer => vec![
                 PortDef::new("Audio", Audio),
@@ -1671,7 +1676,6 @@ impl NodeBehavior for NodeType {
             NodeType::HtmlViewer => vec![PortDef::new("URL", Text)],
             NodeType::ImageNode { .. } => vec![PortDef::new("Image", Image)],
             NodeType::ImageEffects { .. } => vec![PortDef::new("Image", Image)],
-            NodeType::Blend { .. } => vec![PortDef::new("Image", Image)],
             NodeType::Curve { .. } => vec![
                 PortDef::new("Y", Normalized), PortDef::new("Phase", Normalized),
                 PortDef::new("End", Trigger), PortDef::new("Image", Image),
@@ -1684,7 +1688,6 @@ impl NodeBehavior for NodeType {
             NodeType::MlModel { .. } => vec![PortDef::new("Annotated", Image), PortDef::new("Result", Text), PortDef::new("JSON", Text)],
             NodeType::Timer { .. } => vec![PortDef::new("Trigger", Trigger), PortDef::new("Phase", Normalized), PortDef::new("BPM", Number)],
             NodeType::SampleHold { .. } => vec![PortDef::new("Out", Generic), PortDef::new("Trigger", Trigger)],
-            NodeType::Select { .. } => vec![PortDef::new("Out", Generic), PortDef::new("Active", Gate)],
             NodeType::NetworkSend { .. } => vec![],
             NodeType::NetworkReceive { imported_schema, .. } => {
                 let mut ports: Vec<PortDef> = imported_schema.iter().map(|s| {
@@ -1704,7 +1707,6 @@ impl NodeBehavior for NodeType {
     fn color_hint(&self) -> [u8; 3] {
         match self {
             NodeType::Slider { .. } => [80, 160, 255],
-            NodeType::Math { .. } => [200, 160, 80],
             NodeType::FolderBrowser { .. } => [140, 160, 200],
             NodeType::WgslViewer { .. } => [220, 140, 60],
             NodeType::MidiOut { .. } => [60, 180, 180],
@@ -1730,6 +1732,7 @@ impl NodeBehavior for NodeType {
             NodeType::ObOrb { .. } => [60, 200, 200],
             NodeType::Synth { .. } => [100, 220, 180],
             NodeType::AudioPlayer { .. } => [180, 100, 220],
+            NodeType::AudioPlaylist { .. } => [140, 80, 200],
             NodeType::AudioInput { .. } => [220, 80, 120],
             NodeType::AudioAnalyzer => [255, 180, 60],
             NodeType::SpectrumAnalyzer => [255, 200, 90],
@@ -1751,7 +1754,6 @@ impl NodeBehavior for NodeType {
             NodeType::HtmlViewer => [60, 180, 220],
             NodeType::ImageNode { .. } => [200, 140, 220],
             NodeType::ImageEffects { .. } => [180, 120, 200],
-            NodeType::Blend { .. } => [160, 100, 180],
             NodeType::Curve { .. } => [100, 200, 160],
             NodeType::Draw { .. } => [200, 180, 100],
             NodeType::ColorCurves { .. } => [220, 140, 160],
@@ -1760,7 +1762,6 @@ impl NodeBehavior for NodeType {
             NodeType::MlModel { .. } => [200, 80, 255],
             NodeType::Timer { .. } => [100, 200, 180],
             NodeType::SampleHold { .. } => [120, 200, 160],
-            NodeType::Select { .. } => [200, 160, 120],
             NodeType::NetworkSend { .. } => [80, 200, 160],
             NodeType::NetworkReceive { .. } => [160, 80, 200],
             NodeType::Dynamic { inner } => inner.node.color_hint(),
@@ -1772,7 +1773,7 @@ impl NodeBehavior for NodeType {
     fn inline_ports(&self) -> bool {
         match self {
             NodeType::Dynamic { inner } => inner.node.inline_ports(),
-            _ => matches!(self, NodeType::Theme { .. } | NodeType::MidiOut { .. } | NodeType::Synth { .. } | NodeType::WgslViewer { .. } | NodeType::ImageEffects { .. } | NodeType::Slider { .. } | NodeType::Blend { .. } | NodeType::HttpRequest { .. } | NodeType::AiRequest { .. } | NodeType::Math { .. } | NodeType::AudioDelay { .. } | NodeType::AudioDistortion { .. } | NodeType::AudioLowPass { .. } | NodeType::AudioHighPass { .. } | NodeType::AudioGain { .. } | NodeType::AudioReverb { .. } | NodeType::AudioEq { .. } | NodeType::AudioPlayer { .. } | NodeType::Timer { .. } | NodeType::SampleHold { .. } | NodeType::Select { .. } | NodeType::Curve { .. } | NodeType::AudioMixer { .. } | NodeType::Speaker { .. } | NodeType::AudioInput { .. } | NodeType::AudioSampler { .. } | NodeType::ClapPlugin { .. } | NodeType::Console { .. } | NodeType::ObOrb { .. }),
+            _ => matches!(self, NodeType::Theme { .. } | NodeType::MidiOut { .. } | NodeType::Synth { .. } | NodeType::WgslViewer { .. } | NodeType::ImageEffects { .. } | NodeType::Slider { .. } | NodeType::HttpRequest { .. } | NodeType::AiRequest { .. } | NodeType::AudioDelay { .. } | NodeType::AudioDistortion { .. } | NodeType::AudioLowPass { .. } | NodeType::AudioHighPass { .. } | NodeType::AudioGain { .. } | NodeType::AudioReverb { .. } | NodeType::AudioEq { .. } | NodeType::AudioPlayer { .. } | NodeType::AudioPlaylist { .. } | NodeType::Timer { .. } | NodeType::SampleHold { .. } | NodeType::Curve { .. } | NodeType::AudioMixer { .. } | NodeType::Speaker { .. } | NodeType::AudioInput { .. } | NodeType::AudioSampler { .. } | NodeType::ClapPlugin { .. } | NodeType::Console { .. } | NodeType::ObOrb { .. } | NodeType::AudioAnalyzer),
         }
     }
 
@@ -1820,7 +1821,6 @@ impl NodeBehavior for NodeType {
         match self {
             // GPU-resident effect chain — never needs CPU bytes for image inputs
             NodeType::ImageEffects { .. } => false,
-            NodeType::Blend { .. } => false,
             NodeType::ColorCurves { .. } => false,
             // ImageNode display path uses the GPU display callback (renders
             // straight from gpu_tex_cache) so it doesn't need CPU pixels.
@@ -2064,9 +2064,6 @@ impl Graph {
                         if let Some(PortValue::Float(v)) = inputs.first() { *value = *v; }
                         values.insert((id, 0), PortValue::Float(*value));
                     }
-                    NodeType::Math { result, .. } => {
-                        values.insert((id, 0), PortValue::Float(*result as f32));
-                    }
                     _ => {}
                 }
             }
@@ -2127,11 +2124,6 @@ impl Graph {
                             *value = *v;
                         }
                         values.insert((id, 0), PortValue::Float(*value));
-                    }
-                    NodeType::Math { result, .. } => {
-                        // Result is computed in render (uses Rhai for formula eval).
-                        // Just propagate the stored result.
-                        values.insert((id, 0), PortValue::Float(*result as f32));
                     }
                     NodeType::Timer { interval, elapsed, running, pulse_width,
                                        ref_time, paused_elapsed, time_initialized } => {
@@ -2204,29 +2196,6 @@ impl Graph {
                         }
                         // Trigger echo: 1.0 on rising edge frame, else 0.0
                         values.insert((id, 1), PortValue::Float(if rising_edge { 1.0 } else { 0.0 }));
-                    }
-                    NodeType::Select { mode } => {
-                        // Input 0 = A, Input 1 = B, Input 2 = Selector
-                        let val_a = inputs.get(0).cloned().unwrap_or(PortValue::Float(0.0));
-                        let val_b = inputs.get(1).cloned().unwrap_or(PortValue::Float(0.0));
-                        let selector = inputs.get(2).map(|v| v.as_float()).unwrap_or(0.0).clamp(0.0, 1.0);
-                        let b_active = selector >= 0.5;
-
-                        let output = if *mode == 1 {
-                            // Crossfade (float only)
-                            match (&val_a, &val_b) {
-                                (PortValue::Float(fa), PortValue::Float(fb)) => {
-                                    PortValue::Float(fa * (1.0 - selector) + fb * selector)
-                                }
-                                _ => if b_active { val_b.clone() } else { val_a.clone() },
-                            }
-                        } else {
-                            // Hard switch
-                            if b_active { val_b.clone() } else { val_a.clone() }
-                        };
-
-                        values.insert((id, 0), output);
-                        values.insert((id, 1), PortValue::Float(if b_active { 1.0 } else { 0.0 }));
                     }
                     NodeType::Curve {
                         points, mode, speed, looping, manual_gate, sustain_index,

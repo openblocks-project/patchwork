@@ -67,6 +67,10 @@ pub trait NodeBehavior: Send + Sync {
     /// override to `false` to opt into the GPU-resident handoff path.
     fn needs_cpu_image_input(&self, _port: usize) -> bool { true }
 
+    /// For Blend nodes: returns (mode, mix) so the GPU image eval loop in
+    /// app/mod.rs can dispatch without downcasting. Default None (all non-blend nodes).
+    fn blend_params(&self) -> Option<(u8, f32)> { None }
+
     /// Render the node's UI content.
     /// Simple nodes can use this (no graph context needed).
     fn render_ui(&mut self, _ui: &mut eframe::egui::Ui) {}
@@ -101,7 +105,7 @@ pub trait NodeBehavior: Send + Sync {
 }
 
 /// Context passed to render_with_context — gives nodes access to
-/// port values, connections, and port position tracking.
+/// port values, connections, port position tracking, and the wgpu render state.
 pub struct RenderContext<'a> {
     pub node_id: crate::graph::NodeId,
     pub values: &'a std::collections::HashMap<(crate::graph::NodeId, usize), crate::graph::PortValue>,
@@ -109,6 +113,9 @@ pub struct RenderContext<'a> {
     pub port_positions: &'a mut std::collections::HashMap<(crate::graph::NodeId, usize, bool), eframe::egui::Pos2>,
     pub dragging_from: &'a mut Option<(crate::graph::NodeId, usize, bool)>,
     pub pending_disconnects: &'a mut Vec<(crate::graph::NodeId, usize)>,
+    /// Available when running on a wgpu backend. Nodes that render GPU previews
+    /// (e.g. Blend) can use this to create textures / callbacks.
+    pub wgpu_render_state: Option<&'a eframe::egui_wgpu::RenderState>,
 }
 
 /// Registry for deserializing trait-based nodes from saved projects.
@@ -154,6 +161,18 @@ pub static NODE_REGISTRY: std::sync::LazyLock<std::sync::Mutex<NodeRegistryInner
         crate::nodes::tts_node::register(&mut r);
         crate::nodes::terminal_node::register(&mut r);
         crate::nodes::text_ops_node::register(&mut r);
+        crate::nodes::printer_node::register(&mut r);
+        crate::nodes::keypoint_extract::register(&mut r);
+        crate::nodes::smoother::register(&mut r);
+        crate::nodes::point_2d_node::register(&mut r);
+        crate::nodes::fill_node::register(&mut r);
+        crate::nodes::hand_detection::register(&mut r);
+        crate::nodes::face_detection::register(&mut r);
+        crate::nodes::pose_detection::register(&mut r);
+        crate::nodes::json_fields::register(&mut r);
+        crate::nodes::math_formula::register(&mut r);
+        crate::nodes::blend::register(&mut r);
+        crate::nodes::select::register(&mut r);
         std::sync::Mutex::new(r)
     });
 

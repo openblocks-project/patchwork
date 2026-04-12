@@ -524,6 +524,9 @@ impl PatchworkApp {
                 NodeType::AudioPlayer { volume, .. } => {
                     self.audio.engine_write_param(nid, 0, *volume);
                 }
+                NodeType::AudioPlaylist { volume, .. } => {
+                    self.audio.engine_write_param(nid, 0, *volume);
+                }
                 NodeType::AudioSampler { volume, .. } => {
                     self.audio.engine_write_param(nid, 0, *volume);
                 }
@@ -733,8 +736,7 @@ impl PatchworkApp {
             };
             let is_display = node.node_type.title() == "Display";
             let is_monitor = node.node_type.title() == "Monitor";
-            let is_audio_player = matches!(node.node_type, NodeType::AudioPlayer { .. });
-            let is_math = matches!(node.node_type, NodeType::Math { .. });
+            let is_audio_player = matches!(node.node_type, NodeType::AudioPlayer { .. } | NodeType::AudioPlaylist { .. });
             let is_speaker = matches!(node.node_type, NodeType::Speaker { .. });
             let no_title = node.node_type.no_title() || is_display || is_monitor || is_audio_player || is_speaker;
             let port_sz = if is_pinned { PORT_INTERACT * inv } else { PORT_INTERACT };
@@ -2076,6 +2078,32 @@ impl eframe::App for PatchworkApp {
                     values.insert((id, 1), PortValue::Float(progress));
                 }
             }
+            if matches!(node.node_type, NodeType::AudioPlaylist { .. }) {
+                if let Some(p) = ctx.data_mut(|d| d.get_temp::<f32>(egui::Id::new(("pl_progress", id)))) {
+                    values.insert((id, 1), PortValue::Float(p));
+                }
+                if let Some(idx) = ctx.data_mut(|d| d.get_temp::<f32>(egui::Id::new(("pl_index", id)))) {
+                    values.insert((id, 2), PortValue::Float(idx));
+                }
+                if let Some(name) = ctx.data_mut(|d| d.get_temp::<String>(egui::Id::new(("pl_name", id)))) {
+                    values.insert((id, 3), PortValue::Text(name));
+                }
+            }
+            // Keypoint Extract: parsed in render_with_context (after ML image loop),
+            // inject X/Y/Conf back into values map so downstream nodes see them.
+            if let NodeType::Dynamic { ref inner } = node.node_type {
+                if inner.node.type_tag() == "keypoint_extract" {
+                    if let Some(x) = ctx.data_mut(|d| d.get_temp::<f32>(egui::Id::new(("kp_x", id)))) {
+                        values.insert((id, 0), PortValue::Float(x));
+                    }
+                    if let Some(y) = ctx.data_mut(|d| d.get_temp::<f32>(egui::Id::new(("kp_y", id)))) {
+                        values.insert((id, 1), PortValue::Float(y));
+                    }
+                    if let Some(c) = ctx.data_mut(|d| d.get_temp::<f32>(egui::Id::new(("kp_conf", id)))) {
+                        values.insert((id, 2), PortValue::Float(c));
+                    }
+                }
+            }
         }
 
         // Re-evaluate Dynamic nodes that depend on freshly injected values
@@ -2133,7 +2161,24 @@ impl eframe::App for PatchworkApp {
                 // need re-evaluation here because image sources weren't populated during graph.evaluate().
                 // Cached: only reprocess when inputs (image content + param state) change.
                 let is_dynamic = matches!(self.graph.nodes.get(&id).map(|n| &n.node_type), Some(NodeType::Dynamic { .. }));
-                if is_dynamic && inputs.iter().any(|v| matches!(v, PortValue::Image(_) | PortValue::GpuImage(_))) {
+                // BlendNode is Dynamic but handled by the blend_params() branch below —
+                // skip the generic Dynamic-image path for it so we don't consume the `continue`.
+                let is_blend_node = self.graph.nodes.get(&id).map(|n| match &n.node_type {
+                    NodeType::Dynamic { inner } => inner.node.blend_params().is_some(),
+                    _ => false,
+                }).unwrap_or(false);
+                // HandDetectionNode: image input is consumed by async inference, not synchronous
+                // evaluate(). Its annotated output comes from egui temp data (set during render).
+                // Exclude it from the generic Dynamic-image block so its match arm below runs.
+                let is_async_ml_node = is_dynamic && self.graph.nodes.get(&id).map(|n| match &n.node_type {
+                    NodeType::Dynamic { inner } => {
+                        let tag = inner.node.type_tag();
+                        tag == "hand_detection" || tag == "face_detection" || tag == "pose_detection"
+                    },
+                    _ => false,
+                }).unwrap_or(false);
+
+                if is_dynamic && !is_blend_node && !is_async_ml_node && inputs.iter().any(|v| matches!(v, PortValue::Image(_) | PortValue::GpuImage(_))) {
                     // Build cache key from image content + params + node state
                     let mut cache_key: u64 = 0;
                     for inp in &inputs {
@@ -2342,7 +2387,15 @@ impl eframe::App for PatchworkApp {
                         }
                     }
                     // Crop migrated to trait-based CropNode (evaluated in graph.evaluate)
-                    NodeType::Blend { mode, mix } => {
+                    // Blend migrated to trait-based BlendNode — dispatch via blend_params() hook
+                    NodeType::Dynamic { inner } if inner.node.blend_params().is_some() => {
+                        let (mode, base_mix) = inner.node.blend_params().unwrap();
+                        // If Mix port (port 2) is wired, use the live value; otherwise use stored mix.
+                        let mix = if inputs.get(2).map(|v| !matches!(v, PortValue::None)).unwrap_or(false) {
+                            inputs.get(2).map(|v| v.as_float().clamp(0.0, 1.0)).unwrap_or(base_mix)
+                        } else {
+                            base_mix
+                        };
                         let stub_a: Option<ImageData> = match inputs.first() {
                             Some(PortValue::GpuImage(h)) => Some(ImageData { width: h.width, height: h.height, pixels: Vec::new() }),
                             _ => None,
@@ -2365,7 +2418,7 @@ impl eframe::App for PatchworkApp {
                             let h_a = inputs.first().map(|v| img_or_gpu_hash(v)).unwrap_or(0);
                             let h_b = inputs.get(1).map(|v| img_or_gpu_hash(v)).unwrap_or(0);
                             let cache_key = h_a ^ h_b.wrapping_mul(7)
-                                ^ (*mode as u64) ^ ((*mix * 1000.0) as u64) << 8;
+                                ^ (mode as u64) ^ ((mix * 1000.0) as u64) << 8;
                             let cache_id = egui::Id::new(("blend_cache", id));
                             let cached: Option<(u64, PortValue)> = ctx.data_mut(|d| d.get_temp(cache_id));
                             if let Some((prev_key, prev_val)) = cached {
@@ -2382,16 +2435,16 @@ impl eframe::App for PatchworkApp {
                             }
                             let needs_readback = self.graph.has_cpu_consumer(id, 0);
                             let result_val: PortValue = if let Some(rs) = &self.wgpu_render_state {
-                                nodes::blend::process_gpu_cached(a, b, *mode, *mix, id, rs, &mut self.gpu_tex_cache, input_sources.first().copied().flatten(), input_sources.get(1).copied().flatten(), needs_readback)
+                                nodes::blend::process_gpu_cached(a, b, mode, mix, id, rs, &mut self.gpu_tex_cache, input_sources.first().copied().flatten(), input_sources.get(1).copied().flatten(), needs_readback)
                                     .unwrap_or_else(|| {
                                         if !a.pixels.is_empty() && !b.pixels.is_empty() {
-                                            PortValue::Image(nodes::blend::process(a, b, *mode, *mix))
+                                            PortValue::Image(nodes::blend::process(a, b, mode, mix))
                                         } else {
                                             PortValue::None
                                         }
                                     })
                             } else if !a.pixels.is_empty() && !b.pixels.is_empty() {
-                                PortValue::Image(nodes::blend::process(a, b, *mode, *mix))
+                                PortValue::Image(nodes::blend::process(a, b, mode, mix))
                             } else {
                                 PortValue::None
                             };
@@ -2525,6 +2578,33 @@ impl eframe::App for PatchworkApp {
                             values.insert((id, 2), PortValue::Text(result_json.clone()));
                         }
                     }
+                    NodeType::Dynamic { inner } if inner.node.type_tag() == "hand_detection" => {
+                        // The HandDetectionNode stores its annotated frame in egui temp data
+                        // (set in render_with_context when a new inference result arrives).
+                        // Read it here and inject as port 0. Ports 1+2 come from evaluate().
+                        let annotated_id = egui::Id::new(("hand_annotated", id));
+                        if let Some(frame) = ctx.data(|d| {
+                            d.get_temp::<std::sync::Arc<crate::graph::ImageData>>(annotated_id)
+                        }) {
+                            values.insert((id, 0), PortValue::Image(frame));
+                        }
+                    }
+                    NodeType::Dynamic { inner } if inner.node.type_tag() == "face_detection" => {
+                        let annotated_id = egui::Id::new(("face_annotated", id));
+                        if let Some(frame) = ctx.data(|d| {
+                            d.get_temp::<std::sync::Arc<crate::graph::ImageData>>(annotated_id)
+                        }) {
+                            values.insert((id, 0), PortValue::Image(frame));
+                        }
+                    }
+                    NodeType::Dynamic { inner } if inner.node.type_tag() == "pose_detection" => {
+                        let annotated_id = egui::Id::new(("pose_annotated", id));
+                        if let Some(frame) = ctx.data(|d| {
+                            d.get_temp::<std::sync::Arc<crate::graph::ImageData>>(annotated_id)
+                        }) {
+                            values.insert((id, 0), PortValue::Image(frame));
+                        }
+                    }
                     // Trait-based Dynamic nodes with image inputs are handled above (before the match)
                     _ => {}
                 }
@@ -2646,7 +2726,7 @@ impl eframe::App for PatchworkApp {
         for (&id, node) in &self.graph.nodes {
             match &node.node_type {
                 // Synth and AudioPlayer output their NodeId so FX nodes can reference them
-                NodeType::Synth { .. } | NodeType::AudioPlayer { .. } => {
+                NodeType::Synth { .. } | NodeType::AudioPlayer { .. } | NodeType::AudioPlaylist { .. } => {
                     values.insert((id, 0), PortValue::Float(id as f32));
                 }
                 _ => {}

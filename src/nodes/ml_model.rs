@@ -3,6 +3,39 @@ use eframe::egui;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+/// Bundled MediaPipe palm detector — embedded at compile time.
+pub static BUNDLED_HAND_MODEL: &[u8] =
+    include_bytes!("../../assets/presets/ml/MediaPipeHandDetector.onnx");
+
+/// Bundled MediaPipe hand landmark model (21 keypoints) — embedded at compile time.
+pub static BUNDLED_HAND_LANDMARK_MODEL: &[u8] =
+    include_bytes!("../../assets/presets/ml/MediaPipeHandLandmark.onnx");
+
+/// Sentinel: model_path == this → run the full 2-stage hand tracking pipeline.
+pub const BUNDLED_HAND_SENTINEL: &str = "__bundled_hand__";
+
+/// Bundled BlazeFace short-range face detector — embedded at compile time.
+pub static BUNDLED_FACE_MODEL: &[u8] =
+    include_bytes!("../../assets/presets/ml/MediaPipeFaceDetector.onnx");
+
+/// Bundled MediaPipe face landmark model (468 landmarks) — embedded at compile time.
+pub static BUNDLED_FACE_LANDMARK_MODEL: &[u8] =
+    include_bytes!("../../assets/presets/ml/MediaPipeFaceLandmarkDetector.onnx");
+
+/// Sentinel: model_path == this → run the full 2-stage face tracking pipeline.
+pub const BUNDLED_FACE_SENTINEL: &str = "__bundled_face__";
+
+/// Bundled MediaPipe pose detector — embedded at compile time.
+pub static BUNDLED_POSE_MODEL: &[u8] =
+    include_bytes!("../../assets/presets/ml/MediaPipePoseDetector.onnx");
+
+/// Bundled MediaPipe pose landmark lite model (33 keypoints) — embedded at compile time.
+pub static BUNDLED_POSE_LANDMARK_MODEL: &[u8] =
+    include_bytes!("../../assets/presets/ml/MediaPipePoseLandmark.onnx");
+
+/// Sentinel: model_path == this → run the full 2-stage body tracking pipeline.
+pub const BUNDLED_POSE_SENTINEL: &str = "__bundled_pose__";
+
 pub fn render(
     ui: &mut egui::Ui,
     node_id: NodeId,
@@ -56,7 +89,7 @@ pub fn render(
     }
 
     // Labels file (optional, mainly for Classification)
-    if *preset == MlPreset::Classification || *preset == MlPreset::ObjectDetection || *preset == MlPreset::Custom {
+    if matches!(*preset, MlPreset::Classification | MlPreset::ObjectDetection | MlPreset::Custom) {
         ui.horizontal(|ui| {
             ui.label("Labels:");
             if ui.button("Load .txt").clicked() {
@@ -167,6 +200,7 @@ pub struct MlInferenceRequest {
 }
 
 /// Result from background inference
+#[derive(Clone)]
 pub struct MlInferenceResult {
     pub node_id: NodeId,
     pub result_text: String,
@@ -177,6 +211,16 @@ pub struct MlInferenceResult {
 
 /// Run ONNX inference on an image (called from background thread)
 pub fn run_inference(req: &MlInferenceRequest) -> MlInferenceResult {
+    // The bundled sentinels trigger the full 2-stage tracking pipelines.
+    if req.model_path == BUNDLED_HAND_SENTINEL {
+        return run_hand_tracking(req);
+    }
+    if req.model_path == BUNDLED_FACE_SENTINEL {
+        return run_face_tracking(req);
+    }
+    if req.model_path == BUNDLED_POSE_SENTINEL {
+        return run_pose_tracking(req);
+    }
     match run_inference_inner(req) {
         Ok(result) => result,
         Err(e) => MlInferenceResult {
@@ -286,7 +330,7 @@ fn parse_expected_shape(err: &str) -> Option<(usize, bool)> {
         search_from = abs_pos + 10 + num_str.len().max(1);
     }
 
-    if expected_dims.len() < 3 { return None; }
+    if expected_dims.len() < 2 { return None; }
 
     expected_dims.sort_by_key(|(i, _)| *i);
 
@@ -307,10 +351,17 @@ fn parse_expected_shape(err: &str) -> Option<(usize, bool)> {
 fn run_inference_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult, String> {
     use ort::session::Session;
 
-    let mut session = Session::builder()
-        .map_err(|e| format!("Session builder: {}", e))?
-        .commit_from_file(&req.model_path)
-        .map_err(|e| format!("Load model: {}", e))?;
+    let mut session = {
+        let mut builder = Session::builder()
+            .map_err(|e| format!("Session builder: {}", e))?;
+        if req.model_path == BUNDLED_HAND_SENTINEL {
+            builder.commit_from_memory(BUNDLED_HAND_MODEL)
+                .map_err(|e| format!("Load bundled hand model: {}", e))?
+        } else {
+            builder.commit_from_file(&req.model_path)
+                .map_err(|e| format!("Load model: {}", e))?
+        }
+    };
 
     let input_name = session.inputs().first().ok_or("No inputs in model")?.name().to_string();
 
@@ -337,10 +388,17 @@ fn run_inference_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult, St
         return Err(format!("Run: {}", first_err));
     }
 
-    let mut session2 = Session::builder()
-        .map_err(|e| format!("Session builder: {}", e))?
-        .commit_from_file(&req.model_path)
-        .map_err(|e| format!("Reload model: {}", e))?;
+    let mut session2 = {
+        let mut builder = Session::builder()
+            .map_err(|e| format!("Session builder: {}", e))?;
+        if req.model_path == BUNDLED_HAND_SENTINEL {
+            builder.commit_from_memory(BUNDLED_HAND_MODEL)
+                .map_err(|e| format!("Reload bundled hand model: {}", e))?
+        } else {
+            builder.commit_from_file(&req.model_path)
+                .map_err(|e| format!("Reload model: {}", e))?
+        }
+    };
     let input_name2 = session2.inputs().first().ok_or("No inputs")?.name().to_string();
     let (tensor2, _data2) = build_input_tensor(req, target_size, is_nchw);
     let outputs = session2.run(ort::inputs![&input_name2 => tensor2])
@@ -355,6 +413,8 @@ fn finish_inference(req: &MlInferenceRequest, outputs: &ort::session::SessionOut
         MlPreset::Classification => parse_classification(req, outputs),
         MlPreset::ObjectDetection => parse_object_detection(req, outputs),
         MlPreset::PoseEstimation => parse_pose_estimation(req, outputs),
+        MlPreset::HandDetection => parse_hand_detection(req, outputs),
+        MlPreset::FaceDetection => parse_hand_detection(req, outputs), // unused — face uses bundled pipeline
         MlPreset::Custom => parse_classification(req, outputs),
     }
 }
@@ -711,6 +771,612 @@ fn parse_pose_estimation(req: &MlInferenceRequest, outputs: &ort::session::Sessi
     })
 }
 
+// ── Full MediaPipe Hand Tracking (2-stage: Palm Detect → 21-point Landmark) ──
+//
+// Stage 1: Palm detector (256×256 NCHW, SSD)
+//   → bounding box of the palm region
+//
+// Stage 2: Hand landmark model (224×224 NHWC)
+//   → 21 keypoints × (x, y, z) normalized to the crop rect
+//
+// The 21 MediaPipe hand keypoints (HAND_LANDMARK_NAMES order):
+//   0  wrist
+//   1  thumb_cmc   2  thumb_mcp   3  thumb_ip    4  thumb_tip
+//   5  index_mcp   6  index_pip   7  index_dip   8  index_tip
+//   9  middle_mcp  10 middle_pip  11 middle_dip  12 middle_tip
+//   13 ring_mcp    14 ring_pip    15 ring_dip    16 ring_tip
+//   17 pinky_mcp   18 pinky_pip   19 pinky_dip   20 pinky_tip
+
+const HAND_LANDMARK_NAMES: [&str; 21] = [
+    "wrist",
+    "thumb_cmc", "thumb_mcp", "thumb_ip", "thumb_tip",
+    "index_mcp", "index_pip", "index_dip", "index_tip",
+    "middle_mcp", "middle_pip", "middle_dip", "middle_tip",
+    "ring_mcp", "ring_pip", "ring_dip", "ring_tip",
+    "pinky_mcp", "pinky_pip", "pinky_dip", "pinky_tip",
+];
+
+// Finger skeleton: pairs of keypoint indices to draw lines between
+const HAND_SKELETON: [(usize, usize); 24] = [
+    // Thumb
+    (0,1),(1,2),(2,3),(3,4),
+    // Index
+    (0,5),(5,6),(6,7),(7,8),
+    // Middle
+    (0,9),(9,10),(10,11),(11,12),
+    // Ring
+    (0,13),(13,14),(14,15),(15,16),
+    // Pinky
+    (0,17),(17,18),(18,19),(19,20),
+    // Palm knuckle line
+    (5,9),(9,13),(13,17),
+    // Extra palm
+    (0,17),
+];
+
+/// Crop an RGBA image to the given pixel rect and resize to new_w × new_h.
+fn crop_and_resize(src: &crate::graph::ImageData, x1: u32, y1: u32, x2: u32, y2: u32, new_w: u32, new_h: u32) -> Vec<u8> {
+    let cx = x2 - x1;
+    let cy = y2 - y1;
+    let mut out = vec![0u8; (new_w * new_h * 4) as usize];
+    let x_ratio = cx as f32 / new_w as f32;
+    let y_ratio = cy as f32 / new_h as f32;
+    for dy in 0..new_h {
+        for dx in 0..new_w {
+            let sx = (dx as f32 * x_ratio) as u32 + x1;
+            let sy = (dy as f32 * y_ratio) as u32 + y1;
+            let sx = sx.min(src.width - 1);
+            let sy = sy.min(src.height - 1);
+            let si = ((sy * src.width + sx) * 4) as usize;
+            let di = ((dy * new_w + dx) * 4) as usize;
+            if si + 3 < src.pixels.len() && di + 3 < out.len() {
+                out[di]   = src.pixels[si];
+                out[di+1] = src.pixels[si+1];
+                out[di+2] = src.pixels[si+2];
+                out[di+3] = 255;
+            }
+        }
+    }
+    out
+}
+
+/// Full 2-stage MediaPipe hand tracking inference.
+/// Stage 1 runs the palm detector; Stage 2 runs hand landmark on the crop.
+pub fn run_hand_tracking(req: &MlInferenceRequest) -> MlInferenceResult {
+    match run_hand_tracking_inner(req) {
+        Ok(r) => r,
+        Err(e) => MlInferenceResult {
+            node_id: req.node_id,
+            result_text: String::new(),
+            result_json: "[]".into(),
+            annotated_frame: Some(req.image.clone()),
+            status: format!("Error: {}", e),
+        },
+    }
+}
+
+fn run_hand_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult, String> {
+    use ort::session::Session;
+    use std::sync::Arc;
+
+    let img_w = req.image.width as f32;
+    let img_h = req.image.height as f32;
+
+    // ────────────────────────────────────────────────────────────────────────
+    // Stage 1 — Palm Detection (256×256 NCHW) — find up to 2 hands with NMS
+    // ────────────────────────────────────────────────────────────────────────
+    let palm_sz = 256u32;
+    let palm_sz_f = palm_sz as f32;
+
+    let mut palm_sess = Session::builder()
+        .map_err(|e| format!("Session builder: {}", e))?
+        .commit_from_memory(BUNDLED_HAND_MODEL)
+        .map_err(|e| format!("Load palm model: {}", e))?;
+
+    let palm_resized = resize_image(&req.image, palm_sz, palm_sz);
+    let ts = palm_sz as usize;
+    let mut palm_data = vec![0.0f32; 3 * ts * ts];
+    for y in 0..ts {
+        for x in 0..ts {
+            let si = (y * ts + x) * 4;
+            palm_data[0 * ts * ts + y * ts + x] = palm_resized[si]   as f32 / 127.5 - 1.0;
+            palm_data[1 * ts * ts + y * ts + x] = palm_resized[si+1] as f32 / 127.5 - 1.0;
+            palm_data[2 * ts * ts + y * ts + x] = palm_resized[si+2] as f32 / 127.5 - 1.0;
+        }
+    }
+    let palm_tensor = ort::value::Tensor::from_array(
+        ([1usize, 3, ts, ts], palm_data.into_boxed_slice())
+    ).map_err(|e| format!("Palm tensor: {}", e))?;
+
+    let palm_input_name = palm_sess.inputs().first().ok_or("No palm inputs")?.name().to_string();
+    let palm_outputs = palm_sess.run(ort::inputs![&palm_input_name => palm_tensor])
+        .map_err(|e| format!("Palm run: {}", e))?;
+
+    let mut tensors: Vec<(Vec<usize>, Vec<f32>)> = Vec::new();
+    for output in palm_outputs.iter() {
+        if let Ok((shape, data)) = output.1.try_extract_tensor::<f32>() {
+            tensors.push((shape.iter().map(|&d| d as usize).collect(), data.to_vec()));
+        }
+    }
+    let boxes_t = tensors.iter().find(|(d,_)| d.len()==3 && d[2]==18);
+    let scores_t = tensors.iter().find(|(d,_)| d.len()==3 && d[2]==1)
+        .or_else(|| tensors.iter().find(|(d,_)| d.len()==2 && d[1]==1));
+    let (boxes, scores) = match (boxes_t, scores_t) {
+        (Some(b), Some(s)) => (b, s),
+        _ => return Err("Palm detector output format unrecognized".into()),
+    };
+
+    let num_anchors = boxes.0[1].min(scores.0[if scores.0.len()>=2 { 1 } else { 0 }]);
+    let anchors = generate_mediapipe_anchors(palm_sz);
+
+    // Collect all detections above threshold, sort by score descending
+    let mut candidates: Vec<(f32, usize)> = (0..num_anchors)
+        .map(|i| (sigmoid(scores.1[i]), i))
+        .filter(|(s, _)| *s >= req.confidence)
+        .collect();
+    candidates.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+
+    if candidates.is_empty() {
+        let best = (0..num_anchors).map(|i| sigmoid(scores.1[i])).fold(0.0f32, f32::max);
+        return Ok(MlInferenceResult {
+            node_id: req.node_id,
+            result_text: format!("No hands ({:.1}%)", best * 100.0),
+            result_json: "[]".into(),
+            annotated_frame: Some(req.image.clone()),
+            status: format!("No hands ({:.1}%)", best * 100.0),
+        });
+    }
+
+    // NMS — select up to 2 non-overlapping detections
+    // Uses BOTH IoU overlap AND center-distance suppression because the SSD
+    // model emits 2 anchors per cell at different scales: a tight and a loose
+    // box on the same hand can have IoU < 0.3 but their centers are the same.
+    let decode_box = |idx: usize| -> (f32, f32, f32, f32) {
+        let b = idx * 18;
+        let (ax, ay) = anchors.get(idx).copied().unwrap_or((0.5, 0.5));
+        let cy = (ay + boxes.1[b]   / palm_sz_f) * img_h;
+        let cx = (ax + boxes.1[b+1] / palm_sz_f) * img_w;
+        let h  = (boxes.1[b+2].abs() / palm_sz_f * img_h).max(1.0);
+        let w  = (boxes.1[b+3].abs() / palm_sz_f * img_w).max(1.0);
+        (cx - w/2.0, cy - h/2.0, cx + w/2.0, cy + h/2.0)
+    };
+    let box_center = |(x1,y1,x2,y2): (f32,f32,f32,f32)| -> (f32,f32) {
+        ((x1+x2)/2.0, (y1+y2)/2.0)
+    };
+    let box_iou = |(ax1,ay1,ax2,ay2): (f32,f32,f32,f32), (bx1,by1,bx2,by2): (f32,f32,f32,f32)| -> f32 {
+        let ix1 = ax1.max(bx1); let iy1 = ay1.max(by1);
+        let ix2 = ax2.min(bx2); let iy2 = ay2.min(by2);
+        let inter = (ix2-ix1).max(0.0) * (iy2-iy1).max(0.0);
+        let a = (ax2-ax1)*(ay2-ay1); let b = (bx2-bx1)*(by2-by1);
+        inter / (a + b - inter + 1e-6)
+    };
+    // Two hands must be at least 25% of the shorter image dimension apart
+    let min_dim = img_w.min(img_h);
+    let center_dist_threshold = min_dim * 0.25;
+
+    let mut selected: Vec<(f32, usize)> = Vec::new();
+    for (score, idx) in &candidates {
+        let box_a = decode_box(*idx);
+        let (ca_x, ca_y) = box_center(box_a);
+        let suppressed = selected.iter().any(|(_, sel)| {
+            let box_b = decode_box(*sel);
+            // Suppress if either heavily overlapping OR centers too close
+            if box_iou(box_a, box_b) > 0.3 { return true; }
+            let (cb_x, cb_y) = box_center(box_b);
+            let dx = ca_x - cb_x; let dy = ca_y - cb_y;
+            (dx*dx + dy*dy).sqrt() < center_dist_threshold
+        });
+        if !suppressed { selected.push((*score, *idx)); }
+        if selected.len() >= 2 { break; }
+    }
+
+    // ────────────────────────────────────────────────────────────────────────
+    // Stage 2 — Run Hand Landmark for each detected palm
+    // ────────────────────────────────────────────────────────────────────────
+    let lm_sz = 224u32;
+    let lm_ts = lm_sz as usize;
+    let lm_sz_f = lm_sz as f32;
+
+    // Load landmark session once, reuse for both hands
+    let mut lm_sess = Session::builder()
+        .map_err(|e| format!("Session builder: {}", e))?
+        .commit_from_memory(BUNDLED_HAND_LANDMARK_MODEL)
+        .map_err(|e| format!("Load landmark model: {}", e))?;
+    let lm_input_name = lm_sess.inputs().first().ok_or("No landmark inputs")?.name().to_string();
+
+    // Per-hand colour palettes for annotation
+    let hand_colors: [(u8,u8,u8); 2] = [(80,200,120), (100,160,255)]; // green, blue
+
+    let mut annotated = req.image.pixels.clone();
+    let mut all_json: Vec<String> = Vec::new();
+    let mut result_text = String::new();
+
+    for (hand_idx, (hand_score, anchor_idx)) in selected.iter().enumerate() {
+        let base = anchor_idx * 18;
+        let (ax, ay) = anchors.get(*anchor_idx).copied().unwrap_or((0.5, 0.5));
+
+        // Decode 7 palm keypoints for crop centering
+        let mut kp_sum_x = 0.0f32; let mut kp_sum_y = 0.0f32;
+        let mut kp_min_x = f32::INFINITY; let mut kp_min_y = f32::INFINITY;
+        let mut kp_max_x = -f32::INFINITY; let mut kp_max_y = -f32::INFINITY;
+        for k in 0..7usize {
+            let ry = boxes.1[base + 4 + k * 2];
+            let rx = boxes.1[base + 4 + k * 2 + 1];
+            let kx = ((ax + rx / palm_sz_f) * img_w).clamp(0.0, img_w);
+            let ky = ((ay + ry / palm_sz_f) * img_h).clamp(0.0, img_h);
+            kp_sum_x += kx; kp_sum_y += ky;
+            kp_min_x = kp_min_x.min(kx); kp_min_y = kp_min_y.min(ky);
+            kp_max_x = kp_max_x.max(kx); kp_max_y = kp_max_y.max(ky);
+        }
+        let kp_cx = kp_sum_x / 7.0;
+        let kp_cy = kp_sum_y / 7.0;
+        let raw_bw = (boxes.1[base+3].abs() / palm_sz_f * img_w).max(30.0);
+        let raw_bh = (boxes.1[base+2].abs() / palm_sz_f * img_h).max(40.0);
+
+        let half_w = (raw_bw * 0.6).max((kp_max_x - kp_min_x) * 0.8).max(40.0);
+        let half_h = (raw_bh * 1.2).max((kp_max_y - kp_min_y) * 1.5).max(60.0);
+        let half = half_w.max(half_h);
+        let crop_cx = kp_cx.max((ax + boxes.1[base+1] / palm_sz_f) * img_w);
+        let crop_cy = kp_cy.min((ay + boxes.1[base]   / palm_sz_f) * img_h) - half * 0.15;
+
+        let cx1 = (crop_cx - half * 1.1).max(0.0) as u32;
+        let cy1 = (crop_cy - half * 1.2).max(0.0) as u32;
+        let cx2 = (crop_cx + half * 1.1).min(img_w) as u32;
+        let cy2 = (crop_cy + half * 0.8).min(img_h) as u32;
+        if cx2 <= cx1 || cy2 <= cy1 { continue; }
+
+        // Build landmark input tensor
+        let cropped = crop_and_resize(&req.image, cx1, cy1, cx2, cy2, lm_sz, lm_sz);
+        let mut lm_data = vec![0.0f32; lm_ts * lm_ts * 3];
+        for y in 0..lm_ts {
+            for x in 0..lm_ts {
+                let si = (y * lm_ts + x) * 4;
+                lm_data[(y * lm_ts + x) * 3 + 0] = cropped[si]   as f32 / 255.0;
+                lm_data[(y * lm_ts + x) * 3 + 1] = cropped[si+1] as f32 / 255.0;
+                lm_data[(y * lm_ts + x) * 3 + 2] = cropped[si+2] as f32 / 255.0;
+            }
+        }
+        let lm_tensor = ort::value::Tensor::from_array(
+            ([1usize, lm_ts, lm_ts, 3], lm_data.into_boxed_slice())
+        ).map_err(|e| format!("Landmark tensor: {}", e))?;
+
+        let lm_outputs = lm_sess.run(ort::inputs![&lm_input_name => lm_tensor])
+            .map_err(|e| format!("Landmark run: {}", e))?;
+
+        let lm_out = &lm_outputs["Identity"];
+        let (_, lm_vals) = lm_out.try_extract_tensor::<f32>()
+            .map_err(|e| format!("Landmark extract: {}", e))?;
+        let lm: Vec<f32> = lm_vals.to_vec();
+        if lm.len() < 63 { continue; }
+
+        let crop_w = (cx2 - cx1) as f32;
+        let crop_h = (cy2 - cy1) as f32;
+        let max_lm = lm.iter().cloned().fold(0.0f32, f32::max);
+        let lm_scale = if max_lm <= 1.5 { 1.0 } else { 1.0 / lm_sz_f };
+
+        let mut keypoints: Vec<(f32, f32, &'static str)> = Vec::with_capacity(21);
+        for i in 0..21usize {
+            let kx = (lm[i*3]     * lm_scale * crop_w + cx1 as f32).clamp(0.0, img_w);
+            let ky = (lm[i*3 + 1] * lm_scale * crop_h + cy1 as f32).clamp(0.0, img_h);
+            keypoints.push((kx, ky, HAND_LANDMARK_NAMES[i]));
+        }
+
+        // Bbox from 21 landmarks
+        let lm_min_x = keypoints.iter().map(|(x,_,_)| *x).fold(f32::INFINITY,  f32::min);
+        let lm_min_y = keypoints.iter().map(|(_,y,_)| *y).fold(f32::INFINITY,  f32::min);
+        let lm_max_x = keypoints.iter().map(|(x,_,_)| *x).fold(-f32::INFINITY, f32::max);
+        let lm_max_y = keypoints.iter().map(|(_,y,_)| *y).fold(-f32::INFINITY, f32::max);
+        let pad = ((lm_max_x - lm_min_x).max(lm_max_y - lm_min_y) * 0.08).max(8.0);
+        let bx1 = (lm_min_x - pad).max(0.0);
+        let by1 = (lm_min_y - pad).max(0.0);
+        let bx2 = (lm_max_x + pad).min(img_w);
+        let by2 = (lm_max_y + pad).min(img_h);
+
+        // Annotate: skeleton
+        let (lr, lg, lb) = hand_colors[hand_idx % 2];
+        for &(a, b) in &HAND_SKELETON {
+            if a < keypoints.len() && b < keypoints.len() {
+                let (ax, ay, _) = keypoints[a];
+                let (bx, by, _) = keypoints[b];
+                draw_line(&mut annotated, req.image.width, req.image.height,
+                    ax as i32, ay as i32, bx as i32, by as i32, lr, lg, lb, 2);
+            }
+        }
+        let fingertips = [4usize, 8, 12, 16, 20];
+        for (i, (kx, ky, _)) in keypoints.iter().enumerate() {
+            let is_tip = fingertips.contains(&i);
+            let (outer_r, inner_r, r, g, b) = if is_tip {
+                (10, 6, 80, 255, 120)
+            } else if i == 0 {
+                (10, 6, 255, 200, 50)
+            } else {
+                (7, 4, lr, lg, lb)
+            };
+            draw_circle(&mut annotated, req.image.width, req.image.height, *kx as i32, *ky as i32, outer_r, 20, 20, 20);
+            draw_circle(&mut annotated, req.image.width, req.image.height, *kx as i32, *ky as i32, inner_r, r, g, b);
+            draw_circle(&mut annotated, req.image.width, req.image.height, *kx as i32, *ky as i32, 2, 255, 255, 255);
+        }
+        // Bbox with hand-coloured border
+        let (bx1i, by1i, bx2i, by2i) = (bx1 as i32, by1 as i32, bx2 as i32, by2 as i32);
+        for t in 0..2i32 {
+            draw_line(&mut annotated, req.image.width, req.image.height, bx1i, by1i+t, bx2i, by1i+t, lr, lg, lb, 1);
+            draw_line(&mut annotated, req.image.width, req.image.height, bx2i-t, by1i, bx2i-t, by2i, lr, lg, lb, 1);
+            draw_line(&mut annotated, req.image.width, req.image.height, bx2i, by2i-t, bx1i, by2i-t, lr, lg, lb, 1);
+            draw_line(&mut annotated, req.image.width, req.image.height, bx1i+t, by2i, bx1i+t, by1i, lr, lg, lb, 1);
+        }
+
+        // JSON — tag each item with hand index
+        let h = hand_idx;
+        result_text.push_str(&format!("Hand {} ({:.1}%)\n", h+1, hand_score * 100.0));
+        all_json.push(format!(
+            r#"{{"type":"hand_bbox","hand":{h},"x1":{:.1},"y1":{:.1},"x2":{:.1},"y2":{:.1},"confidence":{:.4}}}"#,
+            bx1, by1, bx2, by2, hand_score
+        ));
+        for (kx, ky, name) in &keypoints {
+            all_json.push(format!(
+                r#"{{"type":"hand_landmark","hand":{h},"name":"{}","x":{:.1},"y":{:.1}}}"#,
+                name, kx, ky
+            ));
+        }
+    }
+
+    let hand_count = selected.len();
+    let best_score = selected.first().map(|(s,_)| *s).unwrap_or(0.0);
+    let status = match hand_count {
+        0 => "No hands".to_string(),
+        1 => format!("1 hand ({:.1}%)", best_score * 100.0),
+        n => format!("{} hands ({:.1}%)", n, best_score * 100.0),
+    };
+
+    Ok(MlInferenceResult {
+        node_id: req.node_id,
+        result_text,
+        result_json: format!("[{}]", all_json.join(",")),
+        annotated_frame: Some(Arc::new(crate::graph::ImageData {
+            width: req.image.width,
+            height: req.image.height,
+            pixels: annotated,
+        })),
+        status,
+    })
+}
+
+// ── Hand Detection (MediaPipe SSD palm detector, single stage) ───────────────
+//
+// MediaPipe palm detector outputs:
+//   out[0]: [1, N, 18]  — per-anchor: [cy, cx, h, w, kp0y, kp0x, ..., kp6y, kp6x]
+//   out[1]: [1, N, 1]   — per-anchor confidence logit (apply sigmoid)
+//
+// Used by the legacy ML Model node preset. Hand Tracking uses run_hand_tracking().
+
+fn sigmoid(x: f32) -> f32 { 1.0 / (1.0 + (-x).exp()) }
+
+/// Generate MediaPipe SSD anchor centers in [0,1] normalized space.
+/// For input_sz=256, strides [8,16,32,32,32], 2 anchors/cell → exactly 2944 anchors.
+/// This matches MediaPipe's SsdAnchorsCalculator configuration for the palm detector.
+pub fn generate_mediapipe_anchors(input_sz: u32) -> Vec<(f32, f32)> {
+    let strides = [8u32, 16, 32, 32, 32];
+    let mut anchors = Vec::with_capacity(2944);
+    for &stride in &strides {
+        let grid = (input_sz / stride) as usize;
+        for row in 0..grid {
+            for col in 0..grid {
+                let cx = (col as f32 + 0.5) / grid as f32;
+                let cy = (row as f32 + 0.5) / grid as f32;
+                // 2 anchors per cell (different aspect ratios, same center)
+                anchors.push((cx, cy));
+                anchors.push((cx, cy));
+            }
+        }
+    }
+    anchors
+}
+
+fn parse_hand_detection(req: &MlInferenceRequest, outputs: &ort::session::SessionOutputs) -> Result<MlInferenceResult, String> {
+    let img_w = req.image.width as f32;
+    let img_h = req.image.height as f32;
+    // Collect raw tensors
+    let mut tensors: Vec<(Vec<usize>, Vec<f32>)> = Vec::new();
+    let mut output_info = String::new();
+    for (idx, output) in outputs.iter().enumerate() {
+        if let Ok((shape, data)) = output.1.try_extract_tensor::<f32>() {
+            let dims: Vec<usize> = shape.iter().map(|&d| d as usize).collect();
+            let vals: Vec<f32> = data.to_vec();
+            output_info.push_str(&format!("out[{}]: {:?} ({} vals)\n", idx, dims, vals.len()));
+            tensors.push((dims, vals));
+        }
+    }
+
+    // Find boxes tensor [1, N, 18] and scores tensor [1, N, 1]
+    let mut boxes_data: Option<(usize, &[f32])> = None; // (num_anchors, data)
+    let mut scores_data: Option<(usize, &[f32])> = None;
+
+    for (dims, vals) in &tensors {
+        if dims.len() == 3 && dims[2] == 18 {
+            boxes_data = Some((dims[1], vals.as_slice()));
+        } else if dims.len() == 3 && dims[2] == 1 {
+            scores_data = Some((dims[1], vals.as_slice()));
+        } else if dims.len() == 2 && dims[1] == 1 {
+            // [N, 1] — treat as scores
+            scores_data = Some((dims[0], vals.as_slice()));
+        }
+    }
+
+    // Fallback: if we couldn't separate, try treating largest tensor as boxes
+    let (boxes, scores) = match (boxes_data, scores_data) {
+        (Some(b), Some(s)) => (b, s),
+        _ => {
+            // Generic fallback — show raw output info
+            return Ok(MlInferenceResult {
+                node_id: req.node_id,
+                result_text: format!("Hand Detection: unexpected output format\n{}", output_info.trim()),
+                result_json: "[]".into(),
+                annotated_frame: None,
+                status: "No detections (format unknown)".into(),
+            });
+        }
+    };
+
+    let num_anchors = boxes.0.min(scores.0);
+
+    // Find best anchor by sigmoid(score)
+    let mut best_score = -f32::INFINITY;
+    let mut best_idx = 0usize;
+    for i in 0..num_anchors {
+        let score = sigmoid(scores.1[i]);
+        if score > best_score {
+            best_score = score;
+            best_idx = i;
+        }
+    }
+
+    let palm_kp_names = ["wrist", "index_mcp", "middle_mcp", "ring_mcp", "pinky_mcp", "index_tip", "thumb_tip"];
+
+    if best_score < req.confidence {
+        return Ok(MlInferenceResult {
+            node_id: req.node_id,
+            result_text: format!("No hand detected (best score {:.1}%, threshold {:.0}%)\nOutputs: {}", best_score * 100.0, req.confidence * 100.0, output_info.trim()),
+            result_json: "[]".into(),
+            annotated_frame: None,
+            status: format!("No hand ({:.1}%)", best_score * 100.0),
+        });
+    }
+
+    // ── Decode keypoints using SSD anchor grid ───────────────────────────────
+    // MediaPipe SSD output format per anchor (18 values):
+    //   [0] cy_offset  [1] cx_offset  [2] h_offset  [3] w_offset
+    //   [4] kp0_y  [5] kp0_x  [6] kp1_y  [7] kp1_x  ... (y BEFORE x each pair)
+    //
+    // All values are anchor-relative offsets in input pixel space.
+    // Decoded: coord_normalized = anchor_center + raw_offset / input_size
+    // Pixel:   coord_px = coord_normalized * image_dimension
+    //
+    // Anchor grid: strides [8,16,32,32,32] × 2 anchors/cell → 2944 anchors for 256×256 input.
+
+    let base = best_idx * 18;
+    let input_size = req.preset.input_size();
+    let input_sz_f = input_size as f32;
+
+    // Generate anchor grid and look up the winning anchor center
+    let anchors = generate_mediapipe_anchors(input_size);
+    let (ax, ay) = anchors.get(best_idx).copied().unwrap_or((0.5, 0.5));
+
+    // Decode 7 palm keypoints — MediaPipe stores (y, x) per pair
+    let mut keypoints: Vec<(f32, f32, &'static str)> = Vec::new();
+    for k in 0..7usize {
+        let raw_kp_y = boxes.1[base + 4 + k * 2];       // y offset comes first
+        let raw_kp_x = boxes.1[base + 4 + k * 2 + 1];   // x offset comes second
+        let kp_x = ((ax + raw_kp_x / input_sz_f) * img_w).clamp(0.0, img_w);
+        let kp_y = ((ay + raw_kp_y / input_sz_f) * img_h).clamp(0.0, img_h);
+        keypoints.push((kp_x, kp_y, palm_kp_names[k]));
+    }
+
+    // Decode bbox center — [cy, cx, h, w] order
+    let raw_cy = boxes.1[base];
+    let raw_cx = boxes.1[base + 1];
+    let raw_h  = boxes.1[base + 2];
+    let raw_w  = boxes.1[base + 3];
+    let cx = ((ax + raw_cx / input_sz_f) * img_w).clamp(0.0, img_w);
+    let cy = ((ay + raw_cy / input_sz_f) * img_h).clamp(0.0, img_h);
+    let bw = (raw_w / input_sz_f * img_w).abs();
+    let bh = (raw_h / input_sz_f * img_h).abs();
+
+    // Bounding box: derive from keypoint extents (covers full detected region)
+    // and cross-check against decoded center — use whichever is larger.
+    let kp_min_x = keypoints.iter().map(|(x, _, _)| *x).fold(f32::INFINITY, f32::min);
+    let kp_min_y = keypoints.iter().map(|(_, y, _)| *y).fold(f32::INFINITY, f32::min);
+    let kp_max_x = keypoints.iter().map(|(x, _, _)| *x).fold(-f32::INFINITY, f32::max);
+    let kp_max_y = keypoints.iter().map(|(_, y, _)| *y).fold(-f32::INFINITY, f32::max);
+    // Padding = 25% of the keypoint span, at least 30px
+    let pad = (((kp_max_x - kp_min_x).max(kp_max_y - kp_min_y)) * 0.25).max(30.0);
+    let kp_x1 = (kp_min_x - pad).max(0.0);
+    let kp_y1 = (kp_min_y - pad).max(0.0);
+    let kp_x2 = (kp_max_x + pad).min(img_w);
+    let kp_y2 = (kp_max_y + pad).min(img_h);
+    // Merge with decoded center box (union — whichever covers more area)
+    let (x1, y1, x2, y2) = if bw > 10.0 && bh > 10.0 {
+        let dx1 = (cx - bw / 2.0).max(0.0);
+        let dy1 = (cy - bh / 2.0).max(0.0);
+        let dx2 = (cx + bw / 2.0).min(img_w);
+        let dy2 = (cy + bh / 2.0).min(img_h);
+        (kp_x1.min(dx1), kp_y1.min(dy1), kp_x2.max(dx2), kp_y2.max(dy2))
+    } else {
+        (kp_x1, kp_y1, kp_x2, kp_y2)
+    };
+
+    // Build result text + JSON
+    let mut result = format!(
+        "Hand detected {:.1}%\nBBox: ({:.0},{:.0})→({:.0},{:.0})\n",
+        best_score * 100.0, x1, y1, x2, y2
+    );
+    let mut json_items: Vec<String> = Vec::new();
+
+    json_items.push(format!(
+        "{{\"type\":\"hand_bbox\",\"x1\":{:.1},\"y1\":{:.1},\"x2\":{:.1},\"y2\":{:.1},\"confidence\":{:.4}}}",
+        x1, y1, x2, y2, best_score
+    ));
+
+    for (kx, ky, name) in &keypoints {
+        result.push_str(&format!("{}: ({:.0}, {:.0})\n", name, kx, ky));
+        json_items.push(format!(
+            "{{\"type\":\"palm_keypoint\",\"name\":\"{}\",\"x\":{:.1},\"y\":{:.1}}}",
+            name, kx, ky
+        ));
+    }
+
+    // Draw annotated image
+    let mut annotated = req.image.pixels.clone();
+
+    // Draw bounding box (bright green, thick)
+    let x1i = x1 as i32; let y1i = y1 as i32;
+    let x2i = x2 as i32; let y2i = y2 as i32;
+    for t in 0..3i32 {
+        draw_line(&mut annotated, req.image.width, req.image.height, x1i, y1i+t, x2i, y1i+t, 0, 230, 80, 1);
+        draw_line(&mut annotated, req.image.width, req.image.height, x2i-t, y1i, x2i-t, y2i, 0, 230, 80, 1);
+        draw_line(&mut annotated, req.image.width, req.image.height, x2i, y2i-t, x1i, y2i-t, 0, 230, 80, 1);
+        draw_line(&mut annotated, req.image.width, req.image.height, x1i+t, y2i, x1i+t, y1i, 0, 230, 80, 1);
+    }
+
+    // Draw palm keypoints (larger bright circles for visibility)
+    for (kx, ky, _) in &keypoints {
+        // Outer ring (dark border for contrast)
+        draw_circle(&mut annotated, req.image.width, req.image.height,
+                    *kx as i32, *ky as i32, 10, 30, 30, 30);
+        // Filled orange circle
+        draw_circle(&mut annotated, req.image.width, req.image.height,
+                    *kx as i32, *ky as i32, 8, 255, 160, 0);
+        // Bright white center dot
+        draw_circle(&mut annotated, req.image.width, req.image.height,
+                    *kx as i32, *ky as i32, 3, 255, 255, 255);
+    }
+
+    // Draw skeleton lines between keypoints (wrist→each mcp, and mcp→tip)
+    let skeleton = [(0,1),(0,2),(0,3),(0,4),(0,5),(1,5),(2,5),(4,6)];
+    for (a, b) in skeleton {
+        if a < keypoints.len() && b < keypoints.len() {
+            let (ax, ay, _) = keypoints[a];
+            let (bx, by, _) = keypoints[b];
+            draw_line(&mut annotated, req.image.width, req.image.height,
+                      ax as i32, ay as i32, bx as i32, by as i32,
+                      255, 200, 50, 1);
+        }
+    }
+
+    let json = format!("[{}]", json_items.join(","));
+
+    Ok(MlInferenceResult {
+        node_id: req.node_id,
+        result_text: result,
+        result_json: json,
+        annotated_frame: Some(Arc::new(ImageData {
+            width: req.image.width,
+            height: req.image.height,
+            pixels: annotated,
+        })),
+        status: format!("Hand detected ({:.1}%)", best_score * 100.0),
+    })
+}
+
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 struct Detection {
@@ -729,6 +1395,797 @@ fn load_labels(path: &str, fallback_count: usize) -> Vec<String> {
     } else {
         (0..fallback_count).map(|i| format!("class_{}", i)).collect()
     }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Face Tracking — 2-stage MediaPipe pipeline (BlazeFace → Face Landmark 468)
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// Generate SSD anchors for BlazeFace short-range face detector (128×128).
+/// Strides [8, 16], anchors per cell [2, 6] → 896 total.
+fn generate_blazeface_anchors(input_sz: u32) -> Vec<(f32, f32)> {
+    let configs: &[(u32, usize)] = &[(8, 2), (16, 6)];
+    let mut anchors = Vec::with_capacity(896);
+    for &(stride, num) in configs {
+        let grid = (input_sz / stride) as usize;
+        for row in 0..grid {
+            for col in 0..grid {
+                let cx = (col as f32 + 0.5) / grid as f32;
+                let cy = (row as f32 + 0.5) / grid as f32;
+                for _ in 0..num {
+                    anchors.push((cx, cy));
+                }
+            }
+        }
+    }
+    anchors
+}
+
+// Named face landmarks — map MediaPipe indices to human-readable names.
+const FACE_NAMED_LANDMARKS: [(usize, &str); 15] = [
+    (1,   "nose_tip"),
+    (10,  "forehead"),
+    (33,  "left_eye_inner"),
+    (133, "left_eye_outer"),
+    (362, "right_eye_inner"),
+    (263, "right_eye_outer"),
+    (61,  "mouth_left"),
+    (291, "mouth_right"),
+    (0,   "upper_lip"),
+    (17,  "lower_lip"),
+    (152, "chin"),
+    (234, "left_cheek"),
+    (454, "right_cheek"),
+    (127, "left_temple"),
+    (356, "right_temple"),
+];
+
+// Face mesh contour connections — subsets of MediaPipe face mesh topology.
+// These draw the face outline, eyes, eyebrows, lips, nose, and iris.
+const FACE_OVAL: [(usize,usize); 36] = [
+    (10,338),(338,297),(297,332),(332,284),(284,251),(251,389),(389,356),(356,454),
+    (454,323),(323,361),(361,288),(288,397),(397,365),(365,379),(379,378),(378,400),
+    (400,377),(377,152),(152,148),(148,176),(176,149),(149,150),(150,136),(136,172),
+    (172,58),(58,132),(132,93),(93,234),(234,127),(127,162),(162,21),(21,54),
+    (54,103),(103,67),(67,109),(109,10),
+];
+
+const FACE_LIPS_OUTER: [(usize,usize); 20] = [
+    (61,146),(146,91),(91,181),(181,84),(84,17),(17,314),(314,405),(405,321),
+    (321,375),(375,291),(291,409),(409,270),(270,269),(269,267),(267,0),(0,37),
+    (37,39),(39,40),(40,185),(185,61),
+];
+
+const FACE_LIPS_INNER: [(usize,usize); 8] = [
+    (78,95),(95,88),(88,178),(178,87),(87,14),(14,317),(317,402),(402,78),
+];
+
+const FACE_LEFT_EYE: [(usize,usize); 16] = [
+    (33,7),(7,163),(163,144),(144,145),(145,153),(153,154),(154,155),(155,133),
+    (33,246),(246,161),(161,160),(160,159),(159,158),(158,157),(157,173),(173,133),
+];
+
+const FACE_RIGHT_EYE: [(usize,usize); 16] = [
+    (362,382),(382,381),(381,380),(380,374),(374,373),(373,390),(390,249),(249,263),
+    (362,398),(398,384),(384,385),(385,386),(386,387),(387,388),(388,466),(466,263),
+];
+
+const FACE_LEFT_EYEBROW: [(usize,usize); 8] = [
+    (46,53),(53,52),(52,65),(65,55),(70,63),(63,105),(105,66),(66,107),
+];
+
+const FACE_RIGHT_EYEBROW: [(usize,usize); 8] = [
+    (276,283),(283,282),(282,295),(295,285),(300,293),(293,334),(334,296),(296,336),
+];
+
+const FACE_NOSE_BRIDGE: [(usize,usize); 4] = [
+    (168,6),(6,197),(197,195),(195,5),
+];
+
+pub fn run_face_tracking(req: &MlInferenceRequest) -> MlInferenceResult {
+    match run_face_tracking_inner(req) {
+        Ok(r) => r,
+        Err(e) => MlInferenceResult {
+            node_id: req.node_id,
+            result_text: String::new(),
+            result_json: "[]".into(),
+            annotated_frame: Some(req.image.clone()),
+            status: format!("Error: {}", e),
+        },
+    }
+}
+
+fn run_face_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult, String> {
+    use ort::session::Session;
+
+    let img_w = req.image.width  as f32;
+    let img_h = req.image.height as f32;
+
+    // ────────────────────────────────────────────────────────────────────────
+    // Stage 1 — BlazeFace short-range face detection (128×128 NHWC)
+    // ────────────────────────────────────────────────────────────────────────
+    let face_sz = 128u32;
+    let ts = face_sz as usize;
+    let face_sz_f = face_sz as f32;
+
+    let mut face_sess = Session::builder()
+        .map_err(|e| format!("Session builder: {}", e))?
+        .commit_from_memory(BUNDLED_FACE_MODEL)
+        .map_err(|e| format!("Load face model: {}", e))?;
+
+    // Resize input image to 128×128
+    let face_resized = resize_image(&req.image, face_sz, face_sz);
+
+    // NHWC tensor, normalize to [-1, 1]
+    let mut face_data = vec![0.0f32; ts * ts * 3];
+    for y in 0..ts {
+        for x in 0..ts {
+            let si = (y * ts + x) * 4;
+            let di = (y * ts + x) * 3;
+            face_data[di]     = face_resized[si]   as f32 / 127.5 - 1.0;
+            face_data[di + 1] = face_resized[si+1] as f32 / 127.5 - 1.0;
+            face_data[di + 2] = face_resized[si+2] as f32 / 127.5 - 1.0;
+        }
+    }
+    let face_tensor = ort::value::Tensor::from_array(
+        ([1usize, ts, ts, 3], face_data.into_boxed_slice())
+    ).map_err(|e| format!("Face tensor: {}", e))?;
+
+    let face_input_name = face_sess.inputs().first().ok_or("No face inputs")?.name().to_string();
+    let face_outputs = face_sess.run(ort::inputs![&face_input_name => face_tensor])
+        .map_err(|e| format!("Face run: {}", e))?;
+
+    // Extract output tensors
+    let mut tensors: Vec<(Vec<usize>, Vec<f32>)> = Vec::new();
+    for output in face_outputs.iter() {
+        if let Ok((shape, data)) = output.1.try_extract_tensor::<f32>() {
+            tensors.push((shape.iter().map(|&d| d as usize).collect(), data.to_vec()));
+        }
+    }
+
+    let boxes_t = tensors.iter().find(|(d,_)| d.len()==3 && d[2]==16);
+    let scores_t = tensors.iter().find(|(d,_)| d.len()==3 && d[2]==1)
+        .or_else(|| tensors.iter().find(|(d,_)| d.len()==2 && d[1]==1));
+    let (boxes, scores) = match (boxes_t, scores_t) {
+        (Some(b), Some(s)) => (b, s),
+        _ => return Err("Face detector output format unrecognized".into()),
+    };
+
+    let num_anchors = boxes.0[1].min(scores.0[if scores.0.len()>=2 { 1 } else { 0 }]);
+    let anchors = generate_blazeface_anchors(face_sz);
+
+    // Collect detections above threshold
+    let mut candidates: Vec<(f32, usize)> = (0..num_anchors)
+        .map(|i| (sigmoid(scores.1[i]), i))
+        .filter(|(s, _)| *s >= req.confidence)
+        .collect();
+    candidates.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+
+    if candidates.is_empty() {
+        let best = (0..num_anchors).map(|i| sigmoid(scores.1[i])).fold(0.0f32, f32::max);
+        return Ok(MlInferenceResult {
+            node_id: req.node_id,
+            result_text: format!("No faces ({:.1}%)", best * 100.0),
+            result_json: "[]".into(),
+            annotated_frame: Some(req.image.clone()),
+            status: format!("No faces ({:.1}%)", best * 100.0),
+        });
+    }
+
+    // NMS — select up to 2 non-overlapping faces
+    // BlazeFace output per anchor: [cy, cx, h, w, kp0y, kp0x, ..., kp5y, kp5x] — 16 values
+    let decode_box = |idx: usize| -> (f32, f32, f32, f32) {
+        let b = idx * 16;
+        let (ax, ay) = anchors.get(idx).copied().unwrap_or((0.5, 0.5));
+        let cy = (ay + boxes.1[b]   / face_sz_f) * img_h;
+        let cx = (ax + boxes.1[b+1] / face_sz_f) * img_w;
+        let h  = (boxes.1[b+2].abs() / face_sz_f * img_h).max(1.0);
+        let w  = (boxes.1[b+3].abs() / face_sz_f * img_w).max(1.0);
+        (cx - w/2.0, cy - h/2.0, cx + w/2.0, cy + h/2.0)
+    };
+    let box_center = |(x1,y1,x2,y2): (f32,f32,f32,f32)| -> (f32,f32) {
+        ((x1+x2)/2.0, (y1+y2)/2.0)
+    };
+    let box_iou = |(ax1,ay1,ax2,ay2): (f32,f32,f32,f32), (bx1,by1,bx2,by2): (f32,f32,f32,f32)| -> f32 {
+        let ix1 = ax1.max(bx1); let iy1 = ay1.max(by1);
+        let ix2 = ax2.min(bx2); let iy2 = ay2.min(by2);
+        let inter = (ix2-ix1).max(0.0) * (iy2-iy1).max(0.0);
+        let a = (ax2-ax1)*(ay2-ay1); let b = (bx2-bx1)*(by2-by1);
+        inter / (a + b - inter + 1e-6)
+    };
+    let min_dim = img_w.min(img_h);
+    let center_dist_threshold = min_dim * 0.25;
+
+    let mut selected: Vec<(f32, usize)> = Vec::new();
+    for (score, idx) in &candidates {
+        let box_a = decode_box(*idx);
+        let (ca_x, ca_y) = box_center(box_a);
+        let suppressed = selected.iter().any(|(_, sel)| {
+            let box_b = decode_box(*sel);
+            if box_iou(box_a, box_b) > 0.3 { return true; }
+            let (cb_x, cb_y) = box_center(box_b);
+            let dx = ca_x - cb_x; let dy = ca_y - cb_y;
+            (dx*dx + dy*dy).sqrt() < center_dist_threshold
+        });
+        if !suppressed { selected.push((*score, *idx)); }
+        if selected.len() >= 1 { break; } // single face only
+    }
+
+    // ────────────────────────────────────────────────────────────────────────
+    // Stage 2 — Face Landmark (192×192 NCHW) for each detected face
+    // ────────────────────────────────────────────────────────────────────────
+    let lm_sz = 192u32;
+    let lm_ts = lm_sz as usize;
+    let lm_sz_f = lm_sz as f32;
+
+    let mut lm_sess = Session::builder()
+        .map_err(|e| format!("Session builder: {}", e))?
+        .commit_from_memory(BUNDLED_FACE_LANDMARK_MODEL)
+        .map_err(|e| format!("Load face landmark model: {}", e))?;
+    let lm_input_name = lm_sess.inputs().first().ok_or("No landmark inputs")?.name().to_string();
+
+    // Per-face colour palettes
+    let face_colors: [(u8,u8,u8); 2] = [(100,220,200), (220,120,200)]; // cyan, pink
+
+    let mut annotated = req.image.pixels.clone();
+    let mut all_json: Vec<String> = Vec::new();
+    let mut result_text = String::new();
+
+    for (face_idx, (face_score, anchor_idx)) in selected.iter().enumerate() {
+        let base = anchor_idx * 16;
+        let (ax, ay) = anchors.get(*anchor_idx).copied().unwrap_or((0.5, 0.5));
+
+        // Decode 6 face keypoints for crop centering
+        let mut kp_sum_x = 0.0f32; let mut kp_sum_y = 0.0f32;
+        let mut kp_min_x = f32::INFINITY; let mut kp_min_y = f32::INFINITY;
+        let mut kp_max_x = -f32::INFINITY; let mut kp_max_y = -f32::INFINITY;
+        for k in 0..6usize {
+            let ry = boxes.1[base + 4 + k * 2];
+            let rx = boxes.1[base + 4 + k * 2 + 1];
+            let kx = ((ax + rx / face_sz_f) * img_w).clamp(0.0, img_w);
+            let ky = ((ay + ry / face_sz_f) * img_h).clamp(0.0, img_h);
+            kp_sum_x += kx; kp_sum_y += ky;
+            kp_min_x = kp_min_x.min(kx); kp_min_y = kp_min_y.min(ky);
+            kp_max_x = kp_max_x.max(kx); kp_max_y = kp_max_y.max(ky);
+        }
+        let kp_cx = kp_sum_x / 6.0;
+        let kp_cy = kp_sum_y / 6.0;
+        let raw_bw = (boxes.1[base+3].abs() / face_sz_f * img_w).max(30.0);
+        let raw_bh = (boxes.1[base+2].abs() / face_sz_f * img_h).max(30.0);
+
+        // Face crop — square, padded generously to include full face
+        let half_w = (raw_bw * 0.7).max((kp_max_x - kp_min_x) * 0.8).max(40.0);
+        let half_h = (raw_bh * 0.7).max((kp_max_y - kp_min_y) * 0.8).max(40.0);
+        let half = half_w.max(half_h);
+        let crop_cx = kp_cx;
+        let crop_cy = kp_cy;
+
+        let cx1 = (crop_cx - half * 1.3).max(0.0) as u32;
+        let cy1 = (crop_cy - half * 1.5).max(0.0) as u32;  // more space above for forehead
+        let cx2 = (crop_cx + half * 1.3).min(img_w) as u32;
+        let cy2 = (crop_cy + half * 1.1).min(img_h) as u32;
+        if cx2 <= cx1 || cy2 <= cy1 { continue; }
+
+        // Build landmark input tensor (NCHW for this model)
+        let cropped = crop_and_resize(&req.image, cx1, cy1, cx2, cy2, lm_sz, lm_sz);
+        let mut lm_data = vec![0.0f32; 3 * lm_ts * lm_ts];
+        for y in 0..lm_ts {
+            for x in 0..lm_ts {
+                let si = (y * lm_ts + x) * 4;
+                // NCHW: channel-first layout
+                lm_data[0 * lm_ts * lm_ts + y * lm_ts + x] = cropped[si]   as f32 / 255.0;
+                lm_data[1 * lm_ts * lm_ts + y * lm_ts + x] = cropped[si+1] as f32 / 255.0;
+                lm_data[2 * lm_ts * lm_ts + y * lm_ts + x] = cropped[si+2] as f32 / 255.0;
+            }
+        }
+        let lm_tensor = ort::value::Tensor::from_array(
+            ([1usize, 3, lm_ts, lm_ts], lm_data.into_boxed_slice())
+        ).map_err(|e| format!("Landmark tensor: {}", e))?;
+
+        let lm_outputs = lm_sess.run(ort::inputs![&lm_input_name => lm_tensor])
+            .map_err(|e| format!("Face landmark run: {}", e))?;
+
+        // Output: "landmarks" [1, 468, 3] and "scores" [1]
+        let lm_vals: Vec<f32> = {
+            let lm_out = lm_outputs.iter()
+                .find(|(name, _)| *name == "landmarks")
+                .or_else(|| lm_outputs.iter().next())
+                .ok_or("No landmark output")?;
+            let (_, data) = lm_out.1.try_extract_tensor::<f32>()
+                .map_err(|e| format!("Landmark extract: {}", e))?;
+            data.to_vec()
+        };
+
+        let num_landmarks = lm_vals.len() / 3;
+        if num_landmarks < 468 { continue; }
+
+        let crop_w = (cx2 - cx1) as f32;
+        let crop_h = (cy2 - cy1) as f32;
+
+        // Determine coordinate space: landmarks may be in [0, lm_sz] pixel space or [0,1] normalized
+        let max_lm = lm_vals.iter().cloned().fold(0.0f32, f32::max);
+        let lm_scale = if max_lm <= 1.5 { 1.0 } else { 1.0 / lm_sz_f };
+
+        // Map all 468 landmarks to image space
+        let mut landmarks: Vec<(f32, f32, f32)> = Vec::with_capacity(num_landmarks);
+        for i in 0..num_landmarks {
+            let lx = (lm_vals[i*3]     * lm_scale * crop_w + cx1 as f32).clamp(0.0, img_w);
+            let ly = (lm_vals[i*3 + 1] * lm_scale * crop_h + cy1 as f32).clamp(0.0, img_h);
+            let lz =  lm_vals[i*3 + 2] * lm_scale; // depth, keep relative
+            landmarks.push((lx, ly, lz));
+        }
+
+        // Bbox from landmarks
+        let lm_min_x = landmarks.iter().map(|(x,_,_)| *x).fold(f32::INFINITY,  f32::min);
+        let lm_min_y = landmarks.iter().map(|(_,y,_)| *y).fold(f32::INFINITY,  f32::min);
+        let lm_max_x = landmarks.iter().map(|(x,_,_)| *x).fold(-f32::INFINITY, f32::max);
+        let lm_max_y = landmarks.iter().map(|(_,y,_)| *y).fold(-f32::INFINITY, f32::max);
+        let pad = ((lm_max_x - lm_min_x).max(lm_max_y - lm_min_y) * 0.05).max(4.0);
+        let bx1 = (lm_min_x - pad).max(0.0);
+        let by1 = (lm_min_y - pad).max(0.0);
+        let bx2 = (lm_max_x + pad).min(img_w);
+        let by2 = (lm_max_y + pad).min(img_h);
+
+        // Annotate: face mesh contours
+        let (lr, lg, lb) = face_colors[face_idx % 2];
+        let draw_contour = |ann: &mut Vec<u8>, connections: &[(usize,usize)], r: u8, g: u8, b: u8| {
+            for &(a, b_idx) in connections {
+                if a < landmarks.len() && b_idx < landmarks.len() {
+                    let (ax, ay, _) = landmarks[a];
+                    let (bx, by, _) = landmarks[b_idx];
+                    draw_line(ann, req.image.width, req.image.height,
+                        ax as i32, ay as i32, bx as i32, by as i32, r, g, b, 1);
+                }
+            }
+        };
+
+        // Draw face oval (jawline)
+        draw_contour(&mut annotated, &FACE_OVAL, lr, lg, lb);
+        // Lips
+        draw_contour(&mut annotated, &FACE_LIPS_OUTER, lr/2+80, lg/2+60, lb/2+60);
+        draw_contour(&mut annotated, &FACE_LIPS_INNER, lr/2+80, lg/2+60, lb/2+60);
+        // Eyes
+        draw_contour(&mut annotated, &FACE_LEFT_EYE, 80, 220, 255);
+        draw_contour(&mut annotated, &FACE_RIGHT_EYE, 80, 220, 255);
+        // Eyebrows
+        draw_contour(&mut annotated, &FACE_LEFT_EYEBROW, lr, lg, lb);
+        draw_contour(&mut annotated, &FACE_RIGHT_EYEBROW, lr, lg, lb);
+        // Nose bridge
+        draw_contour(&mut annotated, &FACE_NOSE_BRIDGE, lr, lg, lb);
+
+        // Draw dots at named landmarks
+        for &(idx, _name) in &FACE_NAMED_LANDMARKS {
+            if idx < landmarks.len() {
+                let (kx, ky, _) = landmarks[idx];
+                draw_circle(&mut annotated, req.image.width, req.image.height, kx as i32, ky as i32, 3, lr, lg, lb);
+                draw_circle(&mut annotated, req.image.width, req.image.height, kx as i32, ky as i32, 1, 255, 255, 255);
+            }
+        }
+
+        // Bbox
+        let (bx1i, by1i, bx2i, by2i) = (bx1 as i32, by1 as i32, bx2 as i32, by2 as i32);
+        for t in 0..2i32 {
+            draw_line(&mut annotated, req.image.width, req.image.height, bx1i, by1i+t, bx2i, by1i+t, lr, lg, lb, 1);
+            draw_line(&mut annotated, req.image.width, req.image.height, bx2i-t, by1i, bx2i-t, by2i, lr, lg, lb, 1);
+            draw_line(&mut annotated, req.image.width, req.image.height, bx2i, by2i-t, bx1i, by2i-t, lr, lg, lb, 1);
+            draw_line(&mut annotated, req.image.width, req.image.height, bx1i+t, by2i, bx1i+t, by1i, lr, lg, lb, 1);
+        }
+
+        // JSON output
+        let f = face_idx;
+        result_text.push_str(&format!("Face {} ({:.1}%)\n", f+1, face_score * 100.0));
+
+        all_json.push(format!(
+            r#"{{"type":"face_bbox","face":{f},"x1":{:.1},"y1":{:.1},"x2":{:.1},"y2":{:.1},"confidence":{:.4}}}"#,
+            bx1, by1, bx2, by2, face_score
+        ));
+
+        for &(idx, name) in &FACE_NAMED_LANDMARKS {
+            if idx < landmarks.len() {
+                let (kx, ky, _) = landmarks[idx];
+                all_json.push(format!(
+                    r#"{{"type":"face_landmark","face":{f},"name":"{}","x":{:.1},"y":{:.1}}}"#,
+                    name, kx, ky
+                ));
+            }
+        }
+
+        // Full landmark array as indexed items
+        for (i, (lx, ly, lz)) in landmarks.iter().enumerate() {
+            all_json.push(format!(
+                r#"{{"type":"face_landmark_idx","face":{f},"index":{i},"x":{:.1},"y":{:.1},"z":{:.3}}}"#,
+                lx, ly, lz
+            ));
+        }
+    }
+
+    let face_count = selected.len();
+    let best_score = selected.first().map(|(s,_)| *s).unwrap_or(0.0);
+    let status = match face_count {
+        0 => "No faces".to_string(),
+        1 => format!("1 face ({:.1}%)", best_score * 100.0),
+        n => format!("{} faces ({:.1}%)", n, best_score * 100.0),
+    };
+
+    Ok(MlInferenceResult {
+        node_id: req.node_id,
+        result_text,
+        result_json: format!("[{}]", all_json.join(",")),
+        annotated_frame: Some(Arc::new(crate::graph::ImageData {
+            width: req.image.width,
+            height: req.image.height,
+            pixels: annotated,
+        })),
+        status,
+    })
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Body/Pose Tracking — 2-stage MediaPipe pipeline (Pose Detector → Pose Landmark)
+// ══════════════════════════════════════════════════════════════════════════════
+
+// 33 MediaPipe pose landmark names (canonical order, indices 0-32)
+const POSE_LANDMARK_NAMES: [&str; 33] = [
+    "nose",
+    "left_eye_inner", "left_eye", "left_eye_outer",
+    "right_eye_inner", "right_eye", "right_eye_outer",
+    "left_ear", "right_ear",
+    "mouth_left", "mouth_right",
+    "left_shoulder", "right_shoulder",
+    "left_elbow", "right_elbow",
+    "left_wrist", "right_wrist",
+    "left_pinky", "right_pinky",
+    "left_index", "right_index",
+    "left_thumb", "right_thumb",
+    "left_hip", "right_hip",
+    "left_knee", "right_knee",
+    "left_ankle", "right_ankle",
+    "left_heel", "right_heel",
+    "left_foot_index", "right_foot_index",
+];
+
+// 35 skeleton connections for body pose
+const POSE_SKELETON: [(usize,usize); 35] = [
+    // Face
+    (0,1),(1,2),(2,3),(3,7), (0,4),(4,5),(5,6),(6,8),
+    // Mouth
+    (9,10),
+    // Shoulders
+    (11,12),
+    // Left arm
+    (11,13),(13,15),(15,17),(15,19),(15,21),(17,19),
+    // Right arm
+    (12,14),(14,16),(16,18),(16,20),(16,22),(18,20),
+    // Torso
+    (11,23),(12,24),(23,24),
+    // Left leg
+    (23,25),(25,27),(27,29),(27,31),(29,31),
+    // Right leg
+    (24,26),(26,28),(28,30),(28,32),(30,32),
+];
+
+pub fn run_pose_tracking(req: &MlInferenceRequest) -> MlInferenceResult {
+    match run_pose_tracking_inner(req) {
+        Ok(r) => r,
+        Err(e) => MlInferenceResult {
+            node_id: req.node_id,
+            result_text: String::new(),
+            result_json: "[]".into(),
+            annotated_frame: Some(req.image.clone()),
+            status: format!("Error: {}", e),
+        },
+    }
+}
+
+fn run_pose_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult, String> {
+    use ort::session::Session;
+
+    let img_w = req.image.width  as f32;
+    let img_h = req.image.height as f32;
+
+    // ────────────────────────────────────────────────────────────────────────
+    // Stage 1 — Pose Detection (128×128 NCHW)
+    // ────────────────────────────────────────────────────────────────────────
+    let pose_sz = 128u32;
+    let ts = pose_sz as usize;
+    let pose_sz_f = pose_sz as f32;
+
+    let mut pose_sess = Session::builder()
+        .map_err(|e| format!("Session builder: {}", e))?
+        .commit_from_memory(BUNDLED_POSE_MODEL)
+        .map_err(|e| format!("Load pose model: {}", e))?;
+
+    let pose_resized = resize_image(&req.image, pose_sz, pose_sz);
+
+    // NCHW tensor, normalize to [-1, 1]
+    let mut pose_data = vec![0.0f32; 3 * ts * ts];
+    for y in 0..ts {
+        for x in 0..ts {
+            let si = (y * ts + x) * 4;
+            pose_data[0 * ts * ts + y * ts + x] = pose_resized[si]   as f32 / 127.5 - 1.0;
+            pose_data[1 * ts * ts + y * ts + x] = pose_resized[si+1] as f32 / 127.5 - 1.0;
+            pose_data[2 * ts * ts + y * ts + x] = pose_resized[si+2] as f32 / 127.5 - 1.0;
+        }
+    }
+    let pose_tensor = ort::value::Tensor::from_array(
+        ([1usize, 3, ts, ts], pose_data.into_boxed_slice())
+    ).map_err(|e| format!("Pose tensor: {}", e))?;
+
+    let pose_input_name = pose_sess.inputs().first().ok_or("No pose inputs")?.name().to_string();
+    let pose_outputs = pose_sess.run(ort::inputs![&pose_input_name => pose_tensor])
+        .map_err(|e| format!("Pose run: {}", e))?;
+
+    let mut tensors: Vec<(Vec<usize>, Vec<f32>)> = Vec::new();
+    for output in pose_outputs.iter() {
+        if let Ok((shape, data)) = output.1.try_extract_tensor::<f32>() {
+            tensors.push((shape.iter().map(|&d| d as usize).collect(), data.to_vec()));
+        }
+    }
+
+    // boxes: [1, 896, 12] — per-anchor: [cy,cx,h,w, kp0y,kp0x, kp1y,kp1x, kp2y,kp2x, kp3y,kp3x]
+    let boxes_t = tensors.iter().find(|(d,_)| d.len()==3 && d[2]==12);
+    let scores_t = tensors.iter().find(|(d,_)| d.len()==3 && d[2]==1)
+        .or_else(|| tensors.iter().find(|(d,_)| d.len()==2 && d[1]==1));
+    let (boxes, scores) = match (boxes_t, scores_t) {
+        (Some(b), Some(s)) => (b, s),
+        _ => return Err("Pose detector output format unrecognized".into()),
+    };
+
+    let num_anchors = boxes.0[1].min(scores.0[if scores.0.len()>=2 { 1 } else { 0 }]);
+    // Reuse BlazeFace anchor generation — same 896 config for 128×128
+    let anchors = generate_blazeface_anchors(pose_sz);
+
+    let mut candidates: Vec<(f32, usize)> = (0..num_anchors)
+        .map(|i| (sigmoid(scores.1[i]), i))
+        .filter(|(s, _)| *s >= req.confidence)
+        .collect();
+    candidates.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+
+    if candidates.is_empty() {
+        let best = (0..num_anchors).map(|i| sigmoid(scores.1[i])).fold(0.0f32, f32::max);
+        return Ok(MlInferenceResult {
+            node_id: req.node_id,
+            result_text: format!("No bodies ({:.1}%)", best * 100.0),
+            result_json: "[]".into(),
+            annotated_frame: Some(req.image.clone()),
+            status: format!("No bodies ({:.1}%)", best * 100.0),
+        });
+    }
+
+    // NMS — up to 2 bodies
+    let decode_box = |idx: usize| -> (f32, f32, f32, f32) {
+        let b = idx * 12;
+        let (ax, ay) = anchors.get(idx).copied().unwrap_or((0.5, 0.5));
+        let cy = (ay + boxes.1[b]   / pose_sz_f) * img_h;
+        let cx = (ax + boxes.1[b+1] / pose_sz_f) * img_w;
+        let h  = (boxes.1[b+2].abs() / pose_sz_f * img_h).max(1.0);
+        let w  = (boxes.1[b+3].abs() / pose_sz_f * img_w).max(1.0);
+        (cx - w/2.0, cy - h/2.0, cx + w/2.0, cy + h/2.0)
+    };
+    let box_center = |(x1,y1,x2,y2): (f32,f32,f32,f32)| -> (f32,f32) {
+        ((x1+x2)/2.0, (y1+y2)/2.0)
+    };
+    let box_iou = |(ax1,ay1,ax2,ay2): (f32,f32,f32,f32), (bx1,by1,bx2,by2): (f32,f32,f32,f32)| -> f32 {
+        let ix1 = ax1.max(bx1); let iy1 = ay1.max(by1);
+        let ix2 = ax2.min(bx2); let iy2 = ay2.min(by2);
+        let inter = (ix2-ix1).max(0.0) * (iy2-iy1).max(0.0);
+        let a = (ax2-ax1)*(ay2-ay1); let b = (bx2-bx1)*(by2-by1);
+        inter / (a + b - inter + 1e-6)
+    };
+    let min_dim = img_w.min(img_h);
+    let center_dist_threshold = min_dim * 0.25;
+
+    let mut selected: Vec<(f32, usize)> = Vec::new();
+    for (score, idx) in &candidates {
+        let box_a = decode_box(*idx);
+        let (ca_x, ca_y) = box_center(box_a);
+        let suppressed = selected.iter().any(|(_, sel)| {
+            let box_b = decode_box(*sel);
+            if box_iou(box_a, box_b) > 0.3 { return true; }
+            let (cb_x, cb_y) = box_center(box_b);
+            let dx = ca_x - cb_x; let dy = ca_y - cb_y;
+            (dx*dx + dy*dy).sqrt() < center_dist_threshold
+        });
+        if !suppressed { selected.push((*score, *idx)); }
+        if selected.len() >= 1 { break; } // single body only
+    }
+
+    // ────────────────────────────────────────────────────────────────────────
+    // Stage 2 — Pose Landmark (256×256 NHWC) for each detected body
+    // ────────────────────────────────────────────────────────────────────────
+    let lm_sz = 256u32;
+    let lm_ts = lm_sz as usize;
+    let lm_sz_f = lm_sz as f32;
+
+    let mut lm_sess = Session::builder()
+        .map_err(|e| format!("Session builder: {}", e))?
+        .commit_from_memory(BUNDLED_POSE_LANDMARK_MODEL)
+        .map_err(|e| format!("Load pose landmark model: {}", e))?;
+    let lm_input_name = lm_sess.inputs().first().ok_or("No landmark inputs")?.name().to_string();
+
+    let body_colors: [(u8,u8,u8); 2] = [(180,220,60), (255,160,60)]; // green-yellow, orange
+
+    let mut annotated = req.image.pixels.clone();
+    let mut all_json: Vec<String> = Vec::new();
+    let mut result_text = String::new();
+
+    for (body_idx, (body_score, anchor_idx)) in selected.iter().enumerate() {
+        let base = anchor_idx * 12;
+        let (ax, ay) = anchors.get(*anchor_idx).copied().unwrap_or((0.5, 0.5));
+
+        // Decode 4 body keypoints for crop centering
+        let mut kp_sum_x = 0.0f32; let mut kp_sum_y = 0.0f32;
+        let mut kp_min_x = f32::INFINITY; let mut kp_min_y = f32::INFINITY;
+        let mut kp_max_x = -f32::INFINITY; let mut kp_max_y = -f32::INFINITY;
+        for k in 0..4usize {
+            let ry = boxes.1[base + 4 + k * 2];
+            let rx = boxes.1[base + 4 + k * 2 + 1];
+            let kx = ((ax + rx / pose_sz_f) * img_w).clamp(0.0, img_w);
+            let ky = ((ay + ry / pose_sz_f) * img_h).clamp(0.0, img_h);
+            kp_sum_x += kx; kp_sum_y += ky;
+            kp_min_x = kp_min_x.min(kx); kp_min_y = kp_min_y.min(ky);
+            kp_max_x = kp_max_x.max(kx); kp_max_y = kp_max_y.max(ky);
+        }
+        let kp_cx = kp_sum_x / 4.0;
+        let kp_cy = kp_sum_y / 4.0;
+        let raw_bw = (boxes.1[base+3].abs() / pose_sz_f * img_w).max(40.0);
+        let raw_bh = (boxes.1[base+2].abs() / pose_sz_f * img_h).max(60.0);
+
+        // Body crop — taller than wide (full body), generous padding
+        let half_w = (raw_bw * 0.6).max((kp_max_x - kp_min_x) * 0.8).max(50.0);
+        let half_h = (raw_bh * 0.7).max((kp_max_y - kp_min_y) * 0.8).max(80.0);
+        let half = half_w.max(half_h);
+
+        let cx1 = (kp_cx - half * 1.3).max(0.0) as u32;
+        let cy1 = (kp_cy - half * 1.5).max(0.0) as u32;
+        let cx2 = (kp_cx + half * 1.3).min(img_w) as u32;
+        let cy2 = (kp_cy + half * 1.3).min(img_h) as u32;
+        if cx2 <= cx1 || cy2 <= cy1 { continue; }
+
+        // Build landmark input tensor (NHWC)
+        let cropped = crop_and_resize(&req.image, cx1, cy1, cx2, cy2, lm_sz, lm_sz);
+        let mut lm_data = vec![0.0f32; lm_ts * lm_ts * 3];
+        for y in 0..lm_ts {
+            for x in 0..lm_ts {
+                let si = (y * lm_ts + x) * 4;
+                let di = (y * lm_ts + x) * 3;
+                lm_data[di]     = cropped[si]   as f32 / 255.0;
+                lm_data[di + 1] = cropped[si+1] as f32 / 255.0;
+                lm_data[di + 2] = cropped[si+2] as f32 / 255.0;
+            }
+        }
+        let lm_tensor = ort::value::Tensor::from_array(
+            ([1usize, lm_ts, lm_ts, 3], lm_data.into_boxed_slice())
+        ).map_err(|e| format!("Pose landmark tensor: {}", e))?;
+
+        let lm_outputs = lm_sess.run(ort::inputs![&lm_input_name => lm_tensor])
+            .map_err(|e| format!("Pose landmark run: {}", e))?;
+
+        // Output Identity: [1, 195] = 39 landmarks × 5 (x, y, z, visibility, presence)
+        let lm_vals: Vec<f32> = {
+            let lm_out = lm_outputs.iter()
+                .find(|(name, _)| *name == "Identity")
+                .or_else(|| lm_outputs.iter().next())
+                .ok_or("No pose landmark output")?;
+            let (_, data) = lm_out.1.try_extract_tensor::<f32>()
+                .map_err(|e| format!("Pose landmark extract: {}", e))?;
+            data.to_vec()
+        };
+
+        // Use first 33 landmarks (skip 6 auxiliary at end)
+        let num_raw = lm_vals.len() / 5;
+        let num_landmarks = num_raw.min(33);
+        if num_landmarks < 33 { continue; }
+
+        let crop_w = (cx2 - cx1) as f32;
+        let crop_h = (cy2 - cy1) as f32;
+
+        // Coordinate scale: landmarks might be in [0, lm_sz] or [0, 1]
+        let max_lm = lm_vals.iter()
+            .take(33 * 5)
+            .enumerate()
+            .filter(|(i, _)| i % 5 < 2)  // only x,y values
+            .map(|(_, v)| *v)
+            .fold(0.0f32, f32::max);
+        let lm_scale = if max_lm <= 1.5 { 1.0 } else { 1.0 / lm_sz_f };
+
+        // Map 33 landmarks to image space
+        let mut keypoints: Vec<(f32, f32, f32, f32, &'static str)> = Vec::with_capacity(33);
+        for i in 0..33usize {
+            let lx = (lm_vals[i*5]     * lm_scale * crop_w + cx1 as f32).clamp(0.0, img_w);
+            let ly = (lm_vals[i*5 + 1] * lm_scale * crop_h + cy1 as f32).clamp(0.0, img_h);
+            let lz =  lm_vals[i*5 + 2] * lm_scale;
+            let vis = sigmoid(lm_vals[i*5 + 3]);
+            keypoints.push((lx, ly, lz, vis, POSE_LANDMARK_NAMES[i]));
+        }
+
+        // Bbox from landmarks (only visible ones)
+        let visible: Vec<&(f32,f32,f32,f32,&str)> = keypoints.iter()
+            .filter(|(_, _, _, vis, _)| *vis > 0.3)
+            .collect();
+        let (bx1, by1, bx2, by2) = if visible.len() >= 4 {
+            let min_x = visible.iter().map(|(x,_,_,_,_)| *x).fold(f32::INFINITY,  f32::min);
+            let min_y = visible.iter().map(|(_,y,_,_,_)| *y).fold(f32::INFINITY,  f32::min);
+            let max_x = visible.iter().map(|(x,_,_,_,_)| *x).fold(-f32::INFINITY, f32::max);
+            let max_y = visible.iter().map(|(_,y,_,_,_)| *y).fold(-f32::INFINITY, f32::max);
+            let pad = ((max_x - min_x).max(max_y - min_y) * 0.05).max(4.0);
+            ((min_x - pad).max(0.0), (min_y - pad).max(0.0),
+             (max_x + pad).min(img_w), (max_y + pad).min(img_h))
+        } else {
+            (cx1 as f32, cy1 as f32, cx2 as f32, cy2 as f32)
+        };
+
+        // ── Annotate ──────────────────────────────────────────────────────
+        let (lr, lg, lb) = body_colors[body_idx % 2];
+
+        // Draw skeleton bones (only when both joints are visible)
+        for &(a, b) in &POSE_SKELETON {
+            if a < keypoints.len() && b < keypoints.len() {
+                let (ax, ay, _, a_vis, _) = keypoints[a];
+                let (bx, by, _, b_vis, _) = keypoints[b];
+                if a_vis > 0.3 && b_vis > 0.3 {
+                    draw_line(&mut annotated, req.image.width, req.image.height,
+                        ax as i32, ay as i32, bx as i32, by as i32, lr, lg, lb, 2);
+                }
+            }
+        }
+
+        // Draw joint dots
+        let major_joints: [usize; 12] = [11,12,13,14,15,16,23,24,25,26,27,28];
+        for (i, (kx, ky, _, vis, _)) in keypoints.iter().enumerate() {
+            if *vis < 0.3 { continue; }
+            let is_major = major_joints.contains(&i);
+            let (outer, inner) = if is_major { (8, 5) } else { (5, 3) };
+            draw_circle(&mut annotated, req.image.width, req.image.height, *kx as i32, *ky as i32, outer, 20, 20, 20);
+            draw_circle(&mut annotated, req.image.width, req.image.height, *kx as i32, *ky as i32, inner, lr, lg, lb);
+            draw_circle(&mut annotated, req.image.width, req.image.height, *kx as i32, *ky as i32, 2, 255, 255, 255);
+        }
+
+        // Bbox
+        let (bx1i, by1i, bx2i, by2i) = (bx1 as i32, by1 as i32, bx2 as i32, by2 as i32);
+        for t in 0..2i32 {
+            draw_line(&mut annotated, req.image.width, req.image.height, bx1i, by1i+t, bx2i, by1i+t, lr, lg, lb, 1);
+            draw_line(&mut annotated, req.image.width, req.image.height, bx2i-t, by1i, bx2i-t, by2i, lr, lg, lb, 1);
+            draw_line(&mut annotated, req.image.width, req.image.height, bx2i, by2i-t, bx1i, by2i-t, lr, lg, lb, 1);
+            draw_line(&mut annotated, req.image.width, req.image.height, bx1i+t, by2i, bx1i+t, by1i, lr, lg, lb, 1);
+        }
+
+        // JSON output
+        let b_idx = body_idx;
+        result_text.push_str(&format!("Body {} ({:.1}%)\n", b_idx+1, body_score * 100.0));
+
+        all_json.push(format!(
+            r#"{{"type":"body_bbox","body":{b_idx},"x1":{:.1},"y1":{:.1},"x2":{:.1},"y2":{:.1},"confidence":{:.4}}}"#,
+            bx1, by1, bx2, by2, body_score
+        ));
+
+        for (kx, ky, kz, vis, name) in &keypoints {
+            all_json.push(format!(
+                r#"{{"type":"body_landmark","body":{b_idx},"name":"{}","x":{:.1},"y":{:.1},"z":{:.3},"visibility":{:.3}}}"#,
+                name, kx, ky, kz, vis
+            ));
+        }
+    }
+
+    let body_count = selected.len();
+    let best_score = selected.first().map(|(s,_)| *s).unwrap_or(0.0);
+    let status = match body_count {
+        0 => "No bodies".to_string(),
+        1 => format!("1 body ({:.1}%)", best_score * 100.0),
+        n => format!("{} bodies ({:.1}%)", n, best_score * 100.0),
+    };
+
+    Ok(MlInferenceResult {
+        node_id: req.node_id,
+        result_text,
+        result_json: format!("[{}]", all_json.join(",")),
+        annotated_frame: Some(Arc::new(crate::graph::ImageData {
+            width: req.image.width,
+            height: req.image.height,
+            pixels: annotated,
+        })),
+        status,
+    })
 }
 
 fn iou(a: &Detection, b: &Detection) -> f32 {

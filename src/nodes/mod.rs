@@ -28,6 +28,7 @@ pub mod mcp_server;
 pub mod rust_plugin;
 pub mod synth;
 pub mod audio_player;
+pub mod audio_playlist;
 pub mod audio_device;
 pub mod audio_delay;
 pub mod audio_distortion;
@@ -56,6 +57,8 @@ pub mod map_range_node;
 pub mod string_format_node;
 pub mod text_editor_node;
 pub mod mouse_tracker_node;
+pub mod point_2d_node;
+pub mod fill_node;
 pub mod key_input_node;
 pub mod time_node;
 pub mod file_node;
@@ -94,6 +97,13 @@ pub mod route_node;
 pub mod tts_node;
 pub mod terminal_node;
 pub mod text_ops_node;
+pub mod printer_node;
+pub mod keypoint_extract;
+pub mod smoother;
+pub mod hand_detection;
+pub mod face_detection;
+pub mod pose_detection;
+pub mod json_fields;
 
 use crate::graph::*;
 use crate::midi::MidiAction;
@@ -269,15 +279,16 @@ pub fn catalog() -> Vec<NodeCatalogEntry> {
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(color_node::ColorNode::default()) } } },
         NodeCatalogEntry { label: "Mouse Tracker", category: "Input",
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(mouse_tracker_node::MouseTrackerNode::default()) } } },
+        NodeCatalogEntry { label: "Point 2D", category: "Input",
+            factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(point_2d_node::Point2dNode::default()) } } },
         NodeCatalogEntry { label: "Keyboard Input", category: "Input",
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(key_input_node::KeyInputNode::default()) } } },
 
         // ── Math ─────────────────────────────────────────────
         NodeCatalogEntry { label: "Add", category: "Math", factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(add_node::AddNode::default()) } } },
         NodeCatalogEntry { label: "Multiply", category: "Math", factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(multiply_node::MultiplyNode::default()) } } },
-        NodeCatalogEntry { label: "Math", category: "Math", factory: || NodeType::Math {
-            formula: "A + B".into(), variables: vec!['A', 'B'], result: 0.0, error: String::new(),
-        } },
+        NodeCatalogEntry { label: "Math", category: "Math",
+            factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(math_formula::MathNode::default()) } } },
         NodeCatalogEntry { label: "Gate", category: "Logic",
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(gate_node::GateNode::default()) } } },
         NodeCatalogEntry { label: "Timer", category: "Input",
@@ -289,7 +300,7 @@ pub fn catalog() -> Vec<NodeCatalogEntry> {
         NodeCatalogEntry { label: "Sample & Hold", category: "Logic",
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(sample_hold_node::SampleHoldNode::default()) } } },
         NodeCatalogEntry { label: "Select", category: "Logic",
-            factory: || NodeType::Select { mode: 0 } },
+            factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(select::SelectNode::default()) } } },
         NodeCatalogEntry { label: "Route", category: "Logic",
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(route_node::RouteNode::default()) } } },
         NodeCatalogEntry { label: "Switch", category: "Logic",
@@ -337,7 +348,7 @@ pub fn catalog() -> Vec<NodeCatalogEntry> {
         NodeCatalogEntry { label: "Image Effects", category: "Image",
             factory: || NodeType::ImageEffects { brightness: 1.0, contrast: 1.0, saturation: 1.0, hue: 0.0, exposure: 0.0, gamma: 1.0 } },
         NodeCatalogEntry { label: "Blend", category: "Image",
-            factory: || NodeType::Blend { mode: 0, mix: 0.5 } },
+            factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(blend::BlendNode::default()) } } },
         NodeCatalogEntry { label: "Crop", category: "Image",
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(crop_node::CropNode::default()) } } },
         NodeCatalogEntry { label: "Color Curves", category: "Image",
@@ -348,6 +359,8 @@ pub fn catalog() -> Vec<NodeCatalogEntry> {
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(image_style_node::ImageStyleNode::default()) } } },
         NodeCatalogEntry { label: "Color Channel", category: "Image",
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(color_channel_node::ColorChannelNode::default()) } } },
+        NodeCatalogEntry { label: "Fill", category: "Image",
+            factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(fill_node::FillNode::default()) } } },
         NodeCatalogEntry { label: "WGSL Presets", category: "Shader",
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(wgsl_presets::WgslPresetsNode::default()) } } },
 
@@ -390,6 +403,8 @@ pub fn catalog() -> Vec<NodeCatalogEntry> {
             factory: || NodeType::AudioMixer { channel_count: 2, gains: vec![0.8, 0.8] } },
         NodeCatalogEntry { label: "Audio Player", category: "Audio",
             factory: || NodeType::AudioPlayer { file_path: String::new(), volume: 1.0, looping: false, duration_secs: 0.0 } },
+        NodeCatalogEntry { label: "Playlist", category: "Audio",
+            factory: || NodeType::AudioPlaylist { tracks: Vec::new(), current_index: 0, volume: 1.0, loop_playlist: false, duration_secs: 0.0 } },
         NodeCatalogEntry { label: "Microphone", category: "Audio",
             factory: || NodeType::AudioInput { selected_device: String::new(), gain: 1.0, active: false } },
         NodeCatalogEntry { label: "Audio Sampler", category: "Audio",
@@ -471,16 +486,28 @@ pub fn catalog() -> Vec<NodeCatalogEntry> {
             factory: || NodeType::ObDistance { device_id: 1, hub_node_id: 0, label_color: [255, 255, 255] } },
         NodeCatalogEntry { label: "OB Orb", category: "Hardware",
             factory: || NodeType::ObOrb { device_id: 1, hub_node_id: 0, mode: 0, color: [255, 255, 255], param1: 0.0, param2: 0.0, speed: 1.0, brightness: 1.0 } },
+        NodeCatalogEntry { label: "Printer", category: "Hardware",
+            factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(printer_node::PrinterNode::default()) } } },
+        // Keypoint Extract removed from catalog — superseded by JSON Fields.
+        // Registration kept in node_trait.rs for backward compat with saved projects.
+        NodeCatalogEntry { label: "Hand Tracking", category: "ML",
+            factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(hand_detection::HandDetectionNode::default()) } } },
+        NodeCatalogEntry { label: "Face Tracking", category: "ML",
+            factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(face_detection::FaceDetectionNode::default()) } } },
+        NodeCatalogEntry { label: "Body Tracking", category: "ML",
+            factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(pose_detection::PoseDetectionNode::default()) } } },
+        NodeCatalogEntry { label: "JSON Fields", category: "ML",
+            factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(json_fields::JsonFieldsNode::default()) } } },
+        NodeCatalogEntry { label: "ML Model", category: "ML",
+            factory: || NodeType::MlModel { model_path: String::new(), labels_path: String::new(), confidence: 0.05, preset: MlPreset::default(), result_text: String::new(), result_json: String::new(), annotated_frame: None, status: String::new(), last_input_hash: 0, interval_secs: 0.5, last_inference_secs: 0.0 } },
+        NodeCatalogEntry { label: "Smoother", category: "Math",
+            factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(smoother::SmootherNode::default()) } } },
 
         // ── Custom ───────────────────────────────────────────
         NodeCatalogEntry { label: "Script", category: "Custom",
             factory: || NodeType::Script { name: "Custom Script".to_string(), input_names: vec![], output_names: vec![], code: String::new(), last_values: vec![], error: String::new(), continuous: true, trigger: false } },
         NodeCatalogEntry { label: "Rust Plugin", category: "Custom",
             factory: || NodeType::RustPlugin { input_names: vec!["in0".into()], output_names: vec!["out0".into()], code: String::new(), last_values: vec![0.0], error: String::new() } },
-
-        // ── ML / AI ──────────────────────────────────────────
-        NodeCatalogEntry { label: "ML Model", category: "ML",
-            factory: || NodeType::MlModel { model_path: String::new(), labels_path: String::new(), confidence: 0.05, preset: MlPreset::default(), result_text: String::new(), result_json: String::new(), annotated_frame: None, status: String::new(), last_input_hash: 0, interval_secs: 0.5, last_inference_secs: 0.0 } },
 
         // ── Utility ──────────────────────────────────────────
         NodeCatalogEntry { label: "Comment", category: "Utility",
@@ -562,8 +589,7 @@ pub fn render_content(
         NodeType::Slider { value, min, max, step, slider_color, label } => slider::render(ui, value, min, max, step, slider_color, label, node_id, values, connections, port_positions, dragging_from, pending_disconnects),
         // Display migrated to trait-based node
         // Add, Multiply migrated to trait-based nodes
-        NodeType::Math { formula, variables, result, error, .. } =>
-            math_formula::render(ui, formula, variables, result, error, node_id, values, connections, port_positions, dragging_from, pending_disconnects),
+        // Math migrated to trait-based node
         // File migrated to trait-based node
         // TextEditor migrated to trait-based node
         NodeType::WgslViewer {
@@ -620,6 +646,7 @@ pub fn render_content(
         NodeType::ObOrb { .. } => ob_orb::render(ui, node_id, node_type, values, connections, ob_manager, port_positions, dragging_from, pending_disconnects),
         NodeType::Synth { .. } => synth::render(ui, node_id, node_type, values, connections, audio_manager, port_positions, dragging_from, pending_disconnects),
         NodeType::AudioPlayer { .. } => audio_player::render(ui, node_id, node_type, values, connections, audio_manager, port_positions, dragging_from, pending_disconnects),
+        NodeType::AudioPlaylist { .. } => audio_playlist::render(ui, node_id, node_type, values, connections, audio_manager, port_positions, dragging_from, pending_disconnects),
         NodeType::AudioInput { .. } => audio_input::render(ui, node_id, node_type, values, connections, audio_manager, port_positions, dragging_from, pending_disconnects),
         NodeType::AudioAnalyzer => audio_analyzer::render(ui, node_id, values, audio_manager, port_positions, dragging_from, connections, pending_disconnects),
         NodeType::SpectrumAnalyzer => spectrum_analyzer::render(ui, node_id, values, audio_manager, port_positions, dragging_from, connections, pending_disconnects),
@@ -643,7 +670,7 @@ pub fn render_content(
         NodeType::ImageNode { .. } => image_node::render(ui, node_id, node_type, values, connections),
         // Crop migrated to trait-based node
         NodeType::ImageEffects { .. } => image_effects::render(ui, node_id, node_type, values, connections, port_positions, dragging_from, pending_disconnects),
-        NodeType::Blend { .. } => blend::render(ui, node_id, node_type, values, connections, wgpu_render_state, port_positions, dragging_from, pending_disconnects),
+        // Blend migrated to trait-based node
         NodeType::Curve { .. } => curve::render(ui, node_id, node_type, values, connections, port_positions, dragging_from, pending_disconnects),
         NodeType::Draw { .. } => {} // migrated to trait — legacy fallback
         // Noise migrated to trait-based node
@@ -655,8 +682,7 @@ pub fn render_content(
         NodeType::Timer { interval, elapsed, running, pulse_width, ref_time, paused_elapsed, time_initialized } =>
             timer::render(ui, interval, elapsed, running, pulse_width, ref_time, paused_elapsed, time_initialized, node_id, values, connections, port_positions, dragging_from, pending_disconnects), // legacy — new timers use Dynamic
         // MapRange, StringFormat, SampleHold, VisualOutput migrated to trait-based nodes
-        NodeType::Select { mode } =>
-            select::render(ui, mode, node_id, values, connections, port_positions, dragging_from, pending_disconnects),
+        // Select migrated to trait-based node
         NodeType::FolderBrowser { .. } => {} // migrated to trait — legacy fallback
         NodeType::SampleHold { .. } => {} // migrated to trait — legacy enum fallback
         NodeType::NetworkSend { schema, identity_mode, persistent_secret, label, last_link, last_peer_count, initialized, .. } =>
@@ -667,6 +693,7 @@ pub fn render_content(
             let mut ctx = crate::node_trait::RenderContext {
                 node_id, values, connections,
                 port_positions, dragging_from, pending_disconnects,
+                wgpu_render_state: wgpu_render_state.as_ref(),
             };
             inner.node.render_with_context(ui, &mut ctx);
         }

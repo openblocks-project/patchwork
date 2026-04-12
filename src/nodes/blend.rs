@@ -1,32 +1,112 @@
 use crate::graph::*;
 use crate::gpu_image::GpuBlendCallback;
+use crate::node_trait::{NodeBehavior, RenderContext};
 use crate::nodes::{inline_port_circle, output_port_row};
 use eframe::egui;
 use eframe::egui_wgpu;
 use eframe::egui_wgpu::wgpu;
+use serde::{Serialize, Deserialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 
 const BLEND_MODES: &[&str] = &["Normal", "Multiply", "Screen", "Overlay", "Add", "Difference", "Soft Light", "Hard Light"];
 
+// ── Node struct ───────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BlendNode {
+    #[serde(default)]
+    pub mode: u8,
+    #[serde(default = "default_half")]
+    pub mix: f32,
+}
+
+fn default_half() -> f32 { 0.5 }
+
+impl Default for BlendNode {
+    fn default() -> Self { Self { mode: 0, mix: 0.5 } }
+}
+
+impl NodeBehavior for BlendNode {
+    fn title(&self)        -> &str    { "Blend" }
+    fn type_tag(&self)     -> &str    { "blend" }
+    fn color_hint(&self)   -> [u8; 3] { [160, 100, 180] }
+    fn inline_ports(&self) -> bool    { true }
+
+    fn needs_cpu_image_input(&self, _port: usize) -> bool { false }
+
+    fn blend_params(&self) -> Option<(u8, f32)> { Some((self.mode, self.mix)) }
+
+    fn inputs(&self) -> Vec<PortDef> {
+        vec![
+            PortDef::new("A",   PortKind::Image),
+            PortDef::new("B",   PortKind::Image),
+            PortDef::new("Mix", PortKind::Normalized),
+        ]
+    }
+
+    fn outputs(&self) -> Vec<PortDef> {
+        vec![PortDef::new("Image", PortKind::Image)]
+    }
+
+    fn save_state(&self) -> serde_json::Value {
+        serde_json::json!({ "mode": self.mode, "mix": self.mix })
+    }
+
+    fn load_state(&mut self, state: &serde_json::Value) {
+        if let Some(m) = state.get("mode").and_then(|v| v.as_u64()) { self.mode = m as u8; }
+        if let Some(m) = state.get("mix").and_then(|v| v.as_f64())  { self.mix = m as f32; }
+    }
+
+    fn render_with_context(&mut self, ui: &mut egui::Ui, ctx: &mut RenderContext) {
+        let target_format = ctx.wgpu_render_state
+            .map(|rs| rs.target_format)
+            .unwrap_or(eframe::egui_wgpu::wgpu::TextureFormat::Bgra8UnormSrgb);
+        render(
+            ui,
+            &mut self.mode,
+            &mut self.mix,
+            ctx.node_id,
+            ctx.values,
+            ctx.connections,
+            target_format,
+            ctx.port_positions,
+            ctx.dragging_from,
+            ctx.pending_disconnects,
+        );
+    }
+}
+
+// ── Registration ──────────────────────────────────────────────────────────────
+
+#[allow(dead_code)]
+pub fn register(registry: &mut crate::node_trait::NodeRegistryInner) {
+    registry.register("blend", |state| {
+        let mut n = BlendNode::default();
+        n.load_state(state);
+        Box::new(n)
+    });
+}
+
+// ── Render function ───────────────────────────────────────────────────────────
+
 pub fn render(
     ui: &mut egui::Ui,
+    mode: &mut u8,
+    mix: &mut f32,
     node_id: NodeId,
-    node_type: &mut NodeType,
     values: &HashMap<(NodeId, usize), PortValue>,
     connections: &[Connection],
-    wgpu_render_state: &Option<egui_wgpu::RenderState>,
+    target_format: eframe::egui_wgpu::wgpu::TextureFormat,
     port_positions: &mut HashMap<(NodeId, usize, bool), egui::Pos2>,
     dragging_from: &mut Option<(NodeId, usize, bool)>,
     pending_disconnects: &mut Vec<(NodeId, usize)>,
 ) {
-    let (mode, mix) = match node_type {
-        NodeType::Blend { mode, mix } => (mode, mix),
-        _ => return,
-    };
 
     let mix_wired = connections.iter().any(|c| c.to_node == node_id && c.to_port == 2);
 
+    // When Mix port is wired, use the wired value for display; the eval loop
+    // reads it ephemerally from port values, so we only update the local copy here.
     if mix_wired {
         *mix = Graph::static_input_value(connections, values, node_id, 2).as_float();
     }
@@ -103,9 +183,7 @@ pub fn render(
             let preview_h = preview_w * aspect;
             let (rect, _) = ui.allocate_exact_size(egui::vec2(preview_w, preview_h), egui::Sense::hover());
 
-            let target_format = wgpu_render_state.as_ref()
-                .map(|rs| rs.target_format)
-                .unwrap_or(eframe::egui_wgpu::wgpu::TextureFormat::Bgra8UnormSrgb);
+            let target_format = target_format;
             ui.painter().add(egui_wgpu::Callback::new_paint_callback(
                 rect,
                 GpuBlendCallback {

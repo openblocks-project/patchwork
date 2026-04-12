@@ -493,17 +493,31 @@ impl super::PatchworkApp {
             // Mark this node as no longer running so next request can be dispatched
             self.ml_running.remove(&nid);
             if let Some(node) = self.graph.nodes.get_mut(&nid) {
-                if let NodeType::MlModel { result_text, result_json, annotated_frame, status, .. } = &mut node.node_type {
-                    *result_text = result.result_text;
-                    *result_json = result.result_json;
-                    *annotated_frame = result.annotated_frame;
-                    let s = result.status.clone();
-                    *status = s;
-                    if status.starts_with("Error") || status.starts_with("error") {
-                        crate::node_errors::report_for(nid, format!("ML inference: {}", status));
-                    } else {
-                        crate::node_errors::clear(nid);
+                match &mut node.node_type {
+                    NodeType::MlModel { result_text, result_json, annotated_frame, status, .. } => {
+                        *result_text = result.result_text;
+                        *result_json = result.result_json;
+                        *annotated_frame = result.annotated_frame;
+                        let s = result.status.clone();
+                        *status = s;
+                        if status.starts_with("Error") || status.starts_with("error") {
+                            crate::node_errors::report_for(nid, format!("ML inference: {}", status));
+                        } else {
+                            crate::node_errors::clear(nid);
+                        }
                     }
+                    NodeType::Dynamic { inner, .. } => {
+                        // Trait-based ML nodes — route result to the correct
+                        // egui temp key so each node type reads its own results.
+                        let key = match inner.node.type_tag() {
+                            "face_detection" => "face_det_result",
+                            "pose_detection" => "pose_det_result",
+                            _                => "hand_det_result",
+                        };
+                        let result_id = egui::Id::new((key, nid));
+                        ctx.data_mut(|d| d.insert_temp(result_id, result));
+                    }
+                    _ => {}
                 }
             }
         }

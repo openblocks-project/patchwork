@@ -46,6 +46,7 @@ impl Default for TimeNode {
 
 impl NodeBehavior for TimeNode {
     fn title(&self) -> &str { "Time" }
+    fn inline_ports(&self) -> bool { true }
     fn inputs(&self) -> Vec<PortDef> {
         vec![PortDef::new("Speed", PortKind::Number)]
     }

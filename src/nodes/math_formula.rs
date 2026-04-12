@@ -1,5 +1,7 @@
 use crate::graph::*;
+use crate::node_trait::{NodeBehavior, RenderContext};
 use eframe::egui;
+use serde::{Serialize, Deserialize};
 use std::collections::{BTreeSet, HashMap};
 
 /// Detect single uppercase letters A-Z used as variables in the formula
@@ -117,23 +119,121 @@ const PRESET_GROUPS: &[PresetGroup] = &[
     ]},
 ];
 
-pub fn render(
+// ── Node struct ───────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MathNode {
+    #[serde(default = "default_formula")]
+    pub formula: String,
+    #[serde(default)]
+    pub variables: Vec<char>,
+    #[serde(default)]
+    pub result: f64,
+    #[serde(skip)]
+    pub error: String,
+}
+
+fn default_formula() -> String { "A + B".to_string() }
+
+impl Default for MathNode {
+    fn default() -> Self {
+        Self {
+            formula:   "A + B".to_string(),
+            variables: vec!['A', 'B'],
+            result:    0.0,
+            error:     String::new(),
+        }
+    }
+}
+
+// ── NodeBehavior ──────────────────────────────────────────────────────────────
+
+impl NodeBehavior for MathNode {
+    fn title(&self)      -> &str    { "Math" }
+    fn type_tag(&self)   -> &str    { "math" }
+    fn color_hint(&self) -> [u8; 3] { [200, 160, 80] }
+    fn no_title(&self)   -> bool    { true }
+    fn inline_ports(&self) -> bool  { true }
+
+    fn inputs(&self) -> Vec<PortDef> {
+        self.variables.iter()
+            .map(|c| PortDef::dynamic(c.to_string(), PortKind::Number))
+            .collect()
+    }
+
+    fn outputs(&self) -> Vec<PortDef> {
+        vec![PortDef::new("Result", PortKind::Number)]
+    }
+
+    fn evaluate(&mut self, inputs: &[PortValue]) -> Vec<(usize, PortValue)> {
+        // Build variable map from the inputs array (already resolved by the graph).
+        // Unwired ports arrive as PortValue::None → as_float() → 0.0, same as before.
+        let mut var_values: HashMap<char, f64> = HashMap::new();
+        for (i, &ch) in self.variables.iter().enumerate() {
+            let val = inputs.get(i).map(|v| v.as_float() as f64).unwrap_or(0.0);
+            var_values.insert(ch, val);
+        }
+
+        if !self.formula.is_empty() {
+            match evaluate_formula(&self.formula, &var_values) {
+                Ok(val) => {
+                    self.result = val;
+                    self.error.clear();
+                }
+                Err(e) => {
+                    self.error = e;
+                }
+            }
+        }
+
+        vec![(0, PortValue::Float(self.result as f32))]
+    }
+
+    fn save_state(&self) -> serde_json::Value {
+        serde_json::json!({
+            "formula":   self.formula,
+            "variables": self.variables.iter().map(|c| c.to_string()).collect::<Vec<_>>(),
+            "result":    self.result,
+        })
+    }
+
+    fn load_state(&mut self, state: &serde_json::Value) {
+        if let Some(f) = state.get("formula").and_then(|v| v.as_str()) {
+            self.formula = f.to_string();
+            self.variables = detect_variables(&self.formula);
+        }
+        if let Some(r) = state.get("result").and_then(|v| v.as_f64()) {
+            self.result = r;
+        }
+    }
+
+    fn render_with_context(&mut self, ui: &mut egui::Ui, ctx: &mut RenderContext) {
+        render_content(
+            ui,
+            &mut self.formula,
+            &mut self.variables,
+            &mut self.result,
+            &mut self.error,
+            ctx,
+        );
+    }
+}
+
+// ── Render ────────────────────────────────────────────────────────────────────
+
+fn render_content(
     ui: &mut egui::Ui,
     formula: &mut String,
     variables: &mut Vec<char>,
     result: &mut f64,
     error: &mut String,
-    node_id: NodeId,
-    values: &HashMap<(NodeId, usize), PortValue>,
-    connections: &[Connection],
-    port_positions: &mut HashMap<(NodeId, usize, bool), egui::Pos2>,
-    dragging_from: &mut Option<(NodeId, usize, bool)>,
-    pending_disconnects: &mut Vec<(NodeId, usize)>,
+    ctx: &mut RenderContext,
 ) {
+    let node_id = ctx.node_id;
     let accent = ui.visuals().hyperlink_color;
     let dim = ui.visuals().widgets.noninteractive.fg_stroke.color;
 
-    // ── Preset buttons (always visible, grouped) ───────────
+    // ── Preset buttons ────────────────────────────────────────
     for group in PRESET_GROUPS {
         ui.horizontal_wrapped(|ui| {
             ui.label(egui::RichText::new(format!("{}:", group.name)).small().color(dim));
@@ -144,8 +244,10 @@ pub fn render(
                 } else {
                     egui::RichText::new(*label).small().strong()
                 };
-                let btn = ui.add(egui::Button::new(text).small().frame(true)
-                    .fill(if is_current { accent.gamma_multiply(0.2) } else { ui.visuals().widgets.inactive.bg_fill }));
+                let btn = ui.add(
+                    egui::Button::new(text).small().frame(true)
+                        .fill(if is_current { accent.gamma_multiply(0.2) } else { ui.visuals().widgets.inactive.bg_fill })
+                );
                 if btn.clicked() {
                     *formula = preset_formula.to_string();
                     *variables = detect_variables(formula);
@@ -159,7 +261,7 @@ pub fn render(
 
     ui.separator();
 
-    // ── Formula editor ─────────────────────────────────────
+    // ── Formula editor ────────────────────────────────────────
     let old_formula = formula.clone();
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new("f =").strong());
@@ -177,19 +279,15 @@ pub fn render(
 
     ui.separator();
 
-    // ── Input ports (one per detected variable) ────────────
-    let mut var_values: HashMap<char, f64> = HashMap::new();
+    // ── Input ports (one per detected variable) ───────────────
     for (i, &ch) in variables.iter().enumerate() {
-        let is_wired = connections.iter().any(|c| c.to_node == node_id && c.to_port == i);
-        let val = if is_wired {
-            Graph::static_input_value(connections, values, node_id, i).as_float() as f64
-        } else {
-            0.0
-        };
-        var_values.insert(ch, val);
+        let is_wired = ctx.connections.iter().any(|c| c.to_node == node_id && c.to_port == i);
+        // Display the value that evaluate() already computed this frame.
+        let val = Graph::static_input_value(ctx.connections, ctx.values, node_id, i).as_float() as f64;
 
         ui.horizontal(|ui| {
-            super::inline_port_circle(ui, node_id, i, true, connections, port_positions, dragging_from, pending_disconnects, PortKind::Number);
+            super::inline_port_circle(ui, node_id, i, true, ctx.connections,
+                ctx.port_positions, ctx.dragging_from, ctx.pending_disconnects, PortKind::Number);
             ui.label(egui::RichText::new(format!("{}", ch)).strong());
             if is_wired {
                 ui.label(egui::RichText::new(format!("{:.3}", val)).monospace().small().color(accent));
@@ -199,29 +297,33 @@ pub fn render(
         });
     }
 
-    // ── Evaluate ───────────────────────────────────────────
-    if !formula.is_empty() {
-        match evaluate_formula(formula, &var_values) {
-            Ok(val) => {
-                *result = val;
-                error.clear();
-                crate::node_errors::clear(node_id);
-            }
-            Err(e) => {
-                crate::node_errors::report_for(node_id, format!("Formula: {}", e));
-                *error = e;
-            }
-        }
-    } else {
-        // Empty formula is not an error — drop any sticky badge.
+    // ── Error badge management (needs node_id, lives here not in evaluate) ──
+    if error.is_empty() {
         crate::node_errors::clear(node_id);
+    } else {
+        crate::node_errors::report_for(node_id, format!("Formula: {}", error));
     }
 
-    // ── Result ─────────────────────────────────────────────
+    // ── Result output port ────────────────────────────────────
     if error.is_empty() {
-        super::output_port_row(ui, "=", &format!("{:.4}", result), node_id, 0, port_positions, dragging_from, connections, pending_disconnects, PortKind::Number);
+        super::output_port_row(ui, "=", &format!("{:.4}", result),
+            node_id, 0, ctx.port_positions, ctx.dragging_from,
+            ctx.connections, ctx.pending_disconnects, PortKind::Number);
     } else {
-        ui.colored_label(egui::Color32::from_rgb(255, 100, 100),
-            egui::RichText::new(&*error).small());
+        ui.colored_label(
+            egui::Color32::from_rgb(255, 100, 100),
+            egui::RichText::new(&*error).small(),
+        );
     }
+}
+
+// ── Registration ──────────────────────────────────────────────────────────────
+
+#[allow(dead_code)]
+pub fn register(registry: &mut crate::node_trait::NodeRegistryInner) {
+    registry.register("math", |state| {
+        let mut n = MathNode::default();
+        n.load_state(state);
+        Box::new(n)
+    });
 }

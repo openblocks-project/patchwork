@@ -15,12 +15,6 @@ pub fn render(
 ) {
     let _ = values;
 
-    // Audio input port
-    crate::nodes::inline_port_circle(
-        ui, node_id, 0, true, connections,
-        port_positions, dragging_from, pending_disconnects, PortKind::Audio,
-    );
-
     // Read analysis stored by app/mod.rs (which does the source tracing)
     let (amp, peak, bass, mid, treble, source_name) = ui.ctx().data_mut(|d| {
         let vals: [f32; 5] = d.get_temp(egui::Id::new(("audio_analysis", node_id))).unwrap_or([0.0; 5]);
@@ -28,12 +22,18 @@ pub fn render(
         (vals[0], vals[1], vals[2], vals[3], vals[4], name)
     });
 
-    // Connection status
-    if source_name.is_empty() {
-        ui.label(egui::RichText::new("Connect audio input").small().color(egui::Color32::from_rgb(100, 100, 110)));
-    } else {
-        ui.label(egui::RichText::new(format!("← {}", source_name)).small().color(egui::Color32::from_rgb(80, 200, 120)));
-    }
+    // Audio input port + connection status (single inline row)
+    ui.horizontal(|ui| {
+        crate::nodes::inline_port_circle(
+            ui, node_id, 0, true, connections,
+            port_positions, dragging_from, pending_disconnects, PortKind::Audio,
+        );
+        if source_name.is_empty() {
+            ui.label(egui::RichText::new("Connect audio input").small().color(egui::Color32::from_rgb(100, 100, 110)));
+        } else {
+            ui.label(egui::RichText::new(format!("← {}", source_name)).small().color(egui::Color32::from_rgb(80, 200, 120)));
+        }
+    });
 
     // Audio pass-through output (port 0) — placed before closure to avoid borrow conflicts
     crate::nodes::audio_port_row(ui, "Audio", node_id, 0, false, port_positions, dragging_from, connections, pending_disconnects, PortKind::Audio);
@@ -43,20 +43,27 @@ pub fn render(
     let bar_h = 8.0;
 
     let mut meter = |ui: &mut egui::Ui, label: &str, value: f32, color: egui::Color32, port: usize| {
-        ui.horizontal(|ui| {
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            // Port circle flush at right edge
             crate::nodes::inline_port_circle(
                 ui, node_id, port, false, connections,
                 port_positions, dragging_from, pending_disconnects, PortKind::Normalized,
             );
-            let (rect, _) = ui.allocate_exact_size(egui::vec2(bar_w, bar_h), egui::Sense::hover());
+            // Value label
+            ui.label(egui::RichText::new(format!("{:.0}%", value * 100.0)).small().monospace());
+            // Bar fills remaining space
+            let available = ui.available_width().max(20.0).min(bar_w);
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(available, bar_h), egui::Sense::hover());
             let painter = ui.painter();
             painter.rect_filled(rect, 2.0, egui::Color32::from_rgb(25, 25, 30));
             let fill_w = rect.width() * value.clamp(0.0, 1.0);
             if fill_w > 0.5 {
+                // Bar fills left-to-right even in RTL layout
                 let fill_rect = egui::Rect::from_min_size(rect.min, egui::vec2(fill_w, rect.height()));
                 painter.rect_filled(fill_rect, 2.0, color);
             }
-            ui.label(egui::RichText::new(format!("{} {:.0}%", label, value * 100.0)).small().monospace());
+            // Label at the left
+            ui.label(egui::RichText::new(label).small().color(egui::Color32::from_rgb(160, 160, 170)));
         });
     };
 
