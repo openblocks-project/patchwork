@@ -100,6 +100,19 @@ impl NodeBehavior for TextEditorNode {
             }
         });
 
+        // Open in external editor
+        if ui.small_button(egui::RichText::new("Open in editor").small()).clicked() {
+            let tmp = std::env::temp_dir().join(format!("patchwork_text_{}.txt", ctx.node_id));
+            if std::fs::write(&tmp, &self.content).is_ok() {
+                #[cfg(target_os = "macos")]
+                let _ = std::process::Command::new("open").arg(&tmp).spawn();
+                #[cfg(target_os = "windows")]
+                let _ = std::process::Command::new("cmd").args(["/C", "start", "", &tmp.display().to_string()]).spawn();
+                #[cfg(target_os = "linux")]
+                let _ = std::process::Command::new("xdg-open").arg(&tmp).spawn();
+            }
+        }
+
         // Show truncated output
         let short = if self.content.len() > 30 {
             format!("\"{}...\"", &self.content[..30])

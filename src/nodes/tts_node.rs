@@ -900,7 +900,11 @@ impl NodeBehavior for TtsNode {
                     let (label, color) = if has_espeak {
                         (format!("• espeak-ng ({}) ✓", voice_label), egui::Color32::LIGHT_GREEN)
                     } else {
-                        (format!("• built-in G2P ({})", voice_label), egui::Color32::YELLOW)
+                        #[cfg(target_os = "windows")]
+                        let hint = format!("• built-in G2P ({}) — install espeak-ng for better quality", voice_label);
+                        #[cfg(not(target_os = "windows"))]
+                        let hint = format!("• built-in G2P ({})", voice_label);
+                        (hint, egui::Color32::YELLOW)
                     };
                     ui.label(egui::RichText::new(label).small().color(color));
                 } else {

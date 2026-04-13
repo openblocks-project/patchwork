@@ -118,12 +118,30 @@ pub fn render(
         ui.label(egui::RichText::new("Code").small().strong());
         ui.label(egui::RichText::new("(or connect Text to Code port ↑)").small().color(egui::Color32::GRAY));
     });
-    ui.add(
-        egui::TextEdit::multiline(code)
-            .desired_rows(4)
-            .desired_width(f32::INFINITY)
-            .font(egui::TextStyle::Monospace)
-    );
+    egui::ScrollArea::vertical()
+        .id_salt(egui::Id::new(("script_code_scroll", node_id)))
+        .max_height(200.0)
+        .show(ui, |ui| {
+            ui.add(
+                egui::TextEdit::multiline(code)
+                    .desired_rows(4)
+                    .desired_width(f32::INFINITY)
+                    .font(egui::TextStyle::Monospace)
+            );
+        });
+
+    // Open in external editor
+    if ui.small_button(egui::RichText::new("Open in editor").small()).clicked() {
+        let tmp = std::env::temp_dir().join(format!("patchwork_script_{}.rhai", node_id));
+        if std::fs::write(&tmp, code.as_str()).is_ok() {
+            #[cfg(target_os = "macos")]
+            let _ = std::process::Command::new("open").arg(&tmp).spawn();
+            #[cfg(target_os = "windows")]
+            let _ = std::process::Command::new("cmd").args(["/C", "start", "", &tmp.display().to_string()]).spawn();
+            #[cfg(target_os = "linux")]
+            let _ = std::process::Command::new("xdg-open").arg(&tmp).spawn();
+        }
+    }
 
     // ── Error display ──
     if !error.is_empty() {

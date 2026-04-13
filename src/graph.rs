@@ -328,14 +328,14 @@ impl PortKind {
     pub fn base_color(&self) -> [u8; 3] {
         match self {
             Self::Number      => [80, 100, 230],    // blue
-            Self::Normalized  => [60, 160, 230],    // cyan-blue
+            Self::Normalized  => [80, 100, 230],    // blue (same family as Number)
             Self::Trigger     => [255, 120, 40],    // orange
-            Self::Gate        => [255, 200, 0],    // amber
+            Self::Gate        => [255, 120, 40],    // orange (same family as Trigger)
             Self::Text        => [60, 220, 80],     // green
             Self::Image       => [200, 30, 255],    // purple
-            Self::Audio       => [255, 50, 50],    // red
-            Self::Color       => [220, 220, 220],   // white (tinted per channel at render)
-            Self::Generic     => [140, 140, 140],   // gray
+            Self::Audio       => [255, 50, 50],     // red
+            Self::Color       => [80, 100, 230],    // blue (same family as Number)
+            Self::Generic     => [80, 100, 230],    // blue (same family as Number)
         }
     }
 
@@ -359,13 +359,13 @@ impl PortKind {
     pub fn shape_id(&self) -> u8 {
         match self {
             Self::Number      => 0, // circle
-            Self::Normalized  => 0, // circle (with ring indicator)
+            Self::Normalized  => 0, // circle (with inner dot)
             Self::Trigger     => 2, // triangle
-            Self::Gate        => 4, // half-moon
+            Self::Gate        => 5, // square
             Self::Text        => 1, // rounded square
             Self::Image       => 3, // diamond
             Self::Audio       => 0, // circle (with inner dot)
-            Self::Color       => 0, // circle (tinted)
+            Self::Color       => 0, // circle
             Self::Generic     => 0, // circle
         }
     }

@@ -401,6 +401,11 @@ impl AudioManager {
                 self.analyzer_results.insert(nid, analysis);
                 Some((Box::new(proc), 0))
             }
+            NodeType::Dynamic { inner } if inner.node.type_tag() == "audio_analyzer" => {
+                let (proc, analysis) = analyzer::AnalyzerProcessor::new();
+                self.analyzer_results.insert(nid, analysis);
+                Some((Box::new(proc), 0))
+            }
             NodeType::SpectrumAnalyzer => {
                 let (proc, spectrum) = spectrum::SpectrumProcessor::new();
                 self.spectrum_results.insert(nid, spectrum);

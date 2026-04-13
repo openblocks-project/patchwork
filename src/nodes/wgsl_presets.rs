@@ -70,7 +70,19 @@ fn all_presets() -> &'static Vec<Preset> {
                         p.extension().and_then(|e| e.to_str()) == Some("wgsl")
                     })
                     .collect();
-                files.sort();
+                // Sort by curated order first, then alphabetical for the rest
+                let priority_order: &[&str] = &[
+                    "gradient", "plasma", "particles", "spinsquare",
+                    "julia", "mandelbrot", "lissajous",
+                    "camera_grade", "edge_detect", "displacement",
+                ];
+                files.sort_by(|a, b| {
+                    let sa = a.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+                    let sb = b.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+                    let ia = priority_order.iter().position(|&p| p == sa).unwrap_or(usize::MAX);
+                    let ib = priority_order.iter().position(|&p| p == sb).unwrap_or(usize::MAX);
+                    ia.cmp(&ib).then_with(|| sa.cmp(sb))
+                });
                 for path in files {
                     if let Ok(text) = std::fs::read_to_string(&path) {
                         let stem = path

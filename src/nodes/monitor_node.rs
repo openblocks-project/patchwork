@@ -329,15 +329,48 @@ fn draw_sparkline(ui: &mut eframe::egui::Ui, data: &VecDeque<f32>, color: eframe
 }
 
 fn get_gpu_name() -> String {
-    if let Ok(output) = std::process::Command::new("system_profiler")
-        .args(["SPDisplaysDataType", "-detailLevel", "mini"])
-        .output()
+    #[cfg(target_os = "macos")]
     {
-        let text = String::from_utf8_lossy(&output.stdout);
-        for line in text.lines() {
-            let trimmed = line.trim();
-            if trimmed.starts_with("Chipset Model:") || trimmed.starts_with("Chip:") {
-                return trimmed.split(':').nth(1).map(|s| s.trim().to_string()).unwrap_or_default();
+        if let Ok(output) = std::process::Command::new("system_profiler")
+            .args(["SPDisplaysDataType", "-detailLevel", "mini"])
+            .output()
+        {
+            let text = String::from_utf8_lossy(&output.stdout);
+            for line in text.lines() {
+                let trimmed = line.trim();
+                if trimmed.starts_with("Chipset Model:") || trimmed.starts_with("Chip:") {
+                    return trimmed.split(':').nth(1).map(|s| s.trim().to_string()).unwrap_or_default();
+                }
+            }
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(output) = std::process::Command::new("wmic")
+            .args(["path", "win32_VideoController", "get", "name"])
+            .output()
+        {
+            let text = String::from_utf8_lossy(&output.stdout);
+            // Skip header line ("Name"), take first non-empty data line
+            for line in text.lines().skip(1) {
+                let trimmed = line.trim();
+                if !trimmed.is_empty() { return trimmed.to_string(); }
+            }
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(output) = std::process::Command::new("lspci")
+            .output()
+        {
+            let text = String::from_utf8_lossy(&output.stdout);
+            for line in text.lines() {
+                if line.contains("VGA") || line.contains("3D") || line.contains("Display") {
+                    // Format: "XX:XX.X VGA compatible controller: NVIDIA ..."
+                    if let Some(pos) = line.find(": ") {
+                        return line[pos + 2..].trim().to_string();
+                    }
+                }
             }
         }
     }

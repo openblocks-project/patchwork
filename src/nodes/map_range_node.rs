@@ -73,65 +73,51 @@ impl NodeBehavior for MapRangeNode {
 
         // ── Input Range ───────────────────────────────────────────────────────
         ui.label(egui::RichText::new("Input Range").small().strong());
-        egui::Grid::new(("map_in", ctx.node_id))
-            .num_columns(2)
-            .spacing([8.0, 2.0])
-            .show(ui, |ui| {
-                // Row 1: port + label
-                ui.horizontal(|ui| {
-                    crate::nodes::inline_port_circle(ui, ctx.node_id, 1, true, ctx.connections, ctx.port_positions, ctx.dragging_from, ctx.pending_disconnects, PortKind::Number);
-                    ui.label(egui::RichText::new("Min").small());
-                });
-                ui.horizontal(|ui| {
-                    crate::nodes::inline_port_circle(ui, ctx.node_id, 2, true, ctx.connections, ctx.port_positions, ctx.dragging_from, ctx.pending_disconnects, PortKind::Number);
-                    ui.label(egui::RichText::new("Max").small());
-                });
-                ui.end_row();
-                // Row 2: values
-                if wired[1] {
-                    ui.label(egui::RichText::new(format!("{:.2}", self.in_min)).small().monospace().color(accent));
-                } else {
-                    ui.add(egui::DragValue::new(&mut self.in_min).speed(0.1));
-                }
-                if wired[2] {
-                    ui.label(egui::RichText::new(format!("{:.2}", self.in_max)).small().monospace().color(accent));
-                } else {
-                    ui.add(egui::DragValue::new(&mut self.in_max).speed(0.1));
-                }
-                ui.end_row();
-            });
+        ui.horizontal(|ui| {
+            crate::nodes::inline_port_circle(ui, ctx.node_id, 1, true, ctx.connections, ctx.port_positions, ctx.dragging_from, ctx.pending_disconnects, PortKind::Number);
+            ui.label(egui::RichText::new("Min").small());
+            ui.add_space(4.0);
+            crate::nodes::inline_port_circle(ui, ctx.node_id, 2, true, ctx.connections, ctx.port_positions, ctx.dragging_from, ctx.pending_disconnects, PortKind::Number);
+            ui.label(egui::RichText::new("Max").small());
+        });
+        ui.horizontal(|ui| {
+            if wired[1] {
+                ui.label(egui::RichText::new(format!("{:.1}", self.in_min)).small().monospace().color(accent));
+            } else {
+                ui.add(egui::DragValue::new(&mut self.in_min).speed(0.1));
+            }
+            ui.label(egui::RichText::new("—").small().color(dim));
+            if wired[2] {
+                ui.label(egui::RichText::new(format!("{:.1}", self.in_max)).small().monospace().color(accent));
+            } else {
+                ui.add(egui::DragValue::new(&mut self.in_max).speed(0.1));
+            }
+        });
 
         ui.add_space(4.0);
 
         // ── Output Range ──────────────────────────────────────────────────────
         ui.label(egui::RichText::new("Output Range").small().strong());
-        egui::Grid::new(("map_out", ctx.node_id))
-            .num_columns(2)
-            .spacing([8.0, 2.0])
-            .show(ui, |ui| {
-                // Row 1: port + label
-                ui.horizontal(|ui| {
-                    crate::nodes::inline_port_circle(ui, ctx.node_id, 3, true, ctx.connections, ctx.port_positions, ctx.dragging_from, ctx.pending_disconnects, PortKind::Number);
-                    ui.label(egui::RichText::new("Min").small());
-                });
-                ui.horizontal(|ui| {
-                    crate::nodes::inline_port_circle(ui, ctx.node_id, 4, true, ctx.connections, ctx.port_positions, ctx.dragging_from, ctx.pending_disconnects, PortKind::Number);
-                    ui.label(egui::RichText::new("Max").small());
-                });
-                ui.end_row();
-                // Row 2: values
-                if wired[3] {
-                    ui.label(egui::RichText::new(format!("{:.2}", self.out_min)).small().monospace().color(accent));
-                } else {
-                    ui.add(egui::DragValue::new(&mut self.out_min).speed(0.1));
-                }
-                if wired[4] {
-                    ui.label(egui::RichText::new(format!("{:.2}", self.out_max)).small().monospace().color(accent));
-                } else {
-                    ui.add(egui::DragValue::new(&mut self.out_max).speed(0.1));
-                }
-                ui.end_row();
-            });
+        ui.horizontal(|ui| {
+            crate::nodes::inline_port_circle(ui, ctx.node_id, 3, true, ctx.connections, ctx.port_positions, ctx.dragging_from, ctx.pending_disconnects, PortKind::Number);
+            ui.label(egui::RichText::new("Min").small());
+            ui.add_space(4.0);
+            crate::nodes::inline_port_circle(ui, ctx.node_id, 4, true, ctx.connections, ctx.port_positions, ctx.dragging_from, ctx.pending_disconnects, PortKind::Number);
+            ui.label(egui::RichText::new("Max").small());
+        });
+        ui.horizontal(|ui| {
+            if wired[3] {
+                ui.label(egui::RichText::new(format!("{:.1}", self.out_min)).small().monospace().color(accent));
+            } else {
+                ui.add(egui::DragValue::new(&mut self.out_min).speed(0.1));
+            }
+            ui.label(egui::RichText::new("—").small().color(dim));
+            if wired[4] {
+                ui.label(egui::RichText::new(format!("{:.1}", self.out_max)).small().monospace().color(accent));
+            } else {
+                ui.add(egui::DragValue::new(&mut self.out_max).speed(0.1));
+            }
+        });
 
         ui.add_space(4.0);
         ui.checkbox(&mut self.clamp, "Clamp output");

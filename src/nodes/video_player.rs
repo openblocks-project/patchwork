@@ -60,6 +60,16 @@ impl VideoDecoder {
     }
 
     fn open_camera(device_index: u32, width: u32, height: u32) -> Result<Self, String> {
+        // Platform-specific capture format and device input
+        #[cfg(target_os = "macos")]
+        let (capture_fmt, device_input) = ("avfoundation", format!("{}:none", device_index));
+        #[cfg(target_os = "linux")]
+        let (capture_fmt, device_input) = ("v4l2", format!("/dev/video{}", device_index));
+        #[cfg(target_os = "windows")]
+        let (capture_fmt, device_input) = ("dshow", format!("video=@device_pnp_{}", device_index));
+        #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+        return Err("Camera capture not supported on this platform".into());
+
         let process = Command::new("ffmpeg")
             .args([
                 "-hide_banner", "-loglevel", "error",
@@ -68,10 +78,10 @@ impl VideoDecoder {
                 "-flags", "low_delay",
                 "-probesize", "32",
                 "-analyzeduration", "0",
-                "-f", "avfoundation",
+                "-f", capture_fmt,
                 "-framerate", "30",
                 "-video_size", &format!("{}x{}", width, height),
-                "-i", &format!("{}:none", device_index),
+                "-i", &device_input,
                 "-f", "rawvideo",
                 "-pix_fmt", "rgba",
                 "-r", "30",
@@ -165,14 +175,25 @@ fn get_duration(path: &str) -> Option<f32> {
     s.trim().parse::<f32>().ok()
 }
 
-/// List available camera devices (macOS)
+/// List available camera devices (cross-platform via ffmpeg)
 pub fn list_cameras() -> Vec<(u32, String)> {
+    #[cfg(target_os = "macos")]
+    return list_cameras_avfoundation();
+    #[cfg(target_os = "linux")]
+    return list_cameras_v4l2();
+    #[cfg(target_os = "windows")]
+    return list_cameras_dshow();
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    return Vec::new();
+}
+
+#[cfg(target_os = "macos")]
+fn list_cameras_avfoundation() -> Vec<(u32, String)> {
     let output = Command::new("ffmpeg")
         .args(["-f", "avfoundation", "-list_devices", "true", "-i", ""])
         .stderr(Stdio::piped())
         .stdout(Stdio::null())
         .output();
-
     let mut cameras = Vec::new();
     if let Ok(output) = output {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -181,13 +202,61 @@ pub fn list_cameras() -> Vec<(u32, String)> {
             if line.contains("AVFoundation video devices") { in_video = true; continue; }
             if line.contains("AVFoundation audio devices") { break; }
             if in_video {
-                // Parse: [AVFoundation indev @ 0x...] [0] Device Name
                 if let Some(bracket_start) = line.find("] [") {
                     let rest = &line[bracket_start + 3..];
                     if let Some(bracket_end) = rest.find(']') {
                         if let Ok(idx) = rest[..bracket_end].parse::<u32>() {
                             let name = rest[bracket_end + 2..].trim().to_string();
                             cameras.push((idx, name));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    cameras
+}
+
+#[cfg(target_os = "linux")]
+fn list_cameras_v4l2() -> Vec<(u32, String)> {
+    let mut cameras = Vec::new();
+    for i in 0..10u32 {
+        let path = format!("/dev/video{}", i);
+        if std::path::Path::new(&path).exists() {
+            // Try to read device name from sysfs
+            let name_path = format!("/sys/class/video4linux/video{}/name", i);
+            let name = std::fs::read_to_string(&name_path)
+                .map(|s| s.trim().to_string())
+                .unwrap_or_else(|_| format!("Camera {}", i));
+            cameras.push((i, name));
+        }
+    }
+    cameras
+}
+
+#[cfg(target_os = "windows")]
+fn list_cameras_dshow() -> Vec<(u32, String)> {
+    let output = Command::new("ffmpeg")
+        .args(["-f", "dshow", "-list_devices", "true", "-i", "dummy"])
+        .stderr(Stdio::piped())
+        .stdout(Stdio::null())
+        .output();
+    let mut cameras = Vec::new();
+    let mut idx = 0u32;
+    if let Ok(output) = output {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let mut in_video = true;
+        for line in stderr.lines() {
+            // dshow lists video devices first, then audio after "DirectShow audio devices"
+            if line.contains("DirectShow audio devices") { break; }
+            // Device lines contain the name in quotes: "Device Name"
+            if in_video && line.contains('"') {
+                if let Some(start) = line.find('"') {
+                    if let Some(end) = line[start+1..].find('"') {
+                        let name = line[start+1..start+1+end].to_string();
+                        if !name.is_empty() {
+                            cameras.push((idx, name));
+                            idx += 1;
                         }
                     }
                 }

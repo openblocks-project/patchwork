@@ -59,6 +59,8 @@ pub mod text_editor_node;
 pub mod mouse_tracker_node;
 pub mod point_2d_node;
 pub mod fill_node;
+pub mod image_scanner_node;
+pub mod audio_analyzer_node;
 pub mod key_input_node;
 pub mod time_node;
 pub mod file_node;
@@ -361,6 +363,8 @@ pub fn catalog() -> Vec<NodeCatalogEntry> {
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(color_channel_node::ColorChannelNode::default()) } } },
         NodeCatalogEntry { label: "Fill", category: "Image",
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(fill_node::FillNode::default()) } } },
+        NodeCatalogEntry { label: "Image Scanner", category: "Image",
+            factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(image_scanner_node::ImageScannerNode::default()) } } },
         NodeCatalogEntry { label: "WGSL Presets", category: "Shader",
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(wgsl_presets::WgslPresetsNode::default()) } } },
 
@@ -412,7 +416,7 @@ pub fn catalog() -> Vec<NodeCatalogEntry> {
         NodeCatalogEntry { label: "CLAP Plugin", category: "Audio",
             factory: || NodeType::ClapPlugin { plugin_path: String::new(), plugin_name: String::new(), param_names: Vec::new(), param_ranges: Vec::new(), param_flags: Vec::new(), param_values: Vec::new(), param_labels: Vec::new(), is_instrument: false } },
         NodeCatalogEntry { label: "Audio Analyzer", category: "Audio",
-            factory: || NodeType::AudioAnalyzer },
+            factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(audio_analyzer_node::AudioAnalyzerNode::default()) } } },
         NodeCatalogEntry { label: "Spectrum Analyzer", category: "Audio",
             factory: || NodeType::SpectrumAnalyzer },
         NodeCatalogEntry { label: "Audio Device", category: "Audio",
@@ -648,7 +652,7 @@ pub fn render_content(
         NodeType::AudioPlayer { .. } => audio_player::render(ui, node_id, node_type, values, connections, audio_manager, port_positions, dragging_from, pending_disconnects),
         NodeType::AudioPlaylist { .. } => audio_playlist::render(ui, node_id, node_type, values, connections, audio_manager, port_positions, dragging_from, pending_disconnects),
         NodeType::AudioInput { .. } => audio_input::render(ui, node_id, node_type, values, connections, audio_manager, port_positions, dragging_from, pending_disconnects),
-        NodeType::AudioAnalyzer => audio_analyzer::render(ui, node_id, values, audio_manager, port_positions, dragging_from, connections, pending_disconnects),
+        NodeType::AudioAnalyzer => {} // migrated to trait — legacy fallback
         NodeType::SpectrumAnalyzer => spectrum_analyzer::render(ui, node_id, values, audio_manager, port_positions, dragging_from, connections, pending_disconnects),
         NodeType::AudioDevice { .. } => audio_device::render(ui, node_id, node_type, audio_manager),
         NodeType::AudioDelay { time_ms, feedback } => audio_delay::render(ui, time_ms, feedback, node_id, values, connections, port_positions, dragging_from, pending_disconnects),

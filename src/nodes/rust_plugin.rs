@@ -76,12 +76,30 @@ pub fn render(
         *code = "// inputs: &[f64] — values from input ports\n// Return: Vec<f64> — values for output ports\n\nvec![inputs.get(0).copied().unwrap_or(0.0) * 2.0]".to_string();
     }
 
-    ui.add(
-        egui::TextEdit::multiline(code)
-            .desired_rows(6)
-            .desired_width(f32::INFINITY)
-            .font(egui::TextStyle::Monospace)
-    );
+    egui::ScrollArea::vertical()
+        .id_salt(egui::Id::new(("rust_code_scroll", node_id)))
+        .max_height(200.0)
+        .show(ui, |ui| {
+            ui.add(
+                egui::TextEdit::multiline(code)
+                    .desired_rows(6)
+                    .desired_width(f32::INFINITY)
+                    .font(egui::TextStyle::Monospace)
+            );
+        });
+
+    // Open in external editor
+    if ui.small_button(egui::RichText::new("Open in editor").small()).clicked() {
+        let tmp = std::env::temp_dir().join(format!("patchwork_rust_{}.rs", node_id));
+        if std::fs::write(&tmp, code.as_str()).is_ok() {
+            #[cfg(target_os = "macos")]
+            let _ = std::process::Command::new("open").arg(&tmp).spawn();
+            #[cfg(target_os = "windows")]
+            let _ = std::process::Command::new("cmd").args(["/C", "start", "", &tmp.display().to_string()]).spawn();
+            #[cfg(target_os = "linux")]
+            let _ = std::process::Command::new("xdg-open").arg(&tmp).spawn();
+        }
+    }
 
     // ── Build button ──
     ui.separator();

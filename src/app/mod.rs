@@ -85,15 +85,12 @@ pub(crate) fn draw_shaped_port(
             ];
             painter.add(egui::Shape::convex_polygon(points, fill, egui::Stroke::new(border_width, border)));
         }
-        4 => {
-            // Half-moon (Gate) — left half filled, right half open
-            painter.circle_filled(center, radius, fill);
-            painter.circle_stroke(center, radius, egui::Stroke::new(border_width, border));
-            // Draw a vertical line through center to indicate half
-            painter.line_segment(
-                [egui::pos2(center.x, center.y - radius + 1.0), egui::pos2(center.x, center.y + radius - 1.0)],
-                egui::Stroke::new(1.5, border),
-            );
+        5 => {
+            // Square (Gate)
+            let half = radius * 0.8;
+            let rect = egui::Rect::from_center_size(center, egui::vec2(half * 2.0, half * 2.0));
+            painter.rect_filled(rect, 0.0, fill);
+            painter.rect_stroke(rect, 0.0, egui::Stroke::new(border_width, border), egui::StrokeKind::Outside);
         }
         _ => {
             // Circle (Number, Normalized, Audio, Color, Generic)
@@ -104,9 +101,9 @@ pub(crate) fn draw_shaped_port(
             if kind == PortKind::Audio {
                 painter.circle_filled(center, radius * 0.35, border);
             }
-            // Normalized: thin ring indicator
+            // Normalized: inner dot (like Audio but blue)
             if kind == PortKind::Normalized {
-                painter.circle_stroke(center, radius * 0.55, egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 80)));
+                painter.circle_filled(center, radius * 0.35, border);
             }
         }
     }
@@ -725,7 +722,7 @@ impl PatchworkApp {
             };
             // Use trait method for min_width if available, else defaults
             let node_width = if let Some(w) = node.node_type.min_width() {
-                w
+                if is_pinned { w * inv } else { w }
             } else {
                 match &node.node_type {
                     NodeType::Slider { .. } => 50.0,
@@ -1990,7 +1987,11 @@ impl eframe::App for PatchworkApp {
         {
             let connections = self.graph.connections.clone();
             let analyzer_ids: Vec<NodeId> = self.graph.nodes.iter()
-                .filter(|(_, n)| matches!(n.node_type, NodeType::AudioAnalyzer))
+                .filter(|(_, n)| match &n.node_type {
+                    NodeType::AudioAnalyzer => true,
+                    NodeType::Dynamic { inner } => inner.node.type_tag() == "audio_analyzer",
+                    _ => false,
+                })
                 .map(|(&id, _)| id).collect();
             for id in analyzer_ids {
                 let (amp, peak, bass, mid, treble) = self.audio.analyzer_results.get(&id)
