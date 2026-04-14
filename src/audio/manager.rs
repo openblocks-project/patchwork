@@ -221,8 +221,12 @@ impl AudioManager {
         let master_vol = self.master_volume.clone();
         let mut engine = super::engine::AudioEngine::new(rx, sample_rate, master_vol);
 
+        // Request small buffer for low latency (~1.5ms at 44100Hz)
+        let mut stream_config: cpal::StreamConfig = config.into();
+        stream_config.buffer_size = cpal::BufferSize::Fixed(64);
+
         let stream = device.build_output_stream(
-            &config.into(),
+            &stream_config,
             move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
                 engine.execute(data, channels);
             },
@@ -410,6 +414,14 @@ impl AudioManager {
                 let (proc, spectrum) = spectrum::SpectrumProcessor::new();
                 self.spectrum_results.insert(nid, spectrum);
                 Some((Box::new(proc), 0))
+            }
+            NodeType::Dynamic { inner } if inner.node.type_tag() == "music_visualizer" => {
+                let (proc, spectrum) = spectrum::SpectrumProcessor::new();
+                self.spectrum_results.insert(nid, spectrum);
+                Some((Box::new(proc), 0))
+            }
+            NodeType::Dynamic { inner } if inner.node.type_tag() == "spectral_synth" => {
+                Some((Box::new(spectral_synth::SpectralSynthProcessor::new()), 67))
             }
             NodeType::AudioInput { gain, .. } => {
                 if let Some(buf) = self.input_buffers.get(&nid) {

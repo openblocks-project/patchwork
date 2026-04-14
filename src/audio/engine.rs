@@ -105,7 +105,7 @@ pub struct AudioEngine {
 impl AudioEngine {
     /// Create a new engine. The Receiver end of the command channel is moved in.
     pub fn new(commands: Receiver<AudioCommand>, sample_rate: f32, master_volume: Arc<AtomicF32>) -> Self {
-        let max_block_size = 2048;
+        let max_block_size = 256; // supports up to 256 samples per callback; prefer 64
         Self {
             slots: HashMap::new(),
             commands,

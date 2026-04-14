@@ -530,6 +530,15 @@ impl PatchworkApp {
                 NodeType::AudioInput { gain, .. } => {
                     self.audio.engine_write_param(nid, 0, *gain);
                 }
+                // Dynamic nodes with audio params (e.g., Spectral Synth)
+                NodeType::Dynamic { inner } => {
+                    let params = inner.node.audio_params();
+                    if !params.is_empty() {
+                        for (i, &v) in params.iter().enumerate() {
+                            self.audio.engine_write_param(nid, i, v);
+                        }
+                    }
+                }
                 _ => {}
             }
         }
@@ -2016,7 +2025,11 @@ impl eframe::App for PatchworkApp {
 
             // ── Spectrum Analyzer injection ────────────────────────────
             let spectrum_ids: Vec<NodeId> = self.graph.nodes.iter()
-                .filter(|(_, n)| matches!(n.node_type, NodeType::SpectrumAnalyzer))
+                .filter(|(_, n)| match &n.node_type {
+                    NodeType::SpectrumAnalyzer => true,
+                    NodeType::Dynamic { inner } => inner.node.type_tag() == "music_visualizer",
+                    _ => false,
+                })
                 .map(|(&id, _)| id).collect();
             for id in spectrum_ids {
                 let sample_rate = self.audio.engine_sample_rate.max(1.0);
@@ -2065,9 +2078,12 @@ impl eframe::App for PatchworkApp {
                     d.insert_temp(egui::Id::new(("spectrum_scalars", id)), [peak_hz, centroid_hz, energy]);
                     d.insert_temp(egui::Id::new(("spectrum_source", id)), source_name);
                 });
-                // Image output (port 1) — rasterize bars off the audio thread.
-                let img = crate::nodes::spectrum_analyzer::rasterize_bins(&bins, 256, 96);
-                values.insert((id, 1), PortValue::Image(std::sync::Arc::new(img)));
+                // Rasterize bars for SpectrumAnalyzer only (it outputs image on port 1).
+                // Music Visualizer renders its own image in evaluate(), don't overwrite.
+                if matches!(self.graph.nodes.get(&id).map(|n| &n.node_type), Some(NodeType::SpectrumAnalyzer)) {
+                    let img = crate::nodes::spectrum_analyzer::rasterize_bins(&bins, 256, 96);
+                    values.insert((id, 1), PortValue::Image(std::sync::Arc::new(img)));
+                }
                 values.insert((id, 2), PortValue::Float(peak_hz));
                 values.insert((id, 3), PortValue::Float(centroid_hz));
                 values.insert((id, 4), PortValue::Float(energy));

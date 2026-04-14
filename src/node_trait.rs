@@ -98,6 +98,11 @@ pub trait NodeBehavior: Send + Sync {
         _time: f32,
     ) -> Option<(u32, u32)> { None }
 
+    /// Audio params to sync to the audio engine each frame.
+    /// Override this for trait-based nodes that drive audio processors.
+    /// Returns an empty slice by default (no audio params).
+    fn audio_params(&self) -> &[f32] { &[] }
+
     /// Monotonically-increasing frame stamp for GPU producer nodes. Bumped
     /// whenever the node re-renders, used by downstream `GpuImage` consumers
     /// to invalidate their parameter caches. Default `0` for CPU nodes.
@@ -168,6 +173,8 @@ pub static NODE_REGISTRY: std::sync::LazyLock<std::sync::Mutex<NodeRegistryInner
         crate::nodes::fill_node::register(&mut r);
         crate::nodes::image_scanner_node::register(&mut r);
         crate::nodes::audio_analyzer_node::register(&mut r);
+        crate::nodes::music_visualizer_node::register(&mut r);
+        crate::nodes::spectral_synth_node::register(&mut r);
         crate::nodes::hand_detection::register(&mut r);
         crate::nodes::face_detection::register(&mut r);
         crate::nodes::pose_detection::register(&mut r);

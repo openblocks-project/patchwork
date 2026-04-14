@@ -39,7 +39,6 @@ pub mod audio_eq;
 pub mod speaker;
 pub mod audio_mixer;
 pub mod audio_input;
-pub mod audio_analyzer;
 pub mod spectrum_analyzer;
 pub mod audio_reverb;
 pub mod clap_plugin;
@@ -61,6 +60,8 @@ pub mod point_2d_node;
 pub mod fill_node;
 pub mod image_scanner_node;
 pub mod audio_analyzer_node;
+pub mod music_visualizer_node;
+pub mod spectral_synth_node;
 pub mod key_input_node;
 pub mod time_node;
 pub mod file_node;
@@ -419,6 +420,10 @@ pub fn catalog() -> Vec<NodeCatalogEntry> {
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(audio_analyzer_node::AudioAnalyzerNode::default()) } } },
         NodeCatalogEntry { label: "Spectrum Analyzer", category: "Audio",
             factory: || NodeType::SpectrumAnalyzer },
+        NodeCatalogEntry { label: "Music Visualizer", category: "Audio",
+            factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(music_visualizer_node::MusicVisualizerNode::default()) } } },
+        NodeCatalogEntry { label: "Spectral Synth", category: "Audio",
+            factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(spectral_synth_node::SpectralSynthNode::default()) } } },
         NodeCatalogEntry { label: "Audio Device", category: "Audio",
             factory: || NodeType::AudioDevice { selected_output: String::new(), selected_input: String::new(), master_volume: 0.8, enabled: false } },
         NodeCatalogEntry { label: "TTS", category: "Audio",

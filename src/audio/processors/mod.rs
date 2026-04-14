@@ -13,3 +13,4 @@ pub mod speaker;
 pub mod analyzer;
 pub mod spectrum;
 pub mod clap;
+pub mod spectral_synth;
