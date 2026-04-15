@@ -217,25 +217,15 @@ impl NodeBehavior for MusicVisualizerNode {
     }
 
     fn outputs(&self) -> Vec<PortDef> {
-        vec![
-            PortDef::new("Audio",      PortKind::Audio),
-            PortDef::new("Image",      PortKind::Image),
-            PortDef::new("Bass",       PortKind::Normalized),
-            PortDef::new("Mid",        PortKind::Normalized),
-            PortDef::new("Treble",     PortKind::Normalized),
-        ]
+        vec![PortDef::new("Image", PortKind::Image)]
     }
 
     fn evaluate(&mut self, _inputs: &[PortValue]) -> Vec<(usize, PortValue)> {
-        let mut out = vec![
-            (2, PortValue::Float(self.bass)),
-            (3, PortValue::Float(self.mid)),
-            (4, PortValue::Float(self.treble)),
-        ];
         if let Some(ref img) = self.cached_image {
-            out.push((1, PortValue::Image(img.clone())));
+            vec![(0, PortValue::Image(img.clone()))]
+        } else {
+            vec![]
         }
-        out
     }
 
     fn render_with_context(&mut self, ui: &mut egui::Ui, ctx: &mut RenderContext) {
@@ -255,10 +245,6 @@ impl NodeBehavior for MusicVisualizerNode {
                     .color(egui::Color32::from_rgb(80, 200, 120)));
             }
         });
-
-        // Audio pass-through output
-        crate::nodes::output_port_row(ui, "Audio", "", node_id, 0,
-            ctx.port_positions, ctx.dragging_from, ctx.connections, ctx.pending_disconnects, PortKind::Audio);
 
         ui.add_space(2.0);
         ui.separator();
@@ -358,15 +344,9 @@ impl NodeBehavior for MusicVisualizerNode {
         ui.separator();
         ui.add_space(2.0);
 
-        // ── Output ports ─────────────────────────────────────────────────
-        crate::nodes::output_port_row(ui, "Image", if self.cached_image.is_some() { "✓" } else { "—" }, node_id, 1,
+        // ── Output port ──────────────────────────────────────────────────
+        crate::nodes::output_port_row(ui, "Image", if self.cached_image.is_some() { "✓" } else { "—" }, node_id, 0,
             ctx.port_positions, ctx.dragging_from, ctx.connections, ctx.pending_disconnects, PortKind::Image);
-        crate::nodes::output_port_row(ui, "Bass", &format!("{:.2}", self.bass), node_id, 2,
-            ctx.port_positions, ctx.dragging_from, ctx.connections, ctx.pending_disconnects, PortKind::Normalized);
-        crate::nodes::output_port_row(ui, "Mid", &format!("{:.2}", self.mid), node_id, 3,
-            ctx.port_positions, ctx.dragging_from, ctx.connections, ctx.pending_disconnects, PortKind::Normalized);
-        crate::nodes::output_port_row(ui, "Treble", &format!("{:.2}", self.treble), node_id, 4,
-            ctx.port_positions, ctx.dragging_from, ctx.connections, ctx.pending_disconnects, PortKind::Normalized);
 
         if self.bass > 0.001 || self.mid > 0.001 || self.treble > 0.001 {
             ui.ctx().request_repaint();

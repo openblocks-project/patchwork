@@ -2016,11 +2016,11 @@ impl eframe::App for PatchworkApp {
                     d.insert_temp(egui::Id::new(("audio_analysis", id)), [amp, peak, bass, mid, treble]);
                     d.insert_temp(egui::Id::new(("audio_analysis_source", id)), source_name);
                 });
-                values.insert((id, 1), PortValue::Float(amp));
-                values.insert((id, 2), PortValue::Float(peak));
-                values.insert((id, 3), PortValue::Float(bass));
-                values.insert((id, 4), PortValue::Float(mid));
-                values.insert((id, 5), PortValue::Float(treble));
+                values.insert((id, 0), PortValue::Float(amp));
+                values.insert((id, 1), PortValue::Float(peak));
+                values.insert((id, 2), PortValue::Float(bass));
+                values.insert((id, 3), PortValue::Float(mid));
+                values.insert((id, 4), PortValue::Float(treble));
             }
 
             // ── Spectrum Analyzer injection ────────────────────────────
@@ -2078,15 +2078,15 @@ impl eframe::App for PatchworkApp {
                     d.insert_temp(egui::Id::new(("spectrum_scalars", id)), [peak_hz, centroid_hz, energy]);
                     d.insert_temp(egui::Id::new(("spectrum_source", id)), source_name);
                 });
-                // Rasterize bars for SpectrumAnalyzer only (it outputs image on port 1).
+                // Rasterize bars for SpectrumAnalyzer only (port 0 = Image).
                 // Music Visualizer renders its own image in evaluate(), don't overwrite.
                 if matches!(self.graph.nodes.get(&id).map(|n| &n.node_type), Some(NodeType::SpectrumAnalyzer)) {
                     let img = crate::nodes::spectrum_analyzer::rasterize_bins(&bins, 256, 96);
-                    values.insert((id, 1), PortValue::Image(std::sync::Arc::new(img)));
+                    values.insert((id, 0), PortValue::Image(std::sync::Arc::new(img)));
+                    values.insert((id, 1), PortValue::Float(peak_hz));
+                    values.insert((id, 2), PortValue::Float(centroid_hz));
+                    values.insert((id, 3), PortValue::Float(energy));
                 }
-                values.insert((id, 2), PortValue::Float(peak_hz));
-                values.insert((id, 3), PortValue::Float(centroid_hz));
-                values.insert((id, 4), PortValue::Float(energy));
             }
         }
         for (&id, node) in &self.graph.nodes {

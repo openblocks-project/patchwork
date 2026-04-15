@@ -36,7 +36,6 @@ impl NodeBehavior for AudioAnalyzerNode {
 
     fn outputs(&self) -> Vec<PortDef> {
         vec![
-            PortDef::new("Audio",  PortKind::Audio),
             PortDef::new("Amp",    PortKind::Normalized),
             PortDef::new("Peak",   PortKind::Normalized),
             PortDef::new("Bass",   PortKind::Normalized),
@@ -76,21 +75,17 @@ impl NodeBehavior for AudioAnalyzerNode {
             }
         });
 
-        // Audio pass-through output
-        crate::nodes::output_port_row(ui, "Audio", "", node_id, 0,
-            ctx.port_positions, ctx.dragging_from, ctx.connections, ctx.pending_disconnects, PortKind::Audio);
-
         ui.add_space(2.0);
 
         // ── Level meters ──────────────────────────────────────────────────
         let bar_h = 8.0;
 
-        let meters: [(& str, f32, egui::Color32, usize); 5] = [
-            ("Amp",    amp,    egui::Color32::from_rgb(80, 200, 120),  1),
-            ("Peak",   peak,   egui::Color32::from_rgb(255, 200, 60), 2),
-            ("Bass",   bass,   egui::Color32::from_rgb(255, 80, 80),  3),
-            ("Mid",    mid,    egui::Color32::from_rgb(80, 160, 255), 4),
-            ("Treble", treble, egui::Color32::from_rgb(200, 120, 255), 5),
+        let meters: [(&str, f32, egui::Color32, usize); 5] = [
+            ("Amp",    amp,    egui::Color32::from_rgb(80, 200, 120),  0),
+            ("Peak",   peak,   egui::Color32::from_rgb(255, 200, 60), 1),
+            ("Bass",   bass,   egui::Color32::from_rgb(255, 80, 80),  2),
+            ("Mid",    mid,    egui::Color32::from_rgb(80, 160, 255), 3),
+            ("Treble", treble, egui::Color32::from_rgb(200, 120, 255), 4),
         ];
 
         for (label, value, color, port) in &meters {

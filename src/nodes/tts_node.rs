@@ -761,6 +761,7 @@ impl TtsNode {
 
 impl NodeBehavior for TtsNode {
     fn title(&self) -> &str { "TTS" }
+    fn inline_ports(&self) -> bool { true }
 
     fn inputs(&self) -> Vec<PortDef> {
         vec![

@@ -1,6 +1,6 @@
 [package]
 name = "patchwork"
-version = "0.0.5"
+version = "0.0.6"
 edition = "2024"
 license = "GPL-3.0"
 authors = ["Allwin Williams / OpenBlocks"]
@@ -41,6 +41,7 @@ data-encoding = "2"
 bytes = "1"
 futures-lite = "2"
 rand = "0.9"
+tungstenite = "0.24"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.5"

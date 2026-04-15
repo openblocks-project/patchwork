@@ -58,6 +58,7 @@ impl NodeBehavior for SpectralSynthNode {
             PortDef::new("Image",   PortKind::Image),
             PortDef::new("Speed",   PortKind::Number),
             PortDef::new("Volume",  PortKind::Normalized),
+            PortDef::new("Seek",    PortKind::Normalized),
             PortDef::new("Trigger", PortKind::Trigger),
         ]
     }
@@ -85,7 +86,7 @@ impl NodeBehavior for SpectralSynthNode {
         let dim  = egui::Color32::from_rgb(110, 110, 120);
         let blue = egui::Color32::from_rgb(100, 180, 240);
 
-        let wired: Vec<bool> = (0..4).map(|p|
+        let wired: Vec<bool> = (0..5).map(|p|
             ctx.connections.iter().any(|c| c.to_node == node_id && c.to_port == p)
         ).collect();
 
@@ -104,9 +105,15 @@ impl NodeBehavior for SpectralSynthNode {
             if let PortValue::Float(f) = v { self.volume = f.clamp(0.0, 1.0); }
         }
 
-        // Trigger input — rising edge starts playback from 0
+        // Seek input — overrides phase directly
         if wired[3] {
             let v = crate::graph::Graph::static_input_value(ctx.connections, ctx.values, node_id, 3);
+            if let PortValue::Float(f) = v { self.phase = f.clamp(0.0, 1.0); }
+        }
+
+        // Trigger input — rising edge starts playback from 0
+        if wired[4] {
+            let v = crate::graph::Graph::static_input_value(ctx.connections, ctx.values, node_id, 4);
             let trig = v.as_float();
             if trig > 0.5 && self.last_trigger <= 0.5 {
                 self.phase = 0.0;
@@ -156,7 +163,10 @@ impl NodeBehavior for SpectralSynthNode {
             self.params_cache[i] = self.magnitudes[i];
         }
         self.params_cache[64] = self.volume;
-        self.params_cache[65] = if self.running { 1.0 } else { 0.0 };
+        // Gate is ON whenever we have an image — running only controls playhead movement.
+        // This way, changing visuals produce sound even when playhead is paused.
+        let has_signal = self.cached_input_image.is_some() && self.magnitudes.iter().any(|&m| m > 0.001);
+        self.params_cache[65] = if has_signal { 1.0 } else { 0.0 };
         self.params_cache[66] = 0.0;
 
         // ── Input ports ──────────────────────────────────────────────────
@@ -192,10 +202,22 @@ impl NodeBehavior for SpectralSynthNode {
 
         ui.horizontal(|ui| {
             crate::nodes::inline_port_circle(ui, node_id, 3, true,
+                ctx.connections, ctx.port_positions, ctx.dragging_from, ctx.pending_disconnects, PortKind::Normalized);
+            ui.label(RichText::new("Seek").small().color(dim));
+            if !wired[3] {
+                ui.add(egui::Slider::new(&mut self.phase, 0.0..=1.0).show_value(false));
+                ui.label(RichText::new(format!("{:.1}%", self.phase * 100.0)).small().monospace());
+            } else {
+                ui.label(RichText::new(format!("{:.1}%", self.phase * 100.0)).small().monospace().color(blue));
+            }
+        });
+
+        ui.horizontal(|ui| {
+            crate::nodes::inline_port_circle(ui, node_id, 4, true,
                 ctx.connections, ctx.port_positions, ctx.dragging_from, ctx.pending_disconnects, PortKind::Trigger);
             ui.label(RichText::new("Trigger").small().color(
-                if wired[3] { egui::Color32::from_rgb(255, 150, 60) } else { dim }));
-            if !wired[3] {
+                if wired[4] { egui::Color32::from_rgb(255, 150, 60) } else { dim }));
+            if !wired[4] {
                 if ui.small_button("▶ Play").clicked() {
                     self.phase = 0.0;
                     self.running = true;
@@ -211,10 +233,6 @@ impl NodeBehavior for SpectralSynthNode {
         ui.horizontal(|ui| {
             if ui.small_button(if self.running { "⏸" } else { "▶" }).clicked() { self.running = !self.running; }
             if ui.small_button("↺").clicked() { self.phase = 0.0; }
-            ui.add_space(4.0);
-            // Seek DragValue
-            ui.label(RichText::new("Seek").small().color(dim));
-            ui.add(egui::DragValue::new(&mut self.phase).speed(0.002).range(0.0..=1.0).max_decimals(3));
         });
 
         ui.add_space(2.0);

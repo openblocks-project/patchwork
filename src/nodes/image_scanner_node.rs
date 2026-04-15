@@ -186,18 +186,12 @@ impl NodeBehavior for ImageScannerNode {
         }
 
         // Read pixel values
-        // Point mode: raster scan — phase covers entire image (row by row)
-        //   pixel_index = phase * (w * h)
-        //   col = pixel_index % w,  row = pixel_index / w
-        // Line mode: single axis sweep (unchanged)
+        // Point mode: phase = X position, y_pos = Y position (independent)
+        // Line mode: phase = sweep position along one axis
         let (px, py, r, g, b) = match self.mode {
             ScanMode::Point => {
-                let total = (w * h) as f32;
-                let idx = (self.phase * total).floor().min(total - 1.0) as u32;
-                let px = idx % w;
-                let py = idx / w;
-                // Update y_pos to reflect current row (for display)
-                self.y_pos = py as f32 / h.max(1) as f32;
+                let px = (self.phase * w as f32).floor().min((w - 1) as f32) as u32;
+                let py = (self.y_pos * h as f32).floor().min((h - 1) as f32) as u32;
                 let (r, g, b) = read_pixel(img, px, py);
                 (px, py, r, g, b)
             }
@@ -261,7 +255,7 @@ impl NodeBehavior for ImageScannerNode {
                 ctx.connections, ctx.values, node_id, 0);
             let total_pixels = match &input_val {
                 PortValue::Image(img) => match self.mode {
-                    ScanMode::Point => (img.width.max(1) * img.height.max(1)) as f32,
+                    ScanMode::Point => img.width.max(1) as f32, // sweep X only, Y is independent
                     ScanMode::Line => match self.direction {
                         ScanDir::Horizontal => img.width.max(1) as f32,
                         ScanDir::Vertical   => img.height.max(1) as f32,

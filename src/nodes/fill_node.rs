@@ -360,7 +360,7 @@ impl NodeBehavior for FillNode {
                             } else { 0.5 };
                             let (r, g, b, a) = sample_gradient(&self.stops, mid);
                             self.stops.push(GradientStop { position: mid, color: [r, g, b, a] });
-                            self.stops.sort_by(|a, b| a.position.partial_cmp(&b.position).unwrap());
+                            self.stops.sort_by(|a, b| a.position.partial_cmp(&b.position).unwrap_or(std::cmp::Ordering::Equal));
                             self.dirty = true;
                         }
                     });
@@ -418,9 +418,9 @@ impl NodeBehavior for FillNode {
                 // Sort stops and mark dirty if any changed
                 let sorted: Vec<f32> = self.stops.iter().map(|s| s.position).collect();
                 let mut sorted2 = sorted.clone();
-                sorted2.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                sorted2.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
                 if sorted != sorted2 {
-                    self.stops.sort_by(|a, b| a.position.partial_cmp(&b.position).unwrap());
+                    self.stops.sort_by(|a, b| a.position.partial_cmp(&b.position).unwrap_or(std::cmp::Ordering::Equal));
                 }
                 // Always mark dirty after gradient edits (colors might have changed)
                 // The dirty flag is set per-field above; we also catch color changes here

@@ -138,6 +138,19 @@ impl NodeBehavior for TimeNode {
         ui.label(egui::RichText::new(format!("{:02}:{:05.2}", mins, s)).monospace().strong());
         ui.label(egui::RichText::new(format!("{:.4}s", secs)).small().color(dim));
 
+        ui.add_space(2.0);
+        ui.separator();
+        ui.add_space(2.0);
+
+        // ── Output ports ─────────────────────────────────────────
+        let frac = secs % 1.0;
+        crate::nodes::output_port_row(ui, "Seconds", &format!("{:.2}", secs),
+            ctx.node_id, 0, ctx.port_positions, ctx.dragging_from, ctx.connections, ctx.pending_disconnects, PortKind::Number);
+        crate::nodes::output_port_row(ui, "Frac", &format!("{:.2}", frac),
+            ctx.node_id, 1, ctx.port_positions, ctx.dragging_from, ctx.connections, ctx.pending_disconnects, PortKind::Normalized);
+        crate::nodes::output_port_row(ui, "Minutes", &format!("{:.2}", secs / 60.0),
+            ctx.node_id, 2, ctx.port_positions, ctx.dragging_from, ctx.connections, ctx.pending_disconnects, PortKind::Number);
+
         if self.running {
             ui.ctx().request_repaint();
         }

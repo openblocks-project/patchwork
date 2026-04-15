@@ -15,6 +15,7 @@ mod osc;
 mod serial;
 mod settings;
 pub mod system_log;
+pub mod transport;
 
 use eframe::egui;
 use std::sync::Arc;

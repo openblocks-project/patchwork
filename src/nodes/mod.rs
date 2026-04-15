@@ -62,6 +62,9 @@ pub mod image_scanner_node;
 pub mod audio_analyzer_node;
 pub mod music_visualizer_node;
 pub mod spectral_synth_node;
+pub mod web_app_node;
+pub mod websocket_node;
+pub mod clock_node;
 pub mod key_input_node;
 pub mod time_node;
 pub mod file_node;
@@ -294,6 +297,8 @@ pub fn catalog() -> Vec<NodeCatalogEntry> {
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(math_formula::MathNode::default()) } } },
         NodeCatalogEntry { label: "Gate", category: "Logic",
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(gate_node::GateNode::default()) } } },
+        NodeCatalogEntry { label: "Clock", category: "Input",
+            factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(clock_node::ClockNode::default()) } } },
         NodeCatalogEntry { label: "Timer", category: "Input",
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(timer_node::TimerNode::default()) } } },
         NodeCatalogEntry { label: "Map/Range", category: "Math",
@@ -328,6 +333,8 @@ pub fn catalog() -> Vec<NodeCatalogEntry> {
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(visual_output_node::VisualOutputNode::default()) } } },
         NodeCatalogEntry { label: "HTML Viewer", category: "Output",
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(html_viewer_node::HtmlViewerNode) } } },
+        NodeCatalogEntry { label: "Web App", category: "Output",
+            factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(web_app_node::WebAppNode::default()) } } },
 
         // ── Shader ───────────────────────────────────────────
         NodeCatalogEntry { label: "WGSL Viewer", category: "Shader", factory: || NodeType::WgslViewer {
@@ -477,6 +484,9 @@ pub fn catalog() -> Vec<NodeCatalogEntry> {
                 last_sender: String::new(), status: "Paste link to connect".into(),
                 connected: false,
             } },
+
+        NodeCatalogEntry { label: "WebSocket", category: "Network",
+            factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(websocket_node::WebSocketNode::default()) } } },
 
         // ── Hardware ─────────────────────────────────────────
         NodeCatalogEntry { label: "OB Hub", category: "Hardware",
