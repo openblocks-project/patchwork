@@ -441,7 +441,32 @@ impl NodeBehavior for ImageStyleNode {
     fn color_hint(&self) -> [u8; 3] { [200, 120, 180] }
     fn inline_ports(&self) -> bool { true }
 
+    /// GPU-native node: receives GpuImage inputs directly (no readback).
+    fn needs_cpu_image_input(&self, _port: usize) -> bool { false }
+
     fn evaluate(&mut self, inputs: &[PortValue]) -> Vec<(usize, PortValue)> {
+        // CPU-only fallback: apply port inputs and pass through the image.
+        // Used when evaluate_with_ctx is not available (e.g., legacy callers).
+        if let Some(PortValue::Float(v)) = inputs.get(1) {
+            self.amount = match self.mode {
+                StyleMode::Blur => v.clamp(1.0, 20.0),
+                StyleMode::Pixelate => v.clamp(2.0, 64.0),
+                StyleMode::Sharpen => v.clamp(0.1, 5.0),
+            };
+        }
+        let result = match inputs.first() {
+            Some(PortValue::Image(img)) => PortValue::Image(img.clone()),
+            _ => PortValue::None,
+        };
+        vec![(0, result)]
+    }
+
+    fn evaluate_with_ctx(
+        &mut self,
+        inputs: &[PortValue],
+        ctx: &mut crate::node_trait::EvalCtx<'_>,
+    ) -> Vec<(usize, PortValue)> {
+        // 1. Apply port inputs (Amount from upstream slider/MapRange)
         if let Some(PortValue::Float(v)) = inputs.get(1) {
             self.amount = match self.mode {
                 StyleMode::Blur => v.clamp(1.0, 20.0),
@@ -450,21 +475,37 @@ impl NodeBehavior for ImageStyleNode {
             };
         }
 
-        // GPU processing is done in the image eval loop in app/mod.rs (which calls evaluate).
-        // We store the node_id in egui temp data so process_gpu can find the render state.
-        // For now, just pass through — the actual GPU processing happens when the image loop
-        // detects this is a Dynamic node with image input.
-        let result = match inputs.first() {
-            Some(PortValue::Image(img)) => {
-                // Try GPU path — read render state from egui temp data
-                // This is set by app/mod.rs before the image eval loop
-                // Note: we can't access egui context here, so GPU path is triggered
-                // from the image eval loop in app/mod.rs instead
-                PortValue::Image(img.clone()) // placeholder — GPU path replaces this
-            }
-            _ => PortValue::None,
+        // 2. Extract image dimensions from either CPU Image or GPU stub
+        let stub_owned: Option<ImageData> = match inputs.first() {
+            Some(PortValue::GpuImage(h)) => Some(ImageData {
+                width: h.width, height: h.height, pixels: Vec::new(),
+            }),
+            _ => None,
         };
-        vec![(0, result)]
+        let img_ref: Option<&ImageData> = match inputs.first() {
+            Some(PortValue::Image(img)) => Some(img.as_ref()),
+            Some(PortValue::GpuImage(_)) => stub_owned.as_ref(),
+            _ => None,
+        };
+
+        let img = match img_ref {
+            Some(img) => img,
+            None => return vec![(0, PortValue::None)],
+        };
+
+        // 3. Try GPU path via process_gpu_cached
+        if let Some(rs) = ctx.render_state {
+            let gpu_src = ctx.input_sources.first().copied().flatten();
+            if let Some(val) = self.process_gpu_cached(
+                img, ctx.node_id, rs, ctx.gpu_tex_cache,
+                gpu_src, ctx.needs_readback,
+            ) {
+                return vec![(0, val)];
+            }
+        }
+
+        // 4. CPU fallback
+        self.evaluate(inputs)
     }
 
     fn type_tag(&self) -> &str { "image_style" }

@@ -379,6 +379,12 @@ impl PatchworkApp {
             app.mcp_rx = Some(rx);
         }
 
+        // Kick off the process-wide HID manager. OnceLock guarantees the
+        // enumeration thread is spawned exactly once. We eager-initialize
+        // here so HID devices are detected even before the user places an
+        // OB Knob node.
+        let _ = crate::hid::global();
+
         // Try restoring previous session; fall back to default nodes
         if !app.restore_session() {
             app.spawn_default_nodes();
@@ -1705,6 +1711,12 @@ impl eframe::App for PatchworkApp {
                                         values.insert((id, port_idx), PortValue::Float(hub.get_value("distance", *did, "val")));
                                         port_idx += 1;
                                     }
+                                    "knob" => {
+                                        // Knob stores its reading under "value", not "val"
+                                        // (see ob.rs apply_data arm for ("knob", "value")).
+                                        values.insert((id, port_idx), PortValue::Float(hub.get_value("knob", *did, "value")));
+                                        port_idx += 1;
+                                    }
                                     "orb" => {
                                         values.insert((id, port_idx), PortValue::Float(hub.get_value("orb", *did, "ax")));
                                         values.insert((id, port_idx + 1), PortValue::Float(hub.get_value("orb", *did, "ay")));
@@ -1742,23 +1754,55 @@ impl eframe::App for PatchworkApp {
                         ob_injected = true;
                     }
                     NodeType::ObEncoder { device_id, hub_node_id, .. } => {
-                        let find = self.ob.get_hub(*hub_node_id)
+                        // Three lookup paths, same priority as other OB nodes:
+                        //   1. Bound hub → 2. Any serial hub → 3. HID auto-discovery
+                        //
+                        // HID path (OB Wheel): parse_encoder_report accumulates
+                        // position and writes turn/click/position keys directly
+                        // into the device map, so the readout here is identical
+                        // to the serial-hub path.
+                        //
+                        // Turn-pulse caveat: the HID parser writes the delta on
+                        // each report and leaves it stale between reports. We
+                        // clear it to 0 here AFTER reading so a single tick
+                        // produces a single frame of non-zero Turn output,
+                        // which matches the serial-hub behavior.
+                        let hub_lookup = self.ob.get_hub(*hub_node_id)
                             .and_then(|h| h.get_device("encoder", *device_id))
-                            .or_else(|| self.ob.find_device("encoder", *device_id).map(|(_, d)| d));
-                        if let Some(dev) = find {
-                            let turn = dev.values.get("turn").copied().unwrap_or(0.0);
-                            let click = dev.values.get("click").copied().unwrap_or(0.0);
-                            let pos = dev.values.get("position").copied().unwrap_or(0.0);
-                            values.insert((id, 0), PortValue::Float(turn));
-                            values.insert((id, 1), PortValue::Float(click));
-                            values.insert((id, 2), PortValue::Float(pos));
-                            let prev_key = egui::Id::new(("ob_prev", id));
-                            let prev: Option<[f32; 3]> = ctx.data_mut(|d| d.get_temp(prev_key));
-                            let curr = [turn, click, pos];
-                            let changed = prev.map(|p| (p[0]-curr[0]).abs() > 0.001 || (p[1]-curr[1]).abs() > 0.5 || (p[2]-curr[2]).abs() > 0.001).unwrap_or(false);
-                            values.insert((id, 3), PortValue::Float(if changed { 1.0 } else { 0.0 }));
-                            ctx.data_mut(|d| d.insert_temp(prev_key, curr));
+                            .or_else(|| self.ob.find_device("encoder", *device_id).map(|(_, d)| d))
+                            .map(|d| (
+                                d.values.get("turn").copied().unwrap_or(0.0),
+                                d.values.get("click").copied().unwrap_or(0.0),
+                                d.values.get("position").copied().unwrap_or(0.0),
+                                true, // was_hub
+                            ));
+                        let (turn, click, pos, was_hub) = hub_lookup
+                            .or_else(|| crate::hid::global().find_device("encoder", *device_id)
+                                .map(|d| (
+                                    d.values.get("turn").copied().unwrap_or(0.0),
+                                    d.values.get("click").copied().unwrap_or(0.0),
+                                    d.values.get("position").copied().unwrap_or(0.0),
+                                    false,
+                                )))
+                            .unwrap_or((0.0, 0.0, 0.0, false));
+
+                        // Clear the one-shot "turn" field so a single detent
+                        // produces a single frame of non-zero Turn output.
+                        // Only do this for HID — the serial hub handles its
+                        // own turn lifecycle.
+                        if !was_hub && turn.abs() > 0.001 {
+                            crate::hid::global().clear_device_value("encoder", *device_id, "turn");
                         }
+
+                        values.insert((id, 0), PortValue::Float(turn));
+                        values.insert((id, 1), PortValue::Float(click));
+                        values.insert((id, 2), PortValue::Float(pos));
+                        let prev_key = egui::Id::new(("ob_prev", id));
+                        let prev: Option<[f32; 3]> = ctx.data_mut(|d| d.get_temp(prev_key));
+                        let curr = [turn, click, pos];
+                        let changed = prev.map(|p| (p[0]-curr[0]).abs() > 0.001 || (p[1]-curr[1]).abs() > 0.5 || (p[2]-curr[2]).abs() > 0.001).unwrap_or(false);
+                        values.insert((id, 3), PortValue::Float(if changed { 1.0 } else { 0.0 }));
+                        ctx.data_mut(|d| d.insert_temp(prev_key, curr));
                         ob_injected = true;
                     }
                     NodeType::ObMove { device_id, hub_node_id } => {
@@ -1799,33 +1843,89 @@ impl eframe::App for PatchworkApp {
                         ob_injected = true;
                     }
                     NodeType::ObPressure { device_id, hub_node_id, .. } => {
-                        let find = self.ob.get_hub(*hub_node_id)
+                        // Three lookup paths, same priority as ObKnob/ObDistance:
+                        //   1. Bound hub → 2. Any serial hub → 3. HID auto-discovery
+                        // HID path uses parse_knob_report, which writes both
+                        // "val" (legacy key, used here) and "value" (knob key).
+                        let hub_lookup = self.ob.get_hub(*hub_node_id)
                             .and_then(|h| h.get_device("pressure", *device_id))
-                            .or_else(|| self.ob.find_device("pressure", *device_id).map(|(_, d)| d));
-                        if let Some(dev) = find {
-                            let val = dev.values.get("val").copied().unwrap_or(0.0);
-                            values.insert((id, 0), PortValue::Float(val));
-                            let prev_key = egui::Id::new(("ob_prev", id));
-                            let prev: Option<f32> = ctx.data_mut(|d| d.get_temp(prev_key));
-                            let changed = prev.map(|p| (p - val).abs() > 0.001).unwrap_or(false);
-                            values.insert((id, 1), PortValue::Float(if changed { 1.0 } else { 0.0 }));
-                            ctx.data_mut(|d| d.insert_temp(prev_key, val));
-                        }
+                            .or_else(|| self.ob.find_device("pressure", *device_id).map(|(_, d)| d))
+                            .map(|d| (d.values.get("val").copied().unwrap_or(0.0), d.is_active));
+                        let (val, _is_active) = hub_lookup
+                            .or_else(|| crate::hid::global().find_device("pressure", *device_id)
+                                .map(|d| (d.values.get("val").copied().unwrap_or(0.0), d.is_active)))
+                            .unwrap_or((0.0, false));
+
+                        values.insert((id, 0), PortValue::Float(val));
+                        let prev_key = egui::Id::new(("ob_prev", id));
+                        let prev: Option<f32> = ctx.data_mut(|d| d.get_temp(prev_key));
+                        let changed = prev.map(|p| (p - val).abs() > 0.001).unwrap_or(false);
+                        values.insert((id, 1), PortValue::Float(if changed { 1.0 } else { 0.0 }));
+                        ctx.data_mut(|d| d.insert_temp(prev_key, val));
                         ob_injected = true;
                     }
                     NodeType::ObDistance { device_id, hub_node_id, .. } => {
-                        let find = self.ob.get_hub(*hub_node_id)
+                        // Three lookup paths, same priority as ObKnob:
+                        //   1. Bound hub → 2. Any serial hub → 3. HID auto-discovery
+                        // Ports: 0 = Value (0..1 normalized), 1 = Distance (mm),
+                        //        2 = Changed (trigger).
+                        // Firmware maps 0..300 mm → 0..1 for the normalized output;
+                        // mm port is the raw reading (useful for absolute distances
+                        // or when chaining a MapRange node for a custom range).
+                        // Serial-hub devices predate the `mm` key, so we fall back
+                        // to 0 on that path — downstream can use Value if absolute
+                        // mm isn't critical.
+                        let hub_lookup = self.ob.get_hub(*hub_node_id)
                             .and_then(|h| h.get_device("distance", *device_id))
-                            .or_else(|| self.ob.find_device("distance", *device_id).map(|(_, d)| d));
-                        if let Some(dev) = find {
-                            let val = dev.values.get("val").copied().unwrap_or(0.0);
-                            values.insert((id, 0), PortValue::Float(val));
-                            let prev_key = egui::Id::new(("ob_prev", id));
-                            let prev: Option<f32> = ctx.data_mut(|d| d.get_temp(prev_key));
-                            let changed = prev.map(|p| (p - val).abs() > 0.01).unwrap_or(false);
-                            values.insert((id, 1), PortValue::Float(if changed { 1.0 } else { 0.0 }));
-                            ctx.data_mut(|d| d.insert_temp(prev_key, val));
-                        }
+                            .or_else(|| self.ob.find_device("distance", *device_id).map(|(_, d)| d))
+                            .map(|d| (
+                                d.values.get("val").copied().unwrap_or(0.0),
+                                d.values.get("mm").copied().unwrap_or(0.0),
+                                d.is_active,
+                            ));
+                        let (val, mm, _is_active) = hub_lookup
+                            .or_else(|| crate::hid::global().find_device("distance", *device_id)
+                                .map(|d| (
+                                    d.values.get("val").copied().unwrap_or(0.0),
+                                    d.values.get("mm").copied().unwrap_or(0.0),
+                                    d.is_active,
+                                )))
+                            .unwrap_or((0.0, 0.0, false));
+
+                        values.insert((id, 0), PortValue::Float(val));
+                        values.insert((id, 1), PortValue::Float(mm));
+                        let prev_key = egui::Id::new(("ob_prev", id));
+                        let prev: Option<f32> = ctx.data_mut(|d| d.get_temp(prev_key));
+                        let changed = prev.map(|p| (p - val).abs() > 0.01).unwrap_or(false);
+                        values.insert((id, 2), PortValue::Float(if changed { 1.0 } else { 0.0 }));
+                        ctx.data_mut(|d| d.insert_temp(prev_key, val));
+
+                        ob_injected = true;
+                    }
+                    NodeType::ObKnob { device_id, hub_node_id, .. } => {
+                        // Knob reading is stored under "value" (see ob.rs apply_data
+                        // for ("knob", "value"), and hid.rs parse_knob_report).
+                        // Three lookup sources tried in order:
+                        //   1. The node's bound hub (if any)
+                        //   2. Any connected serial hub
+                        //   3. HID auto-discovery (no hub required) — via the
+                        //      process-wide singleton in `crate::hid::global()`.
+                        // HID is the expected path for USB-direct knobs.
+                        let hub_lookup = self.ob.get_hub(*hub_node_id)
+                            .and_then(|h| h.get_device("knob", *device_id))
+                            .or_else(|| self.ob.find_device("knob", *device_id).map(|(_, d)| d))
+                            .map(|d| (d.values.get("value").copied().unwrap_or(0.0), d.is_active));
+                        let (val, _is_active) = hub_lookup
+                            .or_else(|| crate::hid::global().find_device("knob", *device_id)
+                                .map(|d| (d.values.get("value").copied().unwrap_or(0.0), d.is_active)))
+                            .unwrap_or((0.0, false));
+
+                        values.insert((id, 0), PortValue::Float(val));
+                        let prev_key = egui::Id::new(("ob_prev", id));
+                        let prev: Option<f32> = ctx.data_mut(|d| d.get_temp(prev_key));
+                        let changed = prev.map(|p| (p - val).abs() > 0.001).unwrap_or(false);
+                        values.insert((id, 1), PortValue::Float(if changed { 1.0 } else { 0.0 }));
+                        ctx.data_mut(|d| d.insert_temp(prev_key, val));
                         ob_injected = true;
                     }
                     NodeType::ObOrb { device_id, hub_node_id, .. } => {
@@ -1915,6 +2015,28 @@ impl eframe::App for PatchworkApp {
             }
         };
 
+        // Build a per-frame set of `(producer_node, producer_port)` pairs that
+        // have at least one downstream consumer requiring CPU pixel bytes.
+        // The image-evaluation loop (and the WGSL Viewer injection below)
+        // previously called `Graph::has_cpu_consumer(id, 0)` at 7 points,
+        // each walking `connections` from scratch — O(N·E) per frame for N
+        // image nodes and E edges. Building the set once reduces every
+        // query to an O(1) HashSet lookup.
+        let cpu_consumer_producers: std::collections::HashSet<(NodeId, usize)> = {
+            let mut set = std::collections::HashSet::new();
+            for conn in &self.graph.connections {
+                if let Some(consumer) = self.graph.nodes.get(&conn.to_node) {
+                    if consumer.node_type.needs_cpu_image_input(conn.to_port) {
+                        set.insert((conn.from_node, conn.from_port));
+                    }
+                }
+            }
+            set
+        };
+        let has_cpu_consumer_cached = |nid: NodeId, port: usize| -> bool {
+            cpu_consumer_producers.contains(&(nid, port))
+        };
+
         // Populate the per-WgslViewer CPU consumer hint thread_local so that
         // `render_offscreen` (which runs later this frame in the egui paint
         // pass) knows whether to skip its readback. Default-true is safe;
@@ -1928,7 +2050,7 @@ impl eframe::App for PatchworkApp {
         for &id in &topo {
             if let Some(node) = self.graph.nodes.get(&id) {
                 if matches!(node.node_type, NodeType::WgslViewer { .. }) {
-                    let needs = self.graph.has_cpu_consumer(id, 0);
+                    let needs = has_cpu_consumer_cached(id, 0);
                     crate::gpu_image::set_cpu_consumer_hint(id, needs);
                 }
             }
@@ -1955,7 +2077,7 @@ impl eframe::App for PatchworkApp {
                     // Theme BG, …) we must readback the GPU texture into a CPU
                     // ImageData here. Otherwise we'd hand them a GpuImage stub
                     // they silently drop.
-                    let needs_cpu = self.graph.has_cpu_consumer(id, 0);
+                    let needs_cpu = has_cpu_consumer_cached(id, 0);
                     if has_gpu_entry && img.pixels.is_empty() && needs_cpu {
                         if let Some(rs) = &self.wgpu_render_state {
                             if let Some(cpu_img) = self.gpu_tex_cache.readback_node_output(id, 0, &rs.device, &rs.queue) {
@@ -2178,15 +2300,9 @@ impl eframe::App for PatchworkApp {
                 // need re-evaluation here because image sources weren't populated during graph.evaluate().
                 // Cached: only reprocess when inputs (image content + param state) change.
                 let is_dynamic = matches!(self.graph.nodes.get(&id).map(|n| &n.node_type), Some(NodeType::Dynamic { .. }));
-                // BlendNode is Dynamic but handled by the blend_params() branch below —
-                // skip the generic Dynamic-image path for it so we don't consume the `continue`.
-                let is_blend_node = self.graph.nodes.get(&id).map(|n| match &n.node_type {
-                    NodeType::Dynamic { inner } => inner.node.blend_params().is_some(),
-                    _ => false,
-                }).unwrap_or(false);
-                // HandDetectionNode: image input is consumed by async inference, not synchronous
-                // evaluate(). Its annotated output comes from egui temp data (set during render).
-                // Exclude it from the generic Dynamic-image block so its match arm below runs.
+                // HandDetectionNode/FaceDetection/PoseDetection: image input is consumed by async
+                // inference, not synchronous evaluate(). Their annotated output comes from egui
+                // temp data (set during render). Exclude them so their match arms below run.
                 let is_async_ml_node = is_dynamic && self.graph.nodes.get(&id).map(|n| match &n.node_type {
                     NodeType::Dynamic { inner } => {
                         let tag = inner.node.type_tag();
@@ -2195,7 +2311,7 @@ impl eframe::App for PatchworkApp {
                     _ => false,
                 }).unwrap_or(false);
 
-                if is_dynamic && !is_blend_node && !is_async_ml_node && inputs.iter().any(|v| matches!(v, PortValue::Image(_) | PortValue::GpuImage(_))) {
+                if is_dynamic && !is_async_ml_node && inputs.iter().any(|v| matches!(v, PortValue::Image(_) | PortValue::GpuImage(_))) {
                     // Build cache key from image content + params + node state
                     let mut cache_key: u64 = 0;
                     for inp in &inputs {
@@ -2237,32 +2353,36 @@ impl eframe::App for PatchworkApp {
                             continue;
                         }
                     }
-                    // Cache miss — reprocess (GPU path for ImageStyleNode, CPU for others)
-                    let needs_readback = self.graph.has_cpu_consumer(id, 0);
+                    // Cache miss — reprocess via evaluate_with_ctx.
+                    //
+                    // Nodes that override evaluate_with_ctx (ImageStyleNode,
+                    // BlendNode) handle their own GPU processing. CPU-only
+                    // nodes (CropNode, TransformNode, ColorChannelNode, etc.)
+                    // use the default delegation to evaluate(), which works
+                    // because the caller readbacks GpuImage→Image for any
+                    // node with needs_cpu_image_input() == true (the default).
+                    let needs_readback = has_cpu_consumer_cached(id, 0);
 
-                    // For trait nodes that take the CPU `evaluate()` fallback
-                    // (Transform, Crop, ColorChannel, etc. — anything that
-                    // isn't `image_style`), `evaluate()` only matches
-                    // `PortValue::Image` and silently drops `GpuImage`. So we
-                    // do an on-demand readback here, transforming any
-                    // `GpuImage` input into a CPU `PortValue::Image` *before*
-                    // calling evaluate. The fast `image_style` GPU path keeps
-                    // the original inputs (it consumes GpuImage stubs via
-                    // gpu_source lookups).
-                    let peek_tag = self.graph.nodes.get(&id).and_then(|n| match &n.node_type {
-                        NodeType::Dynamic { inner } => Some(inner.node.type_tag().to_string()),
-                        _ => None,
-                    }).unwrap_or_default();
-                    let cpu_inputs: Vec<PortValue> = if peek_tag == "image_style" {
-                        inputs.clone()
-                    } else {
-                        inputs.iter().map(|v| match v {
+                    // Build cpu_inputs: readback GpuImage→Image for nodes
+                    // that need CPU pixels on each port. GPU-native nodes
+                    // (needs_cpu_image_input → false) receive the raw
+                    // GpuImage and handle it inside evaluate_with_ctx.
+                    let cpu_inputs: Vec<PortValue> = {
+                        // Query per-port CPU needs from the node
+                        let needs_cpu_per_port: Vec<bool> = self.graph.nodes.get(&id)
+                            .map(|n| (0..inputs.len()).map(|p| n.node_type.needs_cpu_image_input(p)).collect())
+                            .unwrap_or_else(|| vec![true; inputs.len()]);
+                        inputs.iter().enumerate().map(|(port_idx, v)| match v {
                             PortValue::GpuImage(h) => {
-                                if let Some(rs) = &self.wgpu_render_state {
-                                    self.gpu_tex_cache.readback_node_output(h.node_id, h.port, &rs.device, &rs.queue)
-                                        .map(PortValue::Image)
-                                        .unwrap_or(PortValue::None)
-                                } else { PortValue::None }
+                                if *needs_cpu_per_port.get(port_idx).unwrap_or(&true) {
+                                    if let Some(rs) = &self.wgpu_render_state {
+                                        self.gpu_tex_cache.readback_node_output(h.node_id, h.port, &rs.device, &rs.queue)
+                                            .map(PortValue::Image)
+                                            .unwrap_or(PortValue::None)
+                                    } else { PortValue::None }
+                                } else {
+                                    v.clone() // pass GpuImage through for GPU-native nodes
+                                }
                             }
                             other => other.clone(),
                         }).collect()
@@ -2270,46 +2390,31 @@ impl eframe::App for PatchworkApp {
 
                     if let Some(mut node_mut) = self.graph.nodes.remove(&id) {
                         if let NodeType::Dynamic { ref mut inner } = node_mut.node_type {
-                            let tag = inner.node.type_tag().to_string();
-                            let rs = self.wgpu_render_state.clone();
-
-                            // Apply port inputs to node state BEFORE GPU processing.
-                            // This ensures connected values (e.g., Amount from Map Range)
-                            // override the slider value in the node's internal state.
-                            // Use `cpu_inputs` so trait nodes that need CPU pixels
-                            // see readback Images instead of GpuImage stubs.
-                            inner.node.evaluate(&cpu_inputs);
-
-                            // Try GPU path for supported nodes
-                            let gpu_results: Option<Vec<(usize, PortValue)>> = match tag.as_str() {
-                                "image_style" => {
-                                    // Accept both CPU `Image` and GPU `GpuImage` upstream.
-                                    // For GpuImage, build a dimensions-only stub; the
-                                    // gpu_source lookup inside process_gpu_cached MUST
-                                    // cache-hit (else process_gpu_cached returns None).
-                                    let stub_owned: Option<ImageData> = match inputs.first() {
-                                        Some(PortValue::GpuImage(h)) => Some(ImageData { width: h.width, height: h.height, pixels: Vec::new() }),
-                                        _ => None,
-                                    };
-                                    let img_ref: Option<&ImageData> = match inputs.first() {
-                                        Some(PortValue::Image(img)) => Some(img.as_ref()),
-                                        Some(PortValue::GpuImage(_)) => stub_owned.as_ref(),
-                                        _ => None,
-                                    };
-                                    if let (Some(rs), Some(img_for_call)) = (&rs, img_ref) {
-                                        let state = inner.node.save_state();
-                                        let gpu_src = input_sources.first().copied().flatten();
-                                        let result = serde_json::from_value::<nodes::image_style_node::ImageStyleNode>(state).ok()
-                                            .and_then(|sn| sn.process_gpu_cached(img_for_call, id, rs, &mut self.gpu_tex_cache, gpu_src, needs_readback));
-                                        result.map(|val| vec![(0, val)])
-                                    } else { None }
-                                }
-                                // color_channel: CPU path is faster (simple per-pixel multiply,
-                                // GPU readback ×4 outputs is slower than CPU)
-                                _ => None,
-                            };
-
-                            let results = gpu_results.unwrap_or_else(|| inner.node.evaluate(&cpu_inputs));
+                            // Single evaluate_with_ctx call replaces the old
+                            // three-step sequence of: (1) evaluate to apply port
+                            // inputs, (2) type-tag dispatch to GPU path, (3) fallback
+                            // evaluate. Nodes that override evaluate_with_ctx handle
+                            // GPU processing themselves; all others delegate to
+                            // evaluate() via the default trait method.
+                            let results = {
+                                let mut eval_ctx = crate::node_trait::EvalCtx {
+                                    node_id: id,
+                                    render_state: self.wgpu_render_state.as_ref(),
+                                    gpu_tex_cache: &mut self.gpu_tex_cache,
+                                    input_sources: input_sources.clone(),
+                                    needs_readback,
+                                };
+                                inner.node.evaluate_with_ctx(&cpu_inputs, &mut eval_ctx)
+                            }; // eval_ctx dropped — gpu_tex_cache borrow released
+                            // NOTE: Do NOT call store_for_display here on cache miss.
+                            // GPU-producing nodes (ImageStyleNode, BlendNode) call
+                            // `tex_cache.publish(...)` inside their `process_gpu_cached`,
+                            // which already invokes `store_for_display` internally. An
+                            // extra call here would allocate a redundant bind group +
+                            // texture view every frame (10x slowdown on dynamic inputs
+                            // like Camera, where every frame is a cache miss).
+                            // `touch` is still safe & cheap — just updates LRU stamp —
+                            // but the publish path already refreshes it, so omit too.
                             for &(port, ref val) in &results {
                                 values.insert((id, port), val.clone());
                             }
@@ -2331,7 +2436,7 @@ impl eframe::App for PatchworkApp {
                         // to-disk, …) we readback the GpuImage here so the
                         // forwarded value is a real `Image`. Otherwise the
                         // CPU consumer would silently see no image.
-                        let needs_cpu_downstream = self.graph.has_cpu_consumer(id, 0);
+                        let needs_cpu_downstream = has_cpu_consumer_cached(id, 0);
                         let out = match inputs.first() {
                             Some(PortValue::Image(img)) => PortValue::Image(img.clone()),
                             Some(PortValue::GpuImage(h)) => {
@@ -2383,7 +2488,7 @@ impl eframe::App for PatchworkApp {
                                     continue;
                                 }
                             }
-                            let needs_readback = self.graph.has_cpu_consumer(id, 0);
+                            let needs_readback = has_cpu_consumer_cached(id, 0);
                             let result_val: PortValue = if let Some(rs) = &self.wgpu_render_state {
                                 nodes::image_effects::process_gpu_cached(img, *brightness, *contrast, *saturation, *hue, *exposure, *gamma, id, rs, &mut self.gpu_tex_cache, input_sources.first().copied().flatten(), needs_readback)
                                     .unwrap_or_else(|| {
@@ -2404,71 +2509,8 @@ impl eframe::App for PatchworkApp {
                         }
                     }
                     // Crop migrated to trait-based CropNode (evaluated in graph.evaluate)
-                    // Blend migrated to trait-based BlendNode — dispatch via blend_params() hook
-                    NodeType::Dynamic { inner } if inner.node.blend_params().is_some() => {
-                        let (mode, base_mix) = inner.node.blend_params().unwrap();
-                        // If Mix port (port 2) is wired, use the live value; otherwise use stored mix.
-                        let mix = if inputs.get(2).map(|v| !matches!(v, PortValue::None)).unwrap_or(false) {
-                            inputs.get(2).map(|v| v.as_float().clamp(0.0, 1.0)).unwrap_or(base_mix)
-                        } else {
-                            base_mix
-                        };
-                        let stub_a: Option<ImageData> = match inputs.first() {
-                            Some(PortValue::GpuImage(h)) => Some(ImageData { width: h.width, height: h.height, pixels: Vec::new() }),
-                            _ => None,
-                        };
-                        let stub_b: Option<ImageData> = match inputs.get(1) {
-                            Some(PortValue::GpuImage(h)) => Some(ImageData { width: h.width, height: h.height, pixels: Vec::new() }),
-                            _ => None,
-                        };
-                        let a: Option<&ImageData> = match inputs.first() {
-                            Some(PortValue::Image(img)) => Some(img.as_ref()),
-                            Some(PortValue::GpuImage(_)) => stub_a.as_ref(),
-                            _ => None,
-                        };
-                        let b: Option<&ImageData> = match inputs.get(1) {
-                            Some(PortValue::Image(img)) => Some(img.as_ref()),
-                            Some(PortValue::GpuImage(_)) => stub_b.as_ref(),
-                            _ => None,
-                        };
-                        if let (Some(a), Some(b)) = (a, b) {
-                            let h_a = inputs.first().map(|v| img_or_gpu_hash(v)).unwrap_or(0);
-                            let h_b = inputs.get(1).map(|v| img_or_gpu_hash(v)).unwrap_or(0);
-                            let cache_key = h_a ^ h_b.wrapping_mul(7)
-                                ^ (mode as u64) ^ ((mix * 1000.0) as u64) << 8;
-                            let cache_id = egui::Id::new(("blend_cache", id));
-                            let cached: Option<(u64, PortValue)> = ctx.data_mut(|d| d.get_temp(cache_id));
-                            if let Some((prev_key, prev_val)) = cached {
-                                if prev_key == cache_key {
-                                    if matches!(&prev_val, PortValue::GpuImage(_)) {
-                                        self.gpu_tex_cache.touch(id, 0);
-                                        if let Some(rs) = &self.wgpu_render_state {
-                                            self.gpu_tex_cache.store_for_display(id, rs);
-                                        }
-                                    }
-                                    values.insert((id, 0), prev_val);
-                                    continue;
-                                }
-                            }
-                            let needs_readback = self.graph.has_cpu_consumer(id, 0);
-                            let result_val: PortValue = if let Some(rs) = &self.wgpu_render_state {
-                                nodes::blend::process_gpu_cached(a, b, mode, mix, id, rs, &mut self.gpu_tex_cache, input_sources.first().copied().flatten(), input_sources.get(1).copied().flatten(), needs_readback)
-                                    .unwrap_or_else(|| {
-                                        if !a.pixels.is_empty() && !b.pixels.is_empty() {
-                                            PortValue::Image(nodes::blend::process(a, b, mode, mix))
-                                        } else {
-                                            PortValue::None
-                                        }
-                                    })
-                            } else if !a.pixels.is_empty() && !b.pixels.is_empty() {
-                                PortValue::Image(nodes::blend::process(a, b, mode, mix))
-                            } else {
-                                PortValue::None
-                            };
-                            ctx.data_mut(|d| d.insert_temp(cache_id, (cache_key, result_val.clone())));
-                            values.insert((id, 0), result_val);
-                        }
-                    }
+                    // Blend migrated to trait-based BlendNode — now handled by
+                    // evaluate_with_ctx in the generic Dynamic-image block above.
                     NodeType::Curve { points, .. } => {
                         // Y/Phase/End are computed in graph.evaluate().
                         // Here we generate the Image LUT output (port 3).
@@ -2539,7 +2581,7 @@ impl eframe::App for PatchworkApp {
                                     continue;
                                 }
                             }
-                            let needs_readback = self.graph.has_cpu_consumer(id, 0);
+                            let needs_readback = has_cpu_consumer_cached(id, 0);
                             let result_val: PortValue = if let Some(rs) = &self.wgpu_render_state {
                                 nodes::color_curves::process_gpu_cached(
                                     img, master, red, green, blue, id, rs, &mut self.gpu_tex_cache, input_sources.first().copied().flatten(), needs_readback)
@@ -2686,6 +2728,7 @@ impl eframe::App for PatchworkApp {
                             "bend" => labels.push(format!("b{}_val", id)),
                             "pressure" => labels.push(format!("p{}_val", id)),
                             "distance" => labels.push(format!("d{}_val", id)),
+                            "knob" => labels.push(format!("k{}_val", id)),
                             "orb" => {
                                 labels.push(format!("orb{}_ax", id));
                                 labels.push(format!("orb{}_ay", id));
@@ -2853,6 +2896,7 @@ impl eframe::App for PatchworkApp {
                         "bend" => NodeType::ObBend { device_id: did, hub_node_id: hub_id, label_color: [255, 255, 255] },
                         "pressure" => NodeType::ObPressure { device_id: did, hub_node_id: hub_id, label_color: [255, 255, 255] },
                         "distance" => NodeType::ObDistance { device_id: did, hub_node_id: hub_id, label_color: [255, 255, 255] },
+                        "knob" => NodeType::ObKnob { device_id: did, hub_node_id: hub_id, label_color: [255, 255, 255] },
                         "orb" => NodeType::ObOrb { device_id: did, hub_node_id: hub_id, mode: 0, color: [255, 255, 255], param1: 0.0, param2: 0.0, speed: 1.0, brightness: 1.0 },
                         _ => continue,
                     };

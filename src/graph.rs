@@ -446,6 +446,14 @@ pub enum NodeType {
         selected_file: String,
         #[serde(default)]
         search: String,
+        /// Cached contents of `selected_file` — avoids re-reading the file
+        /// from disk on every frame's `evaluate()` pass. Invalidated when
+        /// `selected_file` changes. Legacy enum variant only; the trait-
+        /// based `FolderBrowserNode` already has this cache.
+        #[serde(skip)]
+        cached_content: String,
+        #[serde(skip)]
+        cached_content_path: String,
     },
     WgslViewer {
         #[serde(default)]
@@ -717,7 +725,23 @@ pub enum NodeType {
         #[serde(default = "default_orb_color")]
         label_color: [u8; 3],
     },
+    /// OB Distance — Time-of-Flight sensor (VL53L0X) reporting a normalized
+    /// 0..1 value mapped from a fixed firmware-side range (30..1200 mm for
+    /// the VL53L0X). For a different output range, chain a MapRange node.
+    /// Same port shape as Bend/Pressure/Knob.
     ObDistance {
+        #[serde(default = "default_device_id")]
+        device_id: u8,
+        #[serde(default)]
+        hub_node_id: NodeId,
+        #[serde(default = "default_orb_color")]
+        label_color: [u8; 3],
+    },
+    /// OB Knob — single-axis rotary knob sensor reporting a normalized value
+    /// under `dev.values["value"]`. Symmetric with Bend/Pressure/Distance:
+    /// one Normalized output + one "Changed" trigger. `label_color` drives
+    /// the device's LED if it has one (harmless no-op otherwise).
+    ObKnob {
         #[serde(default = "default_device_id")]
         device_id: u8,
         #[serde(default)]
@@ -1317,11 +1341,15 @@ impl NodeBehavior for NodeType {
             NodeType::ZoomControl { .. } => "Zoom",
             NodeType::ObHub { .. } => "OB Hub",
             NodeType::ObJoystick { .. } => "OB Joystick",
-            NodeType::ObEncoder { .. } => "OB Encoder",
+            // UI label only — internal protocol type stays "encoder" so all
+            // existing hub-based flows, saved projects, and mesh forwarding
+            // continue working unchanged.
+            NodeType::ObEncoder { .. } => "OB Wheel",
             NodeType::ObMove { .. } => "OB Move",
             NodeType::ObBend { .. } => "OB Bend",
             NodeType::ObPressure { .. } => "OB Pressure",
             NodeType::ObDistance { .. } => "OB Distance",
+            NodeType::ObKnob { .. } => "OB Knob",
             NodeType::ObOrb { .. } => "OB Orb",
             NodeType::Synth { .. } => "Synth",
             NodeType::AudioPlayer { .. } => "Audio Player",
@@ -1430,6 +1458,7 @@ impl NodeBehavior for NodeType {
             NodeType::ObBend { .. } => vec![],
             NodeType::ObPressure { .. } => vec![],
             NodeType::ObDistance { .. } => vec![],
+            NodeType::ObKnob { .. } => vec![],
             NodeType::ObOrb { .. } => {
                 vec![PortDef::new("Drive", Number)]
             },
@@ -1601,6 +1630,9 @@ impl NodeBehavior for NodeType {
                         "distance" => {
                             ports.push(PortDef::dynamic(format!("d{}_val", id), Normalized));
                         }
+                        "knob" => {
+                            ports.push(PortDef::dynamic(format!("k{}_val", id), Normalized));
+                        }
                         "orb" => {
                             ports.push(PortDef::dynamic(format!("orb{}_ax", id), Number));
                             ports.push(PortDef::dynamic(format!("orb{}_ay", id), Number));
@@ -1626,7 +1658,12 @@ impl NodeBehavior for NodeType {
             ],
             NodeType::ObBend { .. } => vec![PortDef::new("Value", Normalized), PortDef::new("Changed", Trigger)],
             NodeType::ObPressure { .. } => vec![PortDef::new("Value", Normalized), PortDef::new("Changed", Trigger)],
-            NodeType::ObDistance { .. } => vec![PortDef::new("Value", Normalized), PortDef::new("Changed", Trigger)],
+            NodeType::ObDistance { .. } => vec![
+                PortDef::new("Value", Normalized),
+                PortDef::new("Distance (mm)", Number),
+                PortDef::new("Changed", Trigger),
+            ],
+            NodeType::ObKnob { .. } => vec![PortDef::new("Value", Normalized), PortDef::new("Changed", Trigger)],
             NodeType::ObJoystick { .. } => vec![PortDef::new("X", Normalized), PortDef::new("Y", Normalized), PortDef::new("Button", Gate), PortDef::new("Changed", Trigger)],
             NodeType::ObEncoder { .. } => vec![PortDef::new("Turn", Number), PortDef::new("Click", Gate), PortDef::new("Position", Number), PortDef::new("Changed", Trigger)],
             NodeType::ObOrb { .. } => vec![
@@ -1728,6 +1765,7 @@ impl NodeBehavior for NodeType {
             NodeType::ObBend { .. } => [160, 200, 100],
             NodeType::ObPressure { .. } => [200, 100, 160],
             NodeType::ObDistance { .. } => [200, 200, 60],
+            NodeType::ObKnob { .. } => [140, 200, 220],
             NodeType::ObOrb { .. } => [60, 200, 200],
             NodeType::Synth { .. } => [100, 220, 180],
             NodeType::AudioPlayer { .. } => [180, 100, 220],
@@ -2313,7 +2351,7 @@ impl Graph {
                         values.insert((id, 4), PortValue::Float(step_value));
                         values.insert((id, 5), PortValue::Float(step_trigger));
                     }
-                    NodeType::FolderBrowser { selected_file, .. } => {
+                    NodeType::FolderBrowser { selected_file, cached_content, cached_content_path, .. } => {
                         // Output the selected file path and name
                         values.insert((id, 0), PortValue::Text(selected_file.clone()));
                         let name = std::path::Path::new(selected_file.as_str())
@@ -2321,10 +2359,19 @@ impl Graph {
                             .map(|n| n.to_string_lossy().to_string())
                             .unwrap_or_default();
                         values.insert((id, 1), PortValue::Text(name));
-                        // Read content (lazy, only when file selected)
+                        // Read content, cached by selected_file path.
+                        // Previously re-read from disk every frame — pure waste
+                        // of syscalls + CPU for the 99.99% of frames where the
+                        // selection hasn't changed.
                         if !selected_file.is_empty() {
-                            let content = std::fs::read_to_string(selected_file).unwrap_or_default();
-                            values.insert((id, 2), PortValue::Text(content));
+                            if cached_content_path != selected_file {
+                                *cached_content = std::fs::read_to_string(selected_file.as_str()).unwrap_or_default();
+                                *cached_content_path = selected_file.clone();
+                            }
+                            values.insert((id, 2), PortValue::Text(cached_content.clone()));
+                        } else {
+                            cached_content.clear();
+                            cached_content_path.clear();
                         }
                     }
                     NodeType::MidiIn { channel, note, velocity, .. } => {
@@ -2587,6 +2634,12 @@ impl Graph {
     /// receiving port. GPU producers query this to decide whether to
     /// readback their output texture (`PortValue::Image`) or emit a
     /// zero-copy `PortValue::GpuImage` handle.
+    ///
+    /// Kept for ad-hoc / one-shot queries (e.g. from node-local render
+    /// paths that don't have the per-frame cache in scope). The image-
+    /// evaluation loop in `app/mod.rs` uses `cpu_consumer_producers`
+    /// instead, which is O(edges) per frame regardless of call count.
+    #[allow(dead_code)]
     pub fn has_cpu_consumer(&self, producer_id: NodeId, producer_port: usize) -> bool {
         for conn in &self.connections {
             if conn.from_node == producer_id && conn.from_port == producer_port {

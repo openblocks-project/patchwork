@@ -15,7 +15,13 @@ use serde_json::Value;
 /// Every node type implements this. Built-in nodes live in the `NodeType`
 /// enum (legacy) or as standalone structs (migrated). External plugins
 /// implement this trait in their own crate.
-pub trait NodeBehavior: Send + Sync {
+///
+/// The `Any` supertrait bound enables callers with `&dyn NodeBehavior` /
+/// `Box<dyn NodeBehavior>` to downcast to a concrete node struct via trait
+/// upcasting (stable since Rust 1.86). Used by the image-eval loop in
+/// `app/mod.rs` to call type-specific GPU fast paths without a JSON
+/// round-trip through `save_state()`/`from_value`.
+pub trait NodeBehavior: std::any::Any + Send + Sync {
     /// Display name shown in the title bar and palette.
     fn title(&self) -> &str;
 
@@ -83,30 +89,63 @@ pub trait NodeBehavior: Send + Sync {
         self.render_ui(ui);
     }
 
-    /// Optional GPU rendering hook for nodes that publish their output as a
-    /// `PortValue::GpuImage`. Called once per frame from the eval loop when a
-    /// `wgpu::Device`/`Queue` are available. Implementations should:
-    ///   1. Run their wgpu pipelines into an offscreen texture.
-    ///   2. Call `gpu_image::queue_publish_node_output(node_id, port, tex, w, h)`.
-    ///   3. Return `Some((width, height))` so the dispatcher can publish a
-    ///      `GpuImageHandle` into the value map.
-    /// Default returns `None` (CPU node).
-    fn render_gpu(
-        &mut self,
-        _render_state: &eframe::egui_wgpu::RenderState,
-        _node_id: crate::graph::NodeId,
-        _time: f32,
-    ) -> Option<(u32, u32)> { None }
-
     /// Audio params to sync to the audio engine each frame.
     /// Override this for trait-based nodes that drive audio processors.
     /// Returns an empty slice by default (no audio params).
     fn audio_params(&self) -> &[f32] { &[] }
 
-    /// Monotonically-increasing frame stamp for GPU producer nodes. Bumped
-    /// whenever the node re-renders, used by downstream `GpuImage` consumers
-    /// to invalidate their parameter caches. Default `0` for CPU nodes.
-    fn frame_stamp(&self) -> u64 { 0 }
+    /// GPU-aware evaluate. Called by the image evaluation loop in
+    /// `app/mod.rs` for Dynamic nodes whose inputs include Image or
+    /// GpuImage values. The `EvalCtx` carries GPU resources so nodes
+    /// can run their own GPU pipelines and emit `PortValue::GpuImage`
+    /// results without per-type dispatch in the caller.
+    ///
+    /// Default delegates to `evaluate(inputs)` — all existing nodes
+    /// work unchanged. Image-producing nodes override this to access
+    /// `ctx.gpu_tex_cache`, `ctx.render_state`, etc.
+    ///
+    /// Scalar-only call sites (Graph::evaluate, Dynamic re-eval after
+    /// injection) keep calling `evaluate()` directly since they have
+    /// no GPU resources to pass.
+    fn evaluate_with_ctx(
+        &mut self,
+        inputs: &[PortValue],
+        ctx: &mut EvalCtx<'_>,
+    ) -> Vec<(usize, PortValue)> {
+        let _ = ctx;
+        self.evaluate(inputs)
+    }
+}
+
+/// Context passed to `evaluate_with_ctx` — gives image-producing nodes
+/// access to GPU resources so they can handle their own processing instead
+/// of relying on per-type dispatch in `app/mod.rs`.
+///
+/// All fields are populated by the image evaluation loop in `app/mod.rs`.
+/// `render_state` is `Option` so headless / test contexts can pass `None`.
+pub struct EvalCtx<'a> {
+    /// Identity of the node being evaluated. Needed for GPU texture cache
+    /// lookups (keyed by NodeId) and `GpuImageHandle` emission.
+    pub node_id: crate::graph::NodeId,
+
+    /// wgpu device + queue + renderer. `None` in headless / no-GPU contexts.
+    pub render_state: Option<&'a eframe::egui_wgpu::RenderState>,
+
+    /// Mutable access to the shared GPU texture cache. All GPU-path free
+    /// functions (`process_gpu_cached` in blend, image_effects, color_curves,
+    /// image_style) take `&mut GpuTextureCache`.
+    pub gpu_tex_cache: &'a mut crate::gpu_image::GpuTextureCache,
+
+    /// Per-input: which `(NodeId, port)` produced each input value. GPU nodes
+    /// use this to look up upstream textures in `gpu_tex_cache` and skip
+    /// redundant CPU→GPU uploads. Length matches `inputs.len()`.
+    pub input_sources: Vec<Option<(crate::graph::NodeId, usize)>>,
+
+    /// Whether at least one downstream consumer of this node's output
+    /// requires CPU pixel bytes. `false` → skip GPU→CPU readback (emit
+    /// `GpuImage` handle instead). Pre-computed from the per-frame
+    /// `cpu_consumer_producers` set.
+    pub needs_readback: bool,
 }
 
 /// Context passed to render_with_context — gives nodes access to

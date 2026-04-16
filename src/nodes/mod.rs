@@ -22,6 +22,7 @@ pub mod ob_orb;
 pub mod ob_distance;
 pub mod ob_pressure;
 pub mod ob_bend;
+pub mod ob_knob;
 pub mod ob_move;
 pub mod html_viewer;
 pub mod mcp_server;
@@ -507,7 +508,7 @@ pub fn catalog() -> Vec<NodeCatalogEntry> {
             factory: || NodeType::ObHub { port_name: String::new(), selected_port: String::new(), detected_devices: Vec::new() } },
         NodeCatalogEntry { wip: false, singleton: false, label: "OB Joystick", category: "Hardware",
             factory: || NodeType::ObJoystick { device_id: 1, hub_node_id: 0, label_color: [255, 255, 255] } },
-        NodeCatalogEntry { wip: false, singleton: false, label: "OB Encoder", category: "Hardware",
+        NodeCatalogEntry { wip: false, singleton: false, label: "OB Wheel", category: "Hardware",
             factory: || NodeType::ObEncoder { device_id: 1, hub_node_id: 0, label_color: [255, 255, 255] } },
         NodeCatalogEntry { wip: false, singleton: false, label: "OB Move", category: "Hardware",
             factory: || NodeType::ObMove { device_id: 1, hub_node_id: 0 } },
@@ -517,6 +518,8 @@ pub fn catalog() -> Vec<NodeCatalogEntry> {
             factory: || NodeType::ObPressure { device_id: 1, hub_node_id: 0, label_color: [255, 255, 255] } },
         NodeCatalogEntry { wip: false, singleton: false, label: "OB Distance", category: "Hardware",
             factory: || NodeType::ObDistance { device_id: 1, hub_node_id: 0, label_color: [255, 255, 255] } },
+        NodeCatalogEntry { wip: false, singleton: false, label: "OB Knob", category: "Hardware",
+            factory: || NodeType::ObKnob { device_id: 1, hub_node_id: 0, label_color: [255, 255, 255] } },
         NodeCatalogEntry { wip: false, singleton: false, label: "OB Orb", category: "Hardware",
             factory: || NodeType::ObOrb { device_id: 1, hub_node_id: 0, mode: 0, color: [255, 255, 255], param1: 0.0, param2: 0.0, speed: 1.0, brightness: 1.0 } },
         NodeCatalogEntry { wip: false, singleton: false, label: "Printer", category: "Hardware",
@@ -676,6 +679,7 @@ pub fn render_content(
         NodeType::ObBend { .. } => ob_bend::render(ui, node_id, node_type, values, connections, ob_manager),
         NodeType::ObPressure { .. } => ob_pressure::render(ui, node_id, node_type, values, connections, ob_manager),
         NodeType::ObDistance { .. } => ob_distance::render(ui, node_id, node_type, values, connections, ob_manager),
+        NodeType::ObKnob { .. } => ob_knob::render(ui, node_id, node_type, values, connections, ob_manager),
         NodeType::ObOrb { .. } => ob_orb::render(ui, node_id, node_type, values, connections, ob_manager, port_positions, dragging_from, pending_disconnects),
         NodeType::Synth { .. } => synth::render(ui, node_id, node_type, values, connections, audio_manager, port_positions, dragging_from, pending_disconnects),
         NodeType::AudioPlayer { .. } => audio_player::render(ui, node_id, node_type, values, connections, audio_manager, port_positions, dragging_from, pending_disconnects),

@@ -374,6 +374,11 @@ pub struct ObManager {
 
 impl ObManager {
     pub fn new() -> Self {
+        // NOTE: HID discovery is handled by a process-wide singleton
+        // (`crate::hid::global()`), NOT owned by ObManager. If we owned it
+        // here, every `std::mem::replace(&mut self.ob, ObManager::new())`
+        // in app/mod.rs would spawn another enumeration thread, causing
+        // hidapi concurrent-access crashes. Access HID via `hid::global()`.
         Self {
             hubs: HashMap::new(),
         }

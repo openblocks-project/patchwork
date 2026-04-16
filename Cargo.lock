@@ -2463,6 +2463,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "hidapi"
+version = "2.6.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d1b71e1f4791fb9e93b9d7ee03d70b501ab48f6151432fbcadeabc30fe15396e"
+dependencies = [
+ "cc",
+ "cfg-if",
+ "libc",
+ "pkg-config",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "hmac-sha256"
 version = "1.1.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4527,6 +4540,7 @@ dependencies = [
  "dirs",
  "eframe",
  "futures-lite",
+ "hidapi",
  "image",
  "iroh",
  "iroh-gossip",
