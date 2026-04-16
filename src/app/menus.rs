@@ -1,5 +1,25 @@
 use super::*;
 
+/// Secondary pill placements for nodes that conceptually belong to more
+/// than one category.
+///
+/// Every catalog entry is placed in its primary pill via
+/// `NodeCatalogEntry.category` (e.g. Sample & Hold → Math). This function
+/// adds extra pill columns the same entry should also appear in — so the
+/// user finds it under multiple browsing contexts without having to
+/// curate separate catalog entries.
+///
+/// Keep this list small and intentional. Not every node needs to be
+/// multi-placed; reserve it for nodes that genuinely serve distinct
+/// workflows (Sample & Hold is both a math tool and a utility-style
+/// time-lapse capture).
+fn also_in(label: &str) -> &'static [&'static str] {
+    match label {
+        "Sample & Hold" => &["Utility"],
+        _ => &[],
+    }
+}
+
 /// Check if two port kinds are compatible for the wire+Tab filtered menu.
 fn port_kinds_compatible(a: PortKind, b: PortKind) -> bool {
     use PortKind::*;
@@ -34,26 +54,40 @@ impl super::PatchworkApp {
 
     pub(super) fn node_menu(&mut self, ctx: &egui::Context) {
         if !self.show_node_menu { return; }
-        // Menus at native screen size regardless of zoom
+        // Menus at native screen size regardless of canvas zoom.
         let orig_style = self.apply_inverse_zoom_style(ctx);
-        let pos = self.node_menu_pos;
+        let _ = self.node_menu_pos; // retained for spawn offset (used below)
         let mut keep_open = true;
         let menu_id = egui::Id::new("add_node_menu_window");
 
-        let accent_rgb = self.graph.nodes.values()
-            .find_map(|n| if let NodeType::Theme { accent, .. } = &n.node_type { Some(*accent) } else { None })
-            .unwrap_or([80, 160, 255]);
-        let accent = egui::Color32::from_rgb(accent_rgb[0], accent_rgb[1], accent_rgb[2]);
+        // No accent/brand colors in this menu — categories and node entries
+        // stay neutral. Colors and shapes are reserved for port kinds.
+        let dim = egui::Color32::from_rgb(110, 110, 120);
+        let text_normal = egui::Color32::from_rgb(200, 200, 210);
+        let pill_active_fill = egui::Color32::from_rgb(70, 70, 85);
+        let pill_inactive_fill = egui::Color32::from_rgba_unmultiplied(48, 48, 58, 140);
+        let selected_fill = egui::Color32::from_rgb(60, 60, 72);
+        let wip_color = egui::Color32::from_rgb(200, 160, 60);
 
+        // Large modal sizing. Menu scales up with the screen but caps at
+        // 1400×800 logical so it doesn't stretch absurdly on big monitors.
         let inv = 1.0 / self.canvas_zoom;
         let screen = ctx.screen_rect();
-        let menu_w = (380.0 * inv).min(screen.width() * 0.85);
-        let menu_h = (screen.height() * 0.55).min(500.0 * inv);
+        let menu_w = (screen.width() * 0.9).min(1400.0 * inv).max(800.0 * inv);
+        let menu_h = (screen.height() * 0.8).min(800.0 * inv).max(480.0 * inv);
         let center = screen.center();
         let menu_pos = egui::pos2(center.x - menu_w * 0.5, center.y - menu_h * 0.5);
 
-        let resp = egui::Window::new(egui::RichText::new("Add Node").color(accent).strong())
+        // Separate from `keep_open` (which is mutated inside the closure
+        // when a node is spawned) — `open_flag` is only written by egui's
+        // built-in close button on the title bar. We merge the two after
+        // the window closes. Two flags because the closure borrows
+        // `keep_open` mutably; Rust won't let us also pass `&mut keep_open`
+        // to `.open()` simultaneously.
+        let mut open_flag = true;
+        let resp = egui::Window::new(egui::RichText::new("Add Node").strong())
             .id(menu_id)
+            .open(&mut open_flag)
             .fixed_pos(menu_pos)
             .fixed_size([menu_w, menu_h])
             .resizable(false)
@@ -80,24 +114,29 @@ impl super::PatchworkApp {
 
                 ui.add_space(4.0);
 
-                // ── Category pills ───────────────────────────────────────
+                // ── Category pills (neutral, no accent colors) ───────────
                 let categories = nodes::CATEGORY_GROUPS;
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing.x = 4.0;
                     for &(label, _) in categories {
-                        let is_active = if label == "All" { self.node_menu_category.is_empty() } else { self.node_menu_category == label };
+                        let is_active = if label == "All" {
+                            self.node_menu_category.is_empty()
+                        } else {
+                            self.node_menu_category == label
+                        };
                         let text = egui::RichText::new(label).small();
                         let btn = if is_active {
                             egui::Button::new(text.strong().color(egui::Color32::WHITE))
-                                .fill(egui::Color32::from_rgba_unmultiplied(accent_rgb[0], accent_rgb[1], accent_rgb[2], 180))
+                                .fill(pill_active_fill)
                                 .corner_radius(12.0)
                         } else {
-                            egui::Button::new(text.color(egui::Color32::from_rgb(140, 140, 150)))
-                                .fill(egui::Color32::from_rgba_unmultiplied(60, 60, 70, 120))
+                            egui::Button::new(text.color(egui::Color32::from_rgb(160, 160, 170)))
+                                .fill(pill_inactive_fill)
                                 .corner_radius(12.0)
                         };
                         if ui.add(btn).clicked() {
-                            self.node_menu_category = if label == "All" { String::new() } else { label.to_string() };
+                            self.node_menu_category =
+                                if label == "All" { String::new() } else { label.to_string() };
                             self.node_menu_selected = 0;
                         }
                     }
@@ -111,140 +150,212 @@ impl super::PatchworkApp {
                 let query = self.node_menu_search.to_lowercase();
                 let catalog = nodes::catalog();
                 let wire_ctx = self.wire_menu_context;
-                let cat_filter = &self.node_menu_category;
+                let cat_filter = self.node_menu_category.clone();
 
                 if wire_ctx.is_some() {
-                    ui.label(egui::RichText::new("⚡ Compatible nodes").small().color(accent));
+                    ui.label(egui::RichText::new("⚡ Compatible nodes").small().color(dim));
                     ui.add_space(2.0);
                 }
 
-                let mut visible: Vec<usize> = Vec::new();
-                for (i, entry) in catalog.iter().enumerate() {
-                    if entry.category == "System" { continue; }
-                    if !cat_filter.is_empty() {
-                        let matched = categories.iter().any(|&(label, cats)| {
-                            label == cat_filter.as_str() && cats.contains(&entry.category)
-                        });
-                        if !matched { continue; }
+                // Resolve a raw category string to its pill label. Single-
+                // pass lookup via CATEGORY_GROUPS. Returns "Other" only for
+                // orphan categories (e.g. System) which we filter out above.
+                let pill_for = |cat: &str| -> &'static str {
+                    for (label, cats) in nodes::CATEGORY_GROUPS.iter() {
+                        if *label == "All" { continue; }
+                        if cats.contains(&cat) { return *label; }
                     }
+                    "Other"
+                };
+
+                // Which entries pass the global filters (search / wire
+                // compatibility). Pill filter happens per-column below.
+                let all_visible: Vec<usize> = catalog.iter().enumerate().filter_map(|(i, entry)| {
+                    if entry.category == "System" { return None; }
                     if !query.is_empty()
                         && !entry.label.to_lowercase().contains(&query)
                         && !entry.category.to_lowercase().contains(&query)
-                    { continue; }
-                    if let Some((_src_nid, _src_port, src_is_output, src_kind)) = wire_ctx {
+                    { return None; }
+                    if let Some((_, _, src_is_output, src_kind)) = wire_ctx {
                         let candidate = (entry.factory)();
                         let target_ports = if src_is_output { candidate.inputs() } else { candidate.outputs() };
-                        if !target_ports.iter().any(|p| port_kinds_compatible(src_kind, p.kind)) { continue; }
+                        if !target_ports.iter().any(|p| port_kinds_compatible(src_kind, p.kind)) {
+                            return None;
+                        }
                     }
-                    visible.push(i);
-                }
+                    Some(i)
+                }).collect();
 
-                // ── Keyboard navigation ──────────────────────────────────
+                // Build columns: one per pill group (Input / Math / Visual /
+                // ML / Audio / I/O / Utility). Pill filter, when active,
+                // narrows to just that column full-width.
+                // An entry lands in its primary pill (via category) AND in
+                // any additional pills returned by also_in(label) — letting
+                // nodes like Sample & Hold appear under both Math and
+                // Utility without duplicating catalog entries.
+                let all_pills: Vec<&'static str> = categories.iter()
+                    .filter(|(label, _)| *label != "All")
+                    .map(|(label, _)| *label)
+                    .collect();
+
+                let mut columns: Vec<(&'static str, Vec<usize>)> = Vec::new();
+                for &pill in &all_pills {
+                    // Pill filter: when active, show ONLY that column full-width.
+                    if !cat_filter.is_empty() && cat_filter != pill { continue; }
+                    let entries: Vec<usize> = all_visible.iter().copied().filter(|&i| {
+                        let entry = &catalog[i];
+                        pill_for(entry.category) == pill || also_in(entry.label).contains(&pill)
+                    }).collect();
+                    // Hide empty columns during a search (keeps layout compact).
+                    // Outside search, always show the column header even if
+                    // empty — otherwise the layout shifts while you type.
+                    if !query.is_empty() && entries.is_empty() { continue; }
+                    columns.push((pill, entries));
+                }
+                // Flatten entries for keyboard nav: walks columns in left-
+                // to-right order, entries within each column in catalog
+                // order. This way Up/Down walks top-to-bottom through a
+                // column, then wraps to the next column's top.
+                let visible_flat: Vec<usize> =
+                    columns.iter().flat_map(|(_, v)| v.iter().copied()).collect();
+
                 let up = ui.ctx().input(|i| i.key_pressed(egui::Key::ArrowUp));
                 let down = ui.ctx().input(|i| i.key_pressed(egui::Key::ArrowDown));
                 let enter = ui.ctx().input(|i| i.key_pressed(egui::Key::Enter));
                 if up && self.node_menu_selected > 0 { self.node_menu_selected -= 1; }
-                if down && self.node_menu_selected + 1 < visible.len() { self.node_menu_selected += 1; }
-                if !visible.is_empty() { self.node_menu_selected = self.node_menu_selected.min(visible.len() - 1); }
+                if down && self.node_menu_selected + 1 < visible_flat.len() {
+                    self.node_menu_selected += 1;
+                }
+                if !visible_flat.is_empty() {
+                    self.node_menu_selected = self.node_menu_selected.min(visible_flat.len() - 1);
+                }
 
                 let off_e = self.canvas_offset / self.canvas_zoom;
                 let spawn_x = self.node_menu_pos.x - off_e.x;
                 let spawn_y_base = self.node_menu_pos.y - off_e.y;
 
                 let mut spawn_idx: Option<usize> = None;
-                if enter && !visible.is_empty() {
-                    spawn_idx = Some(visible[self.node_menu_selected]);
+                if enter && !visible_flat.is_empty() {
+                    spawn_idx = Some(visible_flat[self.node_menu_selected]);
                 }
 
-                // ── Scrollable node list ─────────────────────────────────
-                egui::ScrollArea::vertical()
-                    .max_height(menu_h - 90.0)
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        let dim = egui::Color32::from_rgb(110, 110, 120);
-                        let wip_color = egui::Color32::from_rgb(200, 160, 60);
-                        let mut last_cat = "";
-                        let mut visible_pos = 0usize;
-
-                        for &cat_idx in &visible {
-                            let entry = &catalog[cat_idx];
-                            let is_selected = visible_pos == self.node_menu_selected;
-
-                            // Category header
-                            if entry.category != last_cat {
-                                if !last_cat.is_empty() { ui.add_space(6.0); }
-                                // Count nodes in this category
-                                let cat_count = visible.iter()
-                                    .filter(|&&i| catalog[i].category == entry.category)
-                                    .count();
-                                let cat_icon = crate::icons::category_icon(entry.category);
-                                ui.horizontal(|ui| {
-                                    ui.label(egui::RichText::new(cat_icon).size(11.0).color(dim));
-                                    ui.label(egui::RichText::new(
-                                        format!("{} ({})", entry.category, cat_count)
-                                    ).small().strong().color(dim));
-                                });
-                                ui.add_space(2.0);
-                                last_cat = entry.category;
-                            }
-
-                            // Node entry
-                            let node_icon = crate::icons::node_icon(entry.label);
-                            let label_text = if entry.wip {
-                                format!("{} {}", node_icon, entry.label)
-                            } else {
-                                format!("{} {}", node_icon, entry.label)
-                            };
-
-                            let text_color = if entry.wip {
-                                egui::Color32::from_rgb(100, 100, 110)
-                            } else if is_selected {
-                                accent
-                            } else {
-                                ui.visuals().text_color()
-                            };
-
-                            let fill = if is_selected {
-                                egui::Color32::from_rgba_unmultiplied(accent_rgb[0], accent_rgb[1], accent_rgb[2], 25)
-                            } else {
-                                egui::Color32::TRANSPARENT
-                            };
-
-                            let btn = ui.add_sized(
-                                [ui.available_width(), 26.0],
-                                egui::Button::new(
-                                    egui::RichText::new(&label_text).size(13.0).color(text_color)
-                                        .strong()
-                                ).fill(fill).frame(true).corner_radius(4.0),
-                            );
-
-                            // WIP badge drawn after button
-                            if entry.wip && ui.is_rect_visible(btn.rect) {
-                                let badge_pos = egui::pos2(btn.rect.right() - 35.0, btn.rect.center().y);
-                                ui.painter().text(
-                                    badge_pos, egui::Align2::RIGHT_CENTER,
-                                    "[WIP]", egui::FontId::proportional(9.0), wip_color,
-                                );
-                            }
-
-                            if is_selected && (up || down) {
-                                btn.scroll_to_me(Some(egui::Align::Center));
-                            }
-
-                            if btn.clicked() { spawn_idx = Some(cat_idx); }
-                            visible_pos += 1;
-                        }
-
-                        if visible.is_empty() {
-                            ui.add_space(20.0);
-                            ui.vertical_centered(|ui| {
-                                ui.label(egui::RichText::new("No matches").color(dim).italics());
-                            });
-                            ui.add_space(20.0);
-                        }
+                // ── Column layout ───────────────────────────────────────
+                let total_cols = columns.len();
+                if total_cols == 0 {
+                    // Empty state (e.g. no search matches in any column).
+                    ui.add_space(40.0);
+                    ui.vertical_centered(|ui| {
+                        ui.label(egui::RichText::new("No matches").color(dim).italics());
                     });
+                    ui.add_space(40.0);
+                } else {
+                    let col_gap = 6.0;
+                    let available_w = ui.available_width();
+                    let col_w = ((available_w - col_gap * (total_cols.saturating_sub(1)) as f32)
+                        / total_cols as f32).max(140.0);
+                    // Use the actual remaining vertical space in the window,
+                    // not a precomputed guess. Subtract a small floor so the
+                    // ScrollArea's scrollbar doesn't overflow the window
+                    // chrome. Earlier version used `menu_h - 140.0` which
+                    // gave a logical value that didn't match `ui`'s actual
+                    // available height after search + pills + separator,
+                    // collapsing the columns to ~90 px tall.
+                    let col_h = (ui.available_height() - 4.0).max(120.0);
 
-                // ── Spawn ────────────────────────────────────────────────
+                    // Walk position tracks the flat index for selection
+                    // highlight. Incremented in the exact same order we
+                    // built `visible_flat`, so they stay in lockstep.
+                    let mut walk_pos = 0usize;
+
+                    // `horizontal_top` aligns columns to the top edge of
+                    // the horizontal strip — matters when one column is
+                    // shorter than its neighbours after search filtering.
+                    // The `ui.set_min_height(col_h)` below forces each
+                    // column's vertical layout to fill the full `col_h`
+                    // regardless of content size, which is what pins the
+                    // ScrollArea's effective height.
+                    ui.horizontal_top(|ui| {
+                        for (col_idx, (pill_name, entries)) in columns.iter().enumerate() {
+                            if col_idx > 0 { ui.add_space(col_gap); }
+                            ui.vertical(|ui| {
+                                ui.set_width(col_w);
+                                ui.set_min_height(col_h);
+                                // Column header — neutral, no icon (icons
+                                // were a per-raw-category detail that didn't
+                                // fit the cleaner column layout).
+                                ui.label(
+                                    egui::RichText::new(format!("{} ({})", pill_name, entries.len()))
+                                        .small().strong().color(dim),
+                                );
+                                ui.separator();
+                                // Per-column scroll — scrolling inside one
+                                // doesn't affect the others. id_salt
+                                // disambiguates each column's scroll state.
+                                egui::ScrollArea::vertical()
+                                    .id_salt(format!("addmenu_col_{}", pill_name))
+                                    .max_height(col_h)
+                                    .auto_shrink([false, false])
+                                    .show(ui, |ui| {
+                                        for &cat_idx in entries {
+                                            let entry = &catalog[cat_idx];
+                                            let is_selected = walk_pos == self.node_menu_selected;
+                                            let node_icon = crate::icons::node_icon(entry.label);
+                                            let label_text = format!("{} {}", node_icon, entry.label);
+
+                                            // Text color stays neutral —
+                                            // WIP entries get dimmed; no
+                                            // accent on selected.
+                                            let text_color = if entry.wip {
+                                                egui::Color32::from_rgb(100, 100, 110)
+                                            } else {
+                                                text_normal
+                                            };
+                                            let fill = if is_selected {
+                                                selected_fill
+                                            } else {
+                                                egui::Color32::TRANSPARENT
+                                            };
+
+                                            let btn = ui.add_sized(
+                                                [ui.available_width(), 24.0],
+                                                egui::Button::new(
+                                                    egui::RichText::new(&label_text).size(12.0).color(text_color),
+                                                ).fill(fill).frame(true).corner_radius(4.0),
+                                            );
+
+                                            if entry.wip && ui.is_rect_visible(btn.rect) {
+                                                let badge_pos = egui::pos2(
+                                                    btn.rect.right() - 28.0,
+                                                    btn.rect.center().y,
+                                                );
+                                                ui.painter().text(
+                                                    badge_pos, egui::Align2::RIGHT_CENTER,
+                                                    "[WIP]", egui::FontId::proportional(8.0), wip_color,
+                                                );
+                                            }
+
+                                            if is_selected && (up || down) {
+                                                btn.scroll_to_me(Some(egui::Align::Center));
+                                            }
+
+                                            if btn.clicked() { spawn_idx = Some(cat_idx); }
+                                            walk_pos += 1;
+                                        }
+
+                                        if entries.is_empty() {
+                                            ui.add_space(8.0);
+                                            ui.label(
+                                                egui::RichText::new("—").small().color(dim),
+                                            );
+                                        }
+                                    });
+                            });
+                        }
+
+                    });
+                }
+
+                // ── Spawn the selected node ──────────────────────────────
                 if let Some(cat_idx) = spawn_idx {
                     let entry = &catalog[cat_idx];
                     self.push_undo();
@@ -270,20 +381,21 @@ impl super::PatchworkApp {
                 }
             });
 
-        // Close on click outside the menu window
+        // Fold the title-bar X button's state into keep_open. egui sets
+        // `open_flag = false` the instant the X is clicked; we AND it
+        // into keep_open so all close paths (X, Esc, click-outside,
+        // node spawn) share the same cleanup.
+        if !open_flag { keep_open = false; }
+
+        // Close on click outside the menu window or Escape key.
         if let Some(inner) = &resp {
             let menu_rect = inner.response.rect;
             let clicked_outside = ctx.input(|i| {
                 i.pointer.button_clicked(egui::PointerButton::Primary)
                     || i.pointer.button_clicked(egui::PointerButton::Secondary)
             }) && ctx.pointer_latest_pos().map(|p| !menu_rect.contains(p)).unwrap_or(false);
-
-            // Also close on Escape
             let esc = ctx.input(|i| i.key_pressed(egui::Key::Escape));
-
-            if clicked_outside || esc {
-                keep_open = false;
-            }
+            if clicked_outside || esc { keep_open = false; }
         }
 
         if !keep_open {

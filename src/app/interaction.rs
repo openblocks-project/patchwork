@@ -22,6 +22,50 @@ impl super::PatchworkApp {
             return;
         }
 
+        // ── Is the pointer over a SCROLLABLE UI surface? ───────────────
+        // Narrower than "any non-Background layer": we want scrolling
+        // over a Slider / Knob / Add / Timer to still pan the canvas
+        // (user expectation: the node doesn't scroll anything, so let
+        // the gesture fall through to the canvas). Only block canvas
+        // scroll when pointer is on something that genuinely consumes
+        // scroll — Console / Terminal / TextEditor / Add Node palette /
+        // tooltips / log views / etc.
+        //
+        // Three cases to block:
+        //   (1) Add Node menu is open AND pointer is over its window
+        //   (2) Popups / tooltips above Middle order (always interactive)
+        //   (3) Pointer is over a node whose NodeType is known to contain
+        //       scrollable content (ScrollArea, multiline TextEdit, logs)
+        let pointer_over_scroll_surface = ctx.pointer_latest_pos().map(|p| {
+            // (1) + (2): layer-order heuristic for popups / menus. The
+            // Add Node menu uses egui::Window (Middle), so we distinguish
+            // it via `show_node_menu` — while the menu is visible ANY
+            // non-background layer hover is treated as "on menu" (user is
+            // in menu-interaction mode; panning the canvas underneath
+            // would be actively confusing).
+            if let Some(layer) = ctx.layer_id_at(p) {
+                if self.show_node_menu && layer.order != egui::Order::Background {
+                    return true;
+                }
+                if matches!(
+                    layer.order,
+                    egui::Order::Foreground | egui::Order::Tooltip | egui::Order::Debug
+                ) {
+                    return true;
+                }
+            }
+
+            // (3): over a node — check if its NodeType has scroll content.
+            for (&id, rect) in &self.node_rects {
+                if rect.contains(p) {
+                    if let Some(node) = self.graph.nodes.get(&id) {
+                        return crate::nodes::node_type_has_scroll(&node.node_type);
+                    }
+                }
+            }
+            false
+        }).unwrap_or(false);
+
         // Pan: delta is logical, multiply by zoom to get screen pixels for offset
         if middle_down || (space_held && ctx.input(|i| i.pointer.button_down(egui::PointerButton::Primary))) {
             self.panning = true;
@@ -31,9 +75,9 @@ impl super::PatchworkApp {
             self.panning = false;
         }
 
-        // Trackpad scroll pan — works everywhere.
-        // Cmd+scroll is reserved for zoom (handled below).
-        if !modifiers.command {
+        // Trackpad scroll pan — only applies when pointer is over the bare
+        // canvas. Cmd+scroll is reserved for zoom (handled below).
+        if !modifiers.command && !pointer_over_scroll_surface {
             let scroll = ctx.input(|i| i.smooth_scroll_delta);
             if scroll.length() > 0.5 {
                 self.canvas_offset += scroll * z;
@@ -44,17 +88,25 @@ impl super::PatchworkApp {
         let min_zoom: f32 = 0.25;
         let max_zoom: f32 = 2.5;
 
-        // Pinch-to-zoom — set target, smooth interpolation handles the rest
+        // Pinch-to-zoom — set target, smooth interpolation handles the rest.
+        // Also gated on pointer_over_scroll_surface: pinching inside a ScrollArea
+        // (two-finger zoom on trackpad while hovering the palette) should
+        // not zoom the canvas.
         let pinch = ctx.input(|i| i.zoom_delta());
-        if (pinch - 1.0).abs() > 0.001 {
+        if (pinch - 1.0).abs() > 0.001 && !pointer_over_scroll_surface {
             self.target_zoom = (self.target_zoom * pinch).clamp(min_zoom, max_zoom);
             if let Some(pointer) = ctx.pointer_latest_pos() {
                 self.zoom_anchor_screen = Some(pointer.to_vec2() * self.canvas_zoom);
             }
         }
 
-        // Cmd+scroll → zoom (multiplicative for uniform feel at all zoom levels)
-        if modifiers.command && !on_node {
+        // Cmd+scroll → zoom (multiplicative for uniform feel at all zoom levels).
+        // `on_node` guard: Cmd+scroll over ANY node (even non-scrollable
+        // like Slider) shouldn't zoom the canvas — because a user might
+        // be doing Cmd+scroll to e.g. adjust a parameter via modifier keys.
+        // `pointer_over_scroll_surface` covers scrollable-widget hover
+        // (user is navigating content, not zooming).
+        if modifiers.command && !on_node && !pointer_over_scroll_surface {
             let scroll = ctx.input(|i| i.smooth_scroll_delta.y);
             if scroll.abs() > 0.5 {
                 let factor = (scroll * 0.005).exp();

@@ -50,7 +50,7 @@ impl VideoDecoder {
             .spawn()
             .map_err(|e| {
                 if e.kind() == std::io::ErrorKind::NotFound {
-                    "ffmpeg not found. Install with: brew install ffmpeg".to_string()
+                    ffmpeg_install_hint()
                 } else {
                     format!("Failed to start ffmpeg: {}", e)
                 }
@@ -60,13 +60,37 @@ impl VideoDecoder {
     }
 
     fn open_camera(device_index: u32, width: u32, height: u32) -> Result<Self, String> {
-        // Platform-specific capture format and device input
+        // Platform-specific capture format and device input string.
+        //
+        // macOS (avfoundation) and Linux (v4l2) both accept numeric device
+        // identifiers directly.
+        //
+        // Windows (dshow) does NOT accept an index — it needs the device's
+        // friendly name from enumeration, passed as `video="<Name>"`. The
+        // previous `device_pnp_<n>` form is a DirectShow internal identifier
+        // that ffmpeg's `-i` doesn't accept. We re-enumerate at open time
+        // and look up the name by the stored index. Enumeration adds ~200 ms
+        // but only happens once per camera open, not per frame.
         #[cfg(target_os = "macos")]
         let (capture_fmt, device_input) = ("avfoundation", format!("{}:none", device_index));
         #[cfg(target_os = "linux")]
         let (capture_fmt, device_input) = ("v4l2", format!("/dev/video{}", device_index));
         #[cfg(target_os = "windows")]
-        let (capture_fmt, device_input) = ("dshow", format!("video=@device_pnp_{}", device_index));
+        let (capture_fmt, device_input) = {
+            let cams = list_cameras_dshow();
+            let name = cams.iter()
+                .find(|(idx, _)| *idx == device_index)
+                .map(|(_, n)| n.clone())
+                .ok_or_else(|| format!(
+                    "Camera #{} not found (found {} camera(s). Reopen the Camera node's device selector.)",
+                    device_index, cams.len()
+                ))?;
+            // Escape any embedded quotes in the device name. Rare but
+            // possible; defensive because ffmpeg parses the -i argument
+            // as a string literal.
+            let safe_name = name.replace('"', "\\\"");
+            ("dshow", format!("video={}", safe_name))
+        };
         #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
         return Err("Camera capture not supported on this platform".into());
 
@@ -90,7 +114,13 @@ impl VideoDecoder {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|e| format!("Failed to start camera: {}", e))?;
+            .map_err(|e| {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    ffmpeg_install_hint()
+                } else {
+                    format!("Failed to start camera: {}", e)
+                }
+            })?;
 
         Self::start_reader(process, width, height)
     }
@@ -173,6 +203,19 @@ fn get_duration(path: &str) -> Option<f32> {
         .output().ok()?;
     let s = String::from_utf8_lossy(&output.stdout);
     s.trim().parse::<f32>().ok()
+}
+
+/// Per-OS ffmpeg install hint shown when the binary isn't found on PATH.
+/// Called from both `open_file` and `open_camera` failure arms.
+fn ffmpeg_install_hint() -> String {
+    #[cfg(target_os = "macos")]
+    return "ffmpeg not found. Install with: brew install ffmpeg".into();
+    #[cfg(target_os = "linux")]
+    return "ffmpeg not found. Install via your package manager (e.g. apt install ffmpeg)".into();
+    #[cfg(target_os = "windows")]
+    return "ffmpeg not found. Download from https://ffmpeg.org/download.html and add ffmpeg.exe to PATH".into();
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    return "ffmpeg not found — required for camera/video capture".into();
 }
 
 /// List available camera devices (cross-platform via ffmpeg)

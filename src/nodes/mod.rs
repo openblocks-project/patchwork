@@ -289,6 +289,62 @@ pub fn output_port_row(
     });
 }
 
+/// Whether a node's render surface contains a scrollable widget
+/// (ScrollArea, multiline TextEdit, log panel, code editor, etc).
+///
+/// Used by `handle_pan_zoom` to suppress canvas scroll / pan / zoom when
+/// the pointer hovers such a node — so scrolling inside a Console log or
+/// Text Editor never bleeds through to move the canvas.
+///
+/// Nodes NOT listed here (Slider, Knob, Timer, Add, Multiply, Synth,
+/// etc.) allow scroll-through: the user can freely pan the canvas with
+/// the pointer hovering these nodes. That matches expectation — there's
+/// nothing in a Slider node that can meaningfully consume scroll.
+///
+/// Kept in one place so new scrollable node types get added here when
+/// their render gains a ScrollArea.
+pub fn node_type_has_scroll(nt: &NodeType) -> bool {
+    match nt {
+        // ── Legacy enum variants with known ScrollArea / TextEdit ──
+        NodeType::Console { .. }
+        | NodeType::Serial { .. }
+        | NodeType::MidiIn { .. }
+        | NodeType::OscIn { .. }
+        | NodeType::Script { .. }
+        | NodeType::HttpRequest { .. }
+        | NodeType::AiRequest { .. }
+        | NodeType::AudioPlaylist { .. }
+        | NodeType::RustPlugin { .. }
+        | NodeType::McpServer
+        | NodeType::HtmlViewer
+        | NodeType::ObHub { .. }
+        | NodeType::ClapPlugin { .. }
+        | NodeType::Palette { .. }
+        | NodeType::FolderBrowser { .. } => true,
+
+        // ── Dynamic (trait-based) nodes — match by type_tag ──
+        // type_tag is the stable identifier registered in NODE_REGISTRY;
+        // saved projects use it for deserialization.
+        NodeType::Dynamic { inner } => matches!(
+            inner.node.type_tag(),
+            "comment"
+            | "fill"
+            | "json_fields"
+            | "json_extract"
+            | "folder_browser"
+            | "web_app"
+            | "terminal"
+            | "text_editor"
+            | "string_format"
+            | "file"
+            | "html_viewer"
+            | "console"
+            | "mcp_server"
+        ),
+        _ => false,
+    }
+}
+
 pub fn catalog() -> Vec<NodeCatalogEntry> {
     vec![
         // ── Input ────────────────────────────────────────────
