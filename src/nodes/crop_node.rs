@@ -66,14 +66,14 @@ impl NodeBehavior for CropNode {
     fn title(&self) -> &str { "Crop" }
     fn inputs(&self) -> Vec<PortDef> {
         vec![
-            PortDef::new("Input", PortKind::Generic),
+            PortDef::new("Input", PortKind::Image),
             PortDef::new("Top", PortKind::Normalized),
             PortDef::new("Left", PortKind::Normalized),
             PortDef::new("Bottom", PortKind::Normalized),
             PortDef::new("Right", PortKind::Normalized),
         ]
     }
-    fn outputs(&self) -> Vec<PortDef> { vec![PortDef::new("Cropped", PortKind::Generic)] }
+    fn outputs(&self) -> Vec<PortDef> { vec![PortDef::new("Cropped", PortKind::Image)] }
     fn color_hint(&self) -> [u8; 3] { [160, 140, 200] }
     fn inline_ports(&self) -> bool { true }
 
@@ -112,7 +112,7 @@ impl NodeBehavior for CropNode {
         // Input port
         ui.horizontal(|ui| {
             crate::nodes::inline_port_circle(ui, ctx.node_id, 0, true, ctx.connections,
-                ctx.port_positions, ctx.dragging_from, ctx.pending_disconnects, PortKind::Generic);
+                ctx.port_positions, ctx.dragging_from, ctx.pending_disconnects, PortKind::Image);
             ui.label(egui::RichText::new("Input").small());
         });
 
@@ -174,7 +174,7 @@ impl NodeBehavior for CropNode {
         if self.left + self.right > 0.95 { self.right = 0.95 - self.left; }
 
         ui.separator();
-        crate::nodes::audio_port_row(ui, "Cropped", ctx.node_id, 0, false, ctx.port_positions, ctx.dragging_from, ctx.connections, ctx.pending_disconnects, PortKind::Generic);
+        crate::nodes::output_port_row(ui, "Cropped", "", ctx.node_id, 0, ctx.port_positions, ctx.dragging_from, ctx.connections, ctx.pending_disconnects, PortKind::Image);
     }
 }
 

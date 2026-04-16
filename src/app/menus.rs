@@ -46,25 +46,30 @@ impl super::PatchworkApp {
         let accent = egui::Color32::from_rgb(accent_rgb[0], accent_rgb[1], accent_rgb[2]);
 
         let inv = 1.0 / self.canvas_zoom;
-        let menu_w = 180.0 * inv;
-        let resp = egui::Window::new(egui::RichText::new("\u{2795} Add Node").color(accent).strong())
+        let screen = ctx.screen_rect();
+        let menu_w = (380.0 * inv).min(screen.width() * 0.85);
+        let menu_h = (screen.height() * 0.55).min(500.0 * inv);
+        let center = screen.center();
+        let menu_pos = egui::pos2(center.x - menu_w * 0.5, center.y - menu_h * 0.5);
+
+        let resp = egui::Window::new(egui::RichText::new("Add Node").color(accent).strong())
             .id(menu_id)
-            .fixed_pos(pos)
-            .default_width(menu_w)
+            .fixed_pos(menu_pos)
+            .fixed_size([menu_w, menu_h])
             .resizable(false)
             .collapsible(false)
             .title_bar(true)
-            .scroll([false, true])
+            .scroll([false, false])
             .order(egui::Order::Foreground)
             .show(ctx, |ui| {
                 ui.set_max_width(menu_w);
 
-                // Search box (auto-focused)
+                // ── Search box (auto-focused) ────────────────────────────
                 let prev_search = self.node_menu_search.clone();
                 let search_re = ui.add(
                     egui::TextEdit::singleline(&mut self.node_menu_search)
-                        .hint_text("\u{1f50d} Search...")
-                        .desired_width(menu_w - 8.0),
+                        .hint_text("🔍 Search nodes...")
+                        .desired_width(menu_w - 16.0),
                 );
                 if search_re.gained_focus() || prev_search.is_empty() {
                     search_re.request_focus();
@@ -73,30 +78,23 @@ impl super::PatchworkApp {
                     self.node_menu_selected = 0;
                 }
 
-                // Category filter pills
-                // Category pills — some map to multiple catalog categories
-                let categories: &[(&str, &[&str])] = &[
-                    ("All", &[]),
-                    ("Math", &["Math", "Logic"]),
-                    ("Signal", &["Signal", "Input"]),
-                    ("Visual", &["Image", "Video", "Shader", "ML"]),
-                    ("Audio", &["Audio"]),
-                    ("I/O", &["IO", "Network", "Serial", "OSC", "MIDI", "Hardware"]),
-                    ("Utility", &["Utility", "Output", "Custom"]),
-                ];
+                ui.add_space(4.0);
+
+                // ── Category pills ───────────────────────────────────────
+                let categories = nodes::CATEGORY_GROUPS;
                 ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing.x = 3.0;
+                    ui.spacing_mut().item_spacing.x = 4.0;
                     for &(label, _) in categories {
                         let is_active = if label == "All" { self.node_menu_category.is_empty() } else { self.node_menu_category == label };
                         let text = egui::RichText::new(label).small();
                         let btn = if is_active {
                             egui::Button::new(text.strong().color(egui::Color32::WHITE))
                                 .fill(egui::Color32::from_rgba_unmultiplied(accent_rgb[0], accent_rgb[1], accent_rgb[2], 180))
-                                .corner_radius(10.0)
+                                .corner_radius(12.0)
                         } else {
-                            egui::Button::new(text.color(egui::Color32::GRAY))
-                                .fill(egui::Color32::TRANSPARENT)
-                                .corner_radius(10.0)
+                            egui::Button::new(text.color(egui::Color32::from_rgb(140, 140, 150)))
+                                .fill(egui::Color32::from_rgba_unmultiplied(60, 60, 70, 120))
+                                .corner_radius(12.0)
                         };
                         if ui.add(btn).clicked() {
                             self.node_menu_category = if label == "All" { String::new() } else { label.to_string() };
@@ -105,36 +103,34 @@ impl super::PatchworkApp {
                     }
                 });
 
+                ui.add_space(2.0);
                 ui.separator();
+                ui.add_space(2.0);
 
+                // ── Filter logic ─────────────────────────────────────────
                 let query = self.node_menu_search.to_lowercase();
                 let catalog = nodes::catalog();
                 let wire_ctx = self.wire_menu_context;
                 let cat_filter = &self.node_menu_category;
 
-                // Show filter hint if opened via Tab
                 if wire_ctx.is_some() {
                     ui.label(egui::RichText::new("⚡ Compatible nodes").small().color(accent));
-                    ui.separator();
+                    ui.add_space(2.0);
                 }
 
-                // Collect visible entries (filtered by search + category + wire compat)
                 let mut visible: Vec<usize> = Vec::new();
                 for (i, entry) in catalog.iter().enumerate() {
                     if entry.category == "System" { continue; }
-                    // Category pill filter — match against grouped categories
                     if !cat_filter.is_empty() {
                         let matched = categories.iter().any(|&(label, cats)| {
                             label == cat_filter.as_str() && cats.contains(&entry.category)
                         });
                         if !matched { continue; }
                     }
-                    // Text search
                     if !query.is_empty()
                         && !entry.label.to_lowercase().contains(&query)
                         && !entry.category.to_lowercase().contains(&query)
                     { continue; }
-                    // Wire compatibility filter
                     if let Some((_src_nid, _src_port, src_is_output, src_kind)) = wire_ctx {
                         let candidate = (entry.factory)();
                         let target_ports = if src_is_output { candidate.inputs() } else { candidate.outputs() };
@@ -143,74 +139,112 @@ impl super::PatchworkApp {
                     visible.push(i);
                 }
 
-                // Keyboard navigation (arrow keys + enter)
+                // ── Keyboard navigation ──────────────────────────────────
                 let up = ui.ctx().input(|i| i.key_pressed(egui::Key::ArrowUp));
                 let down = ui.ctx().input(|i| i.key_pressed(egui::Key::ArrowDown));
                 let enter = ui.ctx().input(|i| i.key_pressed(egui::Key::Enter));
-                if up && self.node_menu_selected > 0 {
-                    self.node_menu_selected -= 1;
-                }
-                if down && self.node_menu_selected + 1 < visible.len() {
-                    self.node_menu_selected += 1;
-                }
-                // Clamp selection
-                if !visible.is_empty() {
-                    self.node_menu_selected = self.node_menu_selected.min(visible.len() - 1);
-                }
+                if up && self.node_menu_selected > 0 { self.node_menu_selected -= 1; }
+                if down && self.node_menu_selected + 1 < visible.len() { self.node_menu_selected += 1; }
+                if !visible.is_empty() { self.node_menu_selected = self.node_menu_selected.min(visible.len() - 1); }
 
                 let off_e = self.canvas_offset / self.canvas_zoom;
                 let spawn_x = self.node_menu_pos.x - off_e.x;
                 let spawn_y_base = self.node_menu_pos.y - off_e.y;
 
-                // Spawn helper (used by both click and Enter)
                 let mut spawn_idx: Option<usize> = None;
                 if enter && !visible.is_empty() {
                     spawn_idx = Some(visible[self.node_menu_selected]);
                 }
 
-                let mut last_cat = "";
-                let mut visible_pos = 0usize;
-                for &cat_idx in &visible {
-                    let entry = &catalog[cat_idx];
-                    let is_selected = visible_pos == self.node_menu_selected;
+                // ── Scrollable node list ─────────────────────────────────
+                egui::ScrollArea::vertical()
+                    .max_height(menu_h - 90.0)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        let dim = egui::Color32::from_rgb(110, 110, 120);
+                        let wip_color = egui::Color32::from_rgb(200, 160, 60);
+                        let mut last_cat = "";
+                        let mut visible_pos = 0usize;
 
-                    // Category header
-                    if entry.category != last_cat {
-                        if !last_cat.is_empty() {
-                            ui.add_space(4.0);
-                            ui.separator();
-                            ui.add_space(2.0);
-                        }
-                        ui.label(egui::RichText::new(entry.category).small().strong().color(egui::Color32::GRAY));
-                        last_cat = entry.category;
-                    }
+                        for &cat_idx in &visible {
+                            let entry = &catalog[cat_idx];
+                            let is_selected = visible_pos == self.node_menu_selected;
 
-                    let text = egui::RichText::new(entry.label).size(13.0);
-                    let btn = ui.add_sized(
-                        [ui.available_width(), 24.0],
-                        egui::Button::new(if is_selected { text.strong().color(accent) } else { text })
-                            .fill(if is_selected {
-                                egui::Color32::from_rgba_unmultiplied(accent_rgb[0], accent_rgb[1], accent_rgb[2], 30)
+                            // Category header
+                            if entry.category != last_cat {
+                                if !last_cat.is_empty() { ui.add_space(6.0); }
+                                // Count nodes in this category
+                                let cat_count = visible.iter()
+                                    .filter(|&&i| catalog[i].category == entry.category)
+                                    .count();
+                                let cat_icon = crate::icons::category_icon(entry.category);
+                                ui.horizontal(|ui| {
+                                    ui.label(egui::RichText::new(cat_icon).size(11.0).color(dim));
+                                    ui.label(egui::RichText::new(
+                                        format!("{} ({})", entry.category, cat_count)
+                                    ).small().strong().color(dim));
+                                });
+                                ui.add_space(2.0);
+                                last_cat = entry.category;
+                            }
+
+                            // Node entry
+                            let node_icon = crate::icons::node_icon(entry.label);
+                            let label_text = if entry.wip {
+                                format!("{} {}", node_icon, entry.label)
+                            } else {
+                                format!("{} {}", node_icon, entry.label)
+                            };
+
+                            let text_color = if entry.wip {
+                                egui::Color32::from_rgb(100, 100, 110)
+                            } else if is_selected {
+                                accent
+                            } else {
+                                ui.visuals().text_color()
+                            };
+
+                            let fill = if is_selected {
+                                egui::Color32::from_rgba_unmultiplied(accent_rgb[0], accent_rgb[1], accent_rgb[2], 25)
                             } else {
                                 egui::Color32::TRANSPARENT
-                            })
-                            .frame(true),
-                    );
+                            };
 
-                    // Scroll selected item into view
-                    if is_selected && (up || down) {
-                        btn.scroll_to_me(Some(egui::Align::Center));
-                    }
+                            let btn = ui.add_sized(
+                                [ui.available_width(), 26.0],
+                                egui::Button::new(
+                                    egui::RichText::new(&label_text).size(13.0).color(text_color)
+                                        .strong()
+                                ).fill(fill).frame(true).corner_radius(4.0),
+                            );
 
-                    if btn.clicked() {
-                        spawn_idx = Some(cat_idx);
-                    }
+                            // WIP badge drawn after button
+                            if entry.wip && ui.is_rect_visible(btn.rect) {
+                                let badge_pos = egui::pos2(btn.rect.right() - 35.0, btn.rect.center().y);
+                                ui.painter().text(
+                                    badge_pos, egui::Align2::RIGHT_CENTER,
+                                    "[WIP]", egui::FontId::proportional(9.0), wip_color,
+                                );
+                            }
 
-                    btn.on_hover_text(format!("Add {} node", entry.label));
-                    visible_pos += 1;
-                }
+                            if is_selected && (up || down) {
+                                btn.scroll_to_me(Some(egui::Align::Center));
+                            }
 
-                // Spawn the selected node (from click or Enter)
+                            if btn.clicked() { spawn_idx = Some(cat_idx); }
+                            visible_pos += 1;
+                        }
+
+                        if visible.is_empty() {
+                            ui.add_space(20.0);
+                            ui.vertical_centered(|ui| {
+                                ui.label(egui::RichText::new("No matches").color(dim).italics());
+                            });
+                            ui.add_space(20.0);
+                        }
+                    });
+
+                // ── Spawn ────────────────────────────────────────────────
                 if let Some(cat_idx) = spawn_idx {
                     let entry = &catalog[cat_idx];
                     self.push_undo();
@@ -232,14 +266,7 @@ impl super::PatchworkApp {
                         self.dragging_from = None;
                         self.wire_menu_context = None;
                     }
-                    let _ = spawn_y_base;
                     keep_open = false;
-                }
-
-                if visible.is_empty() {
-                    ui.add_space(8.0);
-                    ui.label(egui::RichText::new("No matches").color(egui::Color32::GRAY).italics());
-                    ui.add_space(8.0);
                 }
             });
 
