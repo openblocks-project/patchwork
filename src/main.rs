@@ -3,6 +3,7 @@ mod audio;
 mod gpu_image;
 mod graph;
 mod node_trait;
+mod hid;
 mod http;
 pub mod icons;
 mod mcp;

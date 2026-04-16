@@ -205,7 +205,7 @@ pub fn node_icon(label: &str) -> &'static str {
         // Hardware
         "OB Hub" => PLUGS_CONNECTED,
         "OB Joystick" => CURSOR_CLICK,
-        "OB Encoder" => GEAR,
+        "OB Wheel" => GEAR,
         // Custom
         "Script" => LIGHTNING,
         "Rust Plugin" => TERMINAL,

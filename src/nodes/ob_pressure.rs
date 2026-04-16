@@ -11,7 +11,8 @@ pub fn render(
     _connections: &[Connection],
     ob_manager: &mut ObManager,
 ) {
-    let (device_id, hub_node_id, label_color) = match node_type {
+    // `label_color` kept on the node for future LED support; UI hidden for now.
+    let (device_id, hub_node_id, _label_color) = match node_type {
         NodeType::ObPressure { device_id, hub_node_id, label_color } => (device_id, hub_node_id, label_color),
         _ => return,
     };
@@ -24,19 +25,24 @@ pub fn render(
     let did = *device_id;
     let hid = *hub_node_id;
 
-    let (val, is_active) = {
-        let device = ob_manager.get_hub(hid)
+    // Lookup order matches app/mod.rs ObPressure injection:
+    //   1. Bound hub → 2. Any serial hub → 3. HID auto-discovery
+    #[derive(PartialEq)]
+    enum Source { Hub, Hid, None }
+    let (val, is_active, source) = {
+        let from_hub = ob_manager.get_hub(hid)
             .and_then(|h| h.get_device("pressure", did))
-            .or_else(|| ob_manager.find_device("pressure", did).map(|(_, d)| d));
-        if let Some(dev) = device {
-            (dev.values.get("val").copied().unwrap_or(0.0), dev.is_active)
-        } else {
-            (0.0, false)
-        }
+            .or_else(|| ob_manager.find_device("pressure", did).map(|(_, d)| d))
+            .map(|dev| (dev.values.get("val").copied().unwrap_or(0.0), dev.is_active, Source::Hub));
+        from_hub
+            .or_else(|| crate::hid::global().find_device("pressure", did)
+                .map(|dev| (dev.values.get("val").copied().unwrap_or(0.0), dev.is_active, Source::Hid)))
+            .unwrap_or((0.0, false, Source::None))
     };
 
     if is_active {
-        ui.colored_label(egui::Color32::from_rgb(80, 200, 80), "● Active");
+        let label = if source == Source::Hid { "● Active (HID)" } else { "● Active" };
+        ui.colored_label(egui::Color32::from_rgb(80, 200, 80), label);
     } else {
         ui.colored_label(egui::Color32::from_rgb(150, 150, 150), "○ Waiting...");
     }
@@ -49,23 +55,8 @@ pub fn render(
     painter.rect_filled(rect, 4.0, egui::Color32::from_rgb(20, 20, 30));
     let fill_w = rect.width() * val.clamp(0.0, 1.0);
     let fill_rect = egui::Rect::from_min_size(rect.min, egui::vec2(fill_w, bar_h));
-    painter.rect_filled(fill_rect, 4.0, egui::Color32::from_rgb(label_color[0], label_color[1], label_color[2]));
+    // Neutral accent while LED control is disabled.
+    painter.rect_filled(fill_rect, 4.0, egui::Color32::from_rgb(140, 180, 230));
 
     ui.label(egui::RichText::new(format!("{:.2}", val)).monospace().strong());
-
-    // Label color
-    ui.separator();
-    ui.horizontal(|ui| {
-        let mut c = egui::Color32::from_rgb(label_color[0], label_color[1], label_color[2]);
-        if ui.color_edit_button_srgba(&mut c).changed() {
-            let a = c.to_array();
-            *label_color = [a[0], a[1], a[2]];
-        }
-        if ui.small_button("Set").clicked() {
-            let col = *label_color;
-            if let Some(hub) = if hid != 0 { ob_manager.get_hub_mut(hid) } else { ob_manager.find_any_hub_mut() } {
-                hub.send_command(&format!("/pressure/{}/color {} {} {}", did, col[0], col[1], col[2]));
-            }
-        }
-    });
 }

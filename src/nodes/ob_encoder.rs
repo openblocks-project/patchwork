@@ -11,7 +11,8 @@ pub fn render(
     _connections: &[Connection],
     ob_manager: &mut ObManager,
 ) {
-    let (device_id, hub_node_id, label_color) = match node_type {
+    // `label_color` kept on the node for future LED support; UI hidden for now.
+    let (device_id, hub_node_id, _label_color) = match node_type {
         NodeType::ObEncoder { device_id, hub_node_id, label_color } => (device_id, hub_node_id, label_color),
         _ => return,
     };
@@ -24,22 +25,36 @@ pub fn render(
     let did = *device_id;
     let hid = *hub_node_id;
 
-    let (turn, click, position, is_active) = {
-        let device = ob_manager.get_hub(hid)
+    // Lookup order matches app/mod.rs ObEncoder injection:
+    //   1. Bound hub → 2. Any serial hub → 3. HID auto-discovery (OB Wheel)
+    #[derive(PartialEq)]
+    enum Source { Hub, Hid, None }
+    let (turn, click, position, is_active, source) = {
+        let from_hub = ob_manager.get_hub(hid)
             .and_then(|h| h.get_device("encoder", did))
-            .or_else(|| ob_manager.find_device("encoder", did).map(|(_, d)| d));
-        if let Some(dev) = device {
-            (dev.values.get("turn").copied().unwrap_or(0.0),
-             dev.values.get("click").copied().unwrap_or(0.0),
-             dev.values.get("position").copied().unwrap_or(0.0),
-             dev.is_active)
-        } else {
-            (0.0, 0.0, 0.0, false)
-        }
+            .or_else(|| ob_manager.find_device("encoder", did).map(|(_, d)| d))
+            .map(|dev| (
+                dev.values.get("turn").copied().unwrap_or(0.0),
+                dev.values.get("click").copied().unwrap_or(0.0),
+                dev.values.get("position").copied().unwrap_or(0.0),
+                dev.is_active,
+                Source::Hub,
+            ));
+        from_hub
+            .or_else(|| crate::hid::global().find_device("encoder", did)
+                .map(|dev| (
+                    dev.values.get("turn").copied().unwrap_or(0.0),
+                    dev.values.get("click").copied().unwrap_or(0.0),
+                    dev.values.get("position").copied().unwrap_or(0.0),
+                    dev.is_active,
+                    Source::Hid,
+                )))
+            .unwrap_or((0.0, 0.0, 0.0, false, Source::None))
     };
 
     if is_active {
-        ui.colored_label(egui::Color32::from_rgb(80, 200, 80), "● Active");
+        let label = if source == Source::Hid { "● Active (HID)" } else { "● Active" };
+        ui.colored_label(egui::Color32::from_rgb(80, 200, 80), label);
     } else {
         ui.colored_label(egui::Color32::from_rgb(150, 150, 150), "○ Waiting...");
     }
@@ -59,8 +74,10 @@ pub fn render(
         center.x + (angle as f32).cos() * radius * 0.8,
         center.y - (angle as f32).sin() * radius * 0.8,
     );
+    // Neutral accent while LED control is disabled; restored from label_color
+    // when that feature returns.
     let ind_color = if is_active {
-        egui::Color32::from_rgb(label_color[0], label_color[1], label_color[2])
+        egui::Color32::from_rgb(140, 180, 230)
     } else {
         egui::Color32::from_rgb(100, 100, 100)
     };
@@ -85,19 +102,4 @@ pub fn render(
         }
     });
 
-    // Label color
-    ui.separator();
-    ui.horizontal(|ui| {
-        let mut c = egui::Color32::from_rgb(label_color[0], label_color[1], label_color[2]);
-        if ui.color_edit_button_srgba(&mut c).changed() {
-            let a = c.to_array();
-            *label_color = [a[0], a[1], a[2]];
-        }
-        if ui.small_button("Set").clicked() {
-            let col = *label_color;
-            if let Some(hub) = if hid != 0 { ob_manager.get_hub_mut(hid) } else { ob_manager.find_any_hub_mut() } {
-                hub.send_command(&format!("/encoder/{}/color {} {} {}", did, col[0], col[1], col[2]));
-            }
-        }
-    });
 }
