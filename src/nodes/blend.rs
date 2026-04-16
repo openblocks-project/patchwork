@@ -37,6 +37,59 @@ impl NodeBehavior for BlendNode {
 
     fn blend_params(&self) -> Option<(u8, f32)> { Some((self.mode, self.mix)) }
 
+    fn evaluate_with_ctx(
+        &mut self,
+        inputs: &[PortValue],
+        ctx: &mut crate::node_trait::EvalCtx<'_>,
+    ) -> Vec<(usize, PortValue)> {
+        // Read Mix from port 2 if wired, else use stored value
+        let mix = if inputs.get(2).map(|v| !matches!(v, PortValue::None)).unwrap_or(false) {
+            inputs.get(2).map(|v| v.as_float().clamp(0.0, 1.0)).unwrap_or(self.mix)
+        } else {
+            self.mix
+        };
+
+        // Extract image refs from inputs (CPU Image or GPU stub)
+        let stub_a: Option<ImageData> = match inputs.first() {
+            Some(PortValue::GpuImage(h)) => Some(ImageData { width: h.width, height: h.height, pixels: Vec::new() }),
+            _ => None,
+        };
+        let stub_b: Option<ImageData> = match inputs.get(1) {
+            Some(PortValue::GpuImage(h)) => Some(ImageData { width: h.width, height: h.height, pixels: Vec::new() }),
+            _ => None,
+        };
+        let a: Option<&ImageData> = match inputs.first() {
+            Some(PortValue::Image(img)) => Some(img.as_ref()),
+            Some(PortValue::GpuImage(_)) => stub_a.as_ref(),
+            _ => None,
+        };
+        let b: Option<&ImageData> = match inputs.get(1) {
+            Some(PortValue::Image(img)) => Some(img.as_ref()),
+            Some(PortValue::GpuImage(_)) => stub_b.as_ref(),
+            _ => None,
+        };
+
+        if let (Some(a), Some(b)) = (a, b) {
+            // Try GPU path
+            if let Some(rs) = ctx.render_state {
+                let gpu_src_a = ctx.input_sources.first().copied().flatten();
+                let gpu_src_b = ctx.input_sources.get(1).copied().flatten();
+                if let Some(val) = process_gpu_cached(
+                    a, b, self.mode, mix, ctx.node_id, rs,
+                    ctx.gpu_tex_cache, gpu_src_a, gpu_src_b,
+                    ctx.needs_readback,
+                ) {
+                    return vec![(0, val)];
+                }
+            }
+            // CPU fallback
+            if !a.pixels.is_empty() && !b.pixels.is_empty() {
+                return vec![(0, PortValue::Image(process(a, b, self.mode, mix)))];
+            }
+        }
+        vec![(0, PortValue::None)]
+    }
+
     fn inputs(&self) -> Vec<PortDef> {
         vec![
             PortDef::new("A",   PortKind::Image),
