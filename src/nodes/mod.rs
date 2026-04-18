@@ -702,7 +702,7 @@ pub fn render_content(
         NodeType::Camera { .. } => video_player::render_camera(ui, node_id, node_type, values, connections),
         NodeType::MlModel { .. } => ml_model::render(ui, node_id, node_type, values, connections),
         // Gate migrated to trait-based node
-        NodeType::Timer { interval, elapsed, running, pulse_width, ref_time, paused_elapsed, time_initialized } =>
+        NodeType::Timer { interval, elapsed, running, pulse_width, ref_time, paused_elapsed, time_initialized, phase_offset: _, last_sync_phase: _ } =>
             timer::render(ui, interval, elapsed, running, pulse_width, ref_time, paused_elapsed, time_initialized, node_id, values, connections, port_positions, dragging_from, pending_disconnects), // legacy — new timers use Dynamic
         // MapRange, StringFormat, SampleHold, VisualOutput migrated to trait-based nodes
         // Select migrated to trait-based node
