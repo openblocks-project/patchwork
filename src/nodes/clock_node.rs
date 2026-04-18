@@ -35,12 +35,19 @@ const SUBDIV_PRESETS: &[SubdivPreset] = &[
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct ClockChannel {
     subdivision: f32,
+    /// Phase offset applied to this channel's output before it leaves the
+    /// node. 0.0 = no shift (default), 0.5 = half-beat offset, etc. The
+    /// shift is baked into the Phase output so downstream consumers (Timers,
+    /// effects, sequencers) see a pre-shifted ramp without needing their own
+    /// offset. VCV Rack calls this "swing" on the source side.
+    #[serde(default)]
+    shift: f32,
     #[serde(skip)]
     last_subdiv_beat: u64,
 }
 
 impl Default for ClockChannel {
-    fn default() -> Self { Self { subdivision: 1.0, last_subdiv_beat: 0 } }
+    fn default() -> Self { Self { subdivision: 1.0, shift: 0.0, last_subdiv_beat: 0 } }
 }
 
 pub struct ClockNode {
@@ -176,11 +183,17 @@ impl NodeBehavior for ClockNode {
             self.synced = false;
         }
 
-        // Build outputs per channel
+        // Build outputs per channel. Each channel's phase is shifted by
+        // `ch.shift` before output — downstream consumers see the pre-
+        // shifted ramp. Trigger detection also uses the shifted phase so
+        // the pulse lands at the shifted position, not the raw one.
         let mut out = Vec::new();
         for (i, ch) in self.channels.iter_mut().enumerate() {
-            let phase = ((self.beats * ch.subdivision as f64) % 1.0) as f32;
-            let subdiv_beat = (self.beats * ch.subdivision as f64).floor() as u64;
+            let raw_phase = (self.beats * ch.subdivision as f64) % 1.0;
+            let shifted_phase = ((raw_phase + ch.shift as f64) % 1.0) as f32;
+            // Trigger: detect when the shifted phase wraps around 0.
+            // Use the subdivided-beat counter shifted by the same amount.
+            let subdiv_beat = (self.beats * ch.subdivision as f64 + ch.shift as f64).floor() as u64;
             let trigger = if subdiv_beat > ch.last_subdiv_beat && (self.running || self.synced) {
                 ch.last_subdiv_beat = subdiv_beat;
                 1.0
@@ -189,7 +202,7 @@ impl NodeBehavior for ClockNode {
                 0.0
             };
             out.push((i * 2,     PortValue::Float(trigger)));
-            out.push((i * 2 + 1, PortValue::Float(phase)));
+            out.push((i * 2 + 1, PortValue::Float(shifted_phase)));
         }
         out.push((self.beat_port(), PortValue::Float(self.beat_count as f32)));
         out.push((self.bpm_port(),  PortValue::Float(self.bpm)));
@@ -310,7 +323,8 @@ impl NodeBehavior for ClockNode {
 
         let mut remove_idx: Option<usize> = None;
         for i in 0..self.channels.len() {
-            let phase = ((self.beats * self.channels[i].subdivision as f64) % 1.0) as f32;
+            let raw = (self.beats * self.channels[i].subdivision as f64) % 1.0;
+            let phase = ((raw + self.channels[i].shift as f64) % 1.0) as f32;
             let trig_port = i * 2;
             let phase_port = i * 2 + 1;
 
@@ -331,7 +345,23 @@ impl NodeBehavior for ClockNode {
                         }
                     });
 
-                // Mini phase bar
+                // Per-channel shift (phase offset). Compact DragValue
+                // that shows fraction labels for common musical offsets.
+                ui.add(egui::DragValue::new(&mut self.channels[i].shift)
+                    .speed(0.01).range(0.0..=0.99).max_decimals(2)
+                    .prefix("⟳")
+                    .custom_formatter(|v, _| {
+                        if v.abs() < 0.005 { "0".into() }
+                        else if (v - 0.25).abs() < 0.01 { "¼".into() }
+                        else if (v - 0.333).abs() < 0.02 { "⅓".into() }
+                        else if (v - 0.5).abs() < 0.01 { "½".into() }
+                        else if (v - 0.667).abs() < 0.02 { "⅔".into() }
+                        else if (v - 0.75).abs() < 0.01 { "¾".into() }
+                        else { format!("{:.2}", v) }
+                    })
+                );
+
+                // Mini phase bar (shows shifted phase)
                 let bar_w = 30.0;
                 let (br, _) = ui.allocate_exact_size(egui::vec2(bar_w, 6.0), Sense::hover());
                 let p = ui.painter();
@@ -385,6 +415,7 @@ impl NodeBehavior for ClockNode {
             "beats_per_bar": self.beats_per_bar,
             "channels": self.channels.iter().map(|ch| serde_json::json!({
                 "subdivision": ch.subdivision,
+                "shift": ch.shift,
             })).collect::<Vec<_>>(),
         })
     }
@@ -395,7 +426,8 @@ impl NodeBehavior for ClockNode {
         if let Some(chs) = state.get("channels").and_then(|v| v.as_array()) {
             self.channels = chs.iter().map(|ch| {
                 let subdiv = ch.get("subdivision").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
-                ClockChannel { subdivision: subdiv, last_subdiv_beat: 0 }
+                let shift = ch.get("shift").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+                ClockChannel { subdivision: subdiv, shift, last_subdiv_beat: 0 }
             }).collect();
             if self.channels.is_empty() { self.channels.push(ClockChannel::default()); }
         }

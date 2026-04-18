@@ -23,6 +23,11 @@ pub struct TimerNode {
     pub running: bool,
     #[serde(default = "default_pulse_width")]
     pub pulse_width: f32,
+    /// Fine phase offset applied when synced via the Phase input port.
+    /// 0.0 = in-phase with source, 0.5 = anti-phase, etc. Persisted.
+    /// When the Phase port is unwired, this field is dormant.
+    #[serde(default)]
+    pub phase_offset: f32,
     #[serde(skip, default = "std::time::Instant::now")]
     ref_time: std::time::Instant,
     #[serde(skip)]
@@ -31,6 +36,11 @@ pub struct TimerNode {
     time_initialized: bool,
     #[serde(skip)]
     last_start_val: f32,
+    /// Previous shifted-phase value for wrap-around edge detection in
+    /// sync mode. When the shifted phase drops from ~1 back toward ~0
+    /// we fire a trigger.
+    #[serde(skip)]
+    last_sync_phase: f32,
 }
 
 fn default_one() -> f32 { 1.0 }
@@ -44,10 +54,12 @@ impl Default for TimerNode {
             elapsed: 0.0,
             running: true,
             pulse_width: 0.1,
+            phase_offset: 0.0,
             ref_time: std::time::Instant::now(),
             paused_elapsed: 0.0,
             time_initialized: false,
             last_start_val: 0.0,
+            last_sync_phase: 0.0,
         }
     }
 }
@@ -62,6 +74,8 @@ impl NodeBehavior for TimerNode {
         vec![
             PortDef::new("Interval", PortKind::Number),
             PortDef::new("Start",    PortKind::Trigger),
+            PortDef::new("Phase",    PortKind::Normalized),  // sync: 0..1 from Clock or another Timer
+            PortDef::new("Offset",   PortKind::Normalized),  // overrides inline phase_offset slider when wired
         ]
     }
 
@@ -89,6 +103,32 @@ impl NodeBehavior for TimerNode {
             self.last_start_val = *v;
         }
 
+        // ── Sync mode ──────────────────────────────────────────
+        // When Phase input (port 2) is wired, Timer locks to the
+        // external phase instead of free-running. The Offset input
+        // (port 3) or inline slider shifts the trigger point.
+        // This early-returns so the wall-clock path below is skipped.
+        if let Some(PortValue::Float(ext_phase)) = inputs.get(2) {
+            let offset = match inputs.get(3) {
+                Some(PortValue::Float(v)) => *v,
+                _ => self.phase_offset,
+            };
+            let shifted = (ext_phase + offset).fract();
+            let shifted = if shifted < 0.0 { shifted + 1.0 } else { shifted };
+            // Trigger on phase wrap-around: shifted drops from ~1 to ~0.
+            // Guard > 0.5 prevents false fires from float jitter.
+            let trigger = if shifted < self.last_sync_phase
+                             && (self.last_sync_phase - shifted) > 0.5
+                             && self.running
+            { 1.0 } else { 0.0 };
+            self.last_sync_phase = shifted;
+            return vec![
+                (0, PortValue::Float(trigger)),
+                (1, PortValue::Float(shifted)),
+            ];
+        }
+
+        // ── Free-running wall-clock mode (unchanged) ─────────
         // Wall-clock timing
         if !self.time_initialized {
             if self.running {
@@ -119,6 +159,7 @@ impl NodeBehavior for TimerNode {
             "elapsed": self.elapsed,
             "running": self.running,
             "pulse_width": self.pulse_width,
+            "phase_offset": self.phase_offset,
         })
     }
 
@@ -127,6 +168,7 @@ impl NodeBehavior for TimerNode {
         if let Some(v) = state.get("elapsed").and_then(|v| v.as_f64()) { self.elapsed = v as f32; }
         if let Some(v) = state.get("running").and_then(|v| v.as_bool()) { self.running = v; }
         if let Some(v) = state.get("pulse_width").and_then(|v| v.as_f64()) { self.pulse_width = v as f32; }
+        if let Some(v) = state.get("phase_offset").and_then(|v| v.as_f64()) { self.phase_offset = v as f32; }
     }
 
     fn render_with_context(&mut self, ui: &mut egui::Ui, ctx: &mut RenderContext) {
@@ -149,6 +191,43 @@ impl NodeBehavior for TimerNode {
                 ctx.port_positions, ctx.dragging_from, ctx.pending_disconnects, PortKind::Trigger);
             ui.label(egui::RichText::new("Start").small().color(
                 if start_wired { egui::Color32::from_rgb(255, 150, 60) } else { dim }));
+        });
+
+        // Phase sync input (port 2) — connect a Clock's Phase output here
+        let phase_wired = ctx.connections.iter().any(|c| c.to_node == ctx.node_id && c.to_port == 2);
+        ui.horizontal(|ui| {
+            crate::nodes::inline_port_circle(ui, ctx.node_id, 2, true, ctx.connections,
+                ctx.port_positions, ctx.dragging_from, ctx.pending_disconnects, PortKind::Normalized);
+            ui.label(egui::RichText::new("Phase").small().color(
+                if phase_wired { blue } else { dim }));
+            if phase_wired {
+                ui.label(egui::RichText::new("synced").small().color(egui::Color32::from_rgb(80, 220, 120)));
+            }
+        });
+
+        // Offset input (port 3) — overrides inline slider when wired
+        let offset_wired = ctx.connections.iter().any(|c| c.to_node == ctx.node_id && c.to_port == 3);
+        ui.horizontal(|ui| {
+            crate::nodes::inline_port_circle(ui, ctx.node_id, 3, true, ctx.connections,
+                ctx.port_positions, ctx.dragging_from, ctx.pending_disconnects, PortKind::Normalized);
+            ui.label(egui::RichText::new("Offset").small().color(
+                if offset_wired { blue } else { dim }));
+            if !offset_wired && phase_wired {
+                // Inline offset slider — visible only when synced.
+                // Progressive disclosure: no clutter for free-running Timers.
+                ui.add(egui::DragValue::new(&mut self.phase_offset)
+                    .speed(0.01).range(0.0..=0.99).max_decimals(2)
+                    .custom_formatter(|v, _| {
+                        if v.abs() < 0.005 { "0".into() }
+                        else if (v - 0.25).abs() < 0.01 { "¼".into() }
+                        else if (v - 0.333).abs() < 0.02 { "⅓".into() }
+                        else if (v - 0.5).abs() < 0.01 { "½".into() }
+                        else if (v - 0.667).abs() < 0.02 { "⅔".into() }
+                        else if (v - 0.75).abs() < 0.01 { "¾".into() }
+                        else { format!("{:.2}", v) }
+                    })
+                );
+            }
         });
 
         ui.separator();
@@ -196,8 +275,14 @@ impl NodeBehavior for TimerNode {
 
         // ── Spinner visual ───────────────────────────────────────
         let safe_interval = self.interval.max(0.01);
-        let phase = (self.elapsed % safe_interval) / safe_interval;
-        let is_pulse = phase < (self.pulse_width / safe_interval).min(0.5);
+        // In sync mode the spinner shows the shifted external phase;
+        // in free-running mode it shows the wall-clock-derived phase.
+        let (phase, is_pulse) = if phase_wired {
+            (self.last_sync_phase, false) // sync mode: no pulse width concept
+        } else {
+            let p = (self.elapsed % safe_interval) / safe_interval;
+            (p, p < (self.pulse_width / safe_interval).min(0.5))
+        };
 
         let spinner_size = 50.0;
         let (rect, _) = ui.allocate_exact_size(egui::vec2(spinner_size, spinner_size), egui::Sense::hover());

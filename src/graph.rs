@@ -1157,6 +1157,12 @@ pub enum NodeType {
         /// Whether ref_time has been initialized this session.
         #[serde(skip)]
         time_initialized: bool,
+        /// Fine phase offset for sync mode (via Phase In port). Persisted.
+        #[serde(default)]
+        phase_offset: f32,
+        /// Previous shifted-phase value for sync edge detection.
+        #[serde(skip)]
+        last_sync_phase: f32,
     },
     /// Sample & Hold: capture value on trigger rising edge, hold until next
     SampleHold {
@@ -1544,7 +1550,12 @@ impl NodeBehavior for NodeType {
             NodeType::VideoPlayer { .. } => vec![],
             NodeType::Camera { .. } => vec![],
             NodeType::MlModel { .. } => vec![PortDef::new("Image", Image)],
-            NodeType::Timer { .. } => vec![PortDef::new("Interval", Number), PortDef::new("BPM", Number)],
+            NodeType::Timer { .. } => vec![
+                PortDef::new("Interval", Number),
+                PortDef::new("BPM", Number),
+                PortDef::new("Phase", Normalized),   // sync: 0..1 from Clock or another Timer
+                PortDef::new("Offset", Normalized),   // overrides inline phase_offset when wired
+            ],
             NodeType::SampleHold { .. } => vec![PortDef::new("Value", Generic), PortDef::new("Trigger", Trigger)],
             NodeType::NetworkSend { schema, .. } => {
                 schema.iter().map(|s| PortDef::dynamic(s.name.clone(), match s.kind {
@@ -2163,7 +2174,8 @@ impl Graph {
                         values.insert((id, 0), PortValue::Float(*value));
                     }
                     NodeType::Timer { interval, elapsed, running, pulse_width,
-                                       ref_time, paused_elapsed, time_initialized } => {
+                                       ref_time, paused_elapsed, time_initialized,
+                                       phase_offset, last_sync_phase } => {
                         // Override interval from input port 0
                         if let Some(pv) = inputs.first() {
                             let v = pv.as_float();
@@ -2177,8 +2189,29 @@ impl Graph {
                             }
                         }
 
-                        // ── Wall-clock timing ──────────────────────────────
-                        // On first frame or after deserialization, initialize ref_time
+                        // ── Sync mode: Phase In (port 2) ─────────────────
+                        // When wired, Timer locks to the external phase and
+                        // skips the wall-clock path entirely.
+                        if let Some(PortValue::Float(ext_phase)) = inputs.get(2) {
+                            let offset = match inputs.get(3) {
+                                Some(PortValue::Float(v)) => *v,
+                                _ => *phase_offset,
+                            };
+                            let shifted = (ext_phase + offset).fract();
+                            let shifted = if shifted < 0.0 { shifted + 1.0 } else { shifted };
+                            let trigger = if shifted < *last_sync_phase
+                                             && (*last_sync_phase - shifted) > 0.5
+                                             && *running
+                            { 1.0 } else { 0.0 };
+                            *last_sync_phase = shifted;
+                            let bpm = 60.0 / interval.max(0.01);
+                            values.insert((id, 0), PortValue::Float(trigger));
+                            values.insert((id, 1), PortValue::Float(shifted));
+                            values.insert((id, 2), PortValue::Float(bpm));
+                            return; // skip wall-clock path
+                        }
+
+                        // ── Free-running wall-clock timing ────────────────
                         if !*time_initialized {
                             if *running {
                                 *ref_time = now_secs;
@@ -2188,7 +2221,6 @@ impl Graph {
                         }
 
                         if *running {
-                            // Compute elapsed from wall clock — no accumulation drift
                             *elapsed = ((now_secs - *ref_time) + *paused_elapsed) as f32;
                         }
 
