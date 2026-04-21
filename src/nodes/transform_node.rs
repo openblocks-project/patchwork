@@ -181,10 +181,19 @@ impl TransformNode {
             return self.transform_scale_only(img);
         }
 
+        // General rotation + scale path.
+        //
+        // Inner-loop math is DDA (Digital Differential Analyzer) style:
+        // we fold the inverse-rotate, inverse-scale, and flip into a
+        // single affine 2×3 matrix and then step `sx += a; sy += c` per
+        // pixel across a row. That replaces ~8 float ops per pixel (two
+        // rotation muls, two scale muls, two subs for ox/oy, two flips)
+        // with 2 float ops per pixel — the remaining cost is essentially
+        // just the bounds check + u32 store. This is what lets the node
+        // stay at camera rate when scale AND rotation are both engaged
+        // at the same time.
         let w = img.width as f32;
         let h = img.height as f32;
-
-        // Output dimensions after scale
         let out_w = ((w * self.scale_x).round().max(1.0)) as u32;
         let out_h = ((h * self.scale_y).round().max(1.0)) as u32;
         let mut pixels = vec![0u8; (out_w * out_h * 4) as usize];
@@ -198,40 +207,45 @@ impl TransformNode {
         let cy_in = h * 0.5;
         let inv_sx = 1.0 / self.scale_x;
         let inv_sy = 1.0 / self.scale_y;
+
+        // Affine matrix for inverse transform (dst → src), folding in
+        // optional flips by flipping the matrix rows directly.
+        //   src_x = a*dx + b*dy + tx
+        //   src_y = c*dx + d*dy + ty
+        let mut a =  cos_a * inv_sx;
+        let mut b =  sin_a * inv_sx;
+        let mut c = -sin_a * inv_sy;
+        let mut d =  cos_a * inv_sy;
+        let mut tx = cx_in - a * cx_out - b * cy_out;
+        let mut ty = cy_in - c * cx_out - d * cy_out;
+        if self.flip_h { a = -a; b = -b; tx = (w - 1.0) - tx; }
+        if self.flip_v { c = -c; d = -d; ty = (h - 1.0) - ty; }
+
         let in_w = img.width as i32;
         let in_h = img.height as i32;
         let src: &[u32] = bytemuck::cast_slice(&img.pixels);
         let dst: &mut [u32] = bytemuck::cast_slice_mut(&mut pixels);
 
         for dy in 0..out_h {
-            let oy = dy as f32 - cy_out;
+            let dy_f = dy as f32;
+            // Row-start source coords. Inside the row we just increment
+            // by (a, c) per dst column.
+            let mut sx = b * dy_f + tx;
+            let mut sy = d * dy_f + ty;
             let dst_row_start = dy as usize * out_w as usize;
-            // Row-constant terms hoisted out of the inner loop.
-            let oy_cos = oy * sin_a;    // contributes to rx (via ox*cos + oy*sin)
-            let oy_sin = oy * cos_a;    // contributes to ry (via -ox*sin + oy*cos)
 
             for dx in 0..out_w {
-                let ox = dx as f32 - cx_out;
-
-                // Inverse rotation
-                let rx = ox * cos_a + oy_cos;
-                let ry = -ox * sin_a + oy_sin;
-
-                // Inverse scale
-                let mut sx = rx * inv_sx + cx_in;
-                let mut sy = ry * inv_sy + cy_in;
-
-                if self.flip_h { sx = w - 1.0 - sx; }
-                if self.flip_v { sy = h - 1.0 - sy; }
-
-                let ix = sx.round() as i32;
-                let iy = sy.round() as i32;
+                let ix = sx as i32;   // truncate is fine for nearest-neighbour
+                let iy = sy as i32;
 
                 if ix >= 0 && ix < in_w && iy >= 0 && iy < in_h {
                     let si = iy as usize * img.width as usize + ix as usize;
                     let di = dst_row_start + dx as usize;
                     dst[di] = src[si];
                 }
+
+                sx += a;
+                sy += c;
             }
         }
 
