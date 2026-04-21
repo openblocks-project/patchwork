@@ -788,26 +788,45 @@ const HAND_SKELETON: [(usize, usize); 24] = [
 ];
 
 /// Crop an RGBA image to the given pixel rect and resize to new_w × new_h.
+///
+/// Hot path: runs once per stage of every hand/face/pose inference (i.e.
+/// up to a few times per camera frame). u32-granular reads/writes + a
+/// precomputed column map keep the inner loop to a single indexed load
+/// + store. Alpha is forced to 255 via `| 0xFF000000` (little-endian
+/// layout — RGBA bytes map to u32 as `A<<24 | B<<16 | G<<8 | R`, so the
+/// top byte is alpha).
 fn crop_and_resize(src: &crate::graph::ImageData, x1: u32, y1: u32, x2: u32, y2: u32, new_w: u32, new_h: u32) -> Vec<u8> {
     let cx = x2 - x1;
     let cy = y2 - y1;
-    let mut out = vec![0u8; (new_w * new_h * 4) as usize];
+    let out_bytes = (new_w * new_h * 4) as usize;
+    let mut out: Vec<u8> = Vec::with_capacity(out_bytes);
+    // SAFETY: every output pixel is written below (in-bounds via the
+    // u32 loop, with alpha forced to 255 via bitmask).
+    unsafe { out.set_len(out_bytes); }
+
     let x_ratio = cx as f32 / new_w as f32;
     let y_ratio = cy as f32 / new_h as f32;
+    let w_in = src.width as usize;
+    let nw = new_w as usize;
+
+    // Precompute src column for each dst column (includes the x1 offset
+    // + clamp so the inner loop stays a straight lookup).
+    let mut col_map: Vec<usize> = Vec::with_capacity(nw);
+    for dx in 0..new_w {
+        let sx = ((dx as f32 * x_ratio) as u32 + x1).min(src.width - 1);
+        col_map.push(sx as usize);
+    }
+
+    let src_u32: &[u32] = bytemuck::cast_slice(&src.pixels);
+    let dst_u32: &mut [u32] = bytemuck::cast_slice_mut(&mut out);
+
     for dy in 0..new_h {
-        for dx in 0..new_w {
-            let sx = (dx as f32 * x_ratio) as u32 + x1;
-            let sy = (dy as f32 * y_ratio) as u32 + y1;
-            let sx = sx.min(src.width - 1);
-            let sy = sy.min(src.height - 1);
-            let si = ((sy * src.width + sx) * 4) as usize;
-            let di = ((dy * new_w + dx) * 4) as usize;
-            if si + 3 < src.pixels.len() && di + 3 < out.len() {
-                out[di]   = src.pixels[si];
-                out[di+1] = src.pixels[si+1];
-                out[di+2] = src.pixels[si+2];
-                out[di+3] = 255;
-            }
+        let sy = ((dy as f32 * y_ratio) as u32 + y1).min(src.height - 1) as usize;
+        let src_row_start = sy * w_in;
+        let dst_row_start = dy as usize * nw;
+        for (dx_idx, &sx_idx) in col_map.iter().enumerate() {
+            // Force alpha = 0xFF in one op.
+            dst_u32[dst_row_start + dx_idx] = src_u32[src_row_start + sx_idx] | 0xFF00_0000;
         }
     }
     out
@@ -2347,25 +2366,40 @@ fn set_pixel(pixels: &mut [u8], w: u32, h: u32, x: i32, y: i32, r: u8, g: u8, b:
     }
 }
 
-/// Simple bilinear resize of RGBA image
+/// Nearest-neighbour resize of RGBA image (called "bilinear" in the old
+/// comment but is actually nearest-neighbour; kept as-is for output
+/// compatibility with downstream ONNX tensor builders).
+///
+/// Hot path: runs on every ONNX inference (classification, object
+/// detection, MediaPipe stage 1 / stage 2 etc). u32-granular copy with a
+/// precomputed column map — same template as `crop_and_resize` above.
 fn resize_image(img: &ImageData, new_w: u32, new_h: u32) -> Vec<u8> {
-    let mut out = vec![0u8; (new_w * new_h * 4) as usize];
+    let out_bytes = (new_w * new_h * 4) as usize;
+    let mut out: Vec<u8> = Vec::with_capacity(out_bytes);
+    // SAFETY: every pixel is written in the u32 loop below.
+    unsafe { out.set_len(out_bytes); }
+
     let x_ratio = img.width as f32 / new_w as f32;
     let y_ratio = img.height as f32 / new_h as f32;
+    let w_in = img.width as usize;
+    let h_in = img.height as usize;
+    let nw = new_w as usize;
+
+    let mut col_map: Vec<usize> = Vec::with_capacity(nw);
+    for x in 0..new_w {
+        let sx = (x as f32 * x_ratio) as usize;
+        col_map.push(sx.min(w_in - 1));
+    }
+
+    let src_u32: &[u32] = bytemuck::cast_slice(&img.pixels);
+    let dst_u32: &mut [u32] = bytemuck::cast_slice_mut(&mut out);
+
     for y in 0..new_h {
-        for x in 0..new_w {
-            let src_x = (x as f32 * x_ratio).min(img.width as f32 - 1.0);
-            let src_y = (y as f32 * y_ratio).min(img.height as f32 - 1.0);
-            let sx = src_x as u32;
-            let sy = src_y as u32;
-            let src_idx = ((sy * img.width + sx) * 4) as usize;
-            let dst_idx = ((y * new_w + x) * 4) as usize;
-            if src_idx + 3 < img.pixels.len() && dst_idx + 3 < out.len() {
-                out[dst_idx] = img.pixels[src_idx];
-                out[dst_idx + 1] = img.pixels[src_idx + 1];
-                out[dst_idx + 2] = img.pixels[src_idx + 2];
-                out[dst_idx + 3] = img.pixels[src_idx + 3];
-            }
+        let sy = ((y as f32 * y_ratio) as usize).min(h_in - 1);
+        let src_row_start = sy * w_in;
+        let dst_row_start = y as usize * nw;
+        for (dx, &sx) in col_map.iter().enumerate() {
+            dst_u32[dst_row_start + dx] = src_u32[src_row_start + sx];
         }
     }
     out
