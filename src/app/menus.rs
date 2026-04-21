@@ -206,10 +206,9 @@ impl super::PatchworkApp {
                         let entry = &catalog[i];
                         pill_for(entry.category) == pill || also_in(entry.label).contains(&pill)
                     }).collect();
-                    // Hide empty columns during a search (keeps layout compact).
-                    // Outside search, always show the column header even if
-                    // empty — otherwise the layout shifts while you type.
-                    if !query.is_empty() && entries.is_empty() { continue; }
+                    // Always include every column so the layout stays stable
+                    // as the user types. Empty columns render the "—"
+                    // placeholder; no reflow.
                     columns.push((pill, entries));
                 }
                 // Flatten entries for keyboard nav: walks columns in left-
@@ -338,7 +337,17 @@ impl super::PatchworkApp {
                                                 btn.scroll_to_me(Some(egui::Align::Center));
                                             }
 
-                                            if btn.clicked() { spawn_idx = Some(cat_idx); }
+                                            // Single-click selects (so user
+                                            // can orient visually and hit
+                                            // Enter), double-click commits.
+                                            // Prevents accidental spawns
+                                            // from a stray click.
+                                            if btn.clicked() {
+                                                self.node_menu_selected = walk_pos;
+                                            }
+                                            if btn.double_clicked() {
+                                                spawn_idx = Some(cat_idx);
+                                            }
                                             walk_pos += 1;
                                         }
 
