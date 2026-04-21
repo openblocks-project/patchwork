@@ -87,22 +87,16 @@ pub fn render(
         }
     });
 
-    // ── Auto-Level (AGC) toggle ───────────────────────────────────────
-    // Automatic gain control. ON by default — built-in mics typically run
-    // at -40 dBFS and need massive boost before the spectrogram encoding
-    // gets usable signal. AGC tracks RMS and gently pulls the level up.
+    // AGC toggle — opt-in. Default off so mic → effects / sampler paths
+    // aren't silently shaped by a compressor the user didn't ask for.
     ui.horizontal(|ui| {
-        ui.checkbox(agc_enabled, "Auto Level");
-        if *agc_enabled {
-            ui.label(egui::RichText::new("adaptive").small()
-                .color(egui::Color32::from_rgb(120, 200, 255)));
-        }
+        ui.checkbox(agc_enabled, egui::RichText::new("Auto Level (experimental)").small());
     });
 
     // ── Gain slider ───────────────────────────────────────────────────
-    // Range is 0..20× (+26 dB) so built-in mics can reach strong levels
-    // without AGC. Display as dB because that's how users think about mic
-    // levels. Manual gain applies AFTER AGC (if on) — acts as a trim.
+    // Familiar 0..2× (0–200%) range. This matches the pre-branch UX —
+    // unity gain sits at the slider's midpoint, so users don't have to
+    // hunt for "normal" on a log-dB scale.
     let gain_wired = connections.iter().any(|c| c.to_node == node_id && c.to_port == 0);
     crate::nodes::inline_port_circle(
         ui, node_id, 0, true, connections,
@@ -110,21 +104,15 @@ pub fn render(
     );
     if gain_wired {
         let v = Graph::static_input_value(connections, values, node_id, 0).as_float();
-        *gain = v.clamp(0.0, 20.0);
-        let db = 20.0 * gain.max(1e-4).log10();
+        *gain = v.clamp(0.0, 2.0);
         ui.horizontal(|ui| {
             ui.label("Gain:");
-            ui.label(format!("{:+.1} dB", db));
+            ui.label(format!("{:.0}%", *gain * 100.0));
         });
     } else {
         ui.horizontal(|ui| {
             ui.label("Gain:");
-            let db_val = 20.0 * gain.max(1e-4).log10();
-            ui.add(egui::Slider::new(gain, 0.0..=20.0)
-                .logarithmic(true)
-                .show_value(false)
-                .clamping(egui::SliderClamping::Always));
-            ui.label(format!("{:+.1} dB", db_val));
+            ui.add(egui::Slider::new(gain, 0.0..=2.0).show_value(true));
         });
     }
 
