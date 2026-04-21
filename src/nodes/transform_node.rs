@@ -84,23 +84,29 @@ impl TransformNode {
         let row_bytes = w * 4;
         let mut pixels = vec![0u8; row_bytes * h];
 
+        // Cast to u32 so each pixel is one load/store instead of a
+        // 4-byte copy_from_slice call. That call had function-call
+        // overhead + per-byte bounds checks in debug builds — enough
+        // to visibly drop fps when the user enabled Flip H on a live
+        // 30 fps camera. u32-granular copies compile to a tight load-
+        // store loop even without optimizations.
+        let src: &[u32] = bytemuck::cast_slice(&img.pixels);
+        let dst: &mut [u32] = bytemuck::cast_slice_mut(&mut pixels);
+
         for dy in 0..h {
             let src_y = if self.flip_v { h - 1 - dy } else { dy };
-            let src_row = &img.pixels[src_y * row_bytes .. src_y * row_bytes + row_bytes];
-            let dst_row = &mut pixels[dy * row_bytes .. dy * row_bytes + row_bytes];
+            let src_row_start = src_y * w;
+            let dst_row_start = dy * w;
+            let src_row = &src[src_row_start .. src_row_start + w];
+            let dst_row = &mut dst[dst_row_start .. dst_row_start + w];
+
             if self.flip_h {
-                // Per-pixel mirror (can't copy_from_slice a reversed view
-                // directly, but this is still massively cheaper than the
-                // full rotation-capable path — no trig, no div, no bounds
-                // checks).
-                for dx in 0..w {
-                    let src_x = w - 1 - dx;
-                    let si = src_x * 4;
-                    let di = dx * 4;
-                    dst_row[di .. di + 4].copy_from_slice(&src_row[si .. si + 4]);
+                // iter+rev compiles cleanly to a reversed indexed loop
+                // with no copy_from_slice bookkeeping.
+                for (d, s) in dst_row.iter_mut().zip(src_row.iter().rev()) {
+                    *d = *s;
                 }
             } else {
-                // Vertical flip only — whole-row copy.
                 dst_row.copy_from_slice(src_row);
             }
         }
