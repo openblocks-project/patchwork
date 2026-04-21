@@ -84,12 +84,23 @@ impl LiveInputBuffer {
 
         let available = wp.wrapping_sub(rp);
 
-        // Skip ahead if too much buffered — keeps latency low (~2 blocks).
-        // Without this, the reader chases the writer from behind and
-        // accumulated samples create audible delay.
-        let max_buffer = num_frames * 3;
-        if available > max_buffer {
-            rp = wp.wrapping_sub(num_frames);
+        // Catch-up skip when the buffer has grown well beyond its steady
+        // state. macOS typically delivers mic samples in ~512-sample
+        // bursts while the output consumes 64-sample blocks, so the
+        // read head lags by up to a burst naturally — we only want to
+        // skip when the mic and output clocks have genuinely drifted
+        // enough to pile up ≥ ~100 ms of audio. Previous threshold of
+        // `num_frames * 3` fired on every mic burst, dropping ~384
+        // samples each time → audible chopping on the live signal.
+        //
+        // When we do skip, leave ~20 ms in the buffer rather than
+        // dropping back to a single block; that softens the artifact
+        // and reduces the risk of immediate underrun on the next
+        // output callback.
+        let skip_threshold = (self.capacity / 10).max(num_frames * 4); // ≥ 100 ms
+        let skip_leave     = (self.capacity / 50).max(num_frames);      // ≈ 20 ms
+        if available > skip_threshold {
+            rp = wp.wrapping_sub(skip_leave);
         }
 
         let available = wp.wrapping_sub(rp);
