@@ -3,38 +3,11 @@ use eframe::egui;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// Bundled MediaPipe palm detector — embedded at compile time.
-pub static BUNDLED_HAND_MODEL: &[u8] =
-    include_bytes!("../../assets/presets/ml/MediaPipeHandDetector.onnx");
-
-/// Bundled MediaPipe hand landmark model (21 keypoints) — embedded at compile time.
-pub static BUNDLED_HAND_LANDMARK_MODEL: &[u8] =
-    include_bytes!("../../assets/presets/ml/MediaPipeHandLandmark.onnx");
-
-/// Sentinel: model_path == this → run the full 2-stage hand tracking pipeline.
-pub const BUNDLED_HAND_SENTINEL: &str = "__bundled_hand__";
-
-/// Bundled BlazeFace short-range face detector — embedded at compile time.
-pub static BUNDLED_FACE_MODEL: &[u8] =
-    include_bytes!("../../assets/presets/ml/MediaPipeFaceDetector.onnx");
-
-/// Bundled MediaPipe face landmark model (468 landmarks) — embedded at compile time.
-pub static BUNDLED_FACE_LANDMARK_MODEL: &[u8] =
-    include_bytes!("../../assets/presets/ml/MediaPipeFaceLandmarkDetector.onnx");
-
-/// Sentinel: model_path == this → run the full 2-stage face tracking pipeline.
-pub const BUNDLED_FACE_SENTINEL: &str = "__bundled_face__";
-
-/// Bundled MediaPipe pose detector — embedded at compile time.
-pub static BUNDLED_POSE_MODEL: &[u8] =
-    include_bytes!("../../assets/presets/ml/MediaPipePoseDetector.onnx");
-
-/// Bundled MediaPipe pose landmark lite model (33 keypoints) — embedded at compile time.
-pub static BUNDLED_POSE_LANDMARK_MODEL: &[u8] =
-    include_bytes!("../../assets/presets/ml/MediaPipePoseLandmark.onnx");
-
-/// Sentinel: model_path == this → run the full 2-stage body tracking pipeline.
-pub const BUNDLED_POSE_SENTINEL: &str = "__bundled_pose__";
+pub use crate::ml::bundled::{
+    BUNDLED_FACE_LANDMARK_MODEL, BUNDLED_FACE_MODEL, BUNDLED_FACE_SENTINEL,
+    BUNDLED_HAND_LANDMARK_MODEL, BUNDLED_HAND_MODEL, BUNDLED_HAND_SENTINEL,
+    BUNDLED_POSE_LANDMARK_MODEL, BUNDLED_POSE_MODEL, BUNDLED_POSE_SENTINEL,
+};
 
 pub fn render(
     ui: &mut egui::Ui,
