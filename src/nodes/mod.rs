@@ -62,6 +62,7 @@ pub mod fill_node;
 pub mod image_scanner_node;
 pub mod frame_recorder_node;
 pub mod noise_removal_node;
+pub mod voice_effects_node;
 pub mod audio_analyzer_node;
 pub mod music_visualizer_node;
 pub mod spectral_synth_node;
@@ -486,6 +487,8 @@ pub fn catalog() -> Vec<NodeCatalogEntry> {
             factory: || NodeType::AudioHighPass { cutoff: 200.0 } },
         NodeCatalogEntry { wip: false, singleton: false, label: "Noise Removal", category: "Audio",
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(noise_removal_node::NoiseRemovalNode::default()) } } },
+        NodeCatalogEntry { wip: false, singleton: false, label: "Voice Effects", category: "Audio",
+            factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(voice_effects_node::VoiceEffectsNode::default()) } } },
         NodeCatalogEntry { wip: false, singleton: false, label: "Gain", category: "Audio",
             factory: || NodeType::AudioGain { level: 1.0 } },
         NodeCatalogEntry { wip: false, singleton: false, label: "EQ", category: "Audio",

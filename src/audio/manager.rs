@@ -435,6 +435,15 @@ impl AudioManager {
                 let thresh = *params.get(1).unwrap_or(&0.0);
                 Some((Box::new(effects::NoiseRemovalProcessor::new(cutoff, thresh)), 2))
             }
+            NodeType::Dynamic { inner } if inner.node.type_tag() == "voice_effects" => {
+                let params = inner.node.audio_params();
+                let effect = *params.first().unwrap_or(&0.0);
+                let p1     = *params.get(1).unwrap_or(&0.6);
+                let p2     = *params.get(2).unwrap_or(&0.3);
+                let p3     = *params.get(3).unwrap_or(&0.0);
+                let mix    = *params.get(4).unwrap_or(&0.5);
+                Some((Box::new(voice_effects::VoiceEffectsProcessor::new(effect, p1, p2, p3, mix)), 5))
+            }
             NodeType::AudioInput { gain, .. } => {
                 if let Some(buf) = self.input_buffers.get(&nid) {
                     // 2 params: [0] gain, [1] agc_enabled (0/1). Using ::new()
