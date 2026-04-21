@@ -502,7 +502,7 @@ pub fn catalog() -> Vec<NodeCatalogEntry> {
         NodeCatalogEntry { wip: false, singleton: false, label: "Playlist", category: "Audio",
             factory: || NodeType::AudioPlaylist { tracks: Vec::new(), current_index: 0, volume: 1.0, loop_playlist: false, duration_secs: 0.0 } },
         NodeCatalogEntry { wip: false, singleton: false, label: "Microphone", category: "Audio",
-            factory: || NodeType::AudioInput { selected_device: String::new(), gain: 1.0, active: false, agc_enabled: true } },
+            factory: || NodeType::AudioInput { selected_device: String::new(), gain: 1.0, active: false, agc_enabled: false } },
         NodeCatalogEntry { wip: false, singleton: false, label: "Audio Sampler", category: "Audio",
             factory: || NodeType::AudioSampler { record_duration: 5.0, trim_start: 0.0, trim_end: 0.0, volume: 1.0, looping: false, reverse: false, play_mode: 0, range_as_duration: false, speed: 1.0, seek: 0.0 } },
         NodeCatalogEntry { wip: false, singleton: false, label: "CLAP Plugin", category: "Audio",

@@ -814,11 +814,11 @@ pub enum NodeType {
         gain: f32,
         #[serde(default)]
         active: bool,
-        /// Auto-level (AGC) on the mic signal. ON by default so built-in
-        /// mics (which typically run at -40 dBFS) automatically reach the
-        /// encoding levels the Music Visualizer spectrogram needs. User
-        /// can disable for deterministic / percussive sources.
-        #[serde(default = "default_true")]
+        /// Auto-level (AGC) on the mic signal. OFF by default so the raw
+        /// signal passes through clean for voice effects, sampling, and
+        /// general use. Users can toggle ON for the Music Visualizer
+        /// spectrogram where built-in mics (~ -40 dBFS) need auto-boost.
+        #[serde(default)]
         agc_enabled: bool,
     },
     /// Real-time audio analysis — outputs amplitude, bass, mid, treble from the master mix.

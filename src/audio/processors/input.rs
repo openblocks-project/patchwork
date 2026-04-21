@@ -28,21 +28,25 @@ const AGC_ENV_ATTACK: f32 = 0.3;       // fast rise when signal surges
 const AGC_ENV_RELEASE: f32 = 0.02;     // slow fall through silences
 const AGC_GAIN_ATTACK: f32 = 0.02;     // slow rise so silence→speech doesn't jump
 const AGC_GAIN_RELEASE: f32 = 0.2;     // faster drop to prevent clipping
-/// Initial gain assumed for the first block after start/prepare. Picked so a
-/// typical built-in mic (~ -30 dBFS raw speech) is immediately audible when
-/// routed through a simple Mic → Effect → Speaker chain, rather than taking
-/// ~1 second to ramp up from unity. Loud sources release down to their
-/// correct gain within ~100 ms.
-const AGC_INIT_GAIN: f32 = 8.0;
+/// Initial gain after prepare/reset. We start at unity so a freshly enabled
+/// AGC doesn't slam a loud signal with +18 dB for the first ~100 ms (which
+/// clips and leaves a half-second of distortion at the top of every recording).
+/// Quiet mics ramp up fast enough that the user perceives no delay.
+const AGC_INIT_GAIN: f32 = 1.0;
 
 impl LiveInputProcessor {
     pub fn new(buffer: Arc<LiveInputBuffer>, gain: f32) -> Self {
+        // AGC defaults OFF. The audio_input node's set_params pushes the
+        // user's toggle state every block, so enabling from the UI is
+        // immediate. We keep fresh processors clean so mic → effects /
+        // sampler paths aren't silently shaped by a compressor the user
+        // didn't ask for.
         Self {
             buffer,
             gain,
-            agc_enabled: true,
+            agc_enabled: false,
             agc_env: AGC_TARGET_RMS,
-            agc_gain: AGC_INIT_GAIN,
+            agc_gain: 1.0,
         }
     }
 }
