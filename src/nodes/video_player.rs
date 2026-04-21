@@ -677,18 +677,40 @@ pub fn fast_downsample(img: &ImageData, target_w: u32, target_h: u32) -> Vec<u8>
     if target_w >= img.width && target_h >= img.height {
         return img.pixels.clone();
     }
-    let mut out = vec![0u8; (target_w * target_h * 4) as usize];
+
+    // u32-granular copy with a precomputed source-column map. Inner loop
+    // becomes `dst[i] = src[col_map[i]]` — no per-pixel float math, no
+    // 4-byte `copy_from_slice`, no bounds double-check. This runs on
+    // every camera preview frame, so the old per-byte loop was a real
+    // ~307k-iteration-per-frame overhead on debug builds.
+    let out_bytes = (target_w * target_h * 4) as usize;
+    let mut out: Vec<u8> = Vec::with_capacity(out_bytes);
+    // SAFETY: every output pixel is written below; the u32-store loop
+    // fills all `target_w * target_h` u32s.
+    unsafe { out.set_len(out_bytes); }
+
     let x_ratio = img.width as f32 / target_w as f32;
     let y_ratio = img.height as f32 / target_h as f32;
+    let w_in = img.width as usize;
+    let tw = target_w as usize;
+
+    // Precompute src column for each dst column.
+    let mut col_map: Vec<usize> = Vec::with_capacity(tw);
+    for x in 0..target_w {
+        let sx = ((x as f32) * x_ratio) as u32 as usize;
+        col_map.push(sx.min(w_in.saturating_sub(1)));
+    }
+
+    let src: &[u32] = bytemuck::cast_slice(&img.pixels);
+    let dst: &mut [u32] = bytemuck::cast_slice_mut(&mut out);
+
     for y in 0..target_h {
-        let sy = (y as f32 * y_ratio) as u32;
-        for x in 0..target_w {
-            let sx = (x as f32 * x_ratio) as u32;
-            let si = ((sy * img.width + sx) * 4) as usize;
-            let di = ((y * target_w + x) * 4) as usize;
-            if si + 3 < img.pixels.len() && di + 3 < out.len() {
-                out[di..di+4].copy_from_slice(&img.pixels[si..si+4]);
-            }
+        let sy = ((y as f32) * y_ratio) as u32 as usize;
+        let sy = sy.min((img.height as usize).saturating_sub(1));
+        let src_row_start = sy * w_in;
+        let dst_row_start = y as usize * tw;
+        for (dx, &sx) in col_map.iter().enumerate() {
+            dst[dst_row_start + dx] = src[src_row_start + sx];
         }
     }
     out

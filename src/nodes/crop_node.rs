@@ -37,18 +37,44 @@ impl CropNode {
         let out_w = x1.saturating_sub(x0).max(1);
         let out_h = y1.saturating_sub(y0).max(1);
 
-        let mut pixels = vec![0u8; (out_w * out_h * 4) as usize];
+        // u32-granular copy. Each output pixel is a single load/store
+        // instead of a 4-byte `copy_from_slice` call — crucial on live
+        // camera paths where the 4-byte-slice overhead + bounds checks
+        // otherwise dominate in debug builds.
+        let out_bytes = (out_w * out_h * 4) as usize;
+        let mut pixels: Vec<u8> = Vec::with_capacity(out_bytes);
+        // SAFETY: every output pixel is written below — either from the
+        // copied row or by the zero-fill on rows that fall outside the
+        // source.
+        unsafe { pixels.set_len(out_bytes); }
+
+        let src: &[u32] = bytemuck::cast_slice(&img.pixels);
+        let dst: &mut [u32] = bytemuck::cast_slice_mut(&mut pixels);
+        let w_in = img.width as usize;
+        let out_w_us = out_w as usize;
+
         for y in 0..out_h {
+            let dst_row_start = y as usize * out_w_us;
             let src_y = y0 + y;
-            if src_y >= h { break; }
-            for x in 0..out_w {
-                let src_x = x0 + x;
-                if src_x >= w { break; }
-                let si = ((src_y * w + src_x) * 4) as usize;
-                let di = ((y * out_w + x) * 4) as usize;
-                if si + 3 < img.pixels.len() && di + 3 < pixels.len() {
-                    pixels[di..di + 4].copy_from_slice(&img.pixels[si..si + 4]);
+            if src_y >= h {
+                // Below source — zero-fill the row so the buffer stays init.
+                for i in 0..out_w_us {
+                    dst[dst_row_start + i] = 0;
                 }
+                continue;
+            }
+            let src_row_start = src_y as usize * w_in;
+            // Clamp how many columns are actually inside the source.
+            let copyable = (w.saturating_sub(x0)).min(out_w) as usize;
+            let src_col_start = x0 as usize;
+
+            // Fast path: whole-row slice copy via u32.
+            dst[dst_row_start .. dst_row_start + copyable]
+                .copy_from_slice(&src[src_row_start + src_col_start .. src_row_start + src_col_start + copyable]);
+
+            // Right-edge padding (if out_w > copyable) → zero.
+            for i in copyable..out_w_us {
+                dst[dst_row_start + i] = 0;
             }
         }
         Arc::new(ImageData { width: out_w, height: out_h, pixels })
