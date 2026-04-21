@@ -322,9 +322,10 @@ fn parse_expected_shape(err: &str) -> Option<(usize, bool)> {
 }
 
 fn run_inference_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult, String> {
+    use ort::session::Session;
 
     let mut session = {
-        let mut builder = crate::ml::ep::session_builder()
+        let mut builder = Session::builder()
             .map_err(|e| format!("Session builder: {}", e))?;
         if req.model_path == BUNDLED_HAND_SENTINEL {
             builder.commit_from_memory(BUNDLED_HAND_MODEL)
@@ -361,7 +362,7 @@ fn run_inference_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult, St
     }
 
     let mut session2 = {
-        let mut builder = crate::ml::ep::session_builder()
+        let mut builder = Session::builder()
             .map_err(|e| format!("Session builder: {}", e))?;
         if req.model_path == BUNDLED_HAND_SENTINEL {
             builder.commit_from_memory(BUNDLED_HAND_MODEL)
@@ -828,6 +829,7 @@ pub fn run_hand_tracking(req: &MlInferenceRequest) -> MlInferenceResult {
 }
 
 fn run_hand_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult, String> {
+    use ort::session::Session;
     use std::sync::Arc;
 
     let img_w = req.image.width as f32;
@@ -839,7 +841,7 @@ fn run_hand_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult
     let palm_sz = 256u32;
     let palm_sz_f = palm_sz as f32;
 
-    let mut palm_sess = crate::ml::ep::session_builder()
+    let mut palm_sess = Session::builder()
         .map_err(|e| format!("Session builder: {}", e))?
         .commit_from_memory(BUNDLED_HAND_MODEL)
         .map_err(|e| format!("Load palm model: {}", e))?;
@@ -949,7 +951,7 @@ fn run_hand_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult
     let lm_sz_f = lm_sz as f32;
 
     // Load landmark session once, reuse for both hands
-    let mut lm_sess = crate::ml::ep::session_builder()
+    let mut lm_sess = Session::builder()
         .map_err(|e| format!("Session builder: {}", e))?
         .commit_from_memory(BUNDLED_HAND_LANDMARK_MODEL)
         .map_err(|e| format!("Load landmark model: {}", e))?;
@@ -1467,6 +1469,7 @@ pub fn run_face_tracking(req: &MlInferenceRequest) -> MlInferenceResult {
 }
 
 fn run_face_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult, String> {
+    use ort::session::Session;
 
     let img_w = req.image.width  as f32;
     let img_h = req.image.height as f32;
@@ -1478,7 +1481,7 @@ fn run_face_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult
     let ts = face_sz as usize;
     let face_sz_f = face_sz as f32;
 
-    let mut face_sess = crate::ml::ep::session_builder()
+    let mut face_sess = Session::builder()
         .map_err(|e| format!("Session builder: {}", e))?
         .commit_from_memory(BUNDLED_FACE_MODEL)
         .map_err(|e| format!("Load face model: {}", e))?;
@@ -1588,7 +1591,7 @@ fn run_face_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult
     let lm_ts = lm_sz as usize;
     let lm_sz_f = lm_sz as f32;
 
-    let mut lm_sess = crate::ml::ep::session_builder()
+    let mut lm_sess = Session::builder()
         .map_err(|e| format!("Session builder: {}", e))?
         .commit_from_memory(BUNDLED_FACE_LANDMARK_MODEL)
         .map_err(|e| format!("Load face landmark model: {}", e))?;
@@ -1848,6 +1851,7 @@ pub fn run_pose_tracking(req: &MlInferenceRequest) -> MlInferenceResult {
 }
 
 fn run_pose_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult, String> {
+    use ort::session::Session;
 
     let img_w = req.image.width  as f32;
     let img_h = req.image.height as f32;
@@ -1859,7 +1863,7 @@ fn run_pose_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult
     let ts = pose_sz as usize;
     let pose_sz_f = pose_sz as f32;
 
-    let mut pose_sess = crate::ml::ep::session_builder()
+    let mut pose_sess = Session::builder()
         .map_err(|e| format!("Session builder: {}", e))?
         .commit_from_memory(BUNDLED_POSE_MODEL)
         .map_err(|e| format!("Load pose model: {}", e))?;
@@ -1966,7 +1970,7 @@ fn run_pose_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult
     let lm_ts = lm_sz as usize;
     let lm_sz_f = lm_sz as f32;
 
-    let mut lm_sess = crate::ml::ep::session_builder()
+    let mut lm_sess = Session::builder()
         .map_err(|e| format!("Session builder: {}", e))?
         .commit_from_memory(BUNDLED_POSE_LANDMARK_MODEL)
         .map_err(|e| format!("Load pose landmark model: {}", e))?;
