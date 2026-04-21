@@ -60,6 +60,8 @@ pub mod mouse_tracker_node;
 pub mod point_2d_node;
 pub mod fill_node;
 pub mod image_scanner_node;
+pub mod frame_recorder_node;
+pub mod noise_removal_node;
 pub mod audio_analyzer_node;
 pub mod music_visualizer_node;
 pub mod spectral_synth_node;
@@ -448,6 +450,8 @@ pub fn catalog() -> Vec<NodeCatalogEntry> {
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(fill_node::FillNode::default()) } } },
         NodeCatalogEntry { wip: false, singleton: false, label: "Image Scanner", category: "Image",
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(image_scanner_node::ImageScannerNode::default()) } } },
+        NodeCatalogEntry { wip: false, singleton: false, label: "Frame Recorder", category: "Image",
+            factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(frame_recorder_node::FrameRecorderNode::default()) } } },
         NodeCatalogEntry { wip: false, singleton: false, label: "WGSL Presets", category: "Shader",
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(wgsl_presets::WgslPresetsNode::default()) } } },
 
@@ -480,6 +484,8 @@ pub fn catalog() -> Vec<NodeCatalogEntry> {
             factory: || NodeType::AudioLowPass { cutoff: 1000.0 } },
         NodeCatalogEntry { wip: false, singleton: false, label: "High Pass", category: "Audio",
             factory: || NodeType::AudioHighPass { cutoff: 200.0 } },
+        NodeCatalogEntry { wip: false, singleton: false, label: "Noise Removal", category: "Audio",
+            factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(noise_removal_node::NoiseRemovalNode::default()) } } },
         NodeCatalogEntry { wip: false, singleton: false, label: "Gain", category: "Audio",
             factory: || NodeType::AudioGain { level: 1.0 } },
         NodeCatalogEntry { wip: false, singleton: false, label: "EQ", category: "Audio",
@@ -493,7 +499,7 @@ pub fn catalog() -> Vec<NodeCatalogEntry> {
         NodeCatalogEntry { wip: false, singleton: false, label: "Playlist", category: "Audio",
             factory: || NodeType::AudioPlaylist { tracks: Vec::new(), current_index: 0, volume: 1.0, loop_playlist: false, duration_secs: 0.0 } },
         NodeCatalogEntry { wip: false, singleton: false, label: "Microphone", category: "Audio",
-            factory: || NodeType::AudioInput { selected_device: String::new(), gain: 1.0, active: false } },
+            factory: || NodeType::AudioInput { selected_device: String::new(), gain: 1.0, active: false, agc_enabled: true } },
         NodeCatalogEntry { wip: false, singleton: false, label: "Audio Sampler", category: "Audio",
             factory: || NodeType::AudioSampler { record_duration: 5.0, trim_start: 0.0, trim_end: 0.0, volume: 1.0, looping: false, reverse: false, play_mode: 0, range_as_duration: false, speed: 1.0, seek: 0.0 } },
         NodeCatalogEntry { wip: false, singleton: false, label: "CLAP Plugin", category: "Audio",

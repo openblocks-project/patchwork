@@ -2155,10 +2155,11 @@ impl eframe::App for PatchworkApp {
                 .map(|(&id, _)| id).collect();
             for id in spectrum_ids {
                 let sample_rate = self.audio.engine_sample_rate.max(1.0);
-                let (bins, peak_hz, centroid_hz, energy) = self.audio.spectrum_results.get(&id)
+                let (bins, phases, peak_hz, centroid_hz, energy) = self.audio.spectrum_results.get(&id)
                     .and_then(|s| s.try_lock().ok())
                     .map(|s| {
                         let bins = s.bins.clone();
+                        let phases = s.phases.clone();
                         let n = bins.len().max(1);
                         // Map bin index → frequency using same log-spaced 30 Hz → Nyquist scheme
                         // as the analysis pass.
@@ -2186,9 +2187,13 @@ impl eframe::App for PatchworkApp {
                         let peak_hz = bin_to_hz(peak_idx);
                         let centroid_hz = if sum_w > 1e-6 { sum_wf / sum_w } else { 0.0 };
                         let energy = (sum / n as f32).clamp(0.0, 1.0);
-                        (bins, peak_hz, centroid_hz, energy)
+                        (bins, phases, peak_hz, centroid_hz, energy)
                     })
-                    .unwrap_or_else(|| (vec![0.0f32; crate::audio::analysis::SPECTRUM_BINS], 0.0, 0.0, 0.0));
+                    .unwrap_or_else(|| (
+                        vec![0.0f32; crate::audio::analysis::SPECTRUM_BINS],
+                        vec![0.5f32; crate::audio::analysis::SPECTRUM_BINS],
+                        0.0, 0.0, 0.0,
+                    ));
 
                 let source_name = connections.iter()
                     .find(|c| c.to_node == id && c.to_port == 0)
@@ -2197,6 +2202,7 @@ impl eframe::App for PatchworkApp {
                     .unwrap_or_default();
                 ctx.data_mut(|d| {
                     d.insert_temp(egui::Id::new(("spectrum_bins", id)), bins.clone());
+                    d.insert_temp(egui::Id::new(("spectrum_phases", id)), phases.clone());
                     d.insert_temp(egui::Id::new(("spectrum_scalars", id)), [peak_hz, centroid_hz, energy]);
                     d.insert_temp(egui::Id::new(("spectrum_source", id)), source_name);
                 });

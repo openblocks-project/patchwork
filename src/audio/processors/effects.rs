@@ -339,6 +339,96 @@ impl AudioProcessor for ReverbProcessor {
     }
 }
 
+// ── Noise Removal (2nd-order Butterworth HPF + optional noise gate) ──────────
+//
+// Designed for voice: removes low-frequency rumble (mic handling, AC mains,
+// HVAC, room boom below ~80 Hz) with a 12 dB/octave cutoff, and silences
+// quiet-room hiss via a simple envelope-tracking gate when enabled.
+
+pub struct NoiseRemovalProcessor {
+    cutoff_hz: SmoothedParam,
+    gate_thresh: SmoothedParam, // linear amplitude threshold; 0 = gate off
+    hpf: BiquadFilter,
+    last_cutoff_hz: f32,
+    envelope: f32,
+    sample_rate: f32,
+}
+
+impl NoiseRemovalProcessor {
+    pub fn new(cutoff_hz: f32, gate_thresh: f32) -> Self {
+        Self {
+            cutoff_hz: SmoothedParam::new(cutoff_hz, 15.0),
+            gate_thresh: SmoothedParam::new(gate_thresh, 15.0),
+            hpf: BiquadFilter::high_pass(cutoff_hz.max(20.0), 0.707, 44100.0),
+            last_cutoff_hz: cutoff_hz,
+            envelope: 0.0,
+            sample_rate: 44100.0,
+        }
+    }
+}
+
+impl AudioProcessor for NoiseRemovalProcessor {
+    fn type_id(&self) -> &str { "noise_removal" }
+    fn kind(&self) -> ProcessorKind { ProcessorKind::Effect }
+
+    fn process_block(&mut self, input: &[f32], output: &mut [f32], _ctx: &ProcessContext) {
+        // Only rebuild biquad coeffs when the cutoff moves enough to matter
+        // — cheap guard, avoids trig every sample.
+        let target_cutoff = self.cutoff_hz.tick().max(20.0);
+        if (target_cutoff - self.last_cutoff_hz).abs() > 0.5 {
+            self.hpf = BiquadFilter::high_pass(target_cutoff, 0.707, self.sample_rate);
+            self.last_cutoff_hz = target_cutoff;
+        }
+
+        // Gate envelope: slow-falling peak follower. Below-threshold signal
+        // gets muted via an exponential ramp (avoids clicks on gate events).
+        let gate_thresh = self.gate_thresh.tick().max(0.0);
+        let gate_on = gate_thresh > 0.0;
+        let env_attack = 0.25f32;   // fast rise
+        let env_release = 0.0005f32; // slow fall
+
+        for i in 0..input.len() {
+            let y = self.hpf.process(input[i]);
+            if !gate_on {
+                output[i] = y;
+                continue;
+            }
+            let abs_y = y.abs();
+            if abs_y > self.envelope {
+                self.envelope += env_attack * (abs_y - self.envelope);
+            } else {
+                self.envelope += env_release * (abs_y - self.envelope);
+            }
+            // Soft gate: multiply by a sigmoidish gain based on how far the
+            // envelope is above threshold. Prevents hard on/off clicks.
+            let margin = (self.envelope / gate_thresh.max(1e-6)).clamp(0.0, 4.0);
+            let gain = (margin * margin).min(1.0); // ramps 0→1 over 0..1×threshold
+            output[i] = y * gain;
+        }
+    }
+
+    fn set_params(&mut self, params: &[f32]) {
+        if let Some(&v) = params.first() { self.cutoff_hz.set(v); }
+        if let Some(&v) = params.get(1) { self.gate_thresh.set(v); }
+    }
+
+    fn param_count(&self) -> usize { 2 }
+
+    fn prepare(&mut self, sample_rate: f32, _max_block_size: usize) {
+        self.sample_rate = sample_rate;
+        self.cutoff_hz = SmoothedParam::new(self.cutoff_hz.target, 15.0);
+        self.gate_thresh = SmoothedParam::new(self.gate_thresh.target, 15.0);
+        self.hpf = BiquadFilter::high_pass(self.cutoff_hz.target.max(20.0), 0.707, sample_rate);
+        self.last_cutoff_hz = self.cutoff_hz.target;
+        self.envelope = 0.0;
+    }
+
+    fn reset(&mut self) {
+        self.hpf.reset();
+        self.envelope = 0.0;
+    }
+}
+
 // ── Parametric EQ ─────────────────────────────────────────────────────────────
 
 pub struct EqProcessor {

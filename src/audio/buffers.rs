@@ -59,6 +59,22 @@ impl LiveInputBuffer {
         self.write_pos.store(wp, Ordering::Release);
     }
 
+    /// Peek the peak absolute amplitude over the most recent `num_samples`
+    /// samples (capped at capacity). Non-destructive — does not advance the
+    /// read cursor — safe for UI-thread polling to drive a level meter.
+    pub fn peek_level(&self, num_samples: usize) -> f32 {
+        let data = unsafe { &*self.data.get() };
+        let wp = self.write_pos.load(Ordering::Acquire);
+        let n = num_samples.min(self.capacity).max(1);
+        let mut peak = 0.0f32;
+        for i in 0..n {
+            let idx = wp.wrapping_sub(n).wrapping_add(i) % self.capacity;
+            let a = data[idx].abs();
+            if a > peak { peak = a; }
+        }
+        peak
+    }
+
     /// Read samples into the output buffer (consumer).
     /// If not enough samples are available, fills remainder with silence.
     pub fn read_into(&self, buf: &mut [f32], num_frames: usize) {

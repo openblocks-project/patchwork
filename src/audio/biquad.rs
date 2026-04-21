@@ -88,6 +88,28 @@ impl BiquadFilter {
         Self { b0: 1.0, b1: 0.0, b2: 0.0, a1: 0.0, a2: 0.0, x1: 0.0, x2: 0.0, y1: 0.0, y2: 0.0 }
     }
 
+    /// 2nd-order high-pass biquad (RBJ cookbook). Q=0.707 gives Butterworth
+    /// response — maximally flat passband, 12 dB/octave rolloff.
+    pub fn high_pass(freq: f32, q: f32, sr: f32) -> Self {
+        let w0 = std::f32::consts::TAU * freq / sr;
+        let sin_w0 = w0.sin();
+        let cos_w0 = w0.cos();
+        let alpha = sin_w0 / (2.0 * q.max(0.0001));
+
+        let b0 = (1.0 + cos_w0) / 2.0;
+        let b1 = -(1.0 + cos_w0);
+        let b2 = (1.0 + cos_w0) / 2.0;
+        let a0 = 1.0 + alpha;
+        let a1 = -2.0 * cos_w0;
+        let a2 = 1.0 - alpha;
+
+        Self {
+            b0: b0 / a0, b1: b1 / a0, b2: b2 / a0,
+            a1: a1 / a0, a2: a2 / a0,
+            x1: 0.0, x2: 0.0, y1: 0.0, y2: 0.0,
+        }
+    }
+
     /// Process a single sample through this biquad.
     #[inline]
     pub fn reset(&mut self) {

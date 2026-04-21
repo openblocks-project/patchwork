@@ -421,11 +421,25 @@ impl AudioManager {
                 Some((Box::new(proc), 0))
             }
             NodeType::Dynamic { inner } if inner.node.type_tag() == "spectral_synth" => {
-                Some((Box::new(spectral_synth::SpectralSynthProcessor::new()), 67))
+                use super::processor::AudioProcessor;
+                let proc = spectral_synth::SpectralSynthProcessor::new();
+                let n = proc.param_count();
+                Some((Box::new(proc), n))
+            }
+            NodeType::Dynamic { inner } if inner.node.type_tag() == "noise_removal" => {
+                // Pull the node's current settings so the processor starts
+                // matched to UI state on first block; subsequent updates
+                // flow through set_params via audio_params().
+                let params = inner.node.audio_params();
+                let cutoff = *params.first().unwrap_or(&80.0);
+                let thresh = *params.get(1).unwrap_or(&0.0);
+                Some((Box::new(effects::NoiseRemovalProcessor::new(cutoff, thresh)), 2))
             }
             NodeType::AudioInput { gain, .. } => {
                 if let Some(buf) = self.input_buffers.get(&nid) {
-                    Some((Box::new(input::LiveInputProcessor { buffer: buf.clone(), gain: *gain }), 1))
+                    // 2 params: [0] gain, [1] agc_enabled (0/1). Using ::new()
+                    // initializes AGC state correctly.
+                    Some((Box::new(input::LiveInputProcessor::new(buf.clone(), *gain)), 2))
                 } else { None }
             }
             NodeType::AudioPlayer { volume, .. } => {
@@ -557,11 +571,11 @@ impl AudioManager {
         // Register processor in the engine (if engine is running).
         // If engine_tx is None, the auto-register in build_audio_chains will catch it.
         if self.engine_tx.is_some() && !self.has_processor(node_id) {
-            let processor = Box::new(super::processors::input::LiveInputProcessor {
-                buffer: buffer.clone(),
-                gain: 1.0,
-            });
-            self.add_processor(node_id, processor, 1);
+            let processor = Box::new(super::processors::input::LiveInputProcessor::new(
+                buffer.clone(),
+                1.0,
+            ));
+            self.add_processor(node_id, processor, 2);
             // The engine's initial connection walk happened before this
             // processor existed, so any mic→sampler edges were silently
             // dropped. Mark this node for connection replay on the next

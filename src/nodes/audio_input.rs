@@ -14,9 +14,9 @@ pub fn render(
     dragging_from: &mut Option<(NodeId, usize, bool)>,
     pending_disconnects: &mut Vec<(NodeId, usize)>,
 ) {
-    let (selected_device, gain, active) = match node_type {
-        NodeType::AudioInput { selected_device, gain, active } =>
-            (selected_device, gain, active),
+    let (selected_device, gain, active, agc_enabled) = match node_type {
+        NodeType::AudioInput { selected_device, gain, active, agc_enabled } =>
+            (selected_device, gain, active, agc_enabled),
         _ => return,
     };
 
@@ -87,8 +87,22 @@ pub fn render(
         }
     });
 
+    // ── Auto-Level (AGC) toggle ───────────────────────────────────────
+    // Automatic gain control. ON by default — built-in mics typically run
+    // at -40 dBFS and need massive boost before the spectrogram encoding
+    // gets usable signal. AGC tracks RMS and gently pulls the level up.
+    ui.horizontal(|ui| {
+        ui.checkbox(agc_enabled, "Auto Level");
+        if *agc_enabled {
+            ui.label(egui::RichText::new("adaptive").small()
+                .color(egui::Color32::from_rgb(120, 200, 255)));
+        }
+    });
+
     // ── Gain slider ───────────────────────────────────────────────────
-    // Read from wired port 0 (Gain) if connected
+    // Range is 0..20× (+26 dB) so built-in mics can reach strong levels
+    // without AGC. Display as dB because that's how users think about mic
+    // levels. Manual gain applies AFTER AGC (if on) — acts as a trim.
     let gain_wired = connections.iter().any(|c| c.to_node == node_id && c.to_port == 0);
     crate::nodes::inline_port_circle(
         ui, node_id, 0, true, connections,
@@ -96,24 +110,68 @@ pub fn render(
     );
     if gain_wired {
         let v = Graph::static_input_value(connections, values, node_id, 0).as_float();
-        *gain = v.clamp(0.0, 2.0);
+        *gain = v.clamp(0.0, 20.0);
+        let db = 20.0 * gain.max(1e-4).log10();
         ui.horizontal(|ui| {
             ui.label("Gain:");
-            ui.label(format!("{:.0}%", *gain * 100.0));
+            ui.label(format!("{:+.1} dB", db));
         });
     } else {
         ui.horizontal(|ui| {
             ui.label("Gain:");
-            ui.add(egui::Slider::new(gain, 0.0..=2.0).show_value(true));
+            let db_val = 20.0 * gain.max(1e-4).log10();
+            ui.add(egui::Slider::new(gain, 0.0..=20.0)
+                .logarithmic(true)
+                .show_value(false)
+                .clamping(egui::SliderClamping::Always));
+            ui.label(format!("{:+.1} dB", db_val));
         });
+    }
+
+    // ── Minimal input level indicator ─────────────────────────────────
+    // A thin bar that fills proportional to the recent peak amplitude of
+    // the mic signal. The peak is read from the live input ring buffer
+    // (~21 ms window) — no explicit decay needed; the bar naturally falls
+    // back as the window slides past a transient.
+    {
+        let (level, bar_color) = if *active {
+            let raw = audio.input_buffers.get(&node_id)
+                .map(|buf| buf.peek_level(1024))
+                .unwrap_or(0.0);
+            // Post-gain so the meter reflects what downstream nodes roughly
+            // receive. Note: meter can't see the AGC multiplier (which is DSP
+            // state); with AGC on, actual downstream level is typically
+            // higher than this meter shows. sqrt gives a perceptual curve.
+            let after_gain = (raw * *gain).clamp(0.0, 1.0).sqrt();
+            (after_gain, egui::Color32::from_rgb(255, 100, 100))
+        } else {
+            (0.0, egui::Color32::from_rgb(70, 70, 80))
+        };
+        let (rect, _) = ui.allocate_exact_size(
+            egui::vec2(ui.available_width().max(60.0), 4.0),
+            egui::Sense::hover(),
+        );
+        let p = ui.painter();
+        p.rect_filled(rect, 1.5, egui::Color32::from_rgb(22, 22, 28));
+        if level > 0.005 {
+            let fill_w = rect.width() * level;
+            let fill = egui::Rect::from_min_size(rect.min, egui::vec2(fill_w, rect.height()));
+            p.rect_filled(fill, 1.5, bar_color);
+        }
+        if *active {
+            // Keep the UI refreshing while the mic is live so the meter
+            // animates in real time.
+            ui.ctx().request_repaint();
+        }
     }
 
     // ── Output port: Audio ────────────────────────────────────────────
     ui.separator();
     crate::nodes::audio_port_row(ui, "Audio", node_id, 0, false, port_positions, dragging_from, connections, pending_disconnects, PortKind::Audio);
 
-    // Write gain to engine (lock-free atomic)
+    // Write gain + AGC toggle to engine (lock-free atomics)
     if *active {
         audio.engine_write_param(node_id, 0, *gain);
+        audio.engine_write_param(node_id, 1, if *agc_enabled { 1.0 } else { 0.0 });
     }
 }

@@ -11,7 +11,9 @@ use crate::node_trait::{NodeBehavior, RenderContext};
 // and renders them as output images + Bass/Mid/Treble scalar outputs.
 
 const HISTORY_W: usize = 256;
-const IMG_H: usize = 128;
+// One image row per spectrum bin so the visualizer → recorder → spectral-synth
+// chain stays lossless vertically.
+const IMG_H: usize = SPECTRUM_BINS;
 
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 enum VizMode { Spectrogram, Bars, Waveform, Rings }
@@ -20,6 +22,9 @@ enum VizMode { Spectrogram, Bars, Waveform, Rings }
 pub struct MusicVisualizerNode {
     mode: VizMode,
     history: Vec<[f32; SPECTRUM_BINS]>,
+    /// Phase history parallel to `history`, stored normalized 0..1
+    /// where 0.5 = 0 radians. Initialized to 0.5 (neutral).
+    phase_history: Vec<[f32; SPECTRUM_BINS]>,
     history_pos: usize,
     bass: f32,
     mid: f32,
@@ -32,6 +37,7 @@ impl Default for MusicVisualizerNode {
         Self {
             mode: VizMode::Spectrogram,
             history: vec![[0.0; SPECTRUM_BINS]; HISTORY_W],
+            phase_history: vec![[0.5; SPECTRUM_BINS]; HISTORY_W],
             history_pos: 0,
             bass: 0.0, mid: 0.0, treble: 0.0,
             cached_image: None,
@@ -72,27 +78,53 @@ fn bar_color(t: f32) -> (u8, u8, u8) {
 fn band_energies(bins: &[f32]) -> (f32, f32, f32) {
     let n = bins.len();
     if n == 0 { return (0.0, 0.0, 0.0); }
-    let bass_end = (n * 10 / 64).max(1);
-    let mid_end = (n * 40 / 64).max(bass_end + 1);
-    let bass: f32 = bins[..bass_end].iter().sum::<f32>() / bass_end as f32;
-    let mid: f32 = bins[bass_end..mid_end].iter().sum::<f32>() / (mid_end - bass_end) as f32;
-    let treble: f32 = bins[mid_end..].iter().sum::<f32>() / (n - mid_end).max(1) as f32;
+    // Splits tuned for the linear 0–SPECTRUM_FREQ_MAX (8 kHz) bin layout in
+    // analysis.rs: bass ≤ 250 Hz (1/32 of range), mid ≤ 2 kHz (1/4 of range).
+    // Uses fractions of n so we stay correct if SPECTRUM_BINS ever changes.
+    let bass_end = (n / 32).max(1);
+    let mid_end = (n / 4).max(bass_end + 1);
+    // Peak-in-band rather than mean-across-band. Voice/music concentrates
+    // energy into a handful of bins per band; averaging the whole band
+    // drowns loud peaks in the many silent-floor bins next to them.
+    // Each bin is already time-smoothed in analysis.rs, so `max` is stable.
+    let peak = |slice: &[f32]| -> f32 {
+        slice.iter().copied().fold(0.0f32, f32::max)
+    };
+    let bass = peak(&bins[..bass_end]);
+    let mid = peak(&bins[bass_end..mid_end]);
+    let treble = peak(&bins[mid_end..]);
     (bass, mid, treble)
 }
 
 // ── Image renderers ──────────────────────────────────────────────────────────
 
-fn render_spectrogram(history: &[[f32; SPECTRUM_BINS]], pos: usize, w: usize, h: usize) -> Vec<u8> {
+fn render_spectrogram(
+    history: &[[f32; SPECTRUM_BINS]],
+    phase_history: &[[f32; SPECTRUM_BINS]],
+    pos: usize,
+    w: usize,
+    h: usize,
+) -> Vec<u8> {
+    // R = G = B = magnitude * 255 (grayscale, visually unchanged).
+    // Alpha = phase * 255. Phase is stored normalized 0..1 where 0.5 = 0 rad.
+    // Alpha appears as full opacity under standard egui rendering, so the
+    // spectrogram looks identical to users. Spectral Synth reads alpha back
+    // and uses it for phase-coherent resynthesis — this is what makes voice
+    // come out vocal rather than saw-like.
     let mut pixels = vec![0u8; w * h * 4];
     for x in 0..w {
         let col_idx = (pos + x) % w;
-        let bins = &history[col_idx.min(history.len() - 1)];
+        let mag_col = &history[col_idx.min(history.len() - 1)];
+        let phase_col = &phase_history[col_idx.min(phase_history.len() - 1)];
         for y in 0..h {
             let bin_idx = ((h - 1 - y) * SPECTRUM_BINS) / h; // flip: low freq at bottom
-            let v = bins[bin_idx.min(SPECTRUM_BINS - 1)];
-            let (r, g, b) = heat_color(v);
+            let bin_idx = bin_idx.min(SPECTRUM_BINS - 1);
+            let v = mag_col[bin_idx].clamp(0.0, 1.0);
+            let p = phase_col[bin_idx].clamp(0.0, 1.0);
+            let gray = (v * 255.0) as u8;
+            let a = (p * 255.0) as u8;
             let i = (y * w + x) * 4;
-            pixels[i] = r; pixels[i+1] = g; pixels[i+2] = b; pixels[i+3] = 255;
+            pixels[i] = gray; pixels[i+1] = gray; pixels[i+2] = gray; pixels[i+3] = a;
         }
     }
     pixels
@@ -262,18 +294,27 @@ impl NodeBehavior for MusicVisualizerNode {
 
         ui.add_space(2.0);
 
-        // ── Read FFT bins from egui temp ─────────────────────────────────
+        // ── Read FFT bins + phases from egui temp ────────────────────────
         let bins: Vec<f32> = ui.ctx().data_mut(|d|
             d.get_temp(egui::Id::new(("spectrum_bins", node_id)))
                 .unwrap_or_else(|| vec![0.0f32; SPECTRUM_BINS]));
+        let phases: Vec<f32> = ui.ctx().data_mut(|d|
+            d.get_temp(egui::Id::new(("spectrum_phases", node_id)))
+                .unwrap_or_else(|| vec![0.5f32; SPECTRUM_BINS]));
 
-        // Update history ring buffer
-        let mut frame = [0.0f32; SPECTRUM_BINS];
-        for (i, &v) in bins.iter().take(SPECTRUM_BINS).enumerate() { frame[i] = v; }
+        // Update history ring buffers (magnitude and phase in lockstep)
+        let mut mag_frame = [0.0f32; SPECTRUM_BINS];
+        let mut phase_frame = [0.5f32; SPECTRUM_BINS];
+        for (i, &v) in bins.iter().take(SPECTRUM_BINS).enumerate() { mag_frame[i] = v; }
+        for (i, &p) in phases.iter().take(SPECTRUM_BINS).enumerate() { phase_frame[i] = p; }
         if self.history.len() < HISTORY_W {
             self.history.resize(HISTORY_W, [0.0; SPECTRUM_BINS]);
         }
-        self.history[self.history_pos % HISTORY_W] = frame;
+        if self.phase_history.len() < HISTORY_W {
+            self.phase_history.resize(HISTORY_W, [0.5; SPECTRUM_BINS]);
+        }
+        self.history[self.history_pos % HISTORY_W] = mag_frame;
+        self.phase_history[self.history_pos % HISTORY_W] = phase_frame;
         self.history_pos = (self.history_pos + 1) % HISTORY_W;
 
         // Band energies
@@ -286,7 +327,7 @@ impl NodeBehavior for MusicVisualizerNode {
         let img_w = HISTORY_W;
         let img_h = IMG_H;
         let pixels = match self.mode {
-            VizMode::Spectrogram => render_spectrogram(&self.history, self.history_pos, img_w, img_h),
+            VizMode::Spectrogram => render_spectrogram(&self.history, &self.phase_history, self.history_pos, img_w, img_h),
             VizMode::Bars        => render_bars(&bins, img_w, img_h),
             VizMode::Waveform    => render_waveform(&bins, img_w, img_h),
             VizMode::Rings       => render_rings(&bins, img_w, img_h),
