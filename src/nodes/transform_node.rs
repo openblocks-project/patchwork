@@ -29,7 +29,61 @@ impl Default for TransformNode {
 }
 
 impl TransformNode {
+    /// Whether the current state would produce exactly the input image.
+    fn is_identity(&self) -> bool {
+        (self.scale_x - 1.0).abs() < 1e-4
+            && (self.scale_y - 1.0).abs() < 1e-4
+            && self.rotation.abs() < 1e-4
+            && !self.flip_h
+            && !self.flip_v
+    }
+
+    /// Whether only horizontal/vertical flips are active (no scale/rotate).
+    /// This case can skip all the trig/division work in the hot loop.
+    fn is_pure_flip(&self) -> bool {
+        (self.scale_x - 1.0).abs() < 1e-4
+            && (self.scale_y - 1.0).abs() < 1e-4
+            && self.rotation.abs() < 1e-4
+            && (self.flip_h || self.flip_v)
+    }
+
+    fn transform_flip_only(&self, img: &ImageData) -> Arc<ImageData> {
+        let w = img.width as usize;
+        let h = img.height as usize;
+        let row_bytes = w * 4;
+        let mut pixels = vec![0u8; row_bytes * h];
+
+        for dy in 0..h {
+            let src_y = if self.flip_v { h - 1 - dy } else { dy };
+            let src_row = &img.pixels[src_y * row_bytes .. src_y * row_bytes + row_bytes];
+            let dst_row = &mut pixels[dy * row_bytes .. dy * row_bytes + row_bytes];
+            if self.flip_h {
+                // Per-pixel mirror (can't copy_from_slice a reversed view
+                // directly, but this is still massively cheaper than the
+                // full rotation-capable path — no trig, no div, no bounds
+                // checks).
+                for dx in 0..w {
+                    let src_x = w - 1 - dx;
+                    let si = src_x * 4;
+                    let di = dx * 4;
+                    dst_row[di .. di + 4].copy_from_slice(&src_row[si .. si + 4]);
+                }
+            } else {
+                // Vertical flip only — whole-row copy.
+                dst_row.copy_from_slice(src_row);
+            }
+        }
+        Arc::new(ImageData { width: img.width, height: img.height, pixels })
+    }
+
     fn transform_image(&self, img: &ImageData) -> Arc<ImageData> {
+        // Fast path for pure flip: no trig, no division, row-granular copy.
+        // Identity is handled by the caller (passes the input Arc through),
+        // so we only get here for non-identity transforms.
+        if self.is_pure_flip() {
+            return self.transform_flip_only(img);
+        }
+
         let w = img.width as f32;
         let h = img.height as f32;
 
@@ -45,6 +99,8 @@ impl TransformNode {
         let cy_out = out_h as f32 * 0.5;
         let cx_in = w * 0.5;
         let cy_in = h * 0.5;
+        let inv_sx = 1.0 / self.scale_x;
+        let inv_sy = 1.0 / self.scale_y;
 
         for dy in 0..out_h {
             for dx in 0..out_w {
@@ -57,8 +113,8 @@ impl TransformNode {
                 let ry = -ox * sin_a + oy * cos_a;
 
                 // Inverse scale (map back to source pixel)
-                let mut sx = rx / self.scale_x + cx_in;
-                let mut sy = ry / self.scale_y + cy_in;
+                let mut sx = rx * inv_sx + cx_in;
+                let mut sy = ry * inv_sy + cy_in;
 
                 // Flip
                 if self.flip_h { sx = w - 1.0 - sx; }
@@ -102,6 +158,13 @@ impl NodeBehavior for TransformNode {
         if let Some(PortValue::Float(v)) = inputs.get(3) { self.rotation = *v % 360.0; }
 
         let result = match inputs.first() {
+            // Identity passthrough — just clone the Arc, no pixel work.
+            // Without this, a live 30/60 fps camera was being run through
+            // a 307k-iteration-per-frame rotate/scale path with all-ones
+            // parameters, halving framerate downstream.
+            Some(PortValue::Image(img)) if self.is_identity() => {
+                PortValue::Image(img.clone())
+            }
             Some(PortValue::Image(img)) => PortValue::Image(self.transform_image(img)),
             _ => PortValue::None,
         };

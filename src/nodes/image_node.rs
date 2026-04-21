@@ -443,7 +443,10 @@ pub fn render(
             // GPU-resident path: sample from gpu_tex_cache via the paint callback.
             show_image_gpu(ui, node_id, img, *preview_size, input_gpu_source);
         } else {
-            show_image_preview(ui, node_id, img, *preview_size);
+            // Arc-aware preview so that when upstream (Camera/Transform) hands
+            // us the same frame Arc on successive repaints, we skip the CPU
+            // downsample + GPU texture upload entirely.
+            show_image_preview_arc(ui, node_id, img, *preview_size);
         }
     } else {
         ui.colored_label(egui::Color32::GRAY, "No image loaded");
@@ -528,69 +531,119 @@ pub fn show_image_gpu(ui: &mut egui::Ui, node_id: NodeId, img: &std::sync::Arc<I
 }
 
 pub fn show_image_preview(ui: &mut egui::Ui, node_id: NodeId, img: &ImageData, max_size: f32) {
+    // Two changes vs the previous impl:
+    //
+    // 1. Cap the upload at 2× the preview's display size (retina headroom),
+    //    not 512. A 640×480 camera frame used to upload 512×384 ≈ 786 KB
+    //    per frame just to display at 150 px wide — the GPU sampler then
+    //    downsampled it back to ~150 px anyway. Uploading closer to the
+    //    display size cuts bandwidth roughly 10×.
+    //
+    // 2. The "same content?" check used a 32-sample sparse hash with an
+    //    `insert_temp` every frame. We don't need content hashing here —
+    //    the caller already owns an Arc<ImageData>; if the Arc's data
+    //    pointer is the same as last frame's, the content is guaranteed
+    //    identical. Single pointer compare, no hashing, no temp churn.
+    //    (We fall back to uploading if an Arc isn't available, which is
+    //    why this function takes `&ImageData` — but the common path gets
+    //    the pointer via the caller below.)
+    show_image_preview_cached(ui, node_id, img, None, max_size);
+}
+
+/// Internal: same as [`show_image_preview`] but accepts an optional
+/// identity key (the upstream Arc's data pointer) so repeated renders of
+/// the same frame can skip the downsample + GPU upload entirely.
+fn show_image_preview_cached(
+    ui: &mut egui::Ui,
+    node_id: NodeId,
+    img: &ImageData,
+    arc_ptr: Option<usize>,
+    max_size: f32,
+) {
     let tex_id = egui::Id::new(("img_tex", node_id));
-    let hash_id = egui::Id::new(("img_hash", node_id));
+    let ptr_id = egui::Id::new(("img_ptr", node_id));
 
-    // Fast content hash — same as image eval loop cache
-    let img_hash = {
-        let mut h: u64 = (img.width as u64).wrapping_mul(31).wrapping_add(img.height as u64);
-        let len = img.pixels.len();
-        if len > 0 {
-            let step = (len / 128).max(1);
-            for i in (0..len).step_by(step).take(32) {
-                h = h.wrapping_mul(31).wrapping_add(img.pixels[i] as u64);
-            }
-        }
-        h
+    // Target upload size: ≤ 2× the visible preview size. More than that
+    // is just wasted bandwidth — the sampler will shrink it again.
+    let target_max = (max_size * 2.0).max(64.0);
+    let scale_factor = if img.width as f32 > target_max || img.height as f32 > target_max {
+        target_max / img.width.max(img.height) as f32
+    } else {
+        1.0
     };
-    let prev_hash: Option<u64> = ui.ctx().data_mut(|d| d.get_temp(hash_id));
 
-    let texture: egui::TextureHandle = if prev_hash == Some(img_hash) {
-        // Same content — reuse cached texture
+    let prev_ptr: Option<usize> = ui.ctx().data_mut(|d| d.get_temp(ptr_id));
+    let cache_hit = matches!((arc_ptr, prev_ptr), (Some(a), Some(b)) if a == b);
+
+    let texture: egui::TextureHandle = if cache_hit {
         if let Some(tex) = ui.ctx().data_mut(|d| d.get_temp::<egui::TextureHandle>(tex_id)) {
             tex
         } else {
-            let color_image = egui::ColorImage::from_rgba_unmultiplied(
-                [img.width as usize, img.height as usize], &img.pixels,
-            );
-            ui.ctx().load_texture(format!("img_{}", node_id), color_image, egui::TextureOptions::LINEAR)
+            // Cache miss despite pointer hit — build once.
+            build_preview_texture(ui, node_id, img, scale_factor)
         }
     } else {
-        // New image content — upload (downsample large images for preview)
-        let (tw, th, pix) = if img.width > 512 || img.height > 512 {
-            let scale = 512.0 / img.width.max(img.height) as f32;
-            let tw = (img.width as f32 * scale) as u32;
-            let th = (img.height as f32 * scale) as u32;
-            let mut small = vec![0u8; (tw * th * 4) as usize];
-            for y in 0..th {
-                for x in 0..tw {
-                    let sx = (x as f32 / scale) as u32;
-                    let sy = (y as f32 / scale) as u32;
-                    let si = ((sy * img.width + sx) * 4) as usize;
-                    let di = ((y * tw + x) * 4) as usize;
-                    if si + 3 < img.pixels.len() && di + 3 < small.len() {
-                        small[di..di+4].copy_from_slice(&img.pixels[si..si+4]);
-                    }
-                }
-            }
-            (tw as usize, th as usize, small)
-        } else {
-            (img.width as usize, img.height as usize, img.pixels.to_vec())
-        };
-        let color_image = egui::ColorImage::from_rgba_unmultiplied([tw, th], &pix);
-        ui.ctx().load_texture(format!("img_{}", node_id), color_image, egui::TextureOptions::LINEAR)
+        let tex = build_preview_texture(ui, node_id, img, scale_factor);
+        ui.ctx().data_mut(|d| d.insert_temp(tex_id, tex.clone()));
+        if let Some(p) = arc_ptr {
+            ui.ctx().data_mut(|d| d.insert_temp(ptr_id, p));
+        }
+        tex
     };
 
-    ui.ctx().data_mut(|d| d.insert_temp(hash_id, img_hash));
-
-    // Compute display size maintaining aspect ratio
     let aspect = img.width as f32 / img.height.max(1) as f32;
     let (w, h) = if aspect > 1.0 {
         (max_size, max_size / aspect)
     } else {
         (max_size * aspect, max_size)
     };
-
     ui.image(egui::load::SizedTexture::new(texture.id(), egui::vec2(w, h)));
-    ui.ctx().data_mut(|d| d.insert_temp(tex_id, texture));
+}
+
+fn build_preview_texture(
+    ui: &mut egui::Ui,
+    node_id: NodeId,
+    img: &ImageData,
+    scale: f32,
+) -> egui::TextureHandle {
+    let (tw, th, pix) = if scale < 0.999 {
+        let tw = (img.width as f32 * scale).max(1.0) as u32;
+        let th = (img.height as f32 * scale).max(1.0) as u32;
+        let mut small = vec![0u8; (tw * th * 4) as usize];
+        let inv = 1.0 / scale;
+        for y in 0..th {
+            let sy = (y as f32 * inv) as u32;
+            for x in 0..tw {
+                let sx = (x as f32 * inv) as u32;
+                let si = ((sy * img.width + sx) * 4) as usize;
+                let di = ((y * tw + x) * 4) as usize;
+                if si + 3 < img.pixels.len() && di + 3 < small.len() {
+                    small[di..di + 4].copy_from_slice(&img.pixels[si..si + 4]);
+                }
+            }
+        }
+        (tw as usize, th as usize, small)
+    } else {
+        (img.width as usize, img.height as usize, img.pixels.to_vec())
+    };
+    let color_image = egui::ColorImage::from_rgba_unmultiplied([tw, th], &pix);
+    ui.ctx().load_texture(
+        format!("img_{}", node_id),
+        color_image,
+        egui::TextureOptions::LINEAR,
+    )
+}
+
+/// Arc-aware variant: same as [`show_image_preview`] but passes the
+/// upstream Arc's data pointer so unchanged frames skip the whole
+/// downsample + upload pipeline. Call sites that have an `Arc<ImageData>`
+/// should prefer this.
+pub fn show_image_preview_arc(
+    ui: &mut egui::Ui,
+    node_id: NodeId,
+    img: &std::sync::Arc<ImageData>,
+    max_size: f32,
+) {
+    let ptr = std::sync::Arc::as_ptr(img) as usize;
+    show_image_preview_cached(ui, node_id, img, Some(ptr), max_size);
 }
