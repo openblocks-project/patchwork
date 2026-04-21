@@ -113,12 +113,72 @@ impl TransformNode {
         Arc::new(ImageData { width: img.width, height: img.height, pixels })
     }
 
+    /// Scale-only (optional flip, no rotation). Precomputes the source
+    /// column/row maps so the inner loop is just a u32 array lookup +
+    /// store — no trig, no per-pixel float math, no copy_from_slice call
+    /// overhead. Handles the entire scale-param-only case, which is what
+    /// the user was dragging when fps tanked.
+    fn transform_scale_only(&self, img: &ImageData) -> Arc<ImageData> {
+        let in_w = img.width as i32;
+        let in_h = img.height as i32;
+        let out_w = ((img.width as f32 * self.scale_x).round().max(1.0)) as u32;
+        let out_h = ((img.height as f32 * self.scale_y).round().max(1.0)) as u32;
+
+        let cx_out = out_w as f32 * 0.5;
+        let cy_out = out_h as f32 * 0.5;
+        let cx_in = img.width as f32 * 0.5;
+        let cy_in = img.height as f32 * 0.5;
+        let inv_sx = 1.0 / self.scale_x;
+        let inv_sy = 1.0 / self.scale_y;
+
+        // Precompute source column index for each dst column. Same map for
+        // every row → moves this math out of the inner loop entirely.
+        let mut col_map: Vec<i32> = Vec::with_capacity(out_w as usize);
+        for dx in 0..out_w {
+            let mut sx = (dx as f32 - cx_out) * inv_sx + cx_in;
+            if self.flip_h { sx = img.width as f32 - 1.0 - sx; }
+            col_map.push(sx.round() as i32);
+        }
+
+        let mut pixels = vec![0u8; (out_w * out_h * 4) as usize];
+        let src: &[u32] = bytemuck::cast_slice(&img.pixels);
+        let dst: &mut [u32] = bytemuck::cast_slice_mut(&mut pixels);
+
+        for dy in 0..out_h {
+            let mut sy = (dy as f32 - cy_out) * inv_sy + cy_in;
+            if self.flip_v { sy = img.height as f32 - 1.0 - sy; }
+            let iy = sy.round() as i32;
+            let dst_row_start = dy as usize * out_w as usize;
+
+            if iy < 0 || iy >= in_h {
+                // Source row out of bounds — leave this dst row at zero.
+                continue;
+            }
+            let src_row_start = iy as usize * img.width as usize;
+
+            for (dx_idx, &ix) in col_map.iter().enumerate() {
+                if ix >= 0 && ix < in_w {
+                    dst[dst_row_start + dx_idx] = src[src_row_start + ix as usize];
+                }
+                // else: stays 0 (transparent/black) from initial alloc
+            }
+        }
+
+        Arc::new(ImageData { width: out_w, height: out_h, pixels })
+    }
+
     fn transform_image(&self, img: &ImageData) -> Arc<ImageData> {
         // Fast path for pure flip: no trig, no division, row-granular copy.
         // Identity is handled by the caller (passes the input Arc through),
         // so we only get here for non-identity transforms.
         if self.is_pure_flip() {
             return self.transform_flip_only(img);
+        }
+
+        // Scale-only fast path (optional flip). Any non-zero rotation
+        // falls through to the general path below.
+        if self.rotation.abs() < 1e-4 {
+            return self.transform_scale_only(img);
         }
 
         let w = img.width as f32;
@@ -138,35 +198,39 @@ impl TransformNode {
         let cy_in = h * 0.5;
         let inv_sx = 1.0 / self.scale_x;
         let inv_sy = 1.0 / self.scale_y;
+        let in_w = img.width as i32;
+        let in_h = img.height as i32;
+        let src: &[u32] = bytemuck::cast_slice(&img.pixels);
+        let dst: &mut [u32] = bytemuck::cast_slice_mut(&mut pixels);
 
         for dy in 0..out_h {
+            let oy = dy as f32 - cy_out;
+            let dst_row_start = dy as usize * out_w as usize;
+            // Row-constant terms hoisted out of the inner loop.
+            let oy_cos = oy * sin_a;    // contributes to rx (via ox*cos + oy*sin)
+            let oy_sin = oy * cos_a;    // contributes to ry (via -ox*sin + oy*cos)
+
             for dx in 0..out_w {
-                // Center-relative output coords
                 let ox = dx as f32 - cx_out;
-                let oy = dy as f32 - cy_out;
 
-                // Inverse rotation (rotate output point back to source space)
-                let rx = ox * cos_a + oy * sin_a;
-                let ry = -ox * sin_a + oy * cos_a;
+                // Inverse rotation
+                let rx = ox * cos_a + oy_cos;
+                let ry = -ox * sin_a + oy_sin;
 
-                // Inverse scale (map back to source pixel)
+                // Inverse scale
                 let mut sx = rx * inv_sx + cx_in;
                 let mut sy = ry * inv_sy + cy_in;
 
-                // Flip
                 if self.flip_h { sx = w - 1.0 - sx; }
                 if self.flip_v { sy = h - 1.0 - sy; }
 
-                // Nearest-neighbor sample
                 let ix = sx.round() as i32;
                 let iy = sy.round() as i32;
 
-                if ix >= 0 && ix < img.width as i32 && iy >= 0 && iy < img.height as i32 {
-                    let si = ((iy as u32 * img.width + ix as u32) * 4) as usize;
-                    let di = ((dy * out_w + dx) * 4) as usize;
-                    if si + 3 < img.pixels.len() && di + 3 < pixels.len() {
-                        pixels[di..di + 4].copy_from_slice(&img.pixels[si..si + 4]);
-                    }
+                if ix >= 0 && ix < in_w && iy >= 0 && iy < in_h {
+                    let si = iy as usize * img.width as usize + ix as usize;
+                    let di = dst_row_start + dx as usize;
+                    dst[di] = src[si];
                 }
             }
         }
