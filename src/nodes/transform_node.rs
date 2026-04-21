@@ -32,6 +32,10 @@ pub struct TransformNode {
     cache_param_key: u64,
     #[serde(skip)]
     cache_out: Option<Arc<ImageData>>,
+    /// Reusable src-column-index map for the scale-only path. Avoids a
+    /// fresh Vec alloc every frame while the user drags the Scale sliders.
+    #[serde(skip)]
+    col_map: Vec<i32>,
 }
 
 fn default_one() -> f32 { 1.0 }
@@ -41,8 +45,23 @@ impl Default for TransformNode {
         Self {
             scale_x: 1.0, scale_y: 1.0, rotation: 0.0, flip_h: false, flip_v: false,
             cache_in_ptr: 0, cache_param_key: 0, cache_out: None,
+            col_map: Vec::new(),
         }
     }
+}
+
+/// Allocate an output buffer for an image of `(w * h * 4)` bytes without
+/// paying the cost of `vec![0u8; ...]` zeroing. Safety: callers MUST
+/// write every byte of the returned Vec before handing it off, otherwise
+/// the extension is reading uninitialised memory.
+fn alloc_pixel_buf(bytes: usize) -> Vec<u8> {
+    let mut v: Vec<u8> = Vec::with_capacity(bytes);
+    // SAFETY: the length is ≤ capacity and u8 has no invalid bit
+    // patterns. Each caller fills every pixel via its inner loop below
+    // — in-bounds source reads write the real pixel, out-of-bounds
+    // branches explicitly write 0.
+    unsafe { v.set_len(bytes); }
+    v
 }
 
 impl TransformNode {
@@ -82,7 +101,8 @@ impl TransformNode {
         let w = img.width as usize;
         let h = img.height as usize;
         let row_bytes = w * 4;
-        let mut pixels = vec![0u8; row_bytes * h];
+        // Every output byte is written below, so we can skip the memset.
+        let mut pixels = alloc_pixel_buf(row_bytes * h);
 
         // Cast to u32 so each pixel is one load/store instead of a
         // 4-byte copy_from_slice call. That call had function-call
@@ -118,7 +138,7 @@ impl TransformNode {
     /// store — no trig, no per-pixel float math, no copy_from_slice call
     /// overhead. Handles the entire scale-param-only case, which is what
     /// the user was dragging when fps tanked.
-    fn transform_scale_only(&self, img: &ImageData) -> Arc<ImageData> {
+    fn transform_scale_only(&mut self, img: &ImageData) -> Arc<ImageData> {
         let in_w = img.width as i32;
         let in_h = img.height as i32;
         let out_w = ((img.width as f32 * self.scale_x).round().max(1.0)) as u32;
@@ -131,43 +151,49 @@ impl TransformNode {
         let inv_sx = 1.0 / self.scale_x;
         let inv_sy = 1.0 / self.scale_y;
 
-        // Precompute source column index for each dst column. Same map for
-        // every row → moves this math out of the inner loop entirely.
-        let mut col_map: Vec<i32> = Vec::with_capacity(out_w as usize);
+        // Reuse the col_map buffer across calls — at out_w=2560 this was
+        // a 10 KB alloc every frame otherwise.
+        self.col_map.clear();
+        self.col_map.reserve(out_w as usize);
         for dx in 0..out_w {
             let mut sx = (dx as f32 - cx_out) * inv_sx + cx_in;
             if self.flip_h { sx = img.width as f32 - 1.0 - sx; }
-            col_map.push(sx.round() as i32);
+            self.col_map.push(sx as i32);
         }
 
-        let mut pixels = vec![0u8; (out_w * out_h * 4) as usize];
+        let mut pixels = alloc_pixel_buf((out_w * out_h * 4) as usize);
         let src: &[u32] = bytemuck::cast_slice(&img.pixels);
         let dst: &mut [u32] = bytemuck::cast_slice_mut(&mut pixels);
 
         for dy in 0..out_h {
             let mut sy = (dy as f32 - cy_out) * inv_sy + cy_in;
             if self.flip_v { sy = img.height as f32 - 1.0 - sy; }
-            let iy = sy.round() as i32;
+            let iy = sy as i32;
             let dst_row_start = dy as usize * out_w as usize;
 
             if iy < 0 || iy >= in_h {
-                // Source row out of bounds — leave this dst row at zero.
+                // Source row out of bounds — fill this dst row with 0.
+                for i in 0..out_w as usize {
+                    dst[dst_row_start + i] = 0;
+                }
                 continue;
             }
             let src_row_start = iy as usize * img.width as usize;
 
-            for (dx_idx, &ix) in col_map.iter().enumerate() {
-                if ix >= 0 && ix < in_w {
-                    dst[dst_row_start + dx_idx] = src[src_row_start + ix as usize];
-                }
-                // else: stays 0 (transparent/black) from initial alloc
+            for (dx_idx, &ix) in self.col_map.iter().enumerate() {
+                let di = dst_row_start + dx_idx;
+                dst[di] = if ix >= 0 && ix < in_w {
+                    src[src_row_start + ix as usize]
+                } else {
+                    0
+                };
             }
         }
 
         Arc::new(ImageData { width: out_w, height: out_h, pixels })
     }
 
-    fn transform_image(&self, img: &ImageData) -> Arc<ImageData> {
+    fn transform_image(&mut self, img: &ImageData) -> Arc<ImageData> {
         // Fast path for pure flip: no trig, no division, row-granular copy.
         // Identity is handled by the caller (passes the input Arc through),
         // so we only get here for non-identity transforms.
@@ -196,7 +222,7 @@ impl TransformNode {
         let h = img.height as f32;
         let out_w = ((w * self.scale_x).round().max(1.0)) as u32;
         let out_h = ((h * self.scale_y).round().max(1.0)) as u32;
-        let mut pixels = vec![0u8; (out_w * out_h * 4) as usize];
+        let mut pixels = alloc_pixel_buf((out_w * out_h * 4) as usize);
 
         let angle = self.rotation.to_radians();
         let cos_a = angle.cos();
@@ -237,12 +263,15 @@ impl TransformNode {
             for dx in 0..out_w {
                 let ix = sx as i32;   // truncate is fine for nearest-neighbour
                 let iy = sy as i32;
+                let di = dst_row_start + dx as usize;
 
-                if ix >= 0 && ix < in_w && iy >= 0 && iy < in_h {
-                    let si = iy as usize * img.width as usize + ix as usize;
-                    let di = dst_row_start + dx as usize;
-                    dst[di] = src[si];
-                }
+                // Always write — the buffer is uninitialised, and the
+                // out-of-bounds branch needs to leave 0 anyway.
+                dst[di] = if ix >= 0 && ix < in_w && iy >= 0 && iy < in_h {
+                    src[iy as usize * img.width as usize + ix as usize]
+                } else {
+                    0
+                };
 
                 sx += a;
                 sy += c;
@@ -268,8 +297,8 @@ impl NodeBehavior for TransformNode {
     fn inline_ports(&self) -> bool { true }
 
     fn evaluate(&mut self, inputs: &[PortValue]) -> Vec<(usize, PortValue)> {
-        if let Some(PortValue::Float(v)) = inputs.get(1) { self.scale_x = v.clamp(0.1, 5.0); }
-        if let Some(PortValue::Float(v)) = inputs.get(2) { self.scale_y = v.clamp(0.1, 5.0); }
+        if let Some(PortValue::Float(v)) = inputs.get(1) { self.scale_x = v.clamp(0.1, 3.0); }
+        if let Some(PortValue::Float(v)) = inputs.get(2) { self.scale_y = v.clamp(0.1, 3.0); }
         if let Some(PortValue::Float(v)) = inputs.get(3) { self.rotation = *v % 360.0; }
 
         let result = match inputs.first() {
@@ -322,7 +351,7 @@ impl NodeBehavior for TransformNode {
             if sx_wired {
                 ui.label(egui::RichText::new(format!("{:.2}", self.scale_x)).small().color(egui::Color32::from_rgb(80, 170, 255)));
             } else {
-                ui.add(egui::Slider::new(&mut self.scale_x, 0.1..=5.0).step_by(0.01).show_value(true));
+                ui.add(egui::Slider::new(&mut self.scale_x, 0.1..=3.0).step_by(0.01).show_value(true));
             }
         });
 
@@ -335,7 +364,7 @@ impl NodeBehavior for TransformNode {
             if sy_wired {
                 ui.label(egui::RichText::new(format!("{:.2}", self.scale_y)).small().color(egui::Color32::from_rgb(80, 170, 255)));
             } else {
-                ui.add(egui::Slider::new(&mut self.scale_y, 0.1..=5.0).step_by(0.01).show_value(true));
+                ui.add(egui::Slider::new(&mut self.scale_y, 0.1..=3.0).step_by(0.01).show_value(true));
             }
         });
 
