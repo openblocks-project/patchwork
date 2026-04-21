@@ -111,20 +111,35 @@ fn render_spectrogram(
     // spectrogram looks identical to users. Spectral Synth reads alpha back
     // and uses it for phase-coherent resynthesis — this is what makes voice
     // come out vocal rather than saw-like.
-    let mut pixels = vec![0u8; w * h * 4];
+    //
+    // Hot path: runs at the FFT rate (~86 Hz) while audio is live. Packs
+    // each pixel as a single u32 store instead of four per-byte writes,
+    // and precomputes row→bin_idx once (per-row, not per-pixel).
+    let out_bytes = w * h * 4;
+    let mut pixels: Vec<u8> = Vec::with_capacity(out_bytes);
+    // SAFETY: every pixel is written by the u32 loop below.
+    unsafe { pixels.set_len(out_bytes); }
+    let dst: &mut [u32] = bytemuck::cast_slice_mut(&mut pixels);
+
+    // Row-constant: bin_idx only depends on y.
+    let mut row_bin: Vec<usize> = Vec::with_capacity(h);
+    for y in 0..h {
+        let bin_idx = ((h - 1 - y) * SPECTRUM_BINS) / h; // low freq at bottom
+        row_bin.push(bin_idx.min(SPECTRUM_BINS - 1));
+    }
+
     for x in 0..w {
         let col_idx = (pos + x) % w;
         let mag_col = &history[col_idx.min(history.len() - 1)];
         let phase_col = &phase_history[col_idx.min(phase_history.len() - 1)];
         for y in 0..h {
-            let bin_idx = ((h - 1 - y) * SPECTRUM_BINS) / h; // flip: low freq at bottom
-            let bin_idx = bin_idx.min(SPECTRUM_BINS - 1);
-            let v = mag_col[bin_idx].clamp(0.0, 1.0);
-            let p = phase_col[bin_idx].clamp(0.0, 1.0);
-            let gray = (v * 255.0) as u8;
-            let a = (p * 255.0) as u8;
-            let i = (y * w + x) * 4;
-            pixels[i] = gray; pixels[i+1] = gray; pixels[i+2] = gray; pixels[i+3] = a;
+            let bin = row_bin[y];
+            let v = mag_col[bin].clamp(0.0, 1.0);
+            let p = phase_col[bin].clamp(0.0, 1.0);
+            let gray = (v * 255.0) as u32;
+            let a = (p * 255.0) as u32;
+            // Little-endian RGBA → u32 = A<<24 | B<<16 | G<<8 | R
+            dst[y * w + x] = (a << 24) | (gray << 16) | (gray << 8) | gray;
         }
     }
     pixels

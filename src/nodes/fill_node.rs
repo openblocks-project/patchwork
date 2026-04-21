@@ -92,76 +92,107 @@ fn sample_gradient(stops: &[GradientStop], t: f32) -> (u8, u8, u8, u8) {
 
 // ── Image generation ─────────────────────────────────────────────────────────
 
+/// Pack an RGBA tuple into a little-endian u32 (R in low byte, A in top).
+#[inline(always)]
+fn pack_rgba(r: u8, g: u8, b: u8, a: u8) -> u32 {
+    (a as u32) << 24 | (b as u32) << 16 | (g as u32) << 8 | r as u32
+}
+
+/// Allocate a `w*h*4`-byte RGBA buffer without paying for a zero-fill.
+/// Callers must write every pixel before handing it off.
+fn alloc_pixel_buf(w: u32, h: u32) -> Vec<u8> {
+    let bytes = (w * h * 4) as usize;
+    let mut v: Vec<u8> = Vec::with_capacity(bytes);
+    // SAFETY: each generator writes every output u32 below.
+    unsafe { v.set_len(bytes); }
+    v
+}
+
 fn generate_solid(w: u32, h: u32, color: [u8; 4]) -> Arc<ImageData> {
     Arc::new(ImageData::solid(w, h, color[0], color[1], color[2], color[3]))
 }
 
 fn generate_linear(w: u32, h: u32, stops: &[GradientStop], angle_deg: f32) -> Arc<ImageData> {
-    let mut pixels = vec![0u8; (w * h * 4) as usize];
+    let mut pixels = alloc_pixel_buf(w, h);
+    let dst: &mut [u32] = bytemuck::cast_slice_mut(&mut pixels);
     let rad = angle_deg.to_radians();
     let cos_a = rad.cos();
     let sin_a = rad.sin();
+    let inv_w = 1.0 / w as f32;
+    let inv_h = 1.0 / h as f32;
     for y in 0..h {
+        let ny = y as f32 * inv_h - 0.5;
+        let ny_sin = ny * sin_a;
         for x in 0..w {
-            let nx = x as f32 / w as f32 - 0.5;
-            let ny = y as f32 / h as f32 - 0.5;
-            let t = (nx * cos_a + ny * sin_a + 0.5).clamp(0.0, 1.0);
+            let nx = x as f32 * inv_w - 0.5;
+            let t = (nx * cos_a + ny_sin + 0.5).clamp(0.0, 1.0);
             let (r, g, b, a) = sample_gradient(stops, t);
-            let i = ((y * w + x) * 4) as usize;
-            pixels[i] = r; pixels[i+1] = g; pixels[i+2] = b; pixels[i+3] = a;
+            dst[(y * w + x) as usize] = pack_rgba(r, g, b, a);
         }
     }
     Arc::new(ImageData::new(w, h, pixels))
 }
 
 fn generate_radial(w: u32, h: u32, stops: &[GradientStop]) -> Arc<ImageData> {
-    let mut pixels = vec![0u8; (w * h * 4) as usize];
+    let mut pixels = alloc_pixel_buf(w, h);
+    let dst: &mut [u32] = bytemuck::cast_slice_mut(&mut pixels);
     let cx = 0.5f32;
     let cy = 0.5f32;
-    let max_r = 0.5f32 * std::f32::consts::SQRT_2; // corner distance
+    let inv_max_r = 1.0 / (0.5f32 * std::f32::consts::SQRT_2); // corner distance
+    let inv_w = 1.0 / w as f32;
+    let inv_h = 1.0 / h as f32;
     for y in 0..h {
+        let dy = y as f32 * inv_h - cy;
+        let dy2 = dy * dy;
         for x in 0..w {
-            let dx = x as f32 / w as f32 - cx;
-            let dy = y as f32 / h as f32 - cy;
-            let t = ((dx * dx + dy * dy).sqrt() / max_r).clamp(0.0, 1.0);
+            let dx = x as f32 * inv_w - cx;
+            let t = ((dx * dx + dy2).sqrt() * inv_max_r).clamp(0.0, 1.0);
             let (r, g, b, a) = sample_gradient(stops, t);
-            let i = ((y * w + x) * 4) as usize;
-            pixels[i] = r; pixels[i+1] = g; pixels[i+2] = b; pixels[i+3] = a;
+            dst[(y * w + x) as usize] = pack_rgba(r, g, b, a);
         }
     }
     Arc::new(ImageData::new(w, h, pixels))
 }
 
 fn generate_diamond(w: u32, h: u32, stops: &[GradientStop]) -> Arc<ImageData> {
-    let mut pixels = vec![0u8; (w * h * 4) as usize];
+    let mut pixels = alloc_pixel_buf(w, h);
+    let dst: &mut [u32] = bytemuck::cast_slice_mut(&mut pixels);
+    let inv_w = 1.0 / w as f32;
+    let inv_h = 1.0 / h as f32;
     for y in 0..h {
+        let dy = (y as f32 * inv_h - 0.5).abs();
         for x in 0..w {
-            let dx = (x as f32 / w as f32 - 0.5).abs();
-            let dy = (y as f32 / h as f32 - 0.5).abs();
-            let t = ((dx + dy) / 0.5).clamp(0.0, 1.0); // Manhattan distance, normalized
+            let dx = (x as f32 * inv_w - 0.5).abs();
+            let t = ((dx + dy) * 2.0).clamp(0.0, 1.0); // (/0.5) → *2.0
             let (r, g, b, a) = sample_gradient(stops, t);
-            let i = ((y * w + x) * 4) as usize;
-            pixels[i] = r; pixels[i+1] = g; pixels[i+2] = b; pixels[i+3] = a;
+            dst[(y * w + x) as usize] = pack_rgba(r, g, b, a);
         }
     }
     Arc::new(ImageData::new(w, h, pixels))
 }
 
 fn generate_tile(w: u32, h: u32, src: &ImageData, scale: f32) -> Arc<ImageData> {
-    let mut pixels = vec![0u8; (w * h * 4) as usize];
+    let mut pixels = alloc_pixel_buf(w, h);
+    let src_u32: &[u32] = bytemuck::cast_slice(&src.pixels);
+    let dst: &mut [u32] = bytemuck::cast_slice_mut(&mut pixels);
     let scale = scale.max(0.01);
+    let sw = src.width;
+    let sh = src.height;
+    let sw_us = sw as usize;
+
+    // Precompute src column index for each dst column (same every row).
+    let mut col_map: Vec<usize> = Vec::with_capacity(w as usize);
+    for x in 0..w {
+        let sx = ((x as f32 * scale) as u32) % sw;
+        col_map.push(sx as usize);
+    }
+
     for y in 0..h {
-        for x in 0..w {
-            let sx = ((x as f32 * scale) as u32) % src.width;
-            let sy = ((y as f32 * scale) as u32) % src.height;
-            let si = ((sy * src.width + sx) * 4) as usize;
-            let di = ((y * w + x) * 4) as usize;
-            if si + 3 < src.pixels.len() {
-                pixels[di]   = src.pixels[si];
-                pixels[di+1] = src.pixels[si+1];
-                pixels[di+2] = src.pixels[si+2];
-                pixels[di+3] = src.pixels[si+3];
-            }
+        let sy = (((y as f32 * scale) as u32) % sh) as usize;
+        let src_row_start = sy * sw_us;
+        let dst_row_start = (y * w) as usize;
+        for (dx, &sx) in col_map.iter().enumerate() {
+            dst[dst_row_start + dx] = src_u32[src_row_start + sx];
         }
     }
     Arc::new(ImageData::new(w, h, pixels))

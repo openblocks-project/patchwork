@@ -261,36 +261,86 @@ pub fn render(
 }
 
 /// Blend two images. Called during evaluation.
+///
+/// CPU fallback (GPU shader path lives below). Two wins over the
+/// old version:
+///
+/// 1. u32-granular reads and a single u32 store per output pixel
+///    replaces 4 per-byte writes plus per-byte bounds checks.
+/// 2. Inline-unrolled the three colour channels so the `mode` match
+///    runs once per 3 components of the blended output rather than
+///    being re-dispatched per channel inside a `for c in 0..3` loop.
+///
+/// Bounds-mismatched rows (one source wider/taller than the other)
+/// still take a safe path via the clamped `w`/`h` dimensions.
 pub fn process(a: &ImageData, b: &ImageData, mode: u8, mix: f32) -> Arc<ImageData> {
     let w = a.width.min(b.width);
     let h = a.height.min(b.height);
-    let mut pixels = vec![0u8; (w * h * 4) as usize];
+    let out_bytes = (w * h * 4) as usize;
+    let mut pixels: Vec<u8> = Vec::with_capacity(out_bytes);
+    // SAFETY: every output pixel is written via the u32 store below.
+    unsafe { pixels.set_len(out_bytes); }
 
-    for y in 0..h {
-        for x in 0..w {
-            let ai = ((y * a.width + x) * 4) as usize;
-            let bi = ((y * b.width + x) * 4) as usize;
-            let oi = ((y * w + x) * 4) as usize;
-            if ai + 3 >= a.pixels.len() || bi + 3 >= b.pixels.len() { continue; }
+    let src_a: &[u32] = bytemuck::cast_slice(&a.pixels);
+    let src_b: &[u32] = bytemuck::cast_slice(&b.pixels);
+    let dst_u32: &mut [u32] = bytemuck::cast_slice_mut(&mut pixels);
 
-            for c in 0..3 {
-                let va = a.pixels[ai + c] as f32 / 255.0;
-                let vb = b.pixels[bi + c] as f32 / 255.0;
-                let blended = match mode {
-                    0 => va * (1.0 - mix) + vb * mix,
+    let a_w = a.width as usize;
+    let b_w = b.width as usize;
+    let o_w = w as usize;
+    let inv_255 = 1.0f32 / 255.0;
+    let one_minus_mix = 1.0 - mix;
+
+    // Extract one RGB channel from a little-endian RGBA u32.
+    #[inline(always)]
+    fn unpack(px: u32) -> (f32, f32, f32) {
+        let r = (px & 0xFF) as f32;
+        let g = ((px >> 8) & 0xFF) as f32;
+        let b = ((px >> 16) & 0xFF) as f32;
+        (r, g, b)
+    }
+
+    for y in 0..h as usize {
+        let ra = y * a_w;
+        let rb = y * b_w;
+        let ro = y * o_w;
+        for x in 0..o_w {
+            let (ar, ag, ab) = unpack(src_a[ra + x]);
+            let (br, bg, bb) = unpack(src_b[rb + x]);
+            let va = (ar * inv_255, ag * inv_255, ab * inv_255);
+            let vb = (br * inv_255, bg * inv_255, bb * inv_255);
+
+            #[inline(always)]
+            fn blend_channel(va: f32, vb: f32, mode: u8) -> f32 {
+                match mode {
+                    0 => vb,
                     1 => va * vb,
                     2 => 1.0 - (1.0 - va) * (1.0 - vb),
                     3 => if va < 0.5 { 2.0 * va * vb } else { 1.0 - 2.0 * (1.0 - va) * (1.0 - vb) },
                     4 => (va + vb).min(1.0),
                     5 => (va - vb).abs(),
-                    6 => if vb < 0.5 { va - (1.0 - 2.0 * vb) * va * (1.0 - va) } else { va + (2.0 * vb - 1.0) * (va.sqrt() - va) },
+                    6 => if vb < 0.5 {
+                            va - (1.0 - 2.0 * vb) * va * (1.0 - va)
+                         } else {
+                            va + (2.0 * vb - 1.0) * (va.sqrt() - va)
+                         },
                     7 => if vb < 0.5 { 2.0 * va * vb } else { 1.0 - 2.0 * (1.0 - va) * (1.0 - vb) },
                     _ => vb,
-                };
-                let result = va * (1.0 - mix) + blended * mix;
-                pixels[oi + c] = (result.clamp(0.0, 1.0) * 255.0) as u8;
+                }
             }
-            pixels[oi + 3] = 255;
+            let br_blend = blend_channel(va.0, vb.0, mode);
+            let bg_blend = blend_channel(va.1, vb.1, mode);
+            let bb_blend = blend_channel(va.2, vb.2, mode);
+
+            let r = (va.0 * one_minus_mix + br_blend * mix).clamp(0.0, 1.0);
+            let g = (va.1 * one_minus_mix + bg_blend * mix).clamp(0.0, 1.0);
+            let b = (va.2 * one_minus_mix + bb_blend * mix).clamp(0.0, 1.0);
+
+            let rb = (r * 255.0) as u32;
+            let gb = (g * 255.0) as u32;
+            let bb = (b * 255.0) as u32;
+            // RGBA → A<<24 | B<<16 | G<<8 | R (little-endian).
+            dst_u32[ro + x] = 0xFF00_0000 | (bb << 16) | (gb << 8) | rb;
         }
     }
     Arc::new(ImageData { width: w, height: h, pixels })

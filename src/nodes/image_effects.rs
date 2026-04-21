@@ -117,30 +117,64 @@ pub fn render(
 }
 
 /// Process image with effects. Works on full resolution.
+///
+/// CPU fallback path (there's a GPU shader below). Hoists every
+/// constant out of the per-pixel loop — the old version recomputed
+/// `mult = 2^exposure`, `inv_g = 1/gamma`, and the full `cos_h/sin_h`
+/// hue-matrix (two trig calls + 18 multiplications) on *every pixel*.
+/// Those are now computed once; the inner loop is just a linear
+/// affine combination of r/g/b.
 pub fn process(img: &ImageData, brightness: f32, contrast: f32, saturation: f32, hue: f32, exposure: f32, gamma: f32) -> Arc<ImageData> {
     let mut pixels = img.pixels.clone();
     let len = pixels.len();
+
+    // Precompute per-effect activation + constants.
+    let exp_active = exposure.abs() > 0.001;
+    let exp_mult = if exp_active { 2.0f32.powf(exposure) } else { 1.0 };
+
+    // Combined gain for exposure + brightness (one multiply per channel
+    // instead of two).
+    let gain = exp_mult * brightness;
+
+    // Contrast is `(x - 0.5) * contrast + 0.5` = `contrast*x + (0.5 - 0.5*contrast)`.
+    // Fold into one mad per channel.
+    let con_bias = 0.5 - 0.5 * contrast;
+
+    // Hue matrix — computed ONCE instead of per-pixel. (Previous code
+    // invoked `.cos()`, `.sin()`, and 18 multiplications inside the
+    // inner loop when hue ≠ 0.)
     let hue_rad = hue * std::f32::consts::PI / 180.0;
+    let hue_active = hue_rad.abs() > 0.001;
+    let (cos_h, sin_h) = if hue_active { (hue_rad.cos(), hue_rad.sin()) } else { (1.0, 0.0) };
+    let m_rr = 0.213 + 0.787 * cos_h - 0.213 * sin_h;
+    let m_rg = 0.715 - 0.715 * cos_h - 0.715 * sin_h;
+    let m_rb = 0.072 - 0.072 * cos_h + 0.928 * sin_h;
+    let m_gr = 0.213 - 0.213 * cos_h + 0.143 * sin_h;
+    let m_gg = 0.715 + 0.285 * cos_h + 0.140 * sin_h;
+    let m_gb = 0.072 - 0.072 * cos_h - 0.283 * sin_h;
+    let m_br = 0.213 - 0.213 * cos_h - 0.787 * sin_h;
+    let m_bg = 0.715 - 0.715 * cos_h + 0.715 * sin_h;
+    let m_bb = 0.072 + 0.928 * cos_h + 0.072 * sin_h;
+
+    let gamma_active = (gamma - 1.0).abs() > 0.001;
+    let inv_g = if gamma_active { 1.0 / gamma } else { 1.0 };
+
+    // 1/255 precomputed; replaces three divides per pixel with multiplies.
+    let inv_255 = 1.0 / 255.0;
 
     let mut i = 0;
     while i + 3 < len {
-        let mut r = pixels[i] as f32 / 255.0;
-        let mut g = pixels[i+1] as f32 / 255.0;
-        let mut b = pixels[i+2] as f32 / 255.0;
+        let mut r = pixels[i]   as f32 * inv_255;
+        let mut g = pixels[i+1] as f32 * inv_255;
+        let mut b = pixels[i+2] as f32 * inv_255;
 
-        // Exposure (applied first, in linear space)
-        if exposure.abs() > 0.001 {
-            let mult = 2.0f32.powf(exposure);
-            r *= mult; g *= mult; b *= mult;
-        }
+        // Exposure × Brightness folded into one gain.
+        r *= gain; g *= gain; b *= gain;
 
-        // Brightness
-        r *= brightness; g *= brightness; b *= brightness;
-
-        // Contrast (around 0.5 midpoint)
-        r = (r - 0.5) * contrast + 0.5;
-        g = (g - 0.5) * contrast + 0.5;
-        b = (b - 0.5) * contrast + 0.5;
+        // Contrast: one mad per channel.
+        r = contrast * r + con_bias;
+        g = contrast * g + con_bias;
+        b = contrast * b + con_bias;
 
         // Saturation
         let lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
@@ -148,25 +182,16 @@ pub fn process(img: &ImageData, brightness: f32, contrast: f32, saturation: f32,
         g = lum + (g - lum) * saturation;
         b = lum + (b - lum) * saturation;
 
-        // Hue rotation
-        if hue_rad.abs() > 0.001 {
-            let cos_h = hue_rad.cos();
-            let sin_h = hue_rad.sin();
-            let nr = r * (0.213 + 0.787 * cos_h - 0.213 * sin_h)
-                   + g * (0.715 - 0.715 * cos_h - 0.715 * sin_h)
-                   + b * (0.072 - 0.072 * cos_h + 0.928 * sin_h);
-            let ng = r * (0.213 - 0.213 * cos_h + 0.143 * sin_h)
-                   + g * (0.715 + 0.285 * cos_h + 0.140 * sin_h)
-                   + b * (0.072 - 0.072 * cos_h - 0.283 * sin_h);
-            let nb = r * (0.213 - 0.213 * cos_h - 0.787 * sin_h)
-                   + g * (0.715 - 0.715 * cos_h + 0.715 * sin_h)
-                   + b * (0.072 + 0.928 * cos_h + 0.072 * sin_h);
+        // Hue rotation — branchless via precomputed matrix (at hue=0
+        // it's essentially the identity transform).
+        if hue_active {
+            let nr = r * m_rr + g * m_rg + b * m_rb;
+            let ng = r * m_gr + g * m_gg + b * m_gb;
+            let nb = r * m_br + g * m_bg + b * m_bb;
             r = nr; g = ng; b = nb;
         }
 
-        // Gamma
-        if (gamma - 1.0).abs() > 0.001 {
-            let inv_g = 1.0 / gamma;
+        if gamma_active {
             r = r.max(0.0).powf(inv_g);
             g = g.max(0.0).powf(inv_g);
             b = b.max(0.0).powf(inv_g);
