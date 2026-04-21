@@ -305,7 +305,7 @@ fn render_tree(
 // ── NodeBehavior ──────────────────────────────────────────────────────────────
 
 impl NodeBehavior for JsonFieldsNode {
-    fn title(&self)      -> &str   { "JSON Fields" }
+    fn title(&self)      -> &str   { "Unpack (JSON)" }
     fn type_tag(&self)   -> &str   { "json_fields" }
     fn color_hint(&self) -> [u8;3] { [80, 160, 220] }
     fn min_width(&self)  -> Option<f32> { Some(260.0) }

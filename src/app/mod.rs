@@ -1191,7 +1191,7 @@ impl PatchworkApp {
                 }
             }
             // Handle delete actions from custom node popups (Slider, Comment, etc.)
-            for prefix in &["slider_delete_action", "comment_delete_action", "display_delete_action"] {
+            for prefix in &["slider_delete_action", "comment_delete_action", "display_delete_action", "button_delete_action"] {
                 let del_id = egui::Id::new((*prefix, node_id));
                 if ctx.data_mut(|d| d.get_temp::<bool>(del_id).unwrap_or(false)) {
                     ctx.data_mut(|d| d.remove::<bool>(del_id));
@@ -2240,6 +2240,20 @@ impl eframe::App for PatchworkApp {
                     }
                     if let Some(c) = ctx.data_mut(|d| d.get_temp::<f32>(egui::Id::new(("kp_conf", id)))) {
                         values.insert((id, 2), PortValue::Float(c));
+                    }
+                }
+                if inner.node.type_tag() == "pose_match" {
+                    if let Some(l) = ctx.data_mut(|d| d.get_temp::<String>(egui::Id::new(("pm_label", id)))) {
+                        values.insert((id, 0), PortValue::Text(l));
+                    }
+                    if let Some(c) = ctx.data_mut(|d| d.get_temp::<f32>(egui::Id::new(("pm_conf", id)))) {
+                        values.insert((id, 1), PortValue::Float(c));
+                    }
+                    if let Some(p) = ctx.data_mut(|d| d.get_temp::<String>(egui::Id::new(("pm_probs", id)))) {
+                        values.insert((id, 2), PortValue::Text(p));
+                    }
+                    if let Some(m) = ctx.data_mut(|d| d.get_temp::<f32>(egui::Id::new(("pm_matched", id)))) {
+                        values.insert((id, 3), PortValue::Float(m));
                     }
                 }
             }

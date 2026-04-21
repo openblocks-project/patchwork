@@ -67,6 +67,8 @@ pub mod web_app_node;
 pub mod websocket_node;
 pub mod clock_node;
 pub mod key_input_node;
+pub mod button_node;
+pub mod pack_node;
 pub mod time_node;
 pub mod file_node;
 pub mod visual_output_node;
@@ -350,6 +352,8 @@ pub fn catalog() -> Vec<NodeCatalogEntry> {
         // ── Input ────────────────────────────────────────────
         NodeCatalogEntry { wip: false, singleton: false, label: "Slider", category: "Input",
             factory: || NodeType::Slider { value: 0.5, min: 0.0, max: 1.0, step: 0.01, slider_color: [80, 160, 255], label: String::new() } },
+        NodeCatalogEntry { wip: false, singleton: false, label: "Button", category: "Input",
+            factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(button_node::ButtonNode::default()) } } },
         NodeCatalogEntry { wip: false, singleton: false, label: "Time", category: "Input",
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(time_node::TimeNode::default()) } } },
         NodeCatalogEntry { wip: false, singleton: false, label: "Color", category: "Input",
@@ -588,8 +592,12 @@ pub fn catalog() -> Vec<NodeCatalogEntry> {
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(face_detection::FaceDetectionNode::default()) } } },
         NodeCatalogEntry { wip: false, singleton: false, label: "Body Tracking", category: "ML",
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(pose_detection::PoseDetectionNode::default()) } } },
-        NodeCatalogEntry { wip: false, singleton: false, label: "JSON Fields", category: "ML",
+        NodeCatalogEntry { wip: false, singleton: false, label: "Match", category: "ML",
+            factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(crate::ml::match_node::MatchNode::default()) } } },
+        NodeCatalogEntry { wip: false, singleton: false, label: "Unpack (JSON)", category: "ML",
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(json_fields::JsonFieldsNode::default()) } } },
+        NodeCatalogEntry { wip: false, singleton: false, label: "Pack (JSON)", category: "ML",
+            factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(pack_node::PackNode::default()) } } },
         NodeCatalogEntry { wip: false, singleton: false, label: "ML Model", category: "ML",
             factory: || NodeType::MlModel { model_path: String::new(), labels_path: String::new(), confidence: 0.05, preset: MlPreset::default(), result_text: String::new(), result_json: String::new(), annotated_frame: None, status: String::new(), last_input_hash: 0, interval_secs: 0.5, last_inference_secs: 0.0 } },
         NodeCatalogEntry { wip: false, singleton: false, label: "Smoother", category: "Math",

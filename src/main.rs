@@ -8,6 +8,7 @@ mod http;
 pub mod icons;
 mod mcp;
 mod midi;
+mod ml;
 mod node_errors;
 mod nodes;
 mod ob;

@@ -179,6 +179,8 @@ pub static NODE_REGISTRY: std::sync::LazyLock<std::sync::Mutex<NodeRegistryInner
         crate::nodes::gate_node::register(&mut r);
         crate::nodes::sample_hold_node::register(&mut r);
         crate::nodes::key_input_node::register(&mut r);
+        crate::nodes::button_node::register(&mut r);
+        crate::nodes::pack_node::register(&mut r);
         crate::nodes::mouse_tracker_node::register(&mut r);
         crate::nodes::map_range_node::register(&mut r);
         crate::nodes::string_format_node::register(&mut r);
@@ -220,6 +222,7 @@ pub static NODE_REGISTRY: std::sync::LazyLock<std::sync::Mutex<NodeRegistryInner
         crate::nodes::hand_detection::register(&mut r);
         crate::nodes::face_detection::register(&mut r);
         crate::nodes::pose_detection::register(&mut r);
+        crate::ml::match_node::register(&mut r);
         crate::nodes::json_fields::register(&mut r);
         crate::nodes::math_formula::register(&mut r);
         crate::nodes::blend::register(&mut r);
