@@ -18,13 +18,44 @@ pub struct TransformNode {
     pub flip_h: bool,
     #[serde(default)]
     pub flip_v: bool,
+
+    // ── Memoization (transient) ──────────────────────────────────────────
+    // UI repaints at ~60 Hz but the camera delivers frames at ~30 Hz, so
+    // without this cache Transform ran its flip/scale/rotate work twice
+    // per real frame AND produced a fresh output Arc each time — which
+    // invalidated the Image node's Arc-ptr cache downstream and caused
+    // the jitter the user saw. Keyed on the input Arc's data pointer
+    // plus a cheap hash of the transform params.
+    #[serde(skip)]
+    cache_in_ptr: usize,
+    #[serde(skip)]
+    cache_param_key: u64,
+    #[serde(skip)]
+    cache_out: Option<Arc<ImageData>>,
 }
 
 fn default_one() -> f32 { 1.0 }
 
 impl Default for TransformNode {
     fn default() -> Self {
-        Self { scale_x: 1.0, scale_y: 1.0, rotation: 0.0, flip_h: false, flip_v: false }
+        Self {
+            scale_x: 1.0, scale_y: 1.0, rotation: 0.0, flip_h: false, flip_v: false,
+            cache_in_ptr: 0, cache_param_key: 0, cache_out: None,
+        }
+    }
+}
+
+impl TransformNode {
+    /// Pack the current transform parameters into a single u64 so the
+    /// memoization key only needs one compare. Scale/rotation quantized
+    /// to 1e-4 — well below user-perceivable change and plenty of
+    /// resolution for the sliders.
+    fn param_key(&self) -> u64 {
+        let sx = (self.scale_x * 10_000.0) as i32 as u64;
+        let sy = (self.scale_y * 10_000.0) as i32 as u64;
+        let r  = (self.rotation * 10_000.0) as i32 as u64;
+        let f  = (self.flip_h as u64) | ((self.flip_v as u64) << 1);
+        (sx << 48) ^ (sy << 32) ^ (r << 16) ^ f
     }
 }
 
@@ -159,13 +190,26 @@ impl NodeBehavior for TransformNode {
 
         let result = match inputs.first() {
             // Identity passthrough — just clone the Arc, no pixel work.
-            // Without this, a live 30/60 fps camera was being run through
-            // a 307k-iteration-per-frame rotate/scale path with all-ones
-            // parameters, halving framerate downstream.
             Some(PortValue::Image(img)) if self.is_identity() => {
                 PortValue::Image(img.clone())
             }
-            Some(PortValue::Image(img)) => PortValue::Image(self.transform_image(img)),
+            Some(PortValue::Image(img)) => {
+                // Memoize across repaints: UI runs at ~60 Hz but Camera
+                // emits at ~30 Hz, so we see the same input Arc twice.
+                // Returning the same cached output Arc also keeps the
+                // Image node's Arc-ptr cache stable.
+                let in_ptr = Arc::as_ptr(img) as usize;
+                let key = self.param_key();
+                let hit = self.cache_in_ptr == in_ptr
+                    && self.cache_param_key == key
+                    && self.cache_out.is_some();
+                if !hit {
+                    self.cache_out = Some(self.transform_image(img));
+                    self.cache_in_ptr = in_ptr;
+                    self.cache_param_key = key;
+                }
+                PortValue::Image(self.cache_out.clone().unwrap())
+            }
             _ => PortValue::None,
         };
         vec![(0, result)]

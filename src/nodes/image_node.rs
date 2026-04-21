@@ -575,21 +575,42 @@ fn show_image_preview_cached(
     let prev_ptr: Option<usize> = ui.ctx().data_mut(|d| d.get_temp(ptr_id));
     let cache_hit = matches!((arc_ptr, prev_ptr), (Some(a), Some(b)) if a == b);
 
-    let texture: egui::TextureHandle = if cache_hit {
-        if let Some(tex) = ui.ctx().data_mut(|d| d.get_temp::<egui::TextureHandle>(tex_id)) {
-            tex
-        } else {
-            // Cache miss despite pointer hit — build once.
-            build_preview_texture(ui, node_id, img, scale_factor)
+    // Get or create the TextureHandle ONCE per node_id and re-`set` its
+    // contents on each cache miss. A fresh `load_texture` on every new
+    // frame churns through egui's texture manager and was the second
+    // half of the Camera → Transform → Image jitter the user hit.
+    let mut texture: egui::TextureHandle = match ui
+        .ctx()
+        .data_mut(|d| d.get_temp::<egui::TextureHandle>(tex_id))
+    {
+        Some(t) => t,
+        None => {
+            // First render — load a placeholder-sized texture, then the
+            // miss branch below uploads the real contents via `.set()`.
+            let (tw, th, pix) = downsample_for_preview(img, scale_factor);
+            let color_image = egui::ColorImage::from_rgba_unmultiplied([tw, th], &pix);
+            let t = ui.ctx().load_texture(
+                format!("img_{}", node_id),
+                color_image,
+                egui::TextureOptions::LINEAR,
+            );
+            ui.ctx().data_mut(|d| d.insert_temp(tex_id, t.clone()));
+            if let Some(p) = arc_ptr {
+                ui.ctx().data_mut(|d| d.insert_temp(ptr_id, p));
+            }
+            t
         }
-    } else {
-        let tex = build_preview_texture(ui, node_id, img, scale_factor);
-        ui.ctx().data_mut(|d| d.insert_temp(tex_id, tex.clone()));
+    };
+
+    if !cache_hit {
+        // Frame changed — reupload into the existing handle in place.
+        let (tw, th, pix) = downsample_for_preview(img, scale_factor);
+        let color_image = egui::ColorImage::from_rgba_unmultiplied([tw, th], &pix);
+        texture.set(color_image, egui::TextureOptions::LINEAR);
         if let Some(p) = arc_ptr {
             ui.ctx().data_mut(|d| d.insert_temp(ptr_id, p));
         }
-        tex
-    };
+    }
 
     let aspect = img.width as f32 / img.height.max(1) as f32;
     let (w, h) = if aspect > 1.0 {
@@ -600,13 +621,8 @@ fn show_image_preview_cached(
     ui.image(egui::load::SizedTexture::new(texture.id(), egui::vec2(w, h)));
 }
 
-fn build_preview_texture(
-    ui: &mut egui::Ui,
-    node_id: NodeId,
-    img: &ImageData,
-    scale: f32,
-) -> egui::TextureHandle {
-    let (tw, th, pix) = if scale < 0.999 {
+fn downsample_for_preview(img: &ImageData, scale: f32) -> (usize, usize, Vec<u8>) {
+    if scale < 0.999 {
         let tw = (img.width as f32 * scale).max(1.0) as u32;
         let th = (img.height as f32 * scale).max(1.0) as u32;
         let mut small = vec![0u8; (tw * th * 4) as usize];
@@ -625,13 +641,7 @@ fn build_preview_texture(
         (tw as usize, th as usize, small)
     } else {
         (img.width as usize, img.height as usize, img.pixels.to_vec())
-    };
-    let color_image = egui::ColorImage::from_rgba_unmultiplied([tw, th], &pix);
-    ui.ctx().load_texture(
-        format!("img_{}", node_id),
-        color_image,
-        egui::TextureOptions::LINEAR,
-    )
+    }
 }
 
 /// Arc-aware variant: same as [`show_image_preview`] but passes the
