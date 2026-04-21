@@ -191,7 +191,13 @@ impl VideoDecoder {
 use std::cell::RefCell;
 thread_local! {
     static VIDEO_DECODERS: RefCell<HashMap<NodeId, VideoDecoder>> = RefCell::new(HashMap::new());
-    static VIDEO_TEXTURES: RefCell<HashMap<NodeId, egui::TextureHandle>> = RefCell::new(HashMap::new());
+    /// Per-node preview texture cache. The second tuple element is the data
+    /// pointer of the last-uploaded frame's Arc<ImageData> — if the next
+    /// render sees the same pointer, we skip the downsample + GPU upload
+    /// entirely. Without this, camera preview re-uploaded a 270 KB texture
+    /// every UI repaint even when the underlying frame hadn't changed,
+    /// causing visible stutter on the camera node itself.
+    static VIDEO_TEXTURES: RefCell<HashMap<NodeId, (egui::TextureHandle, usize)>> = RefCell::new(HashMap::new());
     static CAMERA_LIST_CACHE: RefCell<(std::time::Instant, Vec<(u32, String)>)> = RefCell::new((std::time::Instant::now(), Vec::new()));
 }
 
@@ -427,28 +433,42 @@ pub fn render_video(
         }
     });
 
-    // Preview — downsample to preview size before texture upload
+    // Preview — downsample + upload only when the frame actually changed.
     if let Some(frame) = current_frame.as_ref() {
         let max_w = ui.available_width().min(300.0);
         let aspect = frame.height as f32 / frame.width as f32;
         let preview_h = max_w * aspect;
-        let pw = max_w as u32;
-        let ph = preview_h as u32;
+        let frame_ptr = std::sync::Arc::as_ptr(frame) as usize;
 
-        // Fast downsample for preview (skip pixels, not bilinear)
-        let preview_pixels = fast_downsample(frame, pw, ph);
-
-        let color_image = egui::ColorImage::from_rgba_unmultiplied(
-            [pw as usize, ph as usize],
-            &preview_pixels,
-        );
         VIDEO_TEXTURES.with(|textures| {
             let mut textures = textures.borrow_mut();
-            let tex = textures.entry(node_id).or_insert_with(|| {
-                ui.ctx().load_texture(format!("video_{}", node_id), color_image.clone(), egui::TextureOptions::LINEAR)
-            });
-            tex.set(color_image, egui::TextureOptions::LINEAR);
-            ui.image(egui::load::SizedTexture::new(tex.id(), egui::vec2(max_w, preview_h)));
+            let cached_same = textures.get(&node_id).map(|(_, p)| *p == frame_ptr).unwrap_or(false);
+            if !cached_same {
+                let pw = max_w as u32;
+                let ph = preview_h as u32;
+                let preview_pixels = fast_downsample(frame, pw, ph);
+                let color_image = egui::ColorImage::from_rgba_unmultiplied(
+                    [pw as usize, ph as usize],
+                    &preview_pixels,
+                );
+                match textures.get_mut(&node_id) {
+                    Some(entry) => {
+                        entry.0.set(color_image, egui::TextureOptions::LINEAR);
+                        entry.1 = frame_ptr;
+                    }
+                    None => {
+                        let tex = ui.ctx().load_texture(
+                            format!("video_{}", node_id),
+                            color_image,
+                            egui::TextureOptions::LINEAR,
+                        );
+                        textures.insert(node_id, (tex, frame_ptr));
+                    }
+                }
+            }
+            if let Some((tex, _)) = textures.get(&node_id) {
+                ui.image(egui::load::SizedTexture::new(tex.id(), egui::vec2(max_w, preview_h)));
+            }
         });
     }
 
@@ -604,26 +624,45 @@ pub fn render_camera(
         }
     });
 
-    // Preview — downsample for display
+    // Preview — downsample + upload only when the frame actually changed.
+    // UI repaints at ~60 Hz but the camera produces at ~30 Hz, so without
+    // the Arc-ptr cache we were redoing this work (a 270 KB GPU upload +
+    // nearest-neighbour downsample) roughly twice per real frame.
     if let Some(frame) = current_frame.as_ref() {
         let max_w = ui.available_width().min(300.0);
         let aspect = frame.height as f32 / frame.width as f32;
         let preview_h = max_w * aspect;
-        let pw = max_w as u32;
-        let ph = preview_h as u32;
+        let frame_ptr = std::sync::Arc::as_ptr(frame) as usize;
 
-        let preview_pixels = fast_downsample(frame, pw, ph);
-        let color_image = egui::ColorImage::from_rgba_unmultiplied(
-            [pw as usize, ph as usize],
-            &preview_pixels,
-        );
         VIDEO_TEXTURES.with(|textures| {
             let mut textures = textures.borrow_mut();
-            let tex = textures.entry(node_id).or_insert_with(|| {
-                ui.ctx().load_texture(format!("cam_{}", node_id), color_image.clone(), egui::TextureOptions::LINEAR)
-            });
-            tex.set(color_image, egui::TextureOptions::LINEAR);
-            ui.image(egui::load::SizedTexture::new(tex.id(), egui::vec2(max_w, preview_h)));
+            let cached_same = textures.get(&node_id).map(|(_, p)| *p == frame_ptr).unwrap_or(false);
+            if !cached_same {
+                let pw = max_w as u32;
+                let ph = preview_h as u32;
+                let preview_pixels = fast_downsample(frame, pw, ph);
+                let color_image = egui::ColorImage::from_rgba_unmultiplied(
+                    [pw as usize, ph as usize],
+                    &preview_pixels,
+                );
+                match textures.get_mut(&node_id) {
+                    Some(entry) => {
+                        entry.0.set(color_image, egui::TextureOptions::LINEAR);
+                        entry.1 = frame_ptr;
+                    }
+                    None => {
+                        let tex = ui.ctx().load_texture(
+                            format!("cam_{}", node_id),
+                            color_image,
+                            egui::TextureOptions::LINEAR,
+                        );
+                        textures.insert(node_id, (tex, frame_ptr));
+                    }
+                }
+            }
+            if let Some((tex, _)) = textures.get(&node_id) {
+                ui.image(egui::load::SizedTexture::new(tex.id(), egui::vec2(max_w, preview_h)));
+            }
         });
     }
 
