@@ -14,7 +14,23 @@ use crate::node_trait::{NodeBehavior, RenderContext};
 //   In  0: Image  (Image)     In  1: Speed (Number)    In  2: Volume (Normalized)
 //   Out 0: Audio  (Audio)     Out 1: Phase (Normalized)
 
-const NUM_BINS: usize = 64;
+const NUM_BINS: usize = 256;
+// Params layout:
+//   [0..256]      magnitudes (sqrt-encoded, 0..1)
+//   [256..512]    phases (normalized 0..1, 0.5 = 0 rad)
+//   [512]         volume
+//   [513]         gate
+//   [514]         frame_seq (monotonic counter — DSP phase-resets when it changes)
+const TOTAL_PARAMS: usize = 515;
+const PARAM_PHASE_OFFSET: usize = 256;
+const PARAM_VOLUME: usize = 512;
+const PARAM_GATE: usize = 513;
+const PARAM_FRAME_SEQ: usize = 514;
+
+// Default playback rate in columns/sec. Matches Frame Recorder's default
+// base_fps (48000 / SPECTRUM_FFT_SIZE), so speed=1.0 plays back an image
+// recorded at the default rate in real time.
+const DEFAULT_PLAYBACK_RATE: f32 = 93.75;
 
 #[derive(Debug, Clone)]
 pub struct SpectralSynthNode {
@@ -22,11 +38,23 @@ pub struct SpectralSynthNode {
     pub volume: f32,
     pub phase: f32,
     pub running: bool,
+    pub playback_rate: f32,
+    pub gain_db: f32,
     pub magnitudes: [f32; NUM_BINS],
+    /// Per-bin phase read from the image's alpha channel, normalized 0..1
+    /// where 0.5 = 0 radians. Decoded on the DSP side.
+    pub phases_in: [f32; NUM_BINS],
     params_cache: Vec<f32>,
     last_instant: Instant,
     cached_input_image: Option<std::sync::Arc<crate::graph::ImageData>>,
     last_trigger: f32,
+    /// Monotonic counter incremented each time the image column the node
+    /// samples from changes. DSP watches this — on change, it hard-resets
+    /// each oscillator's phase to the stored image phase so voice harmonics
+    /// stay phase-coherent across frames.
+    frame_seq: u32,
+    /// Last image column index we sampled, to detect column crossings.
+    last_column: i64,
 }
 
 impl Default for SpectralSynthNode {
@@ -36,11 +64,19 @@ impl Default for SpectralSynthNode {
             volume: 0.8,
             phase: 0.0,
             running: false, // starts paused — use trigger or play button
+            playback_rate: DEFAULT_PLAYBACK_RATE,
+            // 0 dB is the correct default now that encoding is sqrt(mag) and
+            // decode is v² — the round-trip is mathematically exact, no
+            // compensation needed. User can bump Gain for quiet mic input.
+            gain_db: 0.0,
             magnitudes: [0.0; NUM_BINS],
-            params_cache: vec![0.0; 67],
+            phases_in: [0.5; NUM_BINS],
+            params_cache: vec![0.0; TOTAL_PARAMS],
             last_instant: Instant::now(),
             cached_input_image: None,
             last_trigger: 0.0,
+            frame_seq: 0,
+            last_column: -1,
         }
     }
 }
@@ -92,7 +128,7 @@ impl NodeBehavior for SpectralSynthNode {
 
         // ── Advance scan phase ───────────────────────────────────────────
         let now = Instant::now();
-        let _dt = now.duration_since(self.last_instant).as_secs_f64().min(0.25);
+        let dt = now.duration_since(self.last_instant).as_secs_f32().min(0.25);
         self.last_instant = now;
 
         // Read speed/volume overrides
@@ -122,52 +158,82 @@ impl NodeBehavior for SpectralSynthNode {
             self.last_trigger = trig;
         }
 
-        // Pixel-stepping phase advancement
+        // Wall-clock phase advancement: speed=1.0 at playback_rate=rec_rate
+        // means playback takes the same wall time as recording.
         if self.running {
             let img_w = self.cached_input_image.as_ref()
                 .map(|img| img.width.max(1) as f32)
                 .unwrap_or(256.0);
-            let step = self.speed / img_w;
+            let step = dt * self.speed * self.playback_rate / img_w;
             self.phase += step;
             if self.phase >= 1.0 { self.phase = self.phase.fract(); }
-            if self.phase < 0.0 { self.phase = 0.0; }
+            if self.phase < 0.0 { self.phase = self.phase.rem_euclid(1.0); }
         }
 
-        // Extract magnitudes from cached image at current phase
+        // Extract magnitudes AND phases from cached image at current phase.
+        //
+        // R=G=B carries sqrt-encoded magnitude. Alpha carries phase encoded
+        // as 0..1 = −π..π (0.5 = 0 rad). v² decode inverts the sqrt encoding
+        // exactly; phase is passed through to the DSP which locks each
+        // oscillator's phase to the image value on each new frame.
+        let mut new_column: i64 = -1;
         if let Some(ref img) = self.cached_input_image {
             let w = img.width;
             let h = img.height;
             if w > 0 && h > 0 {
                 let col = (self.phase * w as f32).floor().min((w - 1) as f32) as u32;
+                new_column = col as i64;
                 for bin in 0..NUM_BINS {
                     let y = ((NUM_BINS - 1 - bin) as f32 / (NUM_BINS - 1) as f32 * (h - 1) as f32) as u32;
                     let y = y.min(h - 1);
                     let idx = ((y * w + col) * 4) as usize;
-                    if idx + 2 < img.pixels.len() {
+                    if idx + 3 < img.pixels.len() {
                         let r = img.pixels[idx]     as f32 / 255.0;
                         let g = img.pixels[idx + 1] as f32 / 255.0;
                         let b = img.pixels[idx + 2] as f32 / 255.0;
-                        self.magnitudes[bin] = (r + g + b) / 3.0;
+                        let a = img.pixels[idx + 3] as f32 / 255.0;
+                        let v = (r + g + b) / 3.0;
+                        // Floor at 0.04 kills the analysis noise baseline
+                        // plus frame-to-frame spillover jitter in quiet bins.
+                        // Only confidently-lit bins get synthesized.
+                        self.magnitudes[bin] = if v < 0.04 { 0.0 } else { v * v };
+                        self.phases_in[bin] = a;
                     } else {
                         self.magnitudes[bin] = 0.0;
+                        self.phases_in[bin] = 0.5;
                     }
                 }
             }
         } else {
             self.magnitudes = [0.0; NUM_BINS];
+            self.phases_in = [0.5; NUM_BINS];
+        }
+        // Bump frame_seq whenever we land on a new image column. The DSP
+        // watches this to phase-reset its oscillators, which is what
+        // preserves voice harmonic coherence across the column boundary.
+        if new_column != self.last_column && new_column >= 0 {
+            self.frame_seq = self.frame_seq.wrapping_add(1);
+            self.last_column = new_column;
         }
 
         // ── Update params cache (read by audio_params() trait method) ────
-        if self.params_cache.len() < 67 { self.params_cache.resize(67, 0.0); }
-        for i in 0..NUM_BINS {
-            self.params_cache[i] = self.magnitudes[i];
+        if self.params_cache.len() < TOTAL_PARAMS {
+            self.params_cache.resize(TOTAL_PARAMS, 0.0);
         }
-        self.params_cache[64] = self.volume;
+        // Gain applied pre-DSP-clamp: the processor clamps each magnitude to
+        // [0,1], so gain > 0 dB acts as soft saturation on loud bins rather
+        // than linear boost. Desirable for voice — gives a little warmth.
+        let gain_linear = 10f32.powf(self.gain_db / 20.0);
+        for i in 0..NUM_BINS {
+            self.params_cache[i] = self.magnitudes[i] * gain_linear;
+            self.params_cache[PARAM_PHASE_OFFSET + i] = self.phases_in[i];
+        }
+        self.params_cache[PARAM_VOLUME] = self.volume;
         // Gate is ON whenever we have an image — running only controls playhead movement.
         // This way, changing visuals produce sound even when playhead is paused.
         let has_signal = self.cached_input_image.is_some() && self.magnitudes.iter().any(|&m| m > 0.001);
-        self.params_cache[65] = if has_signal { 1.0 } else { 0.0 };
-        self.params_cache[66] = 0.0;
+        self.params_cache[PARAM_GATE] = if has_signal { 1.0 } else { 0.0 };
+        self.params_cache[PARAM_FRAME_SEQ] = self.frame_seq as f32;
 
         // ── Input ports ──────────────────────────────────────────────────
         ui.horizontal(|ui| {
@@ -186,6 +252,35 @@ impl NodeBehavior for SpectralSynthNode {
             } else {
                 ui.label(RichText::new(format!("{:.1}", self.speed)).small().monospace().color(blue));
             }
+        });
+
+        // Rate = image columns per second at speed=1.0. Match Frame Recorder's
+        // base_fps to get record-duration == playback-duration.
+        ui.horizontal(|ui| {
+            ui.add_space(14.0); // align with other port rows (no port circle here)
+            ui.label(RichText::new("Rate").small().color(dim));
+            ui.add(
+                egui::DragValue::new(&mut self.playback_rate)
+                    .speed(0.25)
+                    .range(1.0..=240.0)
+                    .max_decimals(2),
+            );
+            ui.label(RichText::new("col/s").small().color(dim));
+        });
+
+        // Gain (dB) — compensates for the dB-encoded grayscale's squashing
+        // of quiet signals. Raise for mic / voice sources, drop for loud
+        // oscillators if the output clips.
+        ui.horizontal(|ui| {
+            ui.add_space(14.0);
+            ui.label(RichText::new("Gain").small().color(dim));
+            ui.add(
+                egui::DragValue::new(&mut self.gain_db)
+                    .speed(0.5)
+                    .range(-24.0..=40.0)
+                    .max_decimals(1),
+            );
+            ui.label(RichText::new("dB").small().color(dim));
         });
 
         ui.horizontal(|ui| {
@@ -344,6 +439,8 @@ impl NodeBehavior for SpectralSynthNode {
             "speed": self.speed,
             "volume": self.volume,
             "running": self.running,
+            "playback_rate": self.playback_rate,
+            "gain_db": self.gain_db,
         })
     }
 
@@ -351,6 +448,12 @@ impl NodeBehavior for SpectralSynthNode {
         if let Some(v) = state.get("speed").and_then(|v| v.as_f64()) { self.speed = v as f32; }
         if let Some(v) = state.get("volume").and_then(|v| v.as_f64()) { self.volume = v as f32; }
         if let Some(v) = state.get("running").and_then(|v| v.as_bool()) { self.running = v; }
+        if let Some(v) = state.get("playback_rate").and_then(|v| v.as_f64()) {
+            self.playback_rate = (v as f32).max(0.01);
+        }
+        if let Some(v) = state.get("gain_db").and_then(|v| v.as_f64()) {
+            self.gain_db = (v as f32).clamp(-24.0, 40.0);
+        }
     }
 }
 

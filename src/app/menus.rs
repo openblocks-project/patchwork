@@ -206,10 +206,9 @@ impl super::PatchworkApp {
                         let entry = &catalog[i];
                         pill_for(entry.category) == pill || also_in(entry.label).contains(&pill)
                     }).collect();
-                    // Hide empty columns during a search (keeps layout compact).
-                    // Outside search, always show the column header even if
-                    // empty — otherwise the layout shifts while you type.
-                    if !query.is_empty() && entries.is_empty() { continue; }
+                    // Always include every column so the layout stays stable
+                    // as the user types. Empty columns render the "—"
+                    // placeholder; no reflow.
                     columns.push((pill, entries));
                 }
                 // Flatten entries for keyboard nav: walks columns in left-
@@ -221,11 +220,49 @@ impl super::PatchworkApp {
 
                 let up = ui.ctx().input(|i| i.key_pressed(egui::Key::ArrowUp));
                 let down = ui.ctx().input(|i| i.key_pressed(egui::Key::ArrowDown));
+                let left = ui.ctx().input(|i| i.key_pressed(egui::Key::ArrowLeft));
+                let right = ui.ctx().input(|i| i.key_pressed(egui::Key::ArrowRight));
                 let enter = ui.ctx().input(|i| i.key_pressed(egui::Key::Enter));
+
+                // Up/Down walk within a single column (flat index is built
+                // column-major, so ±1 stays inside the current column until
+                // it overruns — then jumps to the next column's top).
                 if up && self.node_menu_selected > 0 { self.node_menu_selected -= 1; }
                 if down && self.node_menu_selected + 1 < visible_flat.len() {
                     self.node_menu_selected += 1;
                 }
+
+                // Left/Right jump between columns at the same row. Skip
+                // empty columns. `col_offsets[i]` is the flat index where
+                // column i begins; last entry is the total flat length.
+                let mut col_offsets: Vec<usize> = Vec::with_capacity(columns.len() + 1);
+                col_offsets.push(0);
+                for (_, entries) in &columns {
+                    col_offsets.push(col_offsets.last().unwrap() + entries.len());
+                }
+                if (left || right) && !visible_flat.is_empty() {
+                    let sel = self.node_menu_selected;
+                    // Find current column (index of the first offset > sel − 1).
+                    let current_col = col_offsets
+                        .iter().rposition(|&o| o <= sel).unwrap_or(0);
+                    let row_in_col = sel - col_offsets[current_col];
+
+                    // Walk in the requested direction, skipping empty columns
+                    // so a filter-emptied one doesn't trap the selection.
+                    let n_cols = columns.len();
+                    let dir: isize = if right { 1 } else { -1 };
+                    let mut next = current_col as isize + dir;
+                    while next >= 0 && (next as usize) < n_cols {
+                        let size = col_offsets[next as usize + 1] - col_offsets[next as usize];
+                        if size > 0 {
+                            let new_row = row_in_col.min(size - 1);
+                            self.node_menu_selected = col_offsets[next as usize] + new_row;
+                            break;
+                        }
+                        next += dir;
+                    }
+                }
+
                 if !visible_flat.is_empty() {
                     self.node_menu_selected = self.node_menu_selected.min(visible_flat.len() - 1);
                 }
@@ -338,7 +375,15 @@ impl super::PatchworkApp {
                                                 btn.scroll_to_me(Some(egui::Align::Center));
                                             }
 
-                                            if btn.clicked() { spawn_idx = Some(cat_idx); }
+                                            // Click = spawn + close. Hover
+                                            // state drives the selection so
+                                            // keyboard-vs-mouse stay in sync.
+                                            if btn.hovered() {
+                                                self.node_menu_selected = walk_pos;
+                                            }
+                                            if btn.clicked() {
+                                                spawn_idx = Some(cat_idx);
+                                            }
                                             walk_pos += 1;
                                         }
 

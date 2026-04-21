@@ -1,9 +1,31 @@
-/// FFT size for the spectrum analyzer. Power of two; ~21 ms at 48 kHz.
-pub const SPECTRUM_FFT_SIZE: usize = 1024;
-/// Number of log-spaced display bins shown by the spectrum analyzer.
-pub const SPECTRUM_BINS: usize = 64;
+/// FFT size for the spectrum analyzer. Power of two; ~43 ms at 48 kHz.
+/// Bumped from 1024 → 2048 to double raw FFT frequency resolution, which
+/// matches the doubled display bin count below. Larger window is the
+/// "better freq / worse time" half of the trade-off — paired with a
+/// hop that runs 4× per window (see `SPECTRUM_HOP_SIZE`) to recover time
+/// resolution via overlap.
+pub const SPECTRUM_FFT_SIZE: usize = 2048;
+/// Number of samples between FFT frames. With FFT size 2048 and hop 512,
+/// consecutive windows overlap 75% and update rate = `sample_rate / hop`
+/// ≈ 93.75 Hz at 48 kHz — roughly twice the previous rate. Frame Recorder
+/// `base_fps` and Spectral Synth `playback_rate` defaults match this.
+pub const SPECTRUM_HOP_SIZE: usize = 512;
+/// Number of linear-spaced display bins shown by the spectrum analyzer.
+/// Linear spacing preserves voice-harmonic integer ratios on resynthesis
+/// through the Music Visualizer → Frame Recorder → Spectral Synth chain.
+/// 256 bins × 31.25 Hz/bin across 0–8 kHz; matched against the 2048-point
+/// FFT's ~23 Hz native bin width so display bins aggregate ~1.3 FFT bins
+/// each — enough averaging for stability, not so much that harmonics
+/// blend.
+pub const SPECTRUM_BINS: usize = 256;
+/// Upper frequency bound for the binned spectrum. Independent of sample rate
+/// — keeps bin centers deterministic so the Spectral Synth processor can use
+/// the same mapping without knowing the audio sample rate ahead of time.
+/// 8 kHz covers the voice band (fundamentals, formants, sibilance) while
+/// sacrificing >8 kHz music content (cymbal air, high harmonics).
+pub const SPECTRUM_FREQ_MAX: f32 = 8000.0;
 
-/// Real-time spectrum analysis — log-spaced FFT magnitude bins (0..1).
+/// Real-time spectrum analysis — linear-spaced FFT magnitude bins (0..1).
 ///
 /// Sits next to `AudioAnalysis` (which is 3-band scalar reactivity)
 /// and is consumed by the Spectrum Analyzer node. Audio threads call
@@ -11,9 +33,13 @@ pub const SPECTRUM_BINS: usize = 64;
 /// `try_lock`.
 #[derive(Clone, Debug)]
 pub struct Spectrum {
-    /// Log-spaced, normalized magnitudes (length = `SPECTRUM_BINS`).
-    /// Indexed low → high frequency. Values are dB-scaled into 0..1.
+    /// Linear-spaced, sqrt-encoded magnitudes (length = `SPECTRUM_BINS`).
+    /// Indexed low → high frequency. Smoothed with attack/decay.
     pub bins: Vec<f32>,
+    /// Per-bin phase, normalized 0..1 where 0.5 = 0 radians. Decoded as
+    /// `phase_rad = (phases[b] - 0.5) * 2π`. Never smoothed — averaging
+    /// angles across wraparound produces nonsense.
+    pub phases: Vec<f32>,
     /// Sliding sample buffer accumulated from the audio thread until
     /// `SPECTRUM_FFT_SIZE` samples are collected, then drained.
     buf: Vec<f32>,
@@ -31,6 +57,7 @@ impl Default for Spectrum {
             .collect();
         Self {
             bins: vec![0.0; SPECTRUM_BINS],
+            phases: vec![0.5; SPECTRUM_BINS],
             buf: Vec::with_capacity(SPECTRUM_FFT_SIZE),
             window,
         }
@@ -38,8 +65,11 @@ impl Default for Spectrum {
 }
 
 impl Spectrum {
-    /// Push new audio samples; runs an FFT every `SPECTRUM_FFT_SIZE`
-    /// samples and updates `bins`.
+    /// Push new audio samples; runs an FFT every `SPECTRUM_HOP_SIZE`
+    /// samples using the last `SPECTRUM_FFT_SIZE` samples as the window,
+    /// then drops the oldest hop-worth of samples so the next FFT overlaps
+    /// with the previous one. Overlap percentage =
+    /// `(FFT_SIZE - HOP_SIZE) / FFT_SIZE` — currently 75%.
     pub fn update(&mut self, data: &[f32], channels: usize, sample_rate: f32) {
         let ch = channels.max(1);
         let num_frames = data.len() / ch;
@@ -55,7 +85,11 @@ impl Spectrum {
             self.buf.push(s);
             if self.buf.len() >= SPECTRUM_FFT_SIZE {
                 self.compute(sample_rate);
-                self.buf.clear();
+                // Slide the window: drop HOP_SIZE oldest samples, keep the
+                // rest so the next FFT happens as soon as HOP_SIZE new
+                // samples arrive. This is the overlap that doubles time
+                // resolution without shrinking the FFT window.
+                self.buf.drain(0..SPECTRUM_HOP_SIZE);
             }
         }
     }
@@ -69,43 +103,75 @@ impl Spectrum {
         }
         fft_radix2(&mut re, &mut im);
 
-        // Half-spectrum magnitudes, normalized by N/2.
+        // Half-spectrum, normalized by N/2. Keep re/im separate so we can
+        // recover phase per display bin (atan2 of summed re/im) — Spectral
+        // Synth needs phase to reconstruct voice rather than a saw-like
+        // magnitude envelope.
         let half = n / 2;
-        let mut mags = vec![0.0f32; half];
         let norm = 1.0 / (n as f32 * 0.5);
-        for i in 0..half {
-            mags[i] = (re[i] * re[i] + im[i] * im[i]).sqrt() * norm;
-        }
 
-        // Log-spaced grouping into display bins, 30 Hz → Nyquist.
-        let min_freq = 30.0f32.max(1.0);
-        let max_freq = (sample_rate * 0.5).max(min_freq + 1.0);
-        let log_min = min_freq.ln();
-        let log_max = max_freq.ln();
+        // Linear-spaced grouping into display bins, 0 → SPECTRUM_FREQ_MAX.
+        // Bin centers sit at arithmetic multiples of bin_width, so voice
+        // harmonics (integer multiples of a fundamental) map onto integer
+        // multiples of a bin index — their ratios are preserved when
+        // the Spectral Synth resynthesizes them as additive sines.
+        let bin_width = SPECTRUM_FREQ_MAX / SPECTRUM_BINS as f32;
+        let nyquist = (sample_rate * 0.5).max(1.0);
 
-        let attack = 0.7f32;
-        let decay = 0.15f32;
+        // Faster attack/decay than before — ~50 ms decay half-life at the
+        // ~47 Hz FFT rate. Preserves phoneme transients; previous decay=0.15
+        // had a 130 ms half-life that smeared consonants into vowels.
+        let attack = 0.9f32;
+        let decay = 0.5f32;
         for b in 0..SPECTRUM_BINS {
-            let f0 = (log_min + (log_max - log_min) * (b as f32) / (SPECTRUM_BINS as f32)).exp();
-            let f1 = (log_min + (log_max - log_min) * ((b + 1) as f32) / (SPECTRUM_BINS as f32)).exp();
-            let i0 = ((f0 / max_freq) * (half as f32)) as usize;
-            let i1 = (((f1 / max_freq) * (half as f32)) as usize).max(i0 + 1).min(half);
-            let mut sum = 0.0f32;
+            let f0 = (b as f32) * bin_width;
+            let f1 = ((b + 1) as f32) * bin_width;
+            let i0 = ((f0 / nyquist) * (half as f32)) as usize;
+            let i1 = (((f1 / nyquist) * (half as f32)) as usize).max(i0 + 1).min(half);
+            let mut re_sum = 0.0f32;
+            let mut im_sum = 0.0f32;
             let mut count = 0usize;
             for i in i0..i1 {
-                sum += mags[i];
+                re_sum += re[i];
+                im_sum += im[i];
                 count += 1;
             }
-            let raw = if count == 0 { 0.0 } else { sum / count as f32 };
-            // dB scale: 20·log10(m + ε) into roughly [-90 dB, 0 dB] → 0..1.
-            let db = 20.0 * (raw + 1e-6).log10();
-            let v = ((db + 90.0) / 90.0).clamp(0.0, 1.0);
+            let (raw, phase_rad) = if count == 0 {
+                (0.0, 0.0)
+            } else {
+                let re_avg = re_sum / count as f32;
+                let im_avg = im_sum / count as f32;
+                let mag = (re_avg * re_avg + im_avg * im_avg).sqrt() * norm;
+                (mag, im_avg.atan2(re_avg))
+            };
+            // Bin 0 (0–62 Hz) is a trap: it collects DC offset, AC mains
+            // hum, mic-handling thumps, and generally rumble that's not
+            // intentional signal. With the 2× pregain below it clamps to
+            // v=1 and the Spectral Synth plays a subsonic 31 Hz sine at
+            // full amplitude — masking any real high-pitch content the
+            // user sang. Just zero it.
+            let raw = if b == 0 { 0.0 } else { raw };
+            // sqrt encoding with 2× pregain. Mic/line FFT magnitudes
+            // typically land at 0.01–0.1; a plain sqrt maps those to
+            // dim-looking gray and quiet resynth output. 2× lifts normal
+            // speech into visible and audible ranges without over-
+            // amplifying ambient bass. Loud signals saturate cleanly at
+            // v=1.0. Spectral Synth's v² decode inverts sqrt; the 2×
+            // carries through as an effective round-trip gain factor.
+            let v = (raw * 2.0).sqrt().clamp(0.0, 1.0);
             let old = self.bins[b];
             self.bins[b] = if v > old {
                 old + attack * (v - old)
             } else {
                 old + decay * (v - old)
             };
+            // Store phase normalized to 0..1 (0.5 = 0 radians). Unsmoothed:
+            // averaging angles across the ±π wrap produces nonsense, and the
+            // Spectral Synth needs the freshest phase to lock each bin's
+            // oscillator on every new frame. For zeroed bin 0, phase is
+            // irrelevant (magnitude is zero).
+            self.phases[b] = (phase_rad / std::f32::consts::TAU + 0.5)
+                .clamp(0.0, 1.0);
         }
     }
 }

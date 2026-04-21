@@ -213,6 +213,9 @@ pub static NODE_REGISTRY: std::sync::LazyLock<std::sync::Mutex<NodeRegistryInner
         crate::nodes::point_2d_node::register(&mut r);
         crate::nodes::fill_node::register(&mut r);
         crate::nodes::image_scanner_node::register(&mut r);
+        crate::nodes::frame_recorder_node::register(&mut r);
+        crate::nodes::noise_removal_node::register(&mut r);
+        crate::nodes::voice_effects_node::register(&mut r);
         crate::nodes::audio_analyzer_node::register(&mut r);
         crate::nodes::music_visualizer_node::register(&mut r);
         crate::nodes::spectral_synth_node::register(&mut r);
