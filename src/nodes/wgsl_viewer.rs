@@ -45,8 +45,14 @@ pub fn slider_defaults_for_uniform(name: &str) -> (f32, f32, f32, f32) {
         (0.5, 8.0, 0.01, 3.0)
     } else if lower.contains("segment") {
         (2.0, 32.0, 1.0, 6.0)
+    } else if lower.contains("zoom_rate") || lower.contains("zoom_speed") {
+        (-1.0, 1.0, 0.01, 0.1)              // signed, for zoom in/out animation
     } else if lower.contains("zoom") {
         (0.1, 4.0, 0.01, 1.0)
+    } else if lower.contains("iter") {
+        (32.0, 512.0, 1.0, 128.0)           // fractal iteration count
+    } else if lower.contains("hue") {
+        (0.0, 6.28318, 0.01, 0.5)           // palette rotation in radians
     } else if lower.contains("thick") || lower.contains("width") {
         (0.001, 0.05, 0.0005, 0.008)
     } else if lower.contains("size") || lower.contains("scale") || lower.contains("radius") {

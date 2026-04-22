@@ -83,7 +83,7 @@ fn all_presets() -> &'static Vec<Preset> {
                 let priority_order: &[&str] = &[
                     "gradient", "plasma", "particles", "spinsquare",
                     "julia", "kaleidoscope",
-                    "mandelbrot", "lissajous",
+                    "mandelbrot", "fractal_zoom", "lissajous",
                     "camera_grade", "edge_detect", "displacement",
                 ];
                 files.sort_by(|a, b| {
