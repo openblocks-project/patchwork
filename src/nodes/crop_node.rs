@@ -2,11 +2,56 @@
 //! Image: crop margins (top/left/bottom/right as 0-1 fractions)
 //! Text: substring extraction (start/end as 0-1 fractions)
 
-use crate::graph::{PortDef, PortKind, PortValue, ImageData, Graph};
+use crate::graph::{NodeId, PortDef, PortKind, PortValue, ImageData, Graph};
 use crate::node_trait::{NodeBehavior, RenderContext};
 use serde::{Serialize, Deserialize};
 use eframe::egui;
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::sync::Arc;
+
+// Per-node preview-texture cache. Keyed by the input Arc's data pointer,
+// so we skip the downsample + GPU upload on repaints where the frame
+// hasn't changed — same pattern as VIDEO_TEXTURES in video_player.rs.
+thread_local! {
+    static CROP_PREVIEW_TEX: RefCell<HashMap<NodeId, (egui::TextureHandle, usize)>>
+        = RefCell::new(HashMap::new());
+}
+
+/// Nearest-neighbour downsample into a target size for preview display.
+/// Lives here because Crop draws its own preview (it needs to overlay the
+/// crop rectangle on top of the image, which the shared Image helpers
+/// don't handle). u32-cast + precomputed col map — same template as the
+/// perf fixes in video_player / ml_model.
+fn downsample_for_preview(img: &ImageData, target_w: u32, target_h: u32) -> Vec<u8> {
+    let out_bytes = (target_w * target_h * 4) as usize;
+    let mut out: Vec<u8> = Vec::with_capacity(out_bytes);
+    // SAFETY: every u32 written in the loop below.
+    unsafe { out.set_len(out_bytes); }
+
+    let x_ratio = img.width as f32 / target_w as f32;
+    let y_ratio = img.height as f32 / target_h as f32;
+    let w_in = img.width as usize;
+    let tw = target_w as usize;
+
+    let mut col_map: Vec<usize> = Vec::with_capacity(tw);
+    for x in 0..target_w {
+        let sx = (x as f32 * x_ratio) as usize;
+        col_map.push(sx.min(w_in.saturating_sub(1)));
+    }
+
+    let src: &[u32] = bytemuck::cast_slice(&img.pixels);
+    let dst: &mut [u32] = bytemuck::cast_slice_mut(&mut out);
+    for y in 0..target_h {
+        let sy = ((y as f32 * y_ratio) as usize).min((img.height as usize).saturating_sub(1));
+        let src_row_start = sy * w_in;
+        let dst_row_start = y as usize * tw;
+        for (dx, &sx) in col_map.iter().enumerate() {
+            dst[dst_row_start + dx] = src[src_row_start + sx];
+        }
+    }
+    out
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CropNode {
@@ -156,12 +201,73 @@ impl NodeBehavior for CropNode {
             let preview_h = max_w * aspect;
             let (rect, _) = ui.allocate_exact_size(egui::vec2(max_w, preview_h), egui::Sense::hover());
             let painter = ui.painter();
-            painter.rect_filled(rect, 0.0, egui::Color32::from_rgba_unmultiplied(0, 0, 0, 100));
+
+            // Draw the actual input image as the preview background (CPU
+            // image only; for a GpuImage we'd need a paint callback).
+            // Upload is Arc-ptr cached per node so unchanged frames reuse
+            // the GPU texture without any work.
+            let mut drew_image = false;
+            if let PortValue::Image(img) = &input_val {
+                if !img.pixels.is_empty() {
+                    let arc_ptr = Arc::as_ptr(img) as usize;
+                    // Downsample to ≈ 2× the preview pixel size — enough
+                    // for sharpness, a fraction of the upload size.
+                    let target_w = (max_w * 2.0).clamp(64.0, 512.0) as u32;
+                    let target_h = ((target_w as f32) * aspect).max(1.0) as u32;
+
+                    CROP_PREVIEW_TEX.with(|cache| {
+                        let mut cache = cache.borrow_mut();
+                        let cached_same = cache.get(&ctx.node_id)
+                            .map(|(_, p)| *p == arc_ptr)
+                            .unwrap_or(false);
+
+                        if !cached_same {
+                            let pixels = downsample_for_preview(img, target_w, target_h);
+                            let color_image = egui::ColorImage::from_rgba_unmultiplied(
+                                [target_w as usize, target_h as usize],
+                                &pixels,
+                            );
+                            match cache.get_mut(&ctx.node_id) {
+                                Some(entry) => {
+                                    entry.0.set(color_image, egui::TextureOptions::LINEAR);
+                                    entry.1 = arc_ptr;
+                                }
+                                None => {
+                                    let tex = ui.ctx().load_texture(
+                                        format!("crop_{}", ctx.node_id),
+                                        color_image,
+                                        egui::TextureOptions::LINEAR,
+                                    );
+                                    cache.insert(ctx.node_id, (tex, arc_ptr));
+                                }
+                            }
+                        }
+
+                        if let Some((tex, _)) = cache.get(&ctx.node_id) {
+                            painter.image(
+                                tex.id(),
+                                rect,
+                                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                                egui::Color32::WHITE,
+                            );
+                            drew_image = true;
+                        }
+                    });
+                }
+            }
+
+            if !drew_image {
+                // GpuImage / empty pixels fallback — keep the old dark
+                // placeholder so the crop-rect overlay still reads.
+                painter.rect_filled(rect, 0.0, egui::Color32::from_rgba_unmultiplied(0, 0, 0, 100));
+            }
+
+            // Crop-region overlay: subtle white fill + accent stroke on top.
             let crop_rect = egui::Rect::from_min_max(
                 egui::pos2(rect.left() + rect.width() * self.left, rect.top() + rect.height() * self.top),
                 egui::pos2(rect.right() - rect.width() * self.right, rect.bottom() - rect.height() * self.bottom),
             );
-            painter.rect_filled(crop_rect, 0.0, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 40));
+            painter.rect_filled(crop_rect, 0.0, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 30));
             painter.rect_stroke(crop_rect, 0.0, egui::Stroke::new(1.5, accent), egui::StrokeKind::Outside);
 
             let out_w = ((1.0 - self.left - self.right).max(0.01) * iw as f32) as u32;
