@@ -31,6 +31,15 @@ pub struct WgslPresetsSpawnRequest {
     pub source_node: NodeId,
 }
 
+/// Reverse pairing: request from an empty Visuals (WGSL) viewer to spawn a
+/// Visual Presets picker to its LEFT (default preset `gradient`) and auto-wire
+/// `Shader → WGSL`. Lets a bare viewer bootstrap itself into a usable state
+/// with one click. Consumed by `app/mod.rs`.
+#[derive(Clone, Debug)]
+pub struct WgslViewerLoadPresetRequest {
+    pub viewer_node: NodeId,
+}
+
 // ── Preset metadata ──────────────────────────────────────────────────────────
 
 #[derive(Clone)]
@@ -73,7 +82,8 @@ fn all_presets() -> &'static Vec<Preset> {
                 // Sort by curated order first, then alphabetical for the rest
                 let priority_order: &[&str] = &[
                     "gradient", "plasma", "particles", "spinsquare",
-                    "julia", "mandelbrot", "lissajous",
+                    "julia", "kaleidoscope",
+                    "mandelbrot", "lissajous",
                     "camera_grade", "edge_detect", "displacement",
                 ];
                 files.sort_by(|a, b| {
@@ -160,7 +170,7 @@ impl Default for WgslPresetsNode {
 }
 
 impl NodeBehavior for WgslPresetsNode {
-    fn title(&self) -> &str { "WGSL Presets" }
+    fn title(&self) -> &str { "Visual Presets (WGSL)" }
 
     fn inputs(&self) -> Vec<PortDef> { Vec::new() }
 
@@ -214,8 +224,8 @@ impl NodeBehavior for WgslPresetsNode {
         ui.separator();
 
         if ui
-            .button("+ Spawn paired WGSL Viewer")
-            .on_hover_text("Create a WGSL Viewer to the right and connect Shader → WGSL")
+            .button("+ WGSL Viewer")
+            .on_hover_text("Create a Visuals (WGSL) viewer to the right and connect Shader → WGSL")
             .clicked()
         {
             let req = WgslPresetsSpawnRequest { source_node: ctx.node_id };

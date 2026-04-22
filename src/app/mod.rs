@@ -1577,6 +1577,29 @@ impl PatchworkApp {
             crate::system_log::log("Spawned paired WGSL Viewer for Formula Preset Picker".to_string());
         }
 
+        // Reverse pairing: an empty Visuals (WGSL) viewer asked for a
+        // Visual Presets picker. Spawn one to the LEFT with the default
+        // (top-of-list) preset already selected and auto-wire it.
+        if let Some(req) = ctx.data_mut(|d| d.get_temp::<crate::nodes::wgsl_presets::WgslViewerLoadPresetRequest>(egui::Id::new("wgsl_viewer_load_preset_request"))) {
+            ctx.data_mut(|d| d.remove::<crate::nodes::wgsl_presets::WgslViewerLoadPresetRequest>(egui::Id::new("wgsl_viewer_load_preset_request")));
+
+            let viewer_pos = self.graph.nodes.get(&req.viewer_node).map(|n| n.pos).unwrap_or([0.0, 0.0]);
+            let spawn_pos = [viewer_pos[0] - 280.0, viewer_pos[1]];
+
+            // Build a fresh Visual Presets node defaulted to "gradient" —
+            // the Default impl picks whatever the first priority-ordered
+            // preset is, but we force "gradient" explicitly so that key
+            // is used regardless of future reordering.
+            let mut picker = crate::nodes::wgsl_presets::WgslPresetsNode::default();
+            picker.preset_key = "gradient".to_string();
+            let picker_id = self.graph.add_node(
+                NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(picker) } },
+                spawn_pos,
+            );
+            self.graph.add_connection(picker_id, 0, req.viewer_node, 0);
+            crate::system_log::log("Spawned Visual Presets picker for empty Visuals (WGSL) viewer".to_string());
+        }
+
         self.midi.process(midi_actions);
         self.serial.process(serial_actions);
         self.osc.process(osc_actions);

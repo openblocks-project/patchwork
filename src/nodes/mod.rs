@@ -416,7 +416,7 @@ pub fn catalog() -> Vec<NodeCatalogEntry> {
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(web_app_node::WebAppNode::default()) } } },
 
         // ── Shader ───────────────────────────────────────────
-        NodeCatalogEntry { wip: false, singleton: false, label: "WGSL Viewer", category: "Shader", factory: || NodeType::WgslViewer {
+        NodeCatalogEntry { wip: false, singleton: false, label: "Visuals (WGSL)", category: "Shader", factory: || NodeType::WgslViewer {
             wgsl_code: String::new(),
             uniform_names: vec![], uniform_types: vec![], uniform_values: vec![], uniform_min: vec![], uniform_max: vec![],
             canvas_w: 400.0, canvas_h: 300.0, resolution: 120, expanded: false,
@@ -456,7 +456,7 @@ pub fn catalog() -> Vec<NodeCatalogEntry> {
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(image_scanner_node::ImageScannerNode::default()) } } },
         NodeCatalogEntry { wip: false, singleton: false, label: "Frame Recorder", category: "Image",
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(frame_recorder_node::FrameRecorderNode::default()) } } },
-        NodeCatalogEntry { wip: false, singleton: false, label: "WGSL Presets", category: "Shader",
+        NodeCatalogEntry { wip: false, singleton: false, label: "Visual Presets (WGSL)", category: "Shader",
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(wgsl_presets::WgslPresetsNode::default()) } } },
 
         // ── Signal ───────────────────────────────────────────

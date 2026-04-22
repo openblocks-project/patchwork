@@ -1337,7 +1337,7 @@ impl NodeBehavior for NodeType {
         match self {
             NodeType::Slider { .. } => "Slider",
             NodeType::FolderBrowser { .. } => "Folder",
-            NodeType::WgslViewer { .. } => "WGSL Viewer",
+            NodeType::WgslViewer { .. } => "Visuals (WGSL)",
             NodeType::MidiOut { .. } => "MIDI Out",
             NodeType::MidiIn { .. } => "MIDI In",
             NodeType::Theme { .. } => "Theme",

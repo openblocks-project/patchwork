@@ -43,6 +43,10 @@ pub fn slider_defaults_for_uniform(name: &str) -> (f32, f32, f32, f32) {
         (0.0, 0.15, 0.001, 0.04)
     } else if lower.contains("ratio") {
         (0.5, 8.0, 0.01, 3.0)
+    } else if lower.contains("segment") {
+        (2.0, 32.0, 1.0, 6.0)
+    } else if lower.contains("zoom") {
+        (0.1, 4.0, 0.01, 1.0)
     } else if lower.contains("thick") || lower.contains("width") {
         (0.001, 0.05, 0.0005, 0.008)
     } else if lower.contains("size") || lower.contains("scale") || lower.contains("radius") {
@@ -623,6 +627,18 @@ pub fn render(
 
     if code.is_empty() {
         ui.colored_label(egui::Color32::GRAY, "Connect WGSL code to render");
+        // Offer a one-click bootstrap: spawn a Visual Presets picker to the
+        // left, auto-wire it, with "gradient" selected so the viewer lights up
+        // immediately. Mirrors the picker's own "+ WGSL Viewer" flow but in
+        // the opposite direction.
+        if ui.button("+ Load from Presets").clicked() {
+            let req = crate::nodes::wgsl_presets::WgslViewerLoadPresetRequest {
+                viewer_node: node_id,
+            };
+            ui.ctx().data_mut(|d| {
+                d.insert_temp(egui::Id::new("wgsl_viewer_load_preset_request"), req);
+            });
+        }
         return;
     }
 
