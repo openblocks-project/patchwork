@@ -231,6 +231,7 @@ impl GpuTextureCache {
             crate::nodes::blend::cleanup_node(cr, node_id);
             crate::nodes::image_effects::cleanup_node(cr, node_id);
             crate::nodes::image_style_node::cleanup_node(cr, node_id);
+            crate::nodes::kaleidoscope_node::cleanup_node(cr, node_id);
         }
     }
 
@@ -258,6 +259,7 @@ impl GpuTextureCache {
             crate::nodes::blend::cleanup_all(cr);
             crate::nodes::image_effects::cleanup_all(cr);
             crate::nodes::image_style_node::cleanup_all(cr);
+            crate::nodes::kaleidoscope_node::cleanup_all(cr);
         }
     }
 

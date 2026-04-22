@@ -96,6 +96,7 @@ pub mod color_curves;
 pub mod ml_model;
 pub mod transform_node;
 pub mod image_style_node;
+pub mod kaleidoscope_node;
 pub mod color_channel_node;
 pub mod video_player;
 pub mod timer;
@@ -445,6 +446,8 @@ pub fn catalog() -> Vec<NodeCatalogEntry> {
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(transform_node::TransformNode::default()) } } },
         NodeCatalogEntry { wip: false, singleton: false, label: "Image Style", category: "Image",
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(image_style_node::ImageStyleNode::default()) } } },
+        NodeCatalogEntry { wip: false, singleton: false, label: "Kaleidoscope", category: "Image",
+            factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(kaleidoscope_node::KaleidoscopeNode::default()) } } },
         NodeCatalogEntry { wip: false, singleton: false, label: "Color Channel", category: "Image",
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(color_channel_node::ColorChannelNode::default()) } } },
         NodeCatalogEntry { wip: false, singleton: false, label: "Fill", category: "Image",
