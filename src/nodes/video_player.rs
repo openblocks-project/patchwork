@@ -883,9 +883,18 @@ pub fn render_camera(
 /// Fast nearest-neighbor downsample for preview display
 pub fn fast_downsample(img: &ImageData, target_w: u32, target_h: u32) -> Vec<u8> {
     if target_w == 0 || target_h == 0 { return vec![]; }
-    if target_w >= img.width && target_h >= img.height {
-        return img.pixels.clone();
-    }
+
+    // NOTE: an earlier fast path returned `img.pixels.clone()` directly
+    // when `target_w >= img.width && target_h >= img.height` to skip
+    // the inner loop. That's a bug — callers expect a buffer sized
+    // `target_w * target_h * 4`, not `img.w * img.h * 4`. It crashed
+    // `ColorImage::from_rgba_unmultiplied` with a left/right byte-count
+    // mismatch any time a Transform node (or upstream processing) shrank
+    // the image below the preview target. The downsample loop below
+    // handles both downscale and upscale (nearest-neighbour; blocky but
+    // correct) — removing the fast path fixes the crash with no measurable
+    // perf hit since the real hot case is downscaling Camera 1920×1080
+    // → preview 300×169.
 
     // u32-granular copy with a precomputed source-column map. Inner loop
     // becomes `dst[i] = src[col_map[i]]` — no per-pixel float math, no

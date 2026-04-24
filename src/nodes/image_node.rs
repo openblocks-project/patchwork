@@ -640,7 +640,25 @@ fn downsample_for_preview(img: &ImageData, scale: f32) -> (usize, usize, Vec<u8>
         }
         (tw as usize, th as usize, small)
     } else {
-        (img.width as usize, img.height as usize, img.pixels.to_vec())
+        // No scaling needed. But the ImageData's `pixels` buffer must
+        // match `width × height × 4` or `ColorImage::from_rgba_unmultiplied`
+        // on the caller side will panic. Pad / truncate defensively
+        // rather than propagate the corrupt buffer; the caller reads
+        // the returned dims and sizes its ColorImage to match.
+        let expected = (img.width as usize) * (img.height as usize) * 4;
+        if img.pixels.len() == expected {
+            (img.width as usize, img.height as usize, img.pixels.to_vec())
+        } else {
+            // Pad with zeroes (or truncate) to the declared dims so
+            // downstream ColorImage construction doesn't panic. A
+            // follow-up ought to find and fix whichever upstream node
+            // is producing this mismatched frame — but a corrupt
+            // preview is infinitely preferable to a whole-app crash.
+            let mut fixed = vec![0u8; expected];
+            let n = img.pixels.len().min(expected);
+            fixed[..n].copy_from_slice(&img.pixels[..n]);
+            (img.width as usize, img.height as usize, fixed)
+        }
     }
 }
 

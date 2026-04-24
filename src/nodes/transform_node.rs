@@ -427,12 +427,28 @@ fn ensure_pipeline(
         fragment: Some(wgpu::FragmentState {
             module: &shader,
             entry_point: Some("fs_main"),
-            // Bgra8Unorm matches Camera upstream and Syphon's preferred
-            // format — keeps the whole chain format-consistent for the
-            // common case. (Kaleidoscope hardcodes Rgba8UnormSrgb;
-            // differ here deliberately so Camera → Transform → Syphon
-            // stays unswizzled end-to-end.)
-            targets: &[Some(wgpu::TextureFormat::Bgra8Unorm.into())],
+            // `Bgra8UnormSrgb` (not `Bgra8Unorm`!) to match the sRGB
+            // colourspace of Camera / NDI In uploads, which go through
+            // `upload_texture` / `get_or_upload` at
+            // `gpu_image.rs` lines 660/830/926/944 as
+            // `Rgba8UnormSrgb`. Without this match:
+            //   1. Sampler decodes sRGB-encoded upstream bytes → linear.
+            //   2. Shader applies the affine transform on linear values.
+            //   3. Output writes linear values into a `Bgra8Unorm`
+            //      texture, which downstream consumers (Syphon, NDI,
+            //      Visual Output, Video In NDI loopback) then render
+            //      as if they were sRGB display values.
+            // Net effect: gamma-compressed shadows + boosted mid-tones,
+            // which the user reads as "added contrast / saturation".
+            // Keeping the sRGB suffix makes the linear-math step
+            // transparent: encode on write, decode on next sample.
+            // BGRA channel order chosen over RGBA so Syphon's MTLTexture
+            // hand-off stays unswizzled (matches Syphon's preferred
+            // format); NDI readback handles the channel swap in
+            // `readback_texture_bgra`. Kaleidoscope uses
+            // `Rgba8UnormSrgb` — different channel order for its own
+            // Metal-compat reasons.
+            targets: &[Some(wgpu::TextureFormat::Bgra8UnormSrgb.into())],
             compilation_options: wgpu::PipelineCompilationOptions::default(),
         }),
         primitive: wgpu::PrimitiveState::default(),
@@ -553,7 +569,12 @@ impl TransformNode {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Bgra8Unorm,
+            // `Bgra8UnormSrgb` — must match the render-pipeline target
+            // format declared at line :435. See the long-form comment
+            // there for the sRGB-matching rationale; TL;DR: the upstream
+            // texture is sRGB, so the output has to be sRGB too or the
+            // gamma conversions on sample and store don't cancel.
+            format: wgpu::TextureFormat::Bgra8UnormSrgb,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT
                  | wgpu::TextureUsages::COPY_SRC
                  | wgpu::TextureUsages::TEXTURE_BINDING,

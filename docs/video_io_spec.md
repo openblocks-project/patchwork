@@ -188,17 +188,23 @@ Video In ───┼─→ Video Out (Syphon "PatchWork")    [GPU]
 | **Key surface** | `SyphonMetalServer::publishFrameTexture:imageRegion:textureDimensions:flipped:`. `SyphonMetalClient::initWithServerDescription:options:newFrameHandler:`. |
 | **wgpu bridge** | Export: `wgpu::Texture::as_hal::<wgpu::hal::metal::Api, _>(|tex| tex.raw_handle())` → `MTLTexture`. Import: `wgpu_hal::metal::Device::texture_from_raw(raw, ..)` wrapped as `wgpu::Texture`. Exact signatures pinned to the `wgpu` version in `Cargo.lock` at implementation time. |
 
-### 7.2 NDI (cross‑platform, Phase 3)
+### 7.2 NDI (macOS v1, Phase 3) — **Shipped** ✓
 
 | | |
 |---|---|
-| **Transport** | Reliable UDP multicast / unicast on the LAN; same‑machine optimised path (mDNS) |
-| **Latency** | 16–50 ms (encoding + network) |
-| **Threading** | `ndi::Send` is `Send`. We publish from the UI thread; the library spawns its own worker pool internally. |
-| **Runtime** | `libndi.dylib` / `Processing.NDI.Lib.x64.dll` / `libndi.so` installed by the user from ndi.video (EULA). Loaded via `libloading`. If missing, the Video Out's `NDI` dropdown entry is disabled with a "Install NDI Runtime from ndi.video" tooltip. |
-| **Crate** | `ndi = "1.1"` or direct FFI via `libloading`. Decision deferred to Phase 3 day 1 — the crate has the right dynamic‑load shape but we may wrap ourselves if the C API is simpler for our use. |
-| **Pixel format** | BGRA or UYVY. We feed BGRA because our readback produces RGBA8; a tiny SIMD/swizzle kernel lives in `src/video_io/pixel_swizzle.rs`. |
-| **Discovery** | `ndi::find::Find` polled on a 2 s background thread, results funnelled into the Video In source dropdown via a mpsc channel. |
+| **Transport** | NDI Runtime's own reliable UDP multicast / unicast on the LAN; same‑machine optimised path (mDNS) |
+| **Latency** | ~17 ms (send) + ~10–15 ms (encode) + network. Full self‑loopback at 1080p: ~50 ms end‑to‑end. |
+| **Threading** | `NdiSender` is `Send`; we publish from the UI thread. `NdiReceiver` runs its blocking `recv_capture_v3(100ms)` loop on a per‑node background thread that writes frames into an `Arc<Mutex<Option<Arc<ImageData>>>>` slot the UI thread drains each tick. |
+| **Runtime** | `libndi.dylib` installed by the user from [ndi.video/tools/](https://ndi.video/tools/) (NewTek EULA — can't bundle). Loaded via `libloading` at first use, cached in a `OnceLock`. Search path: `$NDI_RUNTIME_DIR_V6 / V5` env vars → `/usr/local/lib/libndi.dylib` → `/Library/NDI SDK for Apple/lib/macOS/libndi.dylib` → `/Applications/*.app/Contents/Frameworks/libndi.dylib` (catches NDI Tools 5/6 which embed libndi per app bundle rather than installing globally) → dyld default. |
+| **Missing‑runtime UX** | `VideoSource::Ndi.available()` / `VideoSink::Ndi.available()` return `false`; the dropdown entries show `(install NDI Runtime)` with a hover tooltip pointing at ndi.video. Selecting NDI in either node surfaces an inline `⚠ NDI Runtime not installed` banner with the install URL. `system_log::warn` fires once at first load attempt. |
+| **Crate** | Hand‑rolled `libloading` FFI in `src/video_io/ndi.rs` (`NdiLibrary` function‑pointer table + safe `NdiSender` / `NdiReceiver` / `NdiFinder` wrappers). Considered `grafton-ndi` (compile‑time link, requires SDK on build machine) and `ndi-sdk` (libloading but router‑only, no send/recv). Hand‑rolled matches the Phase 4 Spout plan exactly (same `libloading` pattern, same "user installs runtime" shape). |
+| **Pixel format** | Sender: `readback_texture_bgra` (fused) pulls BGRA straight out of the GPU texture — zero swizzle when upstream is already `Bgra8UnormSrgb` (Transform), one fused swap when upstream is `Rgba8UnormSrgb` (Camera/NDI In/uploads). Receiver: `capture_video` fills a BGRA `CapturedFrame`, worker thread swizzles BGRA → RGBA once into `Arc<ImageData>` via `pixel_swizzle::bgra_to_rgba`. |
+| **Discovery** | `NdiFinder` instance kept on each Video In node for the lifetime of the source-picker session; `sources()` queried at 1 Hz via a TTL cache (same pattern as `syphon_servers_cache`). Refresh ↻ forces immediate re‑poll. |
+| **FPS cap** | Explicit `fps_cap: f32` DragValue on Video Out (default 60, range 5–120). Last‑send timestamp gates publishes; UI shows `last send: N ms ago` heartbeat so silent-NDI failures are immediately visible. |
+| **Staleness detection** | Video In tracks `ndi_last_frame_at`; indicator cycles `Connecting… → Receiving → Source offline — waiting for frames` based on elapsed time. Worker stays alive so an offline sender coming back reconnects automatically. |
+| **Dual‑consumer** | NDI (like Syphon) is publish‑subscribe, so multiple Video In nodes subscribing to the same sender is fine. Video In (Camera) however *does* hit AVFoundation device‑exclusive — detected by the process‑wide `CAMERA_OWNERS` registry; second opener sees "Device in use by Video In #N". |
+| **Restart reconnect** | Same caveat as Syphon (see §7.1): NDI senders come up with a fresh internal UUID on every PatchWork restart. Receivers that were subscribed keep the name visible but need a manual re‑pick. Documented in the Publish-as hover tooltip. |
+| **Known limits** | NDI codec dominates at high res: full-HD self-loopback hits 60 fps easily, 4K self-loopback caps around 20 fps (encode on send + decode on receive + 22 MB/frame CPU work, both directions on one machine). Real deployments (sender and receiver on different machines) roughly double those numbers per side. |
 
 ### 7.3 Spout (Windows, Phase 4)
 

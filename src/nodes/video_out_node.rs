@@ -51,14 +51,21 @@ impl VideoSink {
             Self::FileRecord => "Phase 6",
         }
     }
+    /// Whether this sink is wired up in the current build + environment.
+    ///
+    /// `Ndi` is the odd one out: cross-platform in principle, but the
+    /// NDI Runtime is a user-installed EULA'd dylib, not something we
+    /// can bundle. So `Ndi.available()` checks `ndi::library()` at
+    /// runtime — the UI disables NDI and shows an install tooltip when
+    /// libndi is missing.
     fn available(self) -> bool {
-        #[cfg(target_os = "macos")]
-        {
-            matches!(self, Self::Window | Self::Syphon)
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            matches!(self, Self::Window)
+        match self {
+            Self::Window => true,
+            #[cfg(target_os = "macos")]
+            Self::Syphon => true,
+            #[cfg(target_os = "macos")]
+            Self::Ndi => crate::video_io::ndi::library().is_ok(),
+            _ => false,
         }
     }
     fn all() -> [Self; 6] {
@@ -101,6 +108,32 @@ pub struct VideoOutNode {
     #[cfg(target_os = "macos")]
     #[serde(skip)]
     syphon_server: Arc<Mutex<Option<crate::video_io::syphon::SyphonServer>>>,
+
+    /// NDI sender, lazily created on first enabled tick when the sink
+    /// is `Ndi`. Same `Arc<Mutex<Option<...>>>` shape as the Syphon
+    /// server so the whole node stays `Send + Sync`. Dropping the
+    /// `NdiSender` (sink change / disable / node removal) runs
+    /// `NDIlib_send_destroy` → receivers drop our entry within ~2–3 s.
+    #[cfg(target_os = "macos")]
+    #[serde(skip)]
+    ndi_sender: Arc<Mutex<Option<crate::video_io::ndi::NdiSender>>>,
+
+    /// Reusable BGRA scratch buffer for the NDI send path. We swizzle
+    /// the upstream `Arc<ImageData>` (RGBA) into this buffer once per
+    /// frame and hand it to `NdiSender::publish_bgra`. Allocated once
+    /// on first publish, grown if resolution increases, never shrunk.
+    #[cfg(target_os = "macos")]
+    #[serde(skip)]
+    ndi_scratch: Vec<u8>,
+
+    /// Instant of the last `publish_bgra` call. Used to enforce
+    /// `fps_cap` (skip the publish if the cap budget hasn't elapsed)
+    /// and to power the UI "last send: Nms ago" heartbeat. `None`
+    /// until the first send of a session — resets on Stop / node
+    /// removal.
+    #[cfg(target_os = "macos")]
+    #[serde(skip)]
+    ndi_last_send: Option<std::time::Instant>,
 }
 
 impl Default for VideoOutNode {
@@ -114,14 +147,21 @@ impl Default for VideoOutNode {
             status: String::new(),
             #[cfg(target_os = "macos")]
             syphon_server: Arc::new(Mutex::new(None)),
+            #[cfg(target_os = "macos")]
+            ndi_sender: Arc::new(Mutex::new(None)),
+            #[cfg(target_os = "macos")]
+            ndi_scratch: Vec::new(),
+            #[cfg(target_os = "macos")]
+            ndi_last_send: None,
         }
     }
 }
 
 impl Clone for VideoOutNode {
-    /// Cloned copy starts cold: fresh sink state, no running SyphonServer
-    /// (it'll be re-created on first publish tick if `enabled` is on).
-    /// Matches `DynNode::clone`'s serialize→deserialize round-trip shape.
+    /// Cloned copy starts cold: fresh sink state, no running server /
+    /// sender (they're re-created on first publish tick if `enabled`
+    /// comes back on). Matches `DynNode::clone`'s serialize→deserialize
+    /// round-trip shape.
     fn clone(&self) -> Self {
         Self {
             sink: self.sink,
@@ -132,6 +172,12 @@ impl Clone for VideoOutNode {
             status: String::new(),
             #[cfg(target_os = "macos")]
             syphon_server: Arc::new(Mutex::new(None)),
+            #[cfg(target_os = "macos")]
+            ndi_sender: Arc::new(Mutex::new(None)),
+            #[cfg(target_os = "macos")]
+            ndi_scratch: Vec::new(),
+            #[cfg(target_os = "macos")]
+            ndi_last_send: None,
         }
     }
 }
@@ -150,10 +196,20 @@ impl NodeBehavior for VideoOutNode {
     fn inline_ports(&self) -> bool { true }
 
     /// Window sink is GPU-resident (draws via `show_image_gpu`). Only
-    /// flip to `true` once a CPU-requiring sink (NDI, vcam IOSurface,
-    /// file record) is wired up.
+    /// flip to `true` once a CPU-requiring sink (virtual camera
+    /// IOSurface, file record) is wired up.
+    ///
+    /// `Ndi` used to return `true` here — which forced the upstream
+    /// to run `readback_texture` and normalise BGRA→RGBA, only for
+    /// NDI Out to swizzle RGBA→BGRA again before `send_video_v2`.
+    /// Two full passes over multi-MB buffers per frame. Now `Ndi`
+    /// returns `false` and `render_ndi_sink` pulls the texture out
+    /// of the GPU cache itself via the fused `readback_texture_bgra`
+    /// helper — single pass, zero work when source is already BGRA.
+    /// The CPU fallback (Camera → NDI with no intermediate GPU node)
+    /// still works because Camera emits `PortValue::Image` directly.
     fn needs_cpu_image_input(&self, _port: usize) -> bool {
-        matches!(self.sink, VideoSink::Ndi | VideoSink::VirtualCamera | VideoSink::FileRecord)
+        matches!(self.sink, VideoSink::VirtualCamera | VideoSink::FileRecord)
     }
 
     fn evaluate(&mut self, _inputs: &[PortValue]) -> Vec<(usize, PortValue)> { vec![] }
@@ -179,11 +235,19 @@ impl NodeBehavior for VideoOutNode {
         // Syphon sink: Drop on SyphonServer runs -stop, which
         // unregisters the server from the directory so TD / OBS drop
         // our name from their pickers within one announce cycle.
+        //
+        // NDI sink: Drop on NdiSender runs NDIlib_send_destroy, so
+        // Studio Monitor / OBS NDI In drop our entry within one NDI
+        // announce cycle (~2–3 s on LAN).
         #[cfg(target_os = "macos")]
         {
             if let Ok(mut guard) = self.syphon_server.lock() {
                 *guard = None;
             }
+            if let Ok(mut guard) = self.ndi_sender.lock() {
+                *guard = None;
+            }
+            self.ndi_last_send = None;
         }
     }
 
@@ -231,13 +295,41 @@ impl NodeBehavior for VideoOutNode {
                 .width(170.0)
                 .show_ui(ui, |ui| {
                     for s in VideoSink::all() {
-                        let text = if s.available() {
-                            s.label().to_string()
+                        // NDI when disabled means the Runtime is missing
+                        // (shippable, just needs the user to install it).
+                        // Other disabled sinks are "future phase" — show
+                        // the phase tag so it's clear what's pending.
+                        let (text, tooltip) = if s.available() {
+                            (s.label().to_string(), None)
                         } else {
-                            format!("{}  ({})", s.label(), s.phase_hint())
+                            #[cfg(target_os = "macos")]
+                            {
+                                if matches!(s, VideoSink::Ndi) {
+                                    (
+                                        format!("{}  (install NDI Runtime)", s.label()),
+                                        Some(
+                                            "NDI Runtime not installed.\n\
+                                             Install the free NDI Tools package\n\
+                                             from https://ndi.video/tools/.",
+                                        ),
+                                    )
+                                } else {
+                                    (
+                                        format!("{}  ({})", s.label(), s.phase_hint()),
+                                        None,
+                                    )
+                                }
+                            }
+                            #[cfg(not(target_os = "macos"))]
+                            {
+                                (format!("{}  ({})", s.label(), s.phase_hint()), None)
+                            }
                         };
                         ui.add_enabled_ui(s.available(), |ui| {
-                            ui.selectable_value(&mut self.sink, s, text);
+                            let resp = ui.selectable_value(&mut self.sink, s, text);
+                            if let Some(t) = tooltip {
+                                resp.on_hover_text(t);
+                            }
                         });
                     }
                 });
@@ -251,12 +343,21 @@ impl NodeBehavior for VideoOutNode {
                     if let Ok(mut guard) = self.syphon_server.lock() {
                         *guard = None;
                     }
+                    if let Ok(mut guard) = self.ndi_sender.lock() {
+                        *guard = None;
+                    }
+                    self.ndi_last_send = None;
                 }
-                // Carry forward a Syphon publish-name default if coming
-                // into Syphon for the first time so the text field isn't
-                // blank (and the server isn't anonymous).
-                if self.sink == VideoSink::Syphon && self.destination.is_empty() {
+                // Carry forward publish-name + fps defaults when
+                // switching INTO Syphon / NDI so the user isn't greeted
+                // with a blank text field + 0 fps cap.
+                if matches!(self.sink, VideoSink::Syphon | VideoSink::Ndi)
+                    && self.destination.is_empty()
+                {
                     self.destination = "PatchWork".into();
+                }
+                if self.sink == VideoSink::Ndi && self.fps_cap <= 0.0 {
+                    self.fps_cap = 60.0;
                 }
             }
         });
@@ -266,6 +367,8 @@ impl NodeBehavior for VideoOutNode {
             VideoSink::Window => self.render_window_sink(ui, ctx, &input_val),
             #[cfg(target_os = "macos")]
             VideoSink::Syphon => self.render_syphon_sink(ui, ctx, &input_val),
+            #[cfg(target_os = "macos")]
+            VideoSink::Ndi => self.render_ndi_sink(ui, ctx, &input_val),
             _ => {
                 ui.add_space(4.0);
                 ui.colored_label(
@@ -468,6 +571,310 @@ impl VideoOutNode {
         ui.colored_label(dim, egui::RichText::new(format!("{}×{}", w, h)).small());
     }
 
+    /// Phase 3 NDI sink (macOS only for now — libloading FFI is ready
+    /// for Windows / Linux once we un-gate `src/video_io/ndi.rs`).
+    /// Publishes the upstream `PortValue::Image` (BGRA-swizzled from
+    /// RGBA) to an `NdiSender` so any NDI consumer on the LAN
+    /// (NDI Studio Monitor, OBS NDI In, Resolume, Zoom) can subscribe.
+    ///
+    /// `needs_cpu_image_input(0) == true` for `Ndi` (set at
+    /// `video_out_node.rs` :needs_cpu_image_input), so the upstream
+    /// image arrives here as `PortValue::Image(Arc<ImageData>)` with
+    /// CPU pixels ready. No GPU readback logic lives in this function;
+    /// it's handled by the shared `has_cpu_consumer` plumbing in
+    /// `app/mod.rs`.
+    ///
+    /// Lifecycle: sender lazy-created on the first enabled frame with
+    /// a valid upstream. Rename / disable / sink-switch /
+    /// `on_removed` all drop it so Studio Monitor's picker stays in sync.
+    #[cfg(target_os = "macos")]
+    fn render_ndi_sink(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &mut RenderContext,
+        input_val: &PortValue,
+    ) {
+        use crate::gpu_image;
+        use crate::video_io::{ndi, pixel_swizzle};
+
+        let dim = ui.visuals().widgets.noninteractive.fg_stroke.color;
+
+        // Clear transient status each frame — only genuine error paths
+        // below set it. Mirrors the M4.c fix on `render_syphon_sink`.
+        self.status.clear();
+
+        // ── Gate: runtime must be installed ────────────────────────
+        // Same reasoning as `render_ndi_ui` — user may land here via
+        // a loaded project or after uninstalling the runtime mid-session.
+        // Skip the entire publish UI and surface an install hint so
+        // nobody's left wondering why "Broadcast" does nothing.
+        if let Err(msg) = ndi::library() {
+            ui.colored_label(
+                egui::Color32::from_rgb(255, 140, 80),
+                egui::RichText::new("⚠ NDI Runtime not installed").strong(),
+            )
+            .on_hover_text(msg);
+            ui.colored_label(
+                dim,
+                egui::RichText::new(
+                    "Install the free NDI Tools package from\n\
+                     https://ndi.video/tools/ to enable NDI publishing.",
+                )
+                .small(),
+            );
+            return;
+        }
+
+        // ── Publish name text field ────────────────────────────────
+        let mut name_changed = false;
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Publish as").small())
+                .on_hover_text(
+                    "Appears in NDI Studio Monitor / OBS NDI Source / \
+                     Resolume pickers as `HOSTNAME (Publish Name)`.\n\n\
+                     When PatchWork restarts, receivers that were \
+                     subscribed will keep the name visible but stop \
+                     receiving frames — re-pick the sender in their \
+                     dropdown to reconnect. Standard NDI behaviour.",
+                );
+            let resp = ui.add(
+                egui::TextEdit::singleline(&mut self.destination)
+                    .desired_width(180.0)
+                    .hint_text("PatchWork"),
+            );
+            if resp.lost_focus() || resp.ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
+                name_changed = true;
+            }
+        });
+        if name_changed {
+            // Drop the old sender so the next tick re-creates with the
+            // new publish name. Matches render_syphon_sink behaviour.
+            if let Ok(mut guard) = self.ndi_sender.lock() {
+                *guard = None;
+            }
+            self.ndi_last_send = None;
+        }
+
+        // ── FPS cap DragValue ──────────────────────────────────────
+        // NDI consumers expect reasonable frame pacing — allow 5–120 Hz
+        // with 60 as the sensible default. Legacy projects with
+        // `fps_cap == 0.0` get bumped to 60 when switching to NDI
+        // (handled in the sink-change branch above).
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("fps cap").small())
+                .on_hover_text(
+                    "Max frames-per-second to publish. NDI senders \
+                     that flood faster than receivers can decode cause \
+                     visible jitter — 60 is a safe default, drop lower \
+                     if the upstream is slower than that.",
+                );
+            ui.add(
+                egui::DragValue::new(&mut self.fps_cap)
+                    .range(5.0..=120.0)
+                    .speed(1.0)
+                    .suffix(" Hz"),
+            );
+        });
+
+        // ── Broadcast toggle + state indicator ─────────────────────
+        // Mirrors render_syphon_sink's three-state machine:
+        //   sender not yet created → dim "ready"
+        //   sender up, 0 conns     → amber "waiting for receivers"
+        //   sender up, ≥1 conn     → green "● live (N)"
+        let mut toggle_clicked = false;
+        ui.horizontal(|ui| {
+            let label = if self.enabled { "● Stop" } else { "▶ Broadcast" };
+            if ui.button(label).clicked() {
+                toggle_clicked = true;
+            }
+            if self.enabled {
+                let (has_sender, conns) = self
+                    .ndi_sender
+                    .lock()
+                    .ok()
+                    .map(|g| match g.as_ref() {
+                        Some(s) => (true, s.connection_count(0)),
+                        None => (false, 0),
+                    })
+                    .unwrap_or((false, 0));
+                let (text, color) = if !has_sender {
+                    ("ready".to_string(), dim)
+                } else if conns > 0 {
+                    (
+                        format!("● live ({})", conns),
+                        egui::Color32::from_rgb(80, 200, 80),
+                    )
+                } else {
+                    (
+                        "waiting for receivers".into(),
+                        egui::Color32::from_rgb(200, 180, 80),
+                    )
+                };
+                ui.colored_label(color, egui::RichText::new(text).small());
+            }
+        });
+        if toggle_clicked {
+            self.enabled = !self.enabled;
+            if !self.enabled {
+                if let Ok(mut guard) = self.ndi_sender.lock() {
+                    *guard = None;
+                }
+                self.ndi_last_send = None;
+            }
+        }
+
+        // Heartbeat: "last send: 12ms ago" — 1 Hz visible feedback that
+        // the publish path is actually running. Important because
+        // `NDIlib_send_send_video_v2` is `void` (no return code) and
+        // silent failure otherwise looks identical to "waiting for
+        // receivers". Pre-planned per the Phase 2 M4.c lesson.
+        if self.enabled {
+            if let Some(t) = self.ndi_last_send {
+                let since = t.elapsed();
+                ui.colored_label(
+                    dim,
+                    egui::RichText::new(format!(
+                        "last send: {} ms ago",
+                        since.as_millis()
+                    ))
+                    .small(),
+                );
+            }
+        }
+
+        if !self.status.is_empty() {
+            ui.colored_label(
+                egui::Color32::from_rgb(255, 100, 100),
+                egui::RichText::new(&self.status).small(),
+            );
+        }
+
+        if !self.enabled {
+            return;
+        }
+
+        // ── Resolve upstream pixels (prefer GPU path) ──────────────
+        //
+        // Two source shapes are possible with `needs_cpu_image_input
+        // = false` for Ndi:
+        //   - `PortValue::Image` — upstream is CPU-native (Camera /
+        //     Screen / Video File / NDI In). We swizzle RGBA→BGRA
+        //     into `ndi_scratch`.
+        //   - `PortValue::GpuImage` — upstream is GPU-resident
+        //     (Transform, WGSL Viewer, Blend, …). We do the readback
+        //     ourselves via `readback_texture_bgra`, which fuses the
+        //     copy + (conditional) swizzle into one pass. If the
+        //     texture is already `Bgra8Unorm` (Transform's Phase 2.5
+        //     default) we ship those bytes untouched — zero swizzle.
+        //   - `PortValue::None` — 1-frame transient after wiring, or
+        //     upstream hasn't produced yet. Wait.
+        let publish_dims: (u32, u32) = match input_val {
+            PortValue::Image(arc) => {
+                if arc.width == 0 || arc.height == 0 || arc.pixels.is_empty() {
+                    ui.ctx().request_repaint();
+                    return;
+                }
+                let expected = (arc.width as usize) * (arc.height as usize) * 4;
+                if arc.pixels.len() < expected {
+                    self.status = "upstream frame truncated".into();
+                    ui.ctx().request_repaint();
+                    return;
+                }
+                // CPU fast-path: one copy + one swizzle, same as
+                // before the optimisation.
+                if self.ndi_scratch.len() != expected {
+                    self.ndi_scratch.resize(expected, 0);
+                }
+                self.ndi_scratch.copy_from_slice(&arc.pixels[..expected]);
+                pixel_swizzle::rgba_to_bgra_in_place(&mut self.ndi_scratch);
+                (arc.width, arc.height)
+            }
+            PortValue::GpuImage(handle) => {
+                let Some(render_state) = ctx.wgpu_render_state else {
+                    self.status = "wgpu render state unavailable".into();
+                    return;
+                };
+                // Resolve the actual texture in the per-frame snapshot.
+                // Missing = 1-frame transient (upstream just wired, or
+                // publish queue hasn't drained yet). Wait.
+                let Some((tex, w, h)) =
+                    gpu_image::frame_snapshot_get_texture(handle.node_id, handle.port)
+                else {
+                    ui.ctx().request_repaint();
+                    return;
+                };
+                // Fused readback into scratch. If `tex.format()` is
+                // already BGRA, this is effectively just a wgpu
+                // copy_texture_to_buffer + one row-wise memcpy per
+                // row. If it's RGBA, it additionally swaps R↔B
+                // inline during the extraction — still a single pass.
+                let bgra = gpu_image::readback_texture_bgra(
+                    &render_state.device, &render_state.queue, &tex, w, h,
+                );
+                let expected = (w as usize) * (h as usize) * 4;
+                if bgra.len() != expected {
+                    self.status = "GPU readback size mismatch".into();
+                    ui.ctx().request_repaint();
+                    return;
+                }
+                self.ndi_scratch = bgra;
+                (w, h)
+            }
+            _ => {
+                ui.ctx().request_repaint();
+                return;
+            }
+        };
+        let (w, h) = publish_dims;
+
+        // ── fps cap ────────────────────────────────────────────────
+        let fps_cap = self.fps_cap.max(5.0).min(120.0);
+        let frame_budget = std::time::Duration::from_secs_f32(1.0 / fps_cap);
+        if let Some(t) = self.ndi_last_send {
+            if t.elapsed() < frame_budget {
+                ui.ctx().request_repaint();
+                return;
+            }
+        }
+
+        // ── Lazy-init NdiSender ────────────────────────────────────
+        let Ok(mut guard) = self.ndi_sender.lock() else { return; };
+        if guard.is_none() {
+            let name = if self.destination.trim().is_empty() {
+                "PatchWork"
+            } else {
+                self.destination.trim()
+            };
+            match ndi::NdiSender::new(name) {
+                Ok(s) => *guard = Some(s),
+                Err(e) => {
+                    self.status = format!("Error: {}", e);
+                    self.enabled = false;
+                    return;
+                }
+            }
+        }
+        let Some(sender) = guard.as_ref() else { return; };
+
+        // ── Publish ────────────────────────────────────────────────
+        let (rn, rd) = rational_fps(fps_cap);
+        let publish = sender.publish_bgra(w, h, &self.ndi_scratch, rn, rd);
+        if let Err(e) = publish {
+            self.status = format!("publish error: {}", e);
+        } else {
+            self.ndi_last_send = Some(std::time::Instant::now());
+        }
+        drop(guard);
+
+        ui.ctx().request_repaint();
+
+        ui.add_space(2.0);
+        ui.colored_label(
+            dim,
+            egui::RichText::new(format!("{}×{}", w, h)).small(),
+        );
+    }
+
     /// Phase 1 Window sink: display picker + fullscreen checkbox +
     /// Enable toggle. The viewport is an egui child spawned via
     /// `show_viewport_immediate`; it lives exactly as long as we keep
@@ -652,6 +1059,22 @@ impl VideoOutNode {
             self.enabled = false;
             self.status = String::new();
         }
+    }
+}
+
+/// Convert an `f32` Hz value into an NDI rational frame-rate (N / D).
+///
+/// NDI transmits frame rate as two `i32` fields (`frame_rate_N`,
+/// `frame_rate_D`) so consumers can reconstruct exact values for
+/// standard rates like 29.97 / 59.94. For integer caps (60, 30, 25)
+/// we use D=1; fractional values get D=100.
+#[cfg(target_os = "macos")]
+fn rational_fps(fps: f32) -> (i32, i32) {
+    let rounded = fps.round();
+    if (fps - rounded).abs() < 0.01 {
+        (rounded as i32, 1)
+    } else {
+        ((fps * 100.0).round() as i32, 100)
     }
 }
 

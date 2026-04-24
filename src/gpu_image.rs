@@ -1018,7 +1018,121 @@ pub fn readback_texture(
         pixels.extend_from_slice(&data[start..end]);
     }
 
+    // PatchWork's `ImageData` is RGBA-byte-order by convention
+    // (inherited from the `image` crate and Camera's ffmpeg output).
+    // GPU textures may be `Bgra8Unorm` (Transform outputs this per
+    // Phase 2.5, and Syphon prefers it upstream) — in that case
+    // the raw readback bytes are B, G, R, A and need an R↔B swizzle
+    // before we hand them to CPU consumers.
+    //
+    // Without this, every GPU→CPU boundary silently swaps channels
+    // for any BGRA-format upstream. The bug is invisible inside
+    // PatchWork (preview / Visual Output re-uploads back to GPU with
+    // the same swap, cancelling out) but corrupts anything that
+    // ships `ImageData.pixels` to an external consumer — NDI sender,
+    // File Recorder, AI Request multipart upload, etc. Phase 3 NDI
+    // surfaced it as a hue shift in `Camera → Transform → Video Out (NDI)`.
+    //
+    // Single-layer fix: normalise here so all callers see RGBA.
+    let src_format = texture.format();
+    if matches!(
+        src_format,
+        wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb
+    ) {
+        crate::video_io::pixel_swizzle::rgba_to_bgra_in_place(&mut pixels);
+    }
+
     Arc::new(ImageData { width, height, pixels })
+}
+
+/// Readback variant that emits **BGRA byte order** regardless of the
+/// source texture's format. Used by NDI sender — NDI wants BGRA and
+/// we'd rather not pay two full passes over the pixel buffer.
+///
+/// ## Why this exists
+/// The generic `readback_texture` above normalises to RGBA so generic
+/// CPU consumers (Crop / Fill / AI / File Save) always see the same
+/// convention. That's the right default, but for NDI it means:
+///   1. `readback_texture` swizzles BGRA (from Transform) → RGBA
+///   2. NDI Out then swizzles RGBA → BGRA before `send_video_v2`
+/// Two full passes over a multi-MB buffer per frame. At 1920×2862
+/// that's ~10 ms/frame of pure cache-trashing waste (~44 MB touched).
+///
+/// This function fuses extract-row + optional swizzle into **one**
+/// pass:
+///   - BGRA source: straight row copy, no byte-level work
+///   - RGBA source: row copy with R↔B swapped inline
+/// Ownership is returned as a plain `Vec<u8>` (not `Arc<ImageData>`)
+/// so the caller can feed it straight into a stack-allocated
+/// `NDIlib_video_frame_v2_t` without paying for the Arc.
+pub fn readback_texture_bgra(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    width: u32,
+    height: u32,
+) -> Vec<u8> {
+    let bytes_per_row = (width * 4 + 255) & !255;
+    let buf_size = (bytes_per_row * height) as u64;
+
+    let staging = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("readback_staging_bgra"),
+        size: buf_size,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+
+    let mut encoder = device.create_command_encoder(&Default::default());
+    encoder.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo {
+            texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyBufferInfo {
+            buffer: &staging,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(bytes_per_row),
+                rows_per_image: Some(height),
+            },
+        },
+        wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+    );
+    queue.submit(Some(encoder.finish()));
+
+    let slice = staging.slice(..);
+    let (tx, rx) = std::sync::mpsc::channel();
+    slice.map_async(wgpu::MapMode::Read, move |result| { let _ = tx.send(result); });
+    device.poll(wgpu::Maintain::Wait);
+    let _ = rx.recv();
+
+    let data = slice.get_mapped_range();
+    let needs_swizzle = matches!(
+        texture.format(),
+        wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Rgba8UnormSrgb,
+    );
+    let mut pixels = Vec::with_capacity((width * height * 4) as usize);
+    for row in 0..height {
+        let start = (row * bytes_per_row) as usize;
+        let end = start + (width * 4) as usize;
+        let row_slice = &data[start..end];
+        if needs_swizzle {
+            // Fused extract + RGBA→BGRA: one pass, cache-friendly.
+            for px in row_slice.chunks_exact(4) {
+                pixels.push(px[2]); // B (was R)
+                pixels.push(px[1]); // G (unchanged)
+                pixels.push(px[0]); // R (was B)
+                pixels.push(px[3]); // A
+            }
+        } else {
+            // Source is already BGRA (or some unknown format we just
+            // pass through). Straight row copy.
+            pixels.extend_from_slice(row_slice);
+        }
+    }
+    pixels
 }
 
 // ── GPU Image Display Callback ──────────────────────────────────────────────
