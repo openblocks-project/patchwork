@@ -167,8 +167,12 @@ pub fn render(
                 ui.horizontal(|ui| {
                     crate::nodes::inline_port_circle(ui, node_id, port_idx, true, connections, port_positions, dragging_from, pending_disconnects, PortKind::Normalized);
 
-                    // Truncate long names
-                    let display_name = if name.len() > 14 { &name[..14] } else { name.as_str() };
+                    // Truncate long names (UTF-8-safe)
+                    let display_name: String = if name.chars().count() > 14 {
+                        name.chars().take(14).collect()
+                    } else {
+                        name.clone()
+                    };
                     ui.label(egui::RichText::new(display_name).small());
 
                     if i < param_values.len() {

@@ -214,7 +214,7 @@ impl NodeBehavior for TerminalNode {
             if cmd_wired {
                 let v = Graph::static_input_value(ctx.connections, ctx.values, ctx.node_id, 0);
                 if let PortValue::Text(ref t) = v {
-                    let preview = if t.len() > 24 { format!("{}…", &t[..24]) } else { t.clone() };
+                    let preview = crate::nodes::truncate_chars(t, 24);
                     ui.label(egui::RichText::new(preview).small().monospace().color(blue));
                 }
             } else {
@@ -326,11 +326,10 @@ impl NodeBehavior for TerminalNode {
         ui.separator();
 
         // ── Output ports (right-aligned) ──────────────────────────────────
-        let out_preview = {
-            let s = &self.last_output;
-            if s.is_empty() { "—".to_string() }
-            else if s.len() > 18 { format!("{}…", &s[..18]) }
-            else { s.clone() }
+        let out_preview = if self.last_output.is_empty() {
+            "—".to_string()
+        } else {
+            crate::nodes::truncate_chars(&self.last_output, 18)
         };
         crate::nodes::output_port_row(ui, "Output", &out_preview,
             ctx.node_id, 0, ctx.port_positions, ctx.dragging_from,

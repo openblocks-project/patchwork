@@ -9,7 +9,10 @@ fn format_port_value(v: &PortValue) -> String {
     match v {
         PortValue::Float(f) => format!("{:.3}", f),
         PortValue::Text(s) => {
-            if s.len() > 16 { format!("\"{}...\"", &s[..16]) } else { format!("\"{}\"", s) }
+            if s.chars().count() > 16 {
+                let head: String = s.chars().take(16).collect();
+                format!("\"{}...\"", head)
+            } else { format!("\"{}\"", s) }
         }
         PortValue::Image(img) => format!("[{}x{}]", img.width, img.height),
         PortValue::GpuImage(h) => format!("[gpu {}x{}]", h.width, h.height),

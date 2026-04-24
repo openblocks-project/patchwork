@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Per-fetch result: optional decoded image + optional local cache file
 /// path written for remote URLs (so we can survive URL expiry).
-type FetchResult = (Option<Arc<ImageData>>, Option<String>);
+pub type FetchResult = (Option<Arc<ImageData>>, Option<String>);
 
 /// Async fetch state stored in egui temp data per node.
 ///
@@ -180,7 +180,7 @@ fn fetch_and_cache(node_id: NodeId, url: &str) -> FetchResult {
 /// `image_data`. Local file paths load synchronously (cheap); http(s)
 /// URLs spawn a background thread and `ctx.request_repaint()` wakes egui
 /// up when the bytes arrive — keeping the render thread responsive.
-fn maybe_load_async(
+pub fn maybe_load_async(
     ctx: &egui::Context,
     node_id: NodeId,
     src: &str,

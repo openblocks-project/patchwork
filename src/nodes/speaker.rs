@@ -217,8 +217,9 @@ fn shorten_device_name(name: &str) -> String {
         return "Headphones".to_string();
     }
     // Keep short names as-is, truncate very long ones
-    if name.len() > 24 {
-        format!("{}…", &name[..22])
+    if name.chars().count() > 24 {
+        let head: String = name.chars().take(22).collect();
+        format!("{}…", head)
     } else {
         name.to_string()
     }

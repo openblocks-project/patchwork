@@ -94,6 +94,25 @@ pub trait NodeBehavior: std::any::Any + Send + Sync {
     /// Returns an empty slice by default (no audio params).
     fn audio_params(&self) -> &[f32] { &[] }
 
+    /// Called by `app/io.rs::poll_http_responses` when an `HttpAction`
+    /// this node pushed earlier receives its response. `body` is the
+    /// raw response body (bytes as text); `status` is the HTTP status
+    /// code (200, 429, 500, …) or 0 for network errors. Default is no-op
+    /// so non-HTTP nodes ignore it. Override on any trait-based node
+    /// that emits `HttpAction::SendRequest`.
+    fn apply_http_response(&mut self, _body: String, _status: u16) {}
+
+    /// Called when the node is about to be removed from the graph, or
+    /// when the project is closed. Trait‑based sinks / sources use this
+    /// to release external resources (ffmpeg subprocesses, Syphon
+    /// servers, NDI senders, IOSurface handles, …). Default is a no‑op
+    /// so most nodes ignore it. Must be safe to call multiple times.
+    ///
+    /// The `node_id` is the node's own id so implementations that park
+    /// state in a thread‑local keyed by id (e.g. `VideoInNode`) can
+    /// free their slot.
+    fn on_removed(&mut self, _node_id: crate::graph::NodeId) {}
+
     /// GPU-aware evaluate. Called by the image evaluation loop in
     /// `app/mod.rs` for Dynamic nodes whose inputs include Image or
     /// GpuImage values. The `EvalCtx` carries GPU resources so nodes
@@ -160,6 +179,14 @@ pub struct RenderContext<'a> {
     /// Available when running on a wgpu backend. Nodes that render GPU previews
     /// (e.g. Blend) can use this to create textures / callbacks.
     pub wgpu_render_state: Option<&'a eframe::egui_wgpu::RenderState>,
+    /// HTTP actions queue — trait-based nodes that make outbound HTTP
+    /// requests (TextGen, ImageGen, CodeGen) push `HttpAction::SendRequest`
+    /// here. Polled by `app/io.rs::poll_http_responses` and written back
+    /// via `crate::node_trait::HttpResponseSink` on the node.
+    pub http_actions: &'a mut Vec<crate::http::HttpAction>,
+    /// Is the HttpManager already tracking an in-flight request for this
+    /// node? Used by generator nodes to gate the Send button.
+    pub http_pending: bool,
 }
 
 /// Registry for deserializing trait-based nodes from saved projects.
@@ -231,6 +258,12 @@ pub static NODE_REGISTRY: std::sync::LazyLock<std::sync::Mutex<NodeRegistryInner
         crate::nodes::math_formula::register(&mut r);
         crate::nodes::blend::register(&mut r);
         crate::nodes::select::register(&mut r);
+        crate::nodes::ai_config_node::register(&mut r);
+        crate::nodes::text_gen_node::register(&mut r);
+        crate::nodes::image_gen_node::register(&mut r);
+        crate::nodes::code_gen_node::register(&mut r);
+        crate::nodes::video_in_node::register(&mut r);
+        crate::nodes::video_out_node::register(&mut r);
         std::sync::Mutex::new(r)
     });
 

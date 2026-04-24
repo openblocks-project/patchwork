@@ -16,13 +16,13 @@
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let target = vec2<f32>(-0.745, 0.112);
+    let center = vec2<f32>(-0.745, 0.112);
     let aspect = u.resolution.x / max(u.resolution.y, 1.0);
     let zoom   = exp(-u.time * u.zoom_rate);
 
-    // UV → complex plane, aspect-corrected and centred on target.
+    // UV → complex plane, aspect-corrected and centred on `center`.
     let uv = (in.uv - vec2<f32>(0.5, 0.5)) * 3.0 * zoom;
-    let c  = target + vec2<f32>(uv.x * aspect, uv.y);
+    let c  = center + vec2<f32>(uv.x * aspect, uv.y);
 
     let max_iter = i32(clamp(u.iterations, 16.0, 1024.0));
     var z: vec2<f32> = vec2<f32>(0.0, 0.0);

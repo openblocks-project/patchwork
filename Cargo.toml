@@ -5,6 +5,11 @@ edition = "2024"
 license = "GPL-3.0"
 authors = ["Allwin Williams / OpenBlocks"]
 description = "A node-based visual programming environment in Rust"
+# With the Phase 2 Syphon spike living at `src/bin/syphon_spike.rs`,
+# `cargo run` is otherwise ambiguous. Pin `patchwork` as the default
+# so `cargo run --release` still "just works"; the spike runs via
+# `cargo run --bin syphon_spike`.
+default-run = "patchwork"
 
 [dependencies]
 eframe = { version = "0.31.0", features = ["wgpu"] }
@@ -46,9 +51,19 @@ hidapi = "2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.5"
-objc2-app-kit = { version = "0.2", features = ["NSWindow", "NSView", "NSResponder"] }
+objc2-app-kit = { version = "0.2", features = ["NSWindow", "NSView", "NSResponder", "NSScreen"] }
 objc2-foundation = { version = "0.2", features = ["NSGeometry", "NSString"] }
 ort = { version = "2.0.0-rc.12", features = ["coreml"] }
+# Phase 2 — Syphon bridge. `wgpu-hal` exposes the raw `MTLTexture` under
+# wgpu's public API; `metal` is the matching Rust binding. `block2` wraps
+# Objective-C blocks for the SyphonMetalClient new-frame handler.
+wgpu-hal = { version = "24.0.4", default-features = false, features = ["metal"] }
+metal = "0.31"
+block2 = "0.5"
+# foreign-types-shared brings `ForeignType` / `ForeignTypeRef` into scope
+# so `metal::Texture::as_ptr()` etc. are callable. Transitive through
+# `metal` but not re-exported — needs to be direct.
+foreign-types-shared = "0.3"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 ort = { version = "2.0.0-rc.12", features = ["cuda", "directml"] }
@@ -60,6 +75,15 @@ before-packaging-command = "cargo build --release"
 formats = ["app", "dmg"]
 icons = ["assets/icons/icon.icns"]
 binaries = [{ path = "PatchWork", main = true }]
+# Embed external resources / frameworks alongside the binary so the
+# packaged `.app` is self-contained. The dev binary links Syphon via
+# `@rpath/Syphon.framework/...` + an `@loader_path/../Frameworks` rpath
+# (set in build.rs). When we drop the framework into
+# `Contents/Frameworks/`, that rpath resolves cleanly at runtime even on
+# machines with no Xcode or Syphon source.
+resources = [
+    { src = "vendor/Syphon.framework.prebuilt/Syphon.framework", target = "Frameworks/Syphon.framework" },
+]
 
 [package.metadata.packager.macos]
 minimum-system-version = "11.0"

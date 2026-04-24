@@ -33,7 +33,10 @@ pub fn render(
             let s = match &v {
                 PortValue::Float(f) => format!("{:.3}", f),
                 PortValue::Text(t) => {
-                    if t.len() > 16 { format!("\"{}...\"", &t[..16]) } else { format!("\"{}\"", t) }
+                    if t.chars().count() > 16 {
+                        let head: String = t.chars().take(16).collect();
+                        format!("\"{}...\"", head)
+                    } else { format!("\"{}\"", t) }
                 }
                 _ => "—".into(),
             };
@@ -110,8 +113,9 @@ pub fn render(
 
         ui.label(egui::RichText::new("Held:").small().strong());
         if *is_text {
-            let display = if held_text.len() > 20 {
-                format!("\"{}...\"", &held_text[..20])
+            let display = if held_text.chars().count() > 20 {
+                let head: String = held_text.chars().take(20).collect();
+                format!("\"{}...\"", head)
             } else {
                 format!("\"{}\"", held_text)
             };
@@ -214,7 +218,12 @@ pub fn render(
 
     // ── Output port: Out ────────────────────────────────────────────
     let out_val = if *is_text {
-        format!("\"{}\"", if held_text.len() > 10 { &held_text[..10] } else { held_text.as_str() })
+        let short = if held_text.chars().count() > 10 {
+            held_text.chars().take(10).collect::<String>()
+        } else {
+            held_text.clone()
+        };
+        format!("\"{}\"", short)
     } else {
         format!("{:.3}", held_float)
     };

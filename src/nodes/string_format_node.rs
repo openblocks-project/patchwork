@@ -107,7 +107,10 @@ impl NodeBehavior for StringFormatNode {
                     let val = Graph::static_input_value(ctx.connections, ctx.values, ctx.node_id, port);
                     let s = match &val {
                         PortValue::Float(f) => format!("{:.3}", f),
-                        PortValue::Text(s) => if s.len() > 20 { format!("\"{}...\"", &s[..20]) } else { format!("\"{}\"", s) },
+                        PortValue::Text(s) => if s.chars().count() > 20 {
+                            let head: String = s.chars().take(20).collect();
+                            format!("\"{}...\"", head)
+                        } else { format!("\"{}\"", s) },
                         _ => "—".into(),
                     };
                     ui.label(egui::RichText::new(s).small().color(accent));

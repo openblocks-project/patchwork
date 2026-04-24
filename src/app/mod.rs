@@ -1667,6 +1667,7 @@ impl eframe::App for PatchworkApp {
         self.poll_osc_inputs();
         self.poll_network_events();
         self.poll_http_responses();
+        self.process_ai_gear_click(ctx);
         self.ob.poll_all();
         self.poll_ml_inference(ctx);
         self.poll_tts_synthesis(ctx);
@@ -2666,6 +2667,52 @@ impl eframe::App for PatchworkApp {
                             if let Some(rs) = &self.wgpu_render_state {
                                 self.gpu_tex_cache.get_or_upload(&rs.device, &rs.queue, frame);
                                 self.gpu_tex_cache.mark_node_source(frame, id, 0);
+                            }
+                        }
+                    }
+                    // New trait-based Video In node — same GPU-cache pattern as
+                    // the legacy Camera enum variant above. Without this, its
+                    // frames never reach `FRAME_TEX_SNAPSHOT`, so downstream
+                    // GPU consumers (notably the Phase 2 Syphon sink) can't
+                    // resolve an upstream texture.
+                    NodeType::Dynamic { inner } if inner.node.type_tag() == "video_in" => {
+                        let any = &*inner.node as &dyn std::any::Any;
+                        if let Some(vin) = any.downcast_ref::<crate::nodes::video_in_node::VideoInNode>() {
+                            // CPU path (Camera / Screen): upload frame to GPU
+                            // cache and emit PortValue::Image so CPU consumers
+                            // (Transform / Crop / Fill / AI Request / ML) still
+                            // work, while the cache makes GPU consumers fast.
+                            if let Some(frame) = vin.current_frame.as_ref() {
+                                values.insert((id, 0), PortValue::Image(frame.clone()));
+                                if let Some(rs) = &self.wgpu_render_state {
+                                    self.gpu_tex_cache.get_or_upload(&rs.device, &rs.queue, frame);
+                                    self.gpu_tex_cache.mark_node_source(frame, id, 0);
+                                }
+                            }
+                            // GPU path (Syphon source): `poll_syphon_client`
+                            // already pushed a fresh wgpu::Texture into the
+                            // cache via `queue_publish_node_output`. Emit a
+                            // `GpuImage` handle so downstream consumers like
+                            // Visual Output / Syphon sink can resolve it via
+                            // `frame_snapshot_get_texture(node_id, 0)`. CPU
+                            // consumers will see nothing from this path —
+                            // they need a readback upgrade (tracked in the
+                            // plan's "Deferred follow-ups" section).
+                            #[cfg(target_os = "macos")]
+                            {
+                                use crate::nodes::video_in_node::VideoSource;
+                                if vin.source == VideoSource::Syphon {
+                                    if let Some((w, h)) = vin.syphon_last_dims {
+                                        let handle = crate::graph::GpuImageHandle {
+                                            node_id: id,
+                                            port: 0,
+                                            width: w,
+                                            height: h,
+                                            frame_stamp: self.gpu_tex_cache.frame_stamp(id, 0),
+                                        };
+                                        values.insert((id, 0), PortValue::GpuImage(handle));
+                                    }
+                                }
                             }
                         }
                     }

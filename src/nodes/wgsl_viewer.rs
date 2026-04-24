@@ -33,7 +33,9 @@ fn uniform_spawn_request(name: &str, target_node: crate::graph::NodeId, target_p
 /// Get smart slider defaults (min, max, step, initial value) based on uniform name.
 pub fn slider_defaults_for_uniform(name: &str) -> (f32, f32, f32, f32) {
     let lower = name.to_lowercase();
-    if lower.contains("count") || lower.contains("num") || lower == "n" || lower == "i" {
+    if lower.contains("particle") {
+        (0.0, 2000.0, 10.0, 400.0)  // particle swarms — 1000s range
+    } else if lower.contains("count") || lower.contains("num") || lower == "n" || lower == "i" {
         (0.0, 20.0, 1.0, 5.0)       // integers
     } else if lower.contains("speed") || lower.contains("rate") {
         (0.0, 10.0, 0.1, 1.0)
@@ -66,6 +68,58 @@ pub fn slider_defaults_for_uniform(name: &str) -> (f32, f32, f32, f32) {
     } else {
         (0.0, 1.0, 0.01, 0.5)       // safe default
     }
+}
+
+/// Pick a deterministic, visually distinct RGB default for a color
+/// uniform named `name`. Stable across reloads of the same shader, but
+/// two differently-named colors land at different hues so a preset with
+/// `color_a` + `color_b` isn't flat grey.
+///
+/// Honours a handful of obvious name hints (`bg` → dark, `accent` →
+/// saturated, `warm` → orange-ish, `cool` → blue-ish). Otherwise hashes
+/// the name into a hue on the golden-ratio wheel, which gives good
+/// separation without any two adjacent-name choices colliding.
+pub fn default_color_rgb(name: &str) -> [f32; 3] {
+    let lower = name.to_lowercase();
+    // Name-hint shortcuts: a few intents worth special-casing.
+    if lower.contains("bg") || lower.contains("background") {
+        return [0.05, 0.06, 0.09];
+    }
+    if lower.contains("fg") || lower.contains("foreground") {
+        return [0.94, 0.94, 0.96];
+    }
+    if lower.contains("warm") || lower.contains("fire") || lower.contains("sun") {
+        return hsl_to_rgb(0.08, 0.80, 0.55); // orange
+    }
+    if lower.contains("cool") || lower.contains("ice") || lower.contains("ocean") {
+        return hsl_to_rgb(0.55, 0.70, 0.50); // cyan-blue
+    }
+    // FNV-1a hash → [0,1) hue, stepped by golden-ratio conjugate for
+    // good perceptual separation between adjacent name choices.
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in lower.as_bytes() {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    let base = (h as f64 / u64::MAX as f64) as f32;
+    let hue = (base + 0.618_033_99_f32).fract();
+    hsl_to_rgb(hue, 0.65, 0.55)
+}
+
+fn hsl_to_rgb(h: f32, s: f32, l: f32) -> [f32; 3] {
+    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+    let h6 = h * 6.0;
+    let x = c * (1.0 - (h6 % 2.0 - 1.0).abs());
+    let (r, g, b) = match h6 as i32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    let m = l - c * 0.5;
+    [r + m, g + m, b + m]
 }
 
 // time is NOT a builtin — it's a normal uniform port that users connect a Time node to.
@@ -703,15 +757,16 @@ pub fn render(
         for (i, name) in uniform_names.iter().enumerate() {
             let t = uniform_types.get(i).map(|s| s.as_str()).unwrap_or("float");
             let comps = if t == "color" { 3 } else { 1 };
+            let rgb = if t == "color" { Some(default_color_rgb(name)) } else { None };
             for c in 0..comps {
                 if idx >= uniform_values.len() {
-                    let default = if t == "color" {
-                        // Color components default to 0.5 (mid-gray)
-                        0.5
+                    let default = if let Some([r, g, b]) = rgb {
+                        // Per-name deterministic hue so every color uniform
+                        // starts visually distinct instead of mid-gray.
+                        match c { 0 => r, 1 => g, 2 => b, _ => 0.5 }
                     } else {
                         slider_defaults_for_uniform(name).3
                     };
-                    let _ = c;
                     uniform_values.push(default);
                 }
                 idx += 1;
@@ -1244,8 +1299,9 @@ pub fn render(
 
     // Show code preview (collapsible)
     ui.collapsing("Shader Code", |ui| {
-        let preview = if final_code.len() > 600 {
-            format!("{}...", &final_code[..600])
+        let preview = if final_code.chars().count() > 600 {
+            let head: String = final_code.chars().take(600).collect();
+            format!("{}...", head)
         } else {
             final_code.clone()
         };

@@ -117,7 +117,10 @@ fn evaluate_condition(value: &PortValue, row: &ConditionRow) -> bool {
 fn format_value(v: &PortValue) -> String {
     match v {
         PortValue::Float(f) => format!("{:.3}", f),
-        PortValue::Text(s) if s.len() > 16 => format!("\"{}…\"", &s[..16]),
+        PortValue::Text(s) if s.chars().count() > 16 => {
+            let head: String = s.chars().take(16).collect();
+            format!("\"{}…\"", head)
+        }
         PortValue::Text(s) => format!("\"{}\"", s),
         PortValue::Image(img) => format!("[{}×{}]", img.width, img.height),
         PortValue::GpuImage(h) => format!("[gpu {}×{}]", h.width, h.height),

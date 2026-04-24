@@ -128,7 +128,10 @@ impl NodeBehavior for HtmlViewerNode {
         if html.is_empty() {
             ui.colored_label(dim, "Connect HTML text to input");
         } else {
-            let preview = if html.len() > 300 { format!("{}...", &html[..300]) } else { html };
+            let preview = if html.chars().count() > 300 {
+                let head: String = html.chars().take(300).collect();
+                format!("{}...", head)
+            } else { html };
             egui::ScrollArea::vertical().max_height(100.0).show(ui, |ui| {
                 let mut p = preview;
                 ui.code_editor(&mut p);

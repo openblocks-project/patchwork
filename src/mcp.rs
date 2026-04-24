@@ -710,7 +710,10 @@ pub fn run_mcp_thread(command_tx: mpsc::Sender<McpRequest>, log: McpLog) {
                             McpResult::Error { error } => format!("Error: {}", error),
                         };
                         let is_error = matches!(result, McpResult::Error { .. });
-                        let short = if text.len() > 80 { format!("{}...", &text[..80]) } else { text.clone() };
+                        let short = if text.chars().count() > 80 {
+                            let head: String = text.chars().take(80).collect();
+                            format!("{}...", head)
+                        } else { text.clone() };
                         log_msg(&log, format!("← {}{}", if is_error { "ERR " } else { "" }, short));
                         let response = json!({
                             "jsonrpc": "2.0",

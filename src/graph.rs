@@ -239,7 +239,10 @@ impl std::fmt::Display for PortValue {
         match self {
             PortValue::Float(v) => write!(f, "{:.3}", v),
             PortValue::Text(s) => {
-                if s.len() > 24 { write!(f, "\"{}...\"", &s[..24]) }
+                if s.chars().count() > 24 {
+                    let head: String = s.chars().take(24).collect();
+                    write!(f, "\"{}...\"", head)
+                }
                 else { write!(f, "\"{}\"", s) }
             }
             PortValue::Image(img) => write!(f, "[Image {}x{}]", img.width, img.height),
@@ -1970,6 +1973,17 @@ impl Graph {
     pub fn remove_node(&mut self, id: NodeId) {
         if let Some(node) = self.nodes.get(&id) {
             crate::system_log::log(format!("Removed {} (id:{})", node.node_type.title(), id));
+        }
+        // Give trait-based nodes a chance to release external
+        // resources (Syphon server/client, ffmpeg subprocess, …)
+        // BEFORE their Box drops. Drop-based cleanup would still
+        // work, but `on_removed` lets impls do an ordered teardown
+        // (e.g. `-stop` before the final `release`, or wait on an
+        // in-flight MTLCommandBuffer). No-op for everything else.
+        if let Some(node) = self.nodes.get_mut(&id) {
+            if let NodeType::Dynamic { inner } = &mut node.node_type {
+                inner.node.on_removed(id);
+            }
         }
         self.nodes.remove(&id);
         self.connections.retain(|c| c.from_node != id && c.to_node != id);

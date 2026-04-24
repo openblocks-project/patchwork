@@ -1,20 +1,43 @@
 use crate::graph::*;
 use eframe::egui;
 use std::collections::HashMap;
-use std::io::Read;
+use std::io::{BufRead, Read};
 use std::process::{Child, Command, Stdio};
 use std::sync::{mpsc, Arc};
+use std::time::Instant;
 
 /// Background video decoder using ffmpeg subprocess.
 /// Uses a bounded channel (capacity 2) to prevent unbounded memory growth
 /// when the UI thread can't keep up with frame production.
-struct VideoDecoder {
+///
+/// Pub so the new trait‑based `VideoInNode` (`src/nodes/video_in_node.rs`)
+/// can spawn its own decoders without duplicating the ffmpeg plumbing.
+/// The old enum‑variant `NodeType::Camera` render path
+/// (`render_camera` below) still uses this via the module‑private
+/// `VIDEO_DECODERS` thread‑local map.
+pub struct VideoDecoder {
     process: Child,
     frame_rx: mpsc::Receiver<Arc<ImageData>>,
+    /// ffmpeg's stderr, one line per recv. Used for diagnostics when
+    /// frames never arrive (typical case: macOS camera TCC denied, or
+    /// "device already in use by another process"). Drained by the
+    /// node's poll loop into `stderr_log`.
+    stderr_rx: mpsc::Receiver<String>,
     _width: u32,
     _height: u32,
-    frame_changed: bool,
-    disconnected: bool,
+    pub frame_changed: bool,
+    /// `true` once the ffmpeg child/reader thread has EOF'd or died. The
+    /// node layer reads this to surface a "Disconnected" status and stop
+    /// drawing stale frames.
+    pub disconnected: bool,
+    /// When the decoder was spawned. Used by the node layer to decide
+    /// whether "no frames yet" is a normal startup lull or a stuck
+    /// permission wall (heuristic cutoff around 3 s).
+    pub started_at: Instant,
+    /// Accumulated ffmpeg stderr output (first ~1 KB). Only populated
+    /// when ffmpeg has something to complain about; empty in the happy
+    /// path. The node layer surfaces this into the user-visible status.
+    pub stderr_log: String,
 }
 
 impl Drop for VideoDecoder {
@@ -26,7 +49,7 @@ impl Drop for VideoDecoder {
 }
 
 impl VideoDecoder {
-    fn open_file(path: &str, width: u32, height: u32, start_time: f32) -> Result<Self, String> {
+    pub fn open_file(path: &str, width: u32, height: u32, start_time: f32) -> Result<Self, String> {
         let mut args = vec![
             "-hide_banner".to_string(),
             "-loglevel".into(), "error".into(),
@@ -59,7 +82,7 @@ impl VideoDecoder {
         Self::start_reader(process, width, height)
     }
 
-    fn open_camera(device_index: u32, width: u32, height: u32) -> Result<Self, String> {
+    pub fn open_camera(device_index: u32, width: u32, height: u32) -> Result<Self, String> {
         // Platform-specific capture format and device input string.
         //
         // macOS (avfoundation) and Linux (v4l2) both accept numeric device
@@ -125,8 +148,100 @@ impl VideoDecoder {
         Self::start_reader(process, width, height)
     }
 
+    /// Capture the whole (or a single) desktop into an RGBA stream.
+    ///
+    /// On macOS, AVFoundation represents screens as video devices —
+    /// they show up in `list_cameras()` as "Capture screen N". So the
+    /// caller passes the same kind of `device_index` they'd pass to
+    /// `open_camera`, and this function just forwards to `open_camera`.
+    /// `list_screens()` filters the full device list to just the screen
+    /// entries for UI.
+    ///
+    /// On Windows, `gdigrab` captures the full virtual desktop (all
+    /// monitors tiled together). Selecting a single display is a
+    /// follow-up (use `-offset_x`, `-offset_y`, `-video_size`).
+    ///
+    /// On Linux, `x11grab` captures from the X display given by the
+    /// `DISPLAY` env var (typically `:0.0`). Offset/size come from the
+    /// caller via `origin_x`/`origin_y`.
+    pub fn open_screen(
+        device_index: u32,
+        width: u32, height: u32,
+        origin_x: i32, origin_y: i32,
+    ) -> Result<Self, String> {
+        #[cfg(target_os = "macos")]
+        {
+            let _ = (origin_x, origin_y); // screens are one-per-device on macOS
+            return Self::open_camera(device_index, width, height);
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let _ = device_index;
+            let display_env = std::env::var("DISPLAY").unwrap_or_else(|_| ":0.0".into());
+            let input = format!("{}+{},{}", display_env, origin_x, origin_y);
+            let process = Command::new("ffmpeg")
+                .args([
+                    "-hide_banner", "-loglevel", "error",
+                    "-fflags", "nobuffer",
+                    "-flags", "low_delay",
+                    "-probesize", "32",
+                    "-analyzeduration", "0",
+                    "-f", "x11grab",
+                    "-framerate", "30",
+                    "-video_size", &format!("{}x{}", width, height),
+                    "-i", &input,
+                    "-f", "rawvideo",
+                    "-pix_fmt", "rgba",
+                    "-r", "30",
+                    "pipe:1",
+                ])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(|e| {
+                    if e.kind() == std::io::ErrorKind::NotFound { ffmpeg_install_hint() }
+                    else { format!("Failed to start screen capture: {}", e) }
+                })?;
+            return Self::start_reader(process, width, height);
+        }
+        #[cfg(target_os = "windows")]
+        {
+            let _ = (device_index, origin_x, origin_y);
+            let process = Command::new("ffmpeg")
+                .args([
+                    "-hide_banner", "-loglevel", "error",
+                    "-fflags", "nobuffer",
+                    "-flags", "low_delay",
+                    "-probesize", "32",
+                    "-analyzeduration", "0",
+                    "-f", "gdigrab",
+                    "-framerate", "30",
+                    "-video_size", &format!("{}x{}", width, height),
+                    "-i", "desktop",
+                    "-f", "rawvideo",
+                    "-pix_fmt", "rgba",
+                    "-r", "30",
+                    "pipe:1",
+                ])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(|e| {
+                    if e.kind() == std::io::ErrorKind::NotFound { ffmpeg_install_hint() }
+                    else { format!("Failed to start screen capture: {}", e) }
+                })?;
+            return Self::start_reader(process, width, height);
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+        {
+            let _ = (device_index, width, height, origin_x, origin_y);
+            Err("Screen capture not supported on this platform".into())
+        }
+    }
+
     fn start_reader(mut process: Child, width: u32, height: u32) -> Result<Self, String> {
         let stdout = process.stdout.take().ok_or("No stdout")?;
+        let stderr = process.stderr.take().ok_or("No stderr")?;
         // Bounded channel (capacity 1): minimal latency — at most 1 frame queued.
         // The producer blocks briefly if the UI hasn't consumed the last frame yet.
         let (tx, rx) = mpsc::sync_channel(1);
@@ -156,17 +271,44 @@ impl VideoDecoder {
             }
         });
 
+        // Stderr reader — surfaces ffmpeg complaints ("camera in use",
+        // "Operation not permitted", "no such device", codec errors).
+        // Without this, a TCC-denied camera looks identical to a camera
+        // that's happily running (both → no stdout bytes).
+        let (err_tx, err_rx) = mpsc::channel::<String>();
+        std::thread::spawn(move || {
+            let reader = std::io::BufReader::new(stderr);
+            for line in reader.lines().map_while(|l| l.ok()) {
+                // Send may fail if Decoder was dropped; fine, just stop.
+                if err_tx.send(line).is_err() { break; }
+            }
+        });
+
         Ok(Self {
             process,
             frame_rx: rx,
+            stderr_rx: err_rx,
             _width: width,
             _height: height,
             frame_changed: false,
             disconnected: false,
+            started_at: Instant::now(),
+            stderr_log: String::new(),
         })
     }
 
-    fn try_recv_frame(&mut self) -> Option<Arc<ImageData>> {
+    /// Drain any queued ffmpeg stderr lines into `self.stderr_log`,
+    /// capped at ~1 KB so a chatty ffmpeg doesn't eat memory. Call each
+    /// frame from the node's render loop; cheap on the happy path.
+    pub fn pump_stderr(&mut self) {
+        while let Ok(line) = self.stderr_rx.try_recv() {
+            if self.stderr_log.len() > 1024 { break; }
+            if !self.stderr_log.is_empty() { self.stderr_log.push('\n'); }
+            self.stderr_log.push_str(&line);
+        }
+    }
+
+    pub fn try_recv_frame(&mut self) -> Option<Arc<ImageData>> {
         let mut latest = None;
         loop {
             match self.frame_rx.try_recv() {
@@ -479,10 +621,23 @@ pub fn render_video(
 
 /// Get cached camera list — uses background thread to avoid blocking UI.
 /// Returns stale data while refresh is in progress.
-fn cached_camera_list() -> Vec<(u32, String)> {
+/// One shared cache for the ffmpeg device list. Both the legacy Camera
+/// enum‑variant render path and the new `VideoInNode` read from here, so
+/// a refresh in either UI benefits both.
+fn camera_list_cache_handle()
+    -> &'static std::sync::Mutex<(std::time::Instant, Vec<(u32, String)>, bool)>
+{
     use std::sync::{Mutex, OnceLock};
     static CACHE: OnceLock<Mutex<(std::time::Instant, Vec<(u32, String)>, bool)>> = OnceLock::new();
-    let cache = CACHE.get_or_init(|| Mutex::new((std::time::Instant::now() - std::time::Duration::from_secs(100), Vec::new(), false)));
+    CACHE.get_or_init(|| Mutex::new((
+        std::time::Instant::now() - std::time::Duration::from_secs(100),
+        Vec::new(),
+        false,
+    )))
+}
+
+pub fn cached_camera_list() -> Vec<(u32, String)> {
+    let cache = camera_list_cache_handle();
     let mut guard = match cache.lock() {
         Ok(g) => g,
         Err(_) => return Vec::new(), // Mutex poisoned — return empty list
@@ -490,10 +645,9 @@ fn cached_camera_list() -> Vec<(u32, String)> {
     let (last_refresh, ref cameras, ref mut refreshing) = *guard;
     if last_refresh.elapsed().as_secs() >= 10 && !*refreshing {
         *refreshing = true;
-        let cache_ref = cache;
         std::thread::spawn(move || {
             let result = list_cameras();
-            if let Ok(mut g) = cache_ref.lock() {
+            if let Ok(mut g) = cache.lock() {
                 g.0 = std::time::Instant::now();
                 g.1 = result;
                 g.2 = false;
@@ -501,6 +655,61 @@ fn cached_camera_list() -> Vec<(u32, String)> {
         });
     }
     cameras.clone()
+}
+
+/// Force the next `cached_camera_list()` call to re-enumerate devices
+/// immediately, regardless of the 10‑second TTL. Hooked up to the "↻"
+/// Refresh button in the Video In UI so plugging in OBS Virtual Camera
+/// / Continuity Camera / a new USB webcam surfaces them without a wait.
+///
+/// Spawns one background re-enumeration; subsequent calls before the
+/// refresh completes are coalesced (the `refreshing` flag is already
+/// set). Safe to call from the UI thread.
+pub fn refresh_camera_list_now() {
+    let cache = camera_list_cache_handle();
+    let mut guard = match cache.lock() { Ok(g) => g, Err(_) => return };
+    if guard.2 { return; } // already refreshing
+    guard.2 = true;
+    drop(guard);
+    std::thread::spawn(move || {
+        let result = list_cameras();
+        if let Ok(mut g) = cache.lock() {
+            g.0 = std::time::Instant::now();
+            g.1 = result;
+            g.2 = false;
+        }
+    });
+}
+
+/// The subset of `cached_camera_list()` entries that are screens, not
+/// cameras. On macOS AVFoundation represents screens as video devices
+/// named "Capture screen N" — we filter those by name. On Linux we
+/// synthesise one entry per display from `crate::display::enumerate_displays()`.
+/// On Windows we return a single "Desktop" entry for now (gdigrab
+/// captures the virtual desktop; multi-monitor selection is a follow‑up).
+pub fn list_screens() -> Vec<(u32, String)> {
+    #[cfg(target_os = "macos")]
+    {
+        cached_camera_list()
+            .into_iter()
+            .filter(|(_, name)| {
+                let lower = name.to_lowercase();
+                lower.contains("capture screen") || lower.starts_with("screen")
+            })
+            .collect()
+    }
+    #[cfg(target_os = "linux")]
+    {
+        crate::display::enumerate_displays()
+            .into_iter()
+            .enumerate()
+            .map(|(i, d)| (i as u32, d.name))
+            .collect()
+    }
+    #[cfg(target_os = "windows")]
+    { vec![(0, "Desktop".into())] }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    { Vec::new() }
 }
 
 // ── Camera Node ──────────────────────────────────────────────────────────────

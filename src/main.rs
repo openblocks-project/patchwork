@@ -1,6 +1,8 @@
 mod app;
 mod audio;
+mod display;
 mod gpu_image;
+mod video_io;
 mod graph;
 mod node_trait;
 mod hid;

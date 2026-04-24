@@ -39,6 +39,14 @@ thread_local! {
     /// Cleared at the start of each `begin_frame`.
     static FRAME_TEX_SNAPSHOT: RefCell<HashMap<(NodeId, usize), (wgpu::TextureView, u32, u32)>>
         = RefCell::new(HashMap::new());
+    /// Parallel snapshot holding the source `wgpu::Texture` (not just a view)
+    /// for consumers that need to reach through `as_hal` to the backend
+    /// (e.g. Syphon, Spout — both want the raw `MTLTexture` / D3D resource,
+    /// and `wgpu_hal::metal::TextureView::raw` isn't public). Keyed the
+    /// same way as `FRAME_TEX_SNAPSHOT` so callers pick their preferred
+    /// accessor.
+    static FRAME_TEX_SNAPSHOT_TEXTURE: RefCell<HashMap<(NodeId, usize), (wgpu::Texture, u32, u32)>>
+        = RefCell::new(HashMap::new());
 }
 
 /// Read a per-frame snapshot of an upstream GPU output texture by
@@ -55,6 +63,17 @@ pub fn frame_snapshot_get_view(
     port: usize,
 ) -> Option<(wgpu::TextureView, u32, u32)> {
     FRAME_TEX_SNAPSHOT.with(|m| m.borrow().get(&(node_id, port)).cloned())
+}
+
+/// Same as `frame_snapshot_get_view` but returns the owning
+/// `wgpu::Texture` instead of a view. Needed when a consumer has to
+/// drop down to the raw backend handle (Syphon / Spout) and the HAL
+/// view type doesn't expose it publicly.
+pub fn frame_snapshot_get_texture(
+    node_id: NodeId,
+    port: usize,
+) -> Option<(wgpu::Texture, u32, u32)> {
+    FRAME_TEX_SNAPSHOT_TEXTURE.with(|m| m.borrow().get(&(node_id, port)).cloned())
 }
 
 /// Mark a node's GPU cache entries as stale. Safe to call from anywhere on
@@ -196,6 +215,18 @@ impl GpuTextureCache {
                 }
             }
         });
+        FRAME_TEX_SNAPSHOT_TEXTURE.with(|m| {
+            let mut map = m.borrow_mut();
+            map.clear();
+            for ct in self.entries.values() {
+                if let Some(nid) = ct.src_node {
+                    map.insert(
+                        (nid, ct.src_port),
+                        (ct.texture.clone(), ct.width, ct.height),
+                    );
+                }
+            }
+        });
     }
 
     /// Drop every cached GPU texture and display-store entry that belongs
@@ -232,6 +263,7 @@ impl GpuTextureCache {
             crate::nodes::image_effects::cleanup_node(cr, node_id);
             crate::nodes::image_style_node::cleanup_node(cr, node_id);
             crate::nodes::kaleidoscope_node::cleanup_node(cr, node_id);
+            crate::nodes::transform_node::cleanup_node(cr, node_id);
         }
     }
 
@@ -260,6 +292,7 @@ impl GpuTextureCache {
             crate::nodes::image_effects::cleanup_all(cr);
             crate::nodes::image_style_node::cleanup_all(cr);
             crate::nodes::kaleidoscope_node::cleanup_all(cr);
+            crate::nodes::transform_node::cleanup_all(cr);
         }
     }
 

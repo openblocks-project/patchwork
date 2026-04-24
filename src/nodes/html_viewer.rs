@@ -236,8 +236,9 @@ pub fn render(
     if html.is_empty() {
         ui.colored_label(egui::Color32::GRAY, "Connect HTML text to input");
     } else {
-        let preview = if html.len() > 300 {
-            format!("{}...", &html[..300])
+        let preview = if html.chars().count() > 300 {
+            let head: String = html.chars().take(300).collect();
+            format!("{}...", head)
         } else {
             html
         };

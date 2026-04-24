@@ -44,8 +44,13 @@ pub fn render(
         } else {
             selected_device.as_str()
         };
+        let truncated: String = if display.chars().count() > 22 {
+            display.chars().take(22).collect()
+        } else {
+            display.to_string()
+        };
         egui::ComboBox::from_id_salt(egui::Id::new(("audio_input_dev", node_id)))
-            .selected_text(if display.len() > 22 { &display[..22] } else { display })
+            .selected_text(truncated)
             .width(140.0)
             .show_ui(ui, |ui| {
                 if ui.selectable_label(selected_device.is_empty(), "Default").clicked() {

@@ -235,7 +235,10 @@ impl NodeBehavior for SampleHoldNode {
             if val_wired {
                 let s = match &live_val {
                     PortValue::Float(f) => format!("{:.3}", f),
-                    PortValue::Text(t) => if t.len() > 16 { format!("\"{}...\"", &t[..16]) } else { format!("\"{}\"", t) },
+                    PortValue::Text(t) => if t.chars().count() > 16 {
+                        let head: String = t.chars().take(16).collect();
+                        format!("\"{}...\"", head)
+                    } else { format!("\"{}\"", t) },
                     PortValue::Image(img) => format!("[{}×{}]", img.width, img.height),
                     PortValue::GpuImage(h) => format!("[{}×{}]", h.width, h.height),
                     _ => "—".into(),

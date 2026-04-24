@@ -111,8 +111,9 @@ pub fn render(
                 ui.ctx().copy_text(link.clone());
             }
         });
-        let short = if link.len() > 40 {
-            format!("{}...", &link[..40])
+        let short = if link.chars().count() > 40 {
+            let head: String = link.chars().take(40).collect();
+            format!("{}...", head)
         } else {
             link.clone()
         };

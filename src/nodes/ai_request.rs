@@ -7,12 +7,12 @@ use crate::graph::ImageData;
 
 // ── Style presets ─────────────────────────────────────────────────────────────
 
-struct StylePreset {
-    label: &'static str,
-    system: &'static str,
+pub struct StylePreset {
+    pub label: &'static str,
+    pub system: &'static str,
 }
 
-const TEXT_PRESETS: &[StylePreset] = &[
+pub const TEXT_PRESETS: &[StylePreset] = &[
     StylePreset {
         label: "Concise",
         system: "Reply briefly and directly. Skip filler words. Plain text, no markdown unless asked.",
@@ -55,7 +55,7 @@ const TEXT_PRESETS: &[StylePreset] = &[
     },
 ];
 
-const IMAGE_PRESETS: &[StylePreset] = &[
+pub const IMAGE_PRESETS: &[StylePreset] = &[
     StylePreset {
         label: "Anime",
         system: "High-quality anime illustration, expressive characters, vibrant colors, detailed line work, cel-shaded.",
@@ -83,7 +83,7 @@ const IMAGE_PRESETS: &[StylePreset] = &[
 /// Returns model presets for `(provider, mode)`. `mode` 0 = Text, 1 = Image.
 /// Returns an empty list if the provider has no models for that mode (e.g.
 /// Anthropic + Image).
-fn models_for(provider: &str, mode: u8) -> Vec<(&'static str, &'static str)> {
+pub fn models_for(provider: &str, mode: u8) -> Vec<(&'static str, &'static str)> {
     match (provider, mode) {
         // ── Text models (vision-capable) ─────────────────────────
         ("anthropic", 0) => vec![
@@ -113,7 +113,7 @@ fn models_for(provider: &str, mode: u8) -> Vec<(&'static str, &'static str)> {
     }
 }
 
-fn provider_label(provider: &str) -> &'static str {
+pub fn provider_label(provider: &str) -> &'static str {
     match provider {
         "anthropic" => "Anthropic",
         "openai" => "OpenAI",
@@ -122,11 +122,11 @@ fn provider_label(provider: &str) -> &'static str {
     }
 }
 
-const TEXT_FORMATS: &[&str] = &["Text", "JSON", "Code", "WGSL", "HTML"];
+pub const TEXT_FORMATS: &[&str] = &["Text", "JSON", "Code", "WGSL", "HTML"];
 
 // ── Inline base64 encoder (avoid pulling a dep just for one encode) ───────────
 
-fn base64_encode(data: &[u8]) -> String {
+pub fn base64_encode(data: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(((data.len() + 2) / 3) * 4);
     for chunk in data.chunks(3) {
@@ -152,7 +152,7 @@ fn base64_encode(data: &[u8]) -> String {
 
 /// JPEG-encode (quality 85) an `ImageData` and return base64 of the bytes.
 /// Returns `None` on encode failure (e.g. zero-size image).
-fn encode_image_to_jpeg_b64(img: &ImageData) -> Option<String> {
+pub fn encode_image_to_jpeg_b64(img: &ImageData) -> Option<String> {
     if img.width == 0 || img.height == 0 || img.pixels.is_empty() {
         return None;
     }
@@ -620,7 +620,7 @@ pub fn render(
 
 // ── Request builder ───────────────────────────────────────────────────────────
 
-fn build_request(
+pub fn build_request(
     provider: &str,
     model: &str,
     api_key: &str,
@@ -792,7 +792,7 @@ fn build_request(
 
 /// Strip markdown code fences from AI responses.
 /// Handles ```lang\n...\n``` and ```\n...\n```
-fn strip_code_fences(text: &str) -> String {
+pub fn strip_code_fences(text: &str) -> String {
     let trimmed = text.trim();
     if trimmed.starts_with("```") {
         let after_opening = if let Some(newline_pos) = trimmed.find('\n') {
@@ -814,7 +814,7 @@ fn strip_code_fences(text: &str) -> String {
 
 /// Tiny base64 decoder (counterpart to `base64_encode` above). Used by the
 /// Imagen response path to materialise inline image bytes.
-fn base64_decode(s: &str) -> Option<Vec<u8>> {
+pub fn base64_decode(s: &str) -> Option<Vec<u8>> {
     fn val(c: u8) -> Option<u8> {
         match c {
             b'A'..=b'Z' => Some(c - b'A'),
@@ -857,7 +857,7 @@ fn base64_decode(s: &str) -> Option<Vec<u8>> {
 /// If `body` contains an Imagen base64 inline image, decode it to a temp
 /// PNG file and return a `file://` URL string. Returns None if the body
 /// doesn't have inline image data.
-fn try_save_imagen_image(body: &str) -> Option<String> {
+pub fn try_save_imagen_image(body: &str) -> Option<String> {
     let json: serde_json::Value = serde_json::from_str(body).ok()?;
     let b64 = json
         .get("candidates")?

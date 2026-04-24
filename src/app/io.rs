@@ -428,6 +428,63 @@ impl super::PatchworkApp {
         }
     }
 
+    /// Consume a pending gear-icon click from an AI generator node.
+    ///
+    /// The generator writes `(requester_node_id, ai_config_output_port)`
+    /// into `egui::Memory` under the key `"ai_gear_click"`. This method
+    /// drains the key each frame and:
+    ///
+    /// 1. If the generator's `Config` input is already wired, does nothing
+    ///    (the wire already points to an AiConfig — a future iteration
+    ///    will pan/flash that config).
+    /// 2. Else if any `AiConfigNode` exists on the graph, creates a
+    ///    connection from its matching output port → generator's Config input.
+    /// 3. Else spawns a fresh `AiConfigNode` next to the generator and
+    ///    wires it up.
+    pub(super) fn process_ai_gear_click(&mut self, ctx: &egui::Context) {
+        let key = egui::Id::new("ai_gear_click");
+        let pending: Option<(NodeId, usize)> =
+            ctx.data_mut(|d| d.remove_temp::<(NodeId, usize)>(key));
+        let Some((requester, out_port)) = pending else { return; };
+
+        let Some(req_node) = self.graph.nodes.get(&requester) else { return; };
+        let req_pos = req_node.pos;
+
+        let already_wired = self
+            .graph
+            .connections
+            .iter()
+            .any(|c| c.to_node == requester && c.to_port == 0);
+        if already_wired {
+            // TODO(gear-pan): find the upstream AiConfig and pan canvas to it + flash.
+            return;
+        }
+
+        // Look for an existing AiConfig on the graph.
+        let existing = self.graph.nodes.iter().find_map(|(nid, n)| {
+            if let NodeType::Dynamic { inner } = &n.node_type {
+                if inner.node.type_tag() == "ai_config" { return Some(*nid); }
+            }
+            None
+        });
+
+        let config_id = if let Some(id) = existing {
+            id
+        } else {
+            let cfg = NodeType::Dynamic {
+                inner: crate::graph::DynNode {
+                    node: Box::new(crate::nodes::ai_config_node::AiConfigNode::default()),
+                },
+            };
+            // Place to the left so the wire flows left→right into the generator.
+            let pos = [req_pos[0] - 320.0, req_pos[1]];
+            self.graph.add_node(cfg, pos)
+        };
+
+        // Wire AiConfig's matching output port → requester's Config input (port 0).
+        self.graph.add_connection(config_id, out_port, requester, 0);
+    }
+
     pub(super) fn poll_http_responses(&mut self) {
         let node_ids: Vec<NodeId> = self.graph.nodes.keys().copied().collect();
         for nid in node_ids {
@@ -476,6 +533,23 @@ impl super::PatchworkApp {
                                     nid,
                                     format!("{}: {}", label, truncate_for_error(&resp.body)),
                                 );
+                            }
+                        }
+                        NodeType::Dynamic { inner } => {
+                            // Trait-based nodes (TextGen, ImageGen, CodeGen, …)
+                            // handle their own response extraction via
+                            // `apply_http_response`. Non-HTTP trait nodes have
+                            // a no-op default impl, so this is safe for all.
+                            inner.node.apply_http_response(resp.body.clone(), resp.status);
+                            if !(200..300).contains(&resp.status) {
+                                let label = if resp.status == 0 { "Request failed".to_string() }
+                                            else { format!("HTTP {}", resp.status) };
+                                crate::node_errors::report_for(
+                                    nid,
+                                    format!("{}: {}", label, truncate_for_error(&resp.body)),
+                                );
+                            } else {
+                                crate::node_errors::clear(nid);
                             }
                         }
                         _ => {}

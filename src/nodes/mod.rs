@@ -13,6 +13,11 @@ pub mod osc_in;
 pub mod palette;
 pub mod http_request;
 pub mod ai_request;
+pub mod ai_shared;
+pub mod ai_config_node;
+pub mod text_gen_node;
+pub mod code_gen_node;
+pub mod image_gen_node;
 pub mod file_menu;
 pub mod zoom_control;
 pub mod ob_hub;
@@ -75,6 +80,8 @@ pub mod pack_node;
 pub mod time_node;
 pub mod file_node;
 pub mod visual_output_node;
+pub mod video_in_node;
+pub mod video_out_node;
 pub mod crop_node;
 pub mod noise_node;
 pub mod monitor_node;
@@ -143,11 +150,22 @@ pub const CATEGORY_GROUPS: &[(&str, &[&str])] = &[
     ("Input", &["Input", "Signal"]),
     ("Math", &["Math"]),
     ("Visual", &["Image", "Video", "Shader"]),
-    ("ML", &["ML"]),
+    ("AI / ML", &["AI", "ML"]),
     ("Audio", &["Audio", "MIDI"]),
     ("I/O", &["IO", "Network", "Serial", "OSC", "Hardware", "Output"]),
     ("Utility", &["Utility", "Custom"]),
 ];
+
+/// UTF-8-safe truncation for UI previews. `&str[..n]` panics when `n`
+/// lands mid-character (em-dash, emoji, CJK, …); every node preview that
+/// shows upstream / AI-generated text must route through this helper
+/// instead of byte-index slicing. Returns `"prefix…"` if truncated,
+/// the original string otherwise.
+pub fn truncate_chars(s: &str, max_chars: usize) -> String {
+    if s.chars().count() <= max_chars { return s.to_string(); }
+    let head: String = s.chars().take(max_chars).collect();
+    format!("{}…", head)
+}
 
 /// Draw a small inline port using the PortKind visual system.
 /// Uses `draw_shaped_port` from `app/mod.rs` for consistent rendering across all ports.
@@ -472,6 +490,12 @@ pub fn catalog() -> Vec<NodeCatalogEntry> {
             factory: || NodeType::VideoPlayer { path: String::new(), playing: false, looping: false, res_w: 640, res_h: 480, current_frame: None, duration: 0.0, speed: 1.0, status: String::new() } },
         NodeCatalogEntry { wip: false, singleton: false, label: "Camera", category: "Video",
             factory: || NodeType::Camera { device_index: 0, res_w: 640, res_h: 480, active: false, current_frame: None, status: String::new() } },
+        // New trait-based video I/O nodes. Ship alongside the legacy Camera
+        // / VisualOutput during Phase 0; see docs/video_io_spec.md.
+        NodeCatalogEntry { wip: false, singleton: false, label: "Video In", category: "Video",
+            factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(video_in_node::VideoInNode::default()) } } },
+        NodeCatalogEntry { wip: false, singleton: false, label: "Video Out", category: "Video",
+            factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(video_out_node::VideoOutNode::default()) } } },
 
         // ── Audio ────────────────────────────────────────────
         NodeCatalogEntry { wip: false, singleton: false, label: "Synth", category: "Audio",
@@ -547,7 +571,18 @@ pub fn catalog() -> Vec<NodeCatalogEntry> {
                 url: String::new(), method: "POST".into(), headers: String::new(),
                 response: String::new(), status: String::new(), auto_send: false, last_hash: 0,
             } },
-        NodeCatalogEntry { wip: false, singleton: false, label: "AI Request", category: "Network",
+        // ── New AI stack (AiConfig + TextGen / ImageGen / CodeGen) ─────
+        NodeCatalogEntry { wip: false, singleton: false, label: "AI Config", category: "AI",
+            factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(ai_config_node::AiConfigNode::default()) } } },
+        NodeCatalogEntry { wip: false, singleton: false, label: "Text Gen", category: "AI",
+            factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(text_gen_node::TextGenNode::default()) } } },
+        NodeCatalogEntry { wip: false, singleton: false, label: "Image Gen", category: "AI",
+            factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(image_gen_node::ImageGenNode::default()) } } },
+        NodeCatalogEntry { wip: false, singleton: false, label: "Code Gen", category: "AI",
+            factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(code_gen_node::CodeGenNode::default()) } } },
+        // Legacy monolithic AI node — kept so old projects load, but marked WIP
+        // so it's hidden from the default catalog palette.
+        NodeCatalogEntry { wip: true, singleton: false, label: "AI Request (legacy)", category: "Network",
             factory: || NodeType::AiRequest {
                 provider: "anthropic".into(), model: "claude-sonnet-4-20250514".into(),
                 system_prompt: String::new(), user_prompt: String::new(),
@@ -807,6 +842,7 @@ pub fn render_content(
                 node_id, values, connections,
                 port_positions, dragging_from, pending_disconnects,
                 wgpu_render_state: wgpu_render_state.as_ref(),
+                http_actions, http_pending,
             };
             inner.node.render_with_context(ui, &mut ctx);
         }

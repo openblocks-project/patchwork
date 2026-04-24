@@ -28,6 +28,7 @@ fn get_text_input(inputs: &[PortValue], port: usize, default: &str) -> String {
     }
 }
 
+
 // ── Node struct ───────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -146,7 +147,7 @@ impl NodeBehavior for TextOpsNode {
             if text_wired {
                 let v = Graph::static_input_value(ctx.connections, ctx.values, ctx.node_id, 0);
                 if let PortValue::Text(ref t) = v {
-                    let preview = if t.len() > 22 { format!("{}…", &t[..22]) } else { t.clone() };
+                    let preview = crate::nodes::truncate_chars(t, 22);
                     ui.label(egui::RichText::new(preview).small().monospace().color(blue));
                 } else {
                     ui.label(egui::RichText::new("—").small().color(dim));
@@ -169,7 +170,7 @@ impl NodeBehavior for TextOpsNode {
         if search_wired {
             let v = Graph::static_input_value(ctx.connections, ctx.values, ctx.node_id, 1);
             if let PortValue::Text(ref t) = v {
-                let preview = if t.len() > 28 { format!("{}…", &t[..28]) } else { t.clone() };
+                let preview = crate::nodes::truncate_chars(t, 28);
                 ui.label(egui::RichText::new(format!("  {}", preview)).small().monospace().color(blue));
             }
         } else {
@@ -191,7 +192,7 @@ impl NodeBehavior for TextOpsNode {
         if replace_wired {
             let v = Graph::static_input_value(ctx.connections, ctx.values, ctx.node_id, 2);
             if let PortValue::Text(ref t) = v {
-                let preview = if t.len() > 28 { format!("{}…", &t[..28]) } else { t.clone() };
+                let preview = crate::nodes::truncate_chars(t, 28);
                 ui.label(egui::RichText::new(format!("  {}", preview)).small().monospace().color(blue));
             }
         } else {
@@ -206,11 +207,10 @@ impl NodeBehavior for TextOpsNode {
         ui.separator();
 
         // ── Output ports ──────────────────────────────────────────────────
-        let result_preview = {
-            let s = &self.last_result;
-            if s.is_empty() { "—".to_string() }
-            else if s.len() > 18 { format!("{}…", &s[..18]) }
-            else { s.clone() }
+        let result_preview = if self.last_result.is_empty() {
+            "—".to_string()
+        } else {
+            crate::nodes::truncate_chars(&self.last_result, 18)
         };
         crate::nodes::output_port_row(ui, "Result", &result_preview,
             ctx.node_id, 0, ctx.port_positions, ctx.dragging_from,

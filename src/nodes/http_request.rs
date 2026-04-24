@@ -56,7 +56,7 @@ pub fn render(
         inline_port_circle(ui, node_id, 0, true, connections, port_positions, dragging_from, pending_disconnects, PortKind::Text);
         ui.label(egui::RichText::new("URL:").small());
         if url_wired {
-            let short = if effective_url.len() > 30 { format!("{}...", &effective_url[..30]) } else { effective_url.clone() };
+            let short = crate::nodes::truncate_chars(&effective_url, 30);
             ui.label(egui::RichText::new(short).small().monospace().color(egui::Color32::from_rgb(80, 170, 255)));
         }
     });
@@ -83,7 +83,7 @@ pub fn render(
         inline_port_circle(ui, node_id, 1, true, connections, port_positions, dragging_from, pending_disconnects, PortKind::Text);
         ui.label(egui::RichText::new("Body:").small());
         if body_wired {
-            let short = if body.len() > 25 { format!("{}...", &body[..25]) } else { body.clone() };
+            let short = crate::nodes::truncate_chars(body.as_str(), 25);
             ui.label(egui::RichText::new(short).small().monospace().color(egui::Color32::from_rgb(80, 170, 255)));
         } else {
             ui.label(egui::RichText::new("—").small().color(egui::Color32::GRAY));
@@ -143,7 +143,7 @@ pub fn render(
 
     // Output ports: Response + Status
     ui.separator();
-    let resp_short = if response.len() > 30 { format!("{}...", &response[..30]) } else if response.is_empty() { "—".into() } else { response.to_string() };
+    let resp_short = if response.is_empty() { "—".into() } else { crate::nodes::truncate_chars(response, 30) };
     output_port_row(ui, "Response", &resp_short, node_id, 0, port_positions, dragging_from, connections, pending_disconnects, PortKind::Text);
     let status_val = if status.is_empty() { "—" } else { status };
     output_port_row(ui, "Status", status_val, node_id, 1, port_positions, dragging_from, connections, pending_disconnects, PortKind::Text);
