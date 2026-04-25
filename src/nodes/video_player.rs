@@ -354,8 +354,9 @@ fn get_duration(path: &str) -> Option<f32> {
 }
 
 /// Per-OS ffmpeg install hint shown when the binary isn't found on PATH.
-/// Called from both `open_file` and `open_camera` failure arms.
-fn ffmpeg_install_hint() -> String {
+/// Called from both `open_file` and `open_camera` failure arms, plus
+/// the file recorder's spawn failure arm in `video_io::file_recorder`.
+pub fn ffmpeg_install_hint() -> String {
     #[cfg(target_os = "macos")]
     return "ffmpeg not found. Install with: brew install ffmpeg".into();
     #[cfg(target_os = "linux")]

@@ -36,3 +36,8 @@ pub mod ndi;
 /// math, no platform deps. Used today by `ndi::NdiSender::publish_bgra`
 /// (sender) and the M5 receiver thread (recv).
 pub mod pixel_swizzle;
+
+/// File recorder — pipe RGBA frames into an ffmpeg subprocess. Phase 6
+/// sink for `VideoOutNode`. See module doc for codec / container rules
+/// and graceful-vs-hard stop semantics.
+pub mod file_recorder;
