@@ -114,6 +114,15 @@ pub fn codec_from_byte(b: u8) -> Codec {
     Codec::parse(b)
 }
 
+/// Output frame rate. ffmpeg's rawvideo demuxer needs a fixed input
+/// rate (each pushed frame is timestamped at `1/fps` intervals). We
+/// throttle `write_frame` to wall-clock match this rate; the output
+/// media duration then equals wall-clock duration. 30 fps matches the
+/// vast majority of webcams + screen captures and keeps file sizes
+/// sensible — a higher rate would be 2× the bytes for content most
+/// users can't tell apart.
+pub const RECORDING_FPS: f32 = 30.0;
+
 /// A running ffmpeg encode session. Construct via `FileRecorder::new`,
 /// feed `write_frame` per UI tick, end with `stop_graceful` (clean) or
 /// `Drop` (fast).
@@ -135,6 +144,14 @@ pub struct FileRecorder {
     started_at: Instant,
     frames_written: u64,
     bytes_written: u64,
+    /// Wall-clock instant of the previous successful write, used to
+    /// gate writes to `RECORDING_FPS`. `None` until the first frame
+    /// arrives — that one is always accepted so the recording starts
+    /// cleanly. After that, frames arriving within `1/fps` of the
+    /// last write are silently skipped (no error, no warning) — they're
+    /// near-duplicates that h.264/hevc would just compress away anyway,
+    /// and skipping them keeps wall-clock = media-clock.
+    last_write_at: Option<Instant>,
     /// Latched from the stderr drainer. UI surfaces this in the status
     /// row. 1 KB cap prevents unbounded growth from a chatty ffmpeg.
     stderr_log: String,
@@ -157,6 +174,7 @@ impl FileRecorder {
         }
 
         let mut cmd = Command::new("ffmpeg");
+        let fps_str = format!("{}", RECORDING_FPS as i32);
         cmd.args([
             "-y",
             "-hide_banner",
@@ -164,12 +182,18 @@ impl FileRecorder {
             "-f", "rawvideo",
             "-pix_fmt", "rgba",
             "-s", &format!("{w}x{h}"),
-            // -framerate is a hint; actual rate is whatever we feed.
-            // ffmpeg interpolates if write_frame is slower than this.
-            "-framerate", "60",
+            // -framerate must match the wall-clock rate at which we
+            // call write_frame. We throttle in the caller (see
+            // last_write_at gating below), so each pushed byte block
+            // is 1/fps seconds of media — output duration = wall-clock
+            // duration.
+            "-framerate", &fps_str,
             "-i", "pipe:0",
         ]);
         cmd.args(codec.encoder_args());
+        // Lock output framerate to the same value so ffmpeg doesn't
+        // attempt vsync re-timing on the encoder side.
+        cmd.args(["-r", &fps_str]);
         // Crash-survivable MP4: faststart moves moov to the front for
         // streaming-friendly playback; frag_keyframe + empty_moov mean a
         // file truncated by SIGKILL is still playable to the last
@@ -217,14 +241,23 @@ impl FileRecorder {
             started_at: Instant::now(),
             frames_written: 0,
             bytes_written: 0,
+            last_write_at: None,
             stderr_log: String::new(),
         })
     }
 
     /// Feed one RGBA frame. Returns `Err` only on a real subprocess
-    /// failure (broken pipe = ffmpeg crashed); a paused recorder or a
-    /// dimension mismatch returns `Ok(())` after recording the issue
-    /// in `stderr_log` so the UI can warn without tearing down.
+    /// failure (broken pipe = ffmpeg crashed); paused / dim-mismatch /
+    /// fps-throttled return `Ok(())` so callers don't tear down on
+    /// transient skips.
+    ///
+    /// **fps gate**: writes arriving within `1/RECORDING_FPS` of the
+    /// previous successful write are silently skipped. Without this
+    /// gate, render_with_context (which fires every egui repaint, ~60
+    /// Hz) would push 60 wall-clock frames/sec at ffmpeg's `-framerate
+    /// 30` timestamp interval — double-speed media-clock vs wall-clock,
+    /// and tons of redundant duplicate frames the encoder dedupes for
+    /// free anyway. With the gate, output duration matches wall-clock.
     pub fn write_frame(&mut self, rgba: &[u8], w: u32, h: u32) -> Result<(), String> {
         if self.paused {
             return Ok(());
@@ -248,6 +281,17 @@ impl FileRecorder {
             return Ok(());
         }
 
+        // fps gate. The first frame after Start (`last_write_at = None`)
+        // always passes; subsequent frames must be ≥ frame_period after
+        // the last accepted one.
+        let now = Instant::now();
+        let frame_period = Duration::from_secs_f32(1.0 / RECORDING_FPS);
+        if let Some(last) = self.last_write_at {
+            if now.duration_since(last) < frame_period {
+                return Ok(()); // throttled; will accept the next eligible tick
+            }
+        }
+
         let stdin = match self.stdin.as_mut() {
             Some(s) => s,
             None => return Err("recorder stdin already closed".into()),
@@ -256,6 +300,7 @@ impl FileRecorder {
             Ok(()) => {
                 self.frames_written += 1;
                 self.bytes_written += expected as u64;
+                self.last_write_at = Some(now);
                 Ok(())
             }
             Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {
@@ -270,6 +315,18 @@ impl FileRecorder {
             }
             Err(e) => Err(format!("write_frame failed: {e}")),
         }
+    }
+
+    /// Encoded file size on disk in bytes. Polled per UI tick to drive
+    /// the recording chip — what users actually want to see (and what
+    /// matches Finder), as opposed to `bytes_written` (raw RGBA pushed
+    /// to ffmpeg, which is ~500× larger than the encoded output).
+    /// Returns 0 if the file isn't readable yet (e.g. on the very
+    /// first tick before ffmpeg has written its header).
+    pub fn file_size_on_disk(&self) -> u64 {
+        std::fs::metadata(&self.output_path)
+            .map(|m| m.len())
+            .unwrap_or(0)
     }
 
     pub fn pause(&mut self) {

@@ -1411,13 +1411,16 @@ impl VideoOutNode {
         });
 
         // ── Start / Pause / Resume / Stop row ──────────────────────
-        let (paused, frames_w, bytes_w, secs) = self
+        // Show file size on disk (encoded bytes), not bytes_written
+        // (raw RGBA pushed to ffmpeg, which is ~500× larger). Users
+        // expect the chip to match what they see in Finder.
+        let (paused, frames_w, file_bytes, secs) = self
             .file_recorder
             .lock()
             .ok()
             .and_then(|g| {
                 g.as_ref()
-                    .map(|r| (r.is_paused(), r.frames_written(), r.bytes_written(), r.elapsed().as_secs()))
+                    .map(|r| (r.is_paused(), r.frames_written(), r.file_size_on_disk(), r.elapsed().as_secs()))
             })
             .unwrap_or((false, 0, 0, 0));
 
@@ -1459,17 +1462,17 @@ impl VideoOutNode {
                     }
                     self.enabled = false;
                 }
-                let mb = bytes_w as f32 / 1_048_576.0;
+                let size_str = format_file_size(file_bytes);
                 let m = secs / 60;
                 let s = secs % 60;
                 let (text, color) = if paused {
                     (
-                        format!("⏸ paused ({} frames, {:.1} MB, {:02}:{:02})", frames_w, mb, m, s),
+                        format!("⏸ paused ({} frames, {}, {:02}:{:02})", frames_w, size_str, m, s),
                         egui::Color32::from_rgb(200, 180, 80),
                     )
                 } else {
                     (
-                        format!("● recording ({} frames, {:.1} MB, {:02}:{:02})", frames_w, mb, m, s),
+                        format!("● recording ({} frames, {}, {:02}:{:02})", frames_w, size_str, m, s),
                         egui::Color32::from_rgb(80, 200, 80),
                     )
                 };
@@ -1634,6 +1637,23 @@ fn default_recorder_path(
         secs,
         codec.extension(),
     ))
+}
+
+/// Format a byte count for the recording chip. Uses KB / MB / GB based
+/// on magnitude — matches Finder's "About This File" feel.
+fn format_file_size(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = 1024 * KB;
+    const GB: u64 = 1024 * MB;
+    if bytes >= GB {
+        format!("{:.2} GB", bytes as f64 / GB as f64)
+    } else if bytes >= MB {
+        format!("{:.1} MB", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{} KB", bytes / KB)
+    } else {
+        format!("{} B", bytes)
+    }
 }
 
 /// Force a path's extension to `new_ext` while preserving the parent
