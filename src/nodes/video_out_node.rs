@@ -151,6 +151,36 @@ pub struct VideoOutNode {
     /// never opens again and the sink redirects to Syphon directly.
     #[serde(skip)]
     vcam_modal_open: bool,
+
+    /// Phase 6 file recorder. Codec selector index — 0=H.264, 1=HEVC,
+    /// 2=ProRes (`crate::video_io::file_recorder::codec_from_byte`
+    /// parses; unknown values fall back to H.264). Persists so a saved
+    /// project re-loads with the user's last codec choice.
+    #[serde(default)] pub recorder_codec: u8,
+
+    /// Path of the next file to write. Persists across save/load so
+    /// users don't re-pick the path each time they reopen a project.
+    /// Empty means "use the auto-generated default" (filled in on
+    /// Start).
+    #[serde(default)] pub recorder_path: String,
+
+    /// Active recorder. `Arc<Mutex<Option<...>>>` matches the
+    /// Send + Sync shape used for syphon/ndi handles. Lazy-created on
+    /// the first frame after Start; dropped on Stop / sink change /
+    /// node removal. `Drop` SIGKILLs ffmpeg; for a clean file the
+    /// caller must hand the recorder to `stop_graceful` on a worker
+    /// thread (handled in `render_filerec_sink`).
+    #[serde(skip)]
+    file_recorder: Arc<Mutex<Option<crate::video_io::file_recorder::FileRecorder>>>,
+
+    /// Result channel from a graceful-stop worker thread. Polled by
+    /// the UI tick to surface the outcome (clean exit / timeout) into
+    /// `self.status`. `None` = no stop in flight.
+    /// `crossbeam_channel::Receiver` is Send + Sync (std `mpsc::Receiver`
+    /// is Send-only) so the whole node stays `NodeBehavior`-compliant
+    /// without an extra Arc<Mutex<>> wrap.
+    #[serde(skip)]
+    stop_result_rx: Option<crossbeam_channel::Receiver<Result<(), String>>>,
 }
 
 impl Default for VideoOutNode {
@@ -171,6 +201,10 @@ impl Default for VideoOutNode {
             #[cfg(target_os = "macos")]
             ndi_last_send: None,
             vcam_modal_open: false,
+            recorder_codec: 0,
+            recorder_path: String::new(),
+            file_recorder: Arc::new(Mutex::new(None)),
+            stop_result_rx: None,
         }
     }
 }
@@ -197,6 +231,10 @@ impl Clone for VideoOutNode {
             #[cfg(target_os = "macos")]
             ndi_last_send: None,
             vcam_modal_open: false,
+            recorder_codec: self.recorder_codec,
+            recorder_path: self.recorder_path.clone(),
+            file_recorder: Arc::new(Mutex::new(None)),
+            stop_result_rx: None,
         }
     }
 }
@@ -242,7 +280,10 @@ impl NodeBehavior for VideoOutNode {
             self.destination = l.destination;
             self.fullscreen = l.fullscreen;
             self.fps_cap = l.fps_cap;
-            // `enabled` / `status` intentionally not restored.
+            self.recorder_codec = l.recorder_codec;
+            self.recorder_path = l.recorder_path;
+            // `enabled` / `status` / `file_recorder` intentionally not
+            // restored — a saved project never auto-resumes recording.
         }
     }
 
@@ -268,6 +309,14 @@ impl NodeBehavior for VideoOutNode {
             }
             self.ndi_last_send = None;
         }
+        // File recorder: Drop SIGKILLs ffmpeg. The output file may be
+        // truncated; `+frag_keyframe+empty_moov` keeps it playable to
+        // the last keyframe. For a clean file the user should hit Stop
+        // before deleting the node.
+        if let Ok(mut guard) = self.file_recorder.lock() {
+            *guard = None;
+        }
+        self.stop_result_rx = None;
     }
 
     fn render_with_context(&mut self, ui: &mut egui::Ui, ctx: &mut RenderContext) {
@@ -371,6 +420,13 @@ impl NodeBehavior for VideoOutNode {
                 // VirtualCamera → Syphon should never leave the modal
                 // hovering over an unrelated sink.
                 self.vcam_modal_open = false;
+                // File recorder: tear down (Drop SIGKILLs ffmpeg). A
+                // sink switch mid-record loses the file's tail but
+                // `+frag_keyframe` keeps the partial playable.
+                if let Ok(mut guard) = self.file_recorder.lock() {
+                    *guard = None;
+                }
+                self.stop_result_rx = None;
                 // Carry forward publish-name + fps defaults when
                 // switching INTO Syphon / NDI so the user isn't greeted
                 // with a blank text field + 0 fps cap.
@@ -394,6 +450,7 @@ impl NodeBehavior for VideoOutNode {
             VideoSink::Ndi => self.render_ndi_sink(ui, ctx, &input_val),
             #[cfg(target_os = "macos")]
             VideoSink::VirtualCamera => self.render_vcam_sink(ui, ctx),
+            VideoSink::FileRecord => self.render_filerec_sink(ui, ctx, &input_val),
             _ => {
                 ui.add_space(4.0);
                 ui.colored_label(
@@ -1209,6 +1266,392 @@ impl VideoOutNode {
             ui.ctx().data_mut(|d| d.remove_temp::<bool>(dont_show_id));
         }
     }
+
+    /// Phase 6 file recorder sink. Pipes the upstream `Image` (RGBA)
+    /// into an ffmpeg subprocess. See `crate::video_io::file_recorder`
+    /// for the codec / container rules and graceful-vs-hard stop
+    /// semantics.
+    ///
+    /// Lifecycle:
+    /// - **Start** click: marks `enabled = true`. The recorder is
+    ///   lazy-created on the first frame so we can lock encoder dims to
+    ///   the actual upstream resolution.
+    /// - **Pause / Resume**: flips `paused` on the recorder. Frames are
+    ///   dropped during pause; the output file is a single contiguous
+    ///   stream (no segment splits).
+    /// - **Stop** click: hands the recorder to a worker thread that
+    ///   runs `stop_graceful` (close stdin → wait 5 s → SIGKILL on
+    ///   timeout). The result lands back in `stop_result_rx` so the UI
+    ///   never blocks on the moov flush.
+    /// - **Sink change / node removal**: `Drop` SIGKILLs ffmpeg. Output
+    ///   stays playable to the last keyframe via `+frag_keyframe`.
+    fn render_filerec_sink(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &mut RenderContext,
+        input_val: &PortValue,
+    ) {
+        use crate::video_io::file_recorder::{self as fr, Codec, FileRecorder};
+
+        let dim = ui.visuals().widgets.noninteractive.fg_stroke.color;
+
+        // Phase 3 lesson: clear transient status each frame; only
+        // genuine errors below set it. Without this, a first-frame
+        // "Set a path" message latches forever after the user types
+        // a path.
+        self.status.clear();
+
+        // Drain any pending graceful-stop result. If we don't, the
+        // user's "Saved." or timeout message never reaches the UI.
+        if let Some(rx) = self.stop_result_rx.as_ref() {
+            match rx.try_recv() {
+                Ok(Ok(())) => {
+                    self.status = "Saved.".into();
+                    self.stop_result_rx = None;
+                }
+                Ok(Err(e)) => {
+                    self.status = format!("Stop: {}", e);
+                    self.stop_result_rx = None;
+                }
+                Err(crossbeam_channel::TryRecvError::Empty) => {
+                    // Reaper still working. Repaint so we drain ASAP.
+                    ui.ctx().request_repaint();
+                }
+                Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                    self.stop_result_rx = None;
+                }
+            }
+        }
+
+        let recorder_active = self
+            .file_recorder
+            .lock()
+            .ok()
+            .map(|g| g.is_some())
+            .unwrap_or(false);
+        let codec = fr::codec_from_byte(self.recorder_codec);
+
+        // ── Codec dropdown ─────────────────────────────────────────
+        // Locked while recording — switching codec mid-record would
+        // require a brand-new ffmpeg process (different container,
+        // different encoder). User must Stop first.
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Codec").small())
+                .on_hover_text(
+                    "H.264 = max compatibility (any player).\n\
+                     HEVC = ~half the file size, mac HW encoder.\n\
+                     ProRes 422 = editor intermediate (Final Cut, DaVinci).",
+                );
+            ui.add_enabled_ui(!recorder_active, |ui| {
+                let prev = self.recorder_codec;
+                egui::ComboBox::from_id_salt(egui::Id::new(("vout_filerec_codec", ctx.node_id)))
+                    .selected_text(codec.label())
+                    .width(220.0)
+                    .show_ui(ui, |ui| {
+                        for (b, c) in [
+                            (0u8, Codec::H264Sw),
+                            (1u8, Codec::HevcVt),
+                            (2u8, Codec::ProResVt),
+                        ] {
+                            if ui
+                                .selectable_label(self.recorder_codec == b, c.label())
+                                .clicked()
+                            {
+                                self.recorder_codec = b;
+                            }
+                        }
+                    });
+                if self.recorder_codec != prev && !self.recorder_path.is_empty() {
+                    // Codec switched in idle — keep the file stem but
+                    // swap the extension so the user doesn't end up
+                    // with a .mp4 ProRes (rejected) or .mov H.264.
+                    let new_codec = fr::codec_from_byte(self.recorder_codec);
+                    rewrite_extension(&mut self.recorder_path, new_codec.extension());
+                }
+            });
+        });
+
+        // ── Path field + Browse ────────────────────────────────────
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Path").small());
+            ui.add_enabled_ui(!recorder_active, |ui| {
+                let hint = format!("PatchWork-recording.{}", codec.extension());
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.recorder_path)
+                        .desired_width(220.0)
+                        .hint_text(hint),
+                );
+                if ui.button("…").on_hover_text("Pick output file").clicked() {
+                    let initial = if self.recorder_path.trim().is_empty() {
+                        default_recorder_path(codec, ctx.node_id)
+                    } else {
+                        std::path::PathBuf::from(self.recorder_path.trim())
+                    };
+                    let mut dlg = rfd::FileDialog::new()
+                        .add_filter(codec.extension(), &[codec.extension()])
+                        .set_file_name(
+                            initial
+                                .file_name()
+                                .and_then(|s| s.to_str())
+                                .unwrap_or("PatchWork-recording")
+                                .to_string(),
+                        );
+                    if let Some(parent) = initial.parent() {
+                        if parent.is_dir() {
+                            dlg = dlg.set_directory(parent);
+                        }
+                    }
+                    if let Some(p) = dlg.save_file() {
+                        let mut s = p.to_string_lossy().to_string();
+                        rewrite_extension(&mut s, codec.extension());
+                        self.recorder_path = s;
+                    }
+                }
+            });
+        });
+
+        // ── Start / Pause / Resume / Stop row ──────────────────────
+        let (paused, frames_w, bytes_w, secs) = self
+            .file_recorder
+            .lock()
+            .ok()
+            .and_then(|g| {
+                g.as_ref()
+                    .map(|r| (r.is_paused(), r.frames_written(), r.bytes_written(), r.elapsed().as_secs()))
+            })
+            .unwrap_or((false, 0, 0, 0));
+
+        ui.horizontal(|ui| {
+            if recorder_active {
+                if paused {
+                    if ui.button("▶ Resume").clicked() {
+                        if let Ok(mut g) = self.file_recorder.lock() {
+                            if let Some(r) = g.as_mut() {
+                                r.resume();
+                            }
+                        }
+                    }
+                } else {
+                    if ui.button("⏸ Pause").clicked() {
+                        if let Ok(mut g) = self.file_recorder.lock() {
+                            if let Some(r) = g.as_mut() {
+                                r.pause();
+                            }
+                        }
+                    }
+                }
+                if ui.button("◼ Stop").clicked() {
+                    // Hand the recorder to a worker thread for the
+                    // graceful flush — UI thread can't afford the 5 s
+                    // wait. Result comes back via `stop_result_rx`.
+                    let opt = self
+                        .file_recorder
+                        .lock()
+                        .ok()
+                        .and_then(|mut g| g.take());
+                    if let Some(rec) = opt {
+                        let (tx, rx) = crossbeam_channel::bounded::<Result<(), String>>(1);
+                        std::thread::spawn(move || {
+                            let r = rec.stop_graceful();
+                            let _ = tx.send(r);
+                        });
+                        self.stop_result_rx = Some(rx);
+                    }
+                    self.enabled = false;
+                }
+                let mb = bytes_w as f32 / 1_048_576.0;
+                let m = secs / 60;
+                let s = secs % 60;
+                let (text, color) = if paused {
+                    (
+                        format!("⏸ paused ({} frames, {:.1} MB, {:02}:{:02})", frames_w, mb, m, s),
+                        egui::Color32::from_rgb(200, 180, 80),
+                    )
+                } else {
+                    (
+                        format!("● recording ({} frames, {:.1} MB, {:02}:{:02})", frames_w, mb, m, s),
+                        egui::Color32::from_rgb(80, 200, 80),
+                    )
+                };
+                ui.colored_label(color, egui::RichText::new(text).small());
+            } else {
+                let saving = self.stop_result_rx.is_some();
+                let start_enabled = !saving;
+                ui.add_enabled_ui(start_enabled, |ui| {
+                    if ui.button("● Start").on_hover_text("Begin recording").clicked() {
+                        // Auto-fill path from default if user left it
+                        // blank — single-click "just record" UX.
+                        if self.recorder_path.trim().is_empty() {
+                            let p = default_recorder_path(codec, ctx.node_id);
+                            self.recorder_path = p.to_string_lossy().to_string();
+                        }
+                        self.enabled = true;
+                    }
+                });
+                let (text, color) = if saving {
+                    ("saving…", egui::Color32::from_rgb(200, 180, 80))
+                } else {
+                    ("ready", dim)
+                };
+                ui.colored_label(color, egui::RichText::new(text).small());
+            }
+        });
+
+        if !self.status.is_empty() {
+            let red = self.status.starts_with("Error");
+            let color = if red {
+                egui::Color32::from_rgb(255, 100, 100)
+            } else {
+                dim
+            };
+            ui.colored_label(color, egui::RichText::new(&self.status).small());
+        }
+
+        // ── Latest stderr line (amber, only while recording) ───────
+        if recorder_active {
+            if let Some(line) = self
+                .file_recorder
+                .lock()
+                .ok()
+                .and_then(|mut g| {
+                    if let Some(r) = g.as_mut() {
+                        r.pump_stderr();
+                        let log = r.stderr_log();
+                        if log.is_empty() {
+                            None
+                        } else {
+                            Some(log.lines().last().unwrap_or("").to_string())
+                        }
+                    } else {
+                        None
+                    }
+                })
+            {
+                if !line.is_empty() {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(220, 180, 80),
+                        egui::RichText::new(line).small(),
+                    );
+                }
+            }
+        }
+
+        if !self.enabled {
+            return;
+        }
+
+        // ── Frame pump ─────────────────────────────────────────────
+        // Resolve the upstream pixels. With `needs_cpu_image_input(0)
+        // == true` for FileRecord the framework's eval loop usually
+        // delivers `PortValue::Image` already. But `render_with_context`
+        // resolves the value via `Graph::static_input_value` (raw
+        // upstream), which can still be `GpuImage` if the upstream is
+        // a GPU node — in that case we readback ourselves into RGBA.
+        let arc: std::sync::Arc<ImageData> = match input_val {
+            PortValue::Image(arc) => {
+                if arc.width == 0 || arc.height == 0 || arc.pixels.is_empty() {
+                    ui.ctx().request_repaint();
+                    return;
+                }
+                arc.clone()
+            }
+            PortValue::GpuImage(handle) => {
+                let Some(rs) = ctx.wgpu_render_state else {
+                    self.status = "Error: wgpu render state unavailable".into();
+                    self.enabled = false;
+                    return;
+                };
+                let Some((tex, w, h)) =
+                    crate::gpu_image::frame_snapshot_get_texture(handle.node_id, handle.port)
+                else {
+                    // 1-frame transient on the first publishable tick.
+                    ui.ctx().request_repaint();
+                    return;
+                };
+                crate::gpu_image::readback_texture(&rs.device, &rs.queue, &tex, w, h)
+            }
+            _ => {
+                ui.ctx().request_repaint();
+                return;
+            }
+        };
+
+        // ── Lazy-init recorder on first frame ──────────────────────
+        let mut guard = match self.file_recorder.lock() {
+            Ok(g) => g,
+            Err(_) => return,
+        };
+        if guard.is_none() {
+            let path = std::path::PathBuf::from(self.recorder_path.trim());
+            if path.as_os_str().is_empty() {
+                self.status = "Error: pick a recording path first".into();
+                self.enabled = false;
+                return;
+            }
+            match FileRecorder::new(&path, codec, arc.width, arc.height) {
+                Ok(r) => {
+                    *guard = Some(r);
+                }
+                Err(e) => {
+                    self.status = format!("Error: {}", e);
+                    self.enabled = false;
+                    return;
+                }
+            }
+        }
+        if let Some(rec) = guard.as_mut() {
+            if let Err(e) = rec.write_frame(&arc.pixels, arc.width, arc.height) {
+                self.status = format!("Error: {}", e);
+                self.enabled = false;
+                *guard = None;
+            }
+        }
+        drop(guard);
+
+        // Heartbeat — keep frame counts ticking on the UI.
+        ui.ctx().request_repaint();
+    }
+}
+
+/// Default `~/Movies/PatchWork-{node_id}-{epoch_secs}.{ext}` for a
+/// blank recorder path. Epoch seconds keep names monotonic without
+/// pulling in a date crate; node id disambiguates if the user has
+/// multiple Video Out nodes recording at once.
+fn default_recorder_path(
+    codec: crate::video_io::file_recorder::Codec,
+    node_id: NodeId,
+) -> std::path::PathBuf {
+    let movies = dirs::home_dir()
+        .map(|h| h.join("Movies"))
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    movies.join(format!(
+        "PatchWork-{}-{}.{}",
+        node_id,
+        secs,
+        codec.extension(),
+    ))
+}
+
+/// Force a path's extension to `new_ext` while preserving the parent
+/// directory and file stem. Used when the codec dropdown changes —
+/// a `.mp4` H.264 path becomes `.mov` ProRes (and vice versa).
+fn rewrite_extension(path: &mut String, new_ext: &str) {
+    let p = std::path::PathBuf::from(&*path);
+    let stem = p
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let parent = p.parent().map(|x| x.to_path_buf());
+    let new_name = format!("{}.{}", stem, new_ext);
+    let new_path = match parent {
+        Some(d) if !d.as_os_str().is_empty() => d.join(new_name),
+        _ => std::path::PathBuf::from(new_name),
+    };
+    *path = new_path.to_string_lossy().into_owned();
 }
 
 /// Convert an `f32` Hz value into an NDI rational frame-rate (N / D).
