@@ -65,6 +65,15 @@ impl VideoSink {
             Self::Syphon => true,
             #[cfg(target_os = "macos")]
             Self::Ndi => crate::video_io::ndi::library().is_ok(),
+            // Phase 5 v1: Virtual Camera enabled on macOS as a modal-only
+            // shim that redirects to Syphon (see render_vcam_sink). Real
+            // CMIO Camera Extension lands in v2.
+            #[cfg(target_os = "macos")]
+            Self::VirtualCamera => true,
+            // Phase 6: file recorder pipes RGBA into ffmpeg. ffmpeg
+            // availability is checked at record-start (lazy), not here —
+            // matches how the legacy Camera node handles its dep.
+            Self::FileRecord => true,
             _ => false,
         }
     }
@@ -134,6 +143,14 @@ pub struct VideoOutNode {
     #[cfg(target_os = "macos")]
     #[serde(skip)]
     ndi_last_send: Option<std::time::Instant>,
+
+    /// Phase 5 v1: `true` while the OBS-bridge setup modal is open.
+    /// Resets on sink change so a quick dropdown switch can't leave the
+    /// modal stranded. The "Don't show again" preference itself lives
+    /// in `Settings::vcam_modal_dismissed` — once dismissed, the modal
+    /// never opens again and the sink redirects to Syphon directly.
+    #[serde(skip)]
+    vcam_modal_open: bool,
 }
 
 impl Default for VideoOutNode {
@@ -153,6 +170,7 @@ impl Default for VideoOutNode {
             ndi_scratch: Vec::new(),
             #[cfg(target_os = "macos")]
             ndi_last_send: None,
+            vcam_modal_open: false,
         }
     }
 }
@@ -178,6 +196,7 @@ impl Clone for VideoOutNode {
             ndi_scratch: Vec::new(),
             #[cfg(target_os = "macos")]
             ndi_last_send: None,
+            vcam_modal_open: false,
         }
     }
 }
@@ -348,6 +367,10 @@ impl NodeBehavior for VideoOutNode {
                     }
                     self.ndi_last_send = None;
                 }
+                // Re-entrancy guard: a fast sequence like Window →
+                // VirtualCamera → Syphon should never leave the modal
+                // hovering over an unrelated sink.
+                self.vcam_modal_open = false;
                 // Carry forward publish-name + fps defaults when
                 // switching INTO Syphon / NDI so the user isn't greeted
                 // with a blank text field + 0 fps cap.
@@ -369,6 +392,8 @@ impl NodeBehavior for VideoOutNode {
             VideoSink::Syphon => self.render_syphon_sink(ui, ctx, &input_val),
             #[cfg(target_os = "macos")]
             VideoSink::Ndi => self.render_ndi_sink(ui, ctx, &input_val),
+            #[cfg(target_os = "macos")]
+            VideoSink::VirtualCamera => self.render_vcam_sink(ui, ctx),
             _ => {
                 ui.add_space(4.0);
                 ui.colored_label(
@@ -1058,6 +1083,130 @@ impl VideoOutNode {
         if closed {
             self.enabled = false;
             self.status = String::new();
+        }
+    }
+
+    /// Phase 5 v1: Virtual Camera shim. Real CMIO Camera Extension
+    /// (`.systemextension`) is out of scope (see `docs/video_io_spec.md`
+    /// §7.4 — needs Apple Developer ID + entitlement, ≥5 weeks of work).
+    /// This UI redirects users to the OBS Virtual Camera + Syphon
+    /// Client bridge: a one-time modal explains the 3 setup steps; on
+    /// Confirm the node's sink is auto-flipped to `Syphon` with publish
+    /// name "PatchWork" so OBS Syphon Client picks it up.
+    ///
+    /// "Don't show again" persists in `Settings::vcam_modal_dismissed`
+    /// — once set, picking Virtual Camera redirects without UI.
+    #[cfg(target_os = "macos")]
+    fn render_vcam_sink(&mut self, ui: &mut egui::Ui, ctx: &mut RenderContext) {
+        // Fast path: if the user has dismissed the modal in a prior
+        // session, redirect the sink to Syphon immediately. The
+        // dropdown already drew "Virtual Camera" this frame so there's
+        // a single-frame flash; the next frame's dispatch lands in
+        // `render_syphon_sink` with publish name "PatchWork".
+        let dismissed = crate::settings::Settings::load().vcam_modal_dismissed;
+        if dismissed {
+            self.sink = VideoSink::Syphon;
+            self.destination = "PatchWork".into();
+            // Drop any prior Syphon server so the next tick re-creates
+            // with the canonical name (the existing sink-change branch
+            // already ran when the user picked Virtual Camera, but be
+            // defensive in case a future caller jumps in via load_state).
+            if let Ok(mut g) = self.syphon_server.lock() {
+                *g = None;
+            }
+            ui.ctx().request_repaint();
+            return;
+        }
+
+        // Modal stays open across frames once armed. `vcam_modal_open`
+        // is a `#[serde(skip)]` bool — re-opens automatically on a
+        // fresh render of an undismissed modal.
+        self.vcam_modal_open = true;
+
+        // egui has no native modal primitive in 0.31; we get close with
+        // a centered foreground Window plus a click-outside drainer
+        // baked into Confirm/Cancel button handling. The "Don't show
+        // again" checkbox state lives in egui temp data so it persists
+        // across frames without polluting the serialized node.
+        let dont_show_id = egui::Id::new(("vcam_modal_dont_show", ctx.node_id));
+        let mut dont_show = ui
+            .ctx()
+            .data(|d| d.get_temp::<bool>(dont_show_id))
+            .unwrap_or(false);
+
+        let mut confirm_clicked = false;
+        let mut cancel_clicked = false;
+
+        egui::Window::new("Set up Virtual Camera")
+            .id(egui::Id::new(("vcam_modal", ctx.node_id)))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .order(egui::Order::Foreground)
+            .show(ui.ctx(), |ui| {
+                ui.set_min_width(420.0);
+                ui.set_max_width(460.0);
+
+                ui.label(
+                    "To appear as a webcam in Zoom / Meet / etc., PatchWork \
+                     needs a system bridge. We recommend OBS:",
+                );
+                ui.add_space(6.0);
+                ui.label("1. Install OBS Studio.");
+                ui.label("2. Add Source → \"Syphon Client\" → pick \"PatchWork\".");
+                ui.label("3. Tools → \"Start Virtual Camera\".");
+                ui.add_space(6.0);
+                ui.label("Zoom / Meet will now see your PatchWork output.");
+                ui.add_space(10.0);
+
+                ui.checkbox(&mut dont_show, "Don't show this again");
+                ui.add_space(8.0);
+
+                ui.horizontal(|ui| {
+                    if ui.button("Cancel").clicked() {
+                        cancel_clicked = true;
+                    }
+                    ui.add_space(6.0);
+                    if ui
+                        .add(egui::Button::new(
+                            egui::RichText::new("Confirm").strong(),
+                        ))
+                        .clicked()
+                    {
+                        confirm_clicked = true;
+                    }
+                });
+
+                // Esc dismisses too — common modal expectation.
+                if ui.ctx().input(|i| i.key_pressed(egui::Key::Escape)) {
+                    cancel_clicked = true;
+                }
+            });
+
+        ui.ctx().data_mut(|d| d.insert_temp(dont_show_id, dont_show));
+
+        if confirm_clicked {
+            // Persist the "don't show again" preference. Load-mutate-
+            // save runs on the UI thread so it can't race with the
+            // Settings node's own writes.
+            if dont_show {
+                let mut s = crate::settings::Settings::load();
+                s.vcam_modal_dismissed = true;
+                let _ = s.save();
+            }
+            self.sink = VideoSink::Syphon;
+            self.destination = "PatchWork".into();
+            self.vcam_modal_open = false;
+            // Drop the egui temp checkbox state — next time we open
+            // the modal (if user un-dismisses via settings), it starts
+            // unchecked.
+            ui.ctx().data_mut(|d| d.remove_temp::<bool>(dont_show_id));
+        } else if cancel_clicked {
+            // Revert to Window — never leave the user staring at a
+            // disabled modal-only sink.
+            self.sink = VideoSink::Window;
+            self.vcam_modal_open = false;
+            ui.ctx().data_mut(|d| d.remove_temp::<bool>(dont_show_id));
         }
     }
 }

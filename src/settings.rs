@@ -76,6 +76,13 @@ pub struct Settings {
     /// that config live in `~/.patchwork/ai_configs/<active>.json`.
     #[serde(default)]
     pub ai: AiSettings,
+    /// Whether the user has dismissed the Virtual Camera setup modal
+    /// (Phase 5 v1). Once true, selecting `Virtual Camera` in a
+    /// `VideoOutNode` immediately redirects the sink to `Syphon` with
+    /// publish name "PatchWork" — no UI flash. See
+    /// `docs/video_io_spec.md` §7.4 for the modal copy.
+    #[serde(default)]
+    pub vcam_modal_dismissed: bool,
     /// Pre-2026-Q2 key storage shape. Loaded for migration only — keys
     /// here are copied to per-config files on first save, then this
     /// field is dropped. `#[serde(default, skip_serializing)]` means
@@ -90,6 +97,7 @@ impl Default for Settings {
             image_cache_max_mb: default_cache_max_mb(),
             image_cache_max_files: default_cache_max_files(),
             ai: AiSettings::default(),
+            vcam_modal_dismissed: false,
             legacy_profiles: None,
         }
     }
