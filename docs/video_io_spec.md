@@ -216,9 +216,11 @@ Video In ───┼─→ Video Out (Syphon "PatchWork")    [GPU]
 | **Library** | `SpoutDX.dll` loaded via `libloading`; hand‑declared FFI prototypes. No stable Rust wrapper crate. |
 | **Threading** | Send/receive must happen on the thread that owns the D3D11 device; that's our wgpu thread under the DX11 backend, so same as Syphon on mac. |
 
-### 7.4 Virtual Camera (macOS, Phase 5 — v1 = doc only)
+### 7.4 Virtual Camera (macOS, Phase 5 — v1 modal-only) — **Shipped** ✓
 
-The production path requires a separate signed and notarised Camera Extension (`.systemextension` bundle) with the CMIO entitlement. Out of v1 scope. **v1 deliverable**: the `VideoSink::VirtualCamera` option shows a modal on first enable:
+**Status**: Shipped in Phase 5 v1. End-to-end verified with OBS Syphon Client → OBS Virtual Camera → Zoom on Apple Silicon.
+
+The production path requires a separate signed and notarised Camera Extension (`.systemextension` bundle) with the CMIO entitlement. Out of v1 scope (~5 weeks of Apple Developer ID + entitlement paperwork). **v1 deliverable**: the `VideoSink::VirtualCamera` option shows a one-time modal:
 
 > To appear as a webcam in Zoom / Meet / etc., PatchWork needs a system bridge. We recommend OBS:
 >   1. Install OBS Studio.
@@ -228,7 +230,34 @@ The production path requires a separate signed and notarised Camera Extension (`
 >
 > [ ] Don't show this again
 
-Then auto‑switches the sink to `Syphon` with publish name "PatchWork". Stored dismissed flag in settings.
+On Confirm: auto-switches the sink to `Syphon` with publish name `"PatchWork"`. On Cancel / Esc: reverts to `Window` so the user is never staring at a disabled modal-only sink.
+
+**Dismissed flag** persists at `Settings::vcam_modal_dismissed: bool` (`~/.patchwork/settings.json`). Once true, picking Virtual Camera redirects to Syphon immediately — no UI flash. To re-enable the modal, delete the key from `settings.json`.
+
+**Modal re-entrancy guard**: the per-node `vcam_modal_open` flag is cleared in the sink-change branch so a fast Window → VirtualCamera → Syphon sequence never strands the modal over an unrelated sink.
+
+### 7.5 File Recorder (Phase 6) — **Shipped** ✓
+
+**Status**: Shipped in Phase 6. Cross-platform (`Command::new("ffmpeg")`); macOS gets HW-encoded VideoToolbox codecs, Linux/Windows fall back to libx264 SW.
+
+| | |
+|---|---|
+| **Transport** | `ffmpeg` subprocess; pixels arrive on stdin as `-f rawvideo -pix_fmt rgba`, encoded output goes to the user-picked file. |
+| **Codecs (v1)** | H.264 (`libx264` SW, max compat), HEVC (`hevc_videotoolbox` HW, ~half the size), ProRes 422 (`prores_videotoolbox` HW, editor intermediate). VP9/AV1 deferred — niche on macOS, slow on the SW path. |
+| **Containers** | `.mp4` for H.264/HEVC, `.mov` for ProRes. The codec dropdown locks the extension; switching codec in idle auto-rewrites the path's extension. |
+| **Frame rate** | Locked to 30 fps (`crate::video_io::file_recorder::RECORDING_FPS`). `write_frame` silently throttles writes arriving within 1/30 s of the previous one — without this, render_with_context would push 60 wall-clock writes/sec at ffmpeg's 30 fps timestamps and the output media-clock would drift from wall-clock. Configurable cap is a v2 add. |
+| **Path picker** | `rfd::FileDialog::save_file()` — native overwrite confirmation; no extra UI. Default name when blank: `~/Movies/PatchWork-{node_id}-{epoch}.{ext}` (epoch seconds for monotonicity without a date crate). |
+| **Mid-record dim change** | Locked to first-frame `(w, h)`. Mismatched frames are dropped with a stderr-log warning; the recording stays alive (a Camera resolution wobble shouldn't lose 5 minutes of footage). |
+| **Pause / Resume** | Drops frames during pause; single output file; no segmentation. User can splice in post if they need a cut. |
+| **Stop semantics** | **Graceful** = drop stdin → wait 5 s for ffmpeg to flush moov → SIGKILL fallback (via `libc::kill` on Unix; reaper thread releases the file). Runs on a worker thread so the UI never blocks. **Drop** (node removal / sink change) = direct SIGKILL. |
+| **Crash survival** | MP4 outputs use `-movflags +faststart+frag_keyframe+empty_moov` so a SIGKILL-truncated file is still playable to the last keyframe. ProRes (.mov) uses fragmented atoms by default. |
+| **Pre-flight checks** | HW codecs (HEVC/ProRes) reject odd dimensions; we surface a clear error before spawn instead of waiting for ffmpeg's stderr. ffmpeg-not-on-PATH errors reuse `video_player::ffmpeg_install_hint()` (`"brew install ffmpeg"` on macOS). |
+| **Status display** | Recording chip shows `● recording (NN frames, M.M MB, MM:SS)` where the size is **on-disk encoded bytes** (polled via `fs::metadata`), NOT raw RGBA pushed to ffmpeg — those numbers diverge by ~500× and confused early users. |
+| **Linux v4l2loopback** | **Documented-only**, not auto-installed. After installing the `v4l2loopback` kernel module, `ffmpeg -f v4l2 /dev/video10` from a separate terminal can pipe the recorded file (or live frames via a future virtual-camera sink) to a `/dev/video*` device that Zoom / Meet pick up. |
+
+**Persistence**: `recorder_codec: u8` and `recorder_path: String` on `VideoOutNode` serialise across save/load. `enabled` and `file_recorder` are `#[serde(skip)]` so a saved project never auto-resumes mid-recording — user must explicitly hit Start.
+
+**Stderr drainer**: sibling thread mirroring `video_player.rs:278–308`. 1 KB cap on `stderr_log` prevents unbounded growth from a chatty ffmpeg. Latest line surfaces as an amber warning under the status row while recording.
 
 ## 8. Lifecycle
 
@@ -289,4 +318,4 @@ Sink failures that would otherwise silently drop frames (Syphon server failed to
 2. **NDI receiver re‑upload format**: SDK delivers `BGRA` or `UYVY` frames. For GPU upload, do we swizzle CPU→CPU first or use a tiny compute shader to swizzle on upload? First cut: CPU swizzle (simpler, cost is negligible for typical 1920×1080 BGRA).
 3. **Syphon import on wgpu**: `wgpu_hal::metal::Device::texture_from_raw` exposed as stable API? If not, fallback is `wgpu::Device::create_texture_from_hal` with a hand‑built `hal::metal::Texture`. Day 1 of Phase 2 work.
 4. **Multiple Video Out of the same sink type**: two Syphon servers with the same publish name = undefined behaviour per Syphon docs. UI should validate uniqueness within the graph on toggle‑enable and refuse duplicates with an error status.
-5. **Recording (file output sink)**: out of scope for this doc? Or include as a Phase 6 companion? Proposal: defer, link from the `VideoSink::FileRecord` stub to a follow‑up spec once the bridge work lands.
+5. ~~**Recording (file output sink)**: out of scope for this doc?~~ — **Resolved** in §7.5. Phase 6 shipped with H.264 / HEVC / ProRes codecs, 30 fps cap, native save dialog, graceful + hard stop paths.
