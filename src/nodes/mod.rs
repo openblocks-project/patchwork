@@ -71,6 +71,7 @@ pub mod voice_effects_node;
 pub mod audio_analyzer_node;
 pub mod music_visualizer_node;
 pub mod spectral_synth_node;
+pub mod neural_audio_node;
 pub mod web_app_node;
 pub mod websocket_node;
 pub mod clock_node;
@@ -542,6 +543,8 @@ pub fn catalog() -> Vec<NodeCatalogEntry> {
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(music_visualizer_node::MusicVisualizerNode::default()) } } },
         NodeCatalogEntry { wip: false, singleton: false, label: "Spectral Synth", category: "Audio",
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(spectral_synth_node::SpectralSynthNode::default()) } } },
+        NodeCatalogEntry { wip: true, singleton: false, label: "Neural Audio", category: "Audio",
+            factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(neural_audio_node::NeuralAudioNode::default()) } } },
         NodeCatalogEntry { wip: false, singleton: true, label: "Audio Device", category: "Audio",
             factory: || NodeType::AudioDevice { selected_output: String::new(), selected_input: String::new(), master_volume: 0.8, enabled: false } },
         NodeCatalogEntry { wip: true, singleton: false, label: "TTS", category: "Audio",
@@ -645,7 +648,7 @@ pub fn catalog() -> Vec<NodeCatalogEntry> {
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(json_fields::JsonFieldsNode::default()) } } },
         NodeCatalogEntry { wip: false, singleton: false, label: "Pack (JSON)", category: "ML",
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(pack_node::PackNode::default()) } } },
-        NodeCatalogEntry { wip: false, singleton: false, label: "ML Model", category: "ML",
+        NodeCatalogEntry { wip: false, singleton: false, label: "Vision Model", category: "ML",
             factory: || NodeType::MlModel { model_path: String::new(), labels_path: String::new(), confidence: 0.05, preset: MlPreset::default(), result_text: String::new(), result_json: String::new(), annotated_frame: None, status: String::new(), last_input_hash: 0, interval_secs: 0.5, last_inference_secs: 0.0 } },
         NodeCatalogEntry { wip: false, singleton: false, label: "Smoother", category: "Math",
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(smoother::SmootherNode::default()) } } },

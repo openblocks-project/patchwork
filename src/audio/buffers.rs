@@ -75,6 +75,14 @@ impl LiveInputBuffer {
         peak
     }
 
+    /// How many samples the producer has written but the consumer hasn't read yet.
+    /// Cheap atomic load on each side; safe to call from any thread.
+    pub fn buffered(&self) -> usize {
+        let wp = self.write_pos.load(Ordering::Acquire);
+        let rp = self.read_pos.load(Ordering::Relaxed);
+        wp.wrapping_sub(rp)
+    }
+
     /// Read samples into the output buffer (consumer).
     /// If not enough samples are available, fills remainder with silence.
     pub fn read_into(&self, buf: &mut [f32], num_frames: usize) {
