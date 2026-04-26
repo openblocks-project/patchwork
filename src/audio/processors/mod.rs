@@ -15,3 +15,4 @@ pub mod spectrum;
 pub mod clap;
 pub mod spectral_synth;
 pub mod voice_effects;
+pub mod neural_audio;

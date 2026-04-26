@@ -426,6 +426,12 @@ impl AudioManager {
                 let n = proc.param_count();
                 Some((Box::new(proc), n))
             }
+            NodeType::Dynamic { inner } if inner.node.type_tag() == "neural_audio" => {
+                let any = &*inner.node as &dyn std::any::Any;
+                let na = any.downcast_ref::<crate::nodes::neural_audio_node::NeuralAudioNode>()?;
+                let buf = na.bridge.audio_buffer.clone();
+                Some((Box::new(neural_audio::NeuralAudioProcessor::new(buf)), 0))
+            }
             NodeType::Dynamic { inner } if inner.node.type_tag() == "noise_removal" => {
                 // Pull the node's current settings so the processor starts
                 // matched to UI state on first block; subsequent updates
