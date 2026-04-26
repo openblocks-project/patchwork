@@ -1,14 +1,13 @@
 //! NeuralAudioProcessor — audio-thread half of the Neural Audio node.
 //!
 //! All ONNX inference happens on a background thread spawned by `NeuralAudioNode`
-//! (see `src/nodes/neural_audio_node.rs`). That thread pushes decoded f32 audio
-//! samples into a shared `LiveInputBuffer` (lock-free SPSC ring). This
-//! processor only drains the ring on each audio callback. No allocation,
-//! no inference, no locks on the audio thread.
+//! (see `src/nodes/neural_audio_node.rs`). The processor:
+//! - drains decoded samples from the shared `output` ring into the engine's
+//!   output buffer
+//! - copies upstream `input` audio into the shared `input` ring so the
+//!   inference thread's encoder can read it (Transfer mode)
 //!
-//! On underrun the ring serves silence; users hear gaps when the host
-//! can't keep up with the model's compute budget. That's intentional v1
-//! feedback — better an obvious dropout than a hidden lock.
+//! No allocation, no inference, no locks on the audio thread.
 
 use std::sync::Arc;
 
@@ -16,12 +15,13 @@ use crate::audio::buffers::LiveInputBuffer;
 use crate::audio::processor::{AudioProcessor, ProcessContext, ProcessorKind};
 
 pub struct NeuralAudioProcessor {
-    buffer: Arc<LiveInputBuffer>,
+    output_buffer: Arc<LiveInputBuffer>,
+    input_buffer: Arc<LiveInputBuffer>,
 }
 
 impl NeuralAudioProcessor {
-    pub fn new(buffer: Arc<LiveInputBuffer>) -> Self {
-        Self { buffer }
+    pub fn new(output_buffer: Arc<LiveInputBuffer>, input_buffer: Arc<LiveInputBuffer>) -> Self {
+        Self { output_buffer, input_buffer }
     }
 }
 
@@ -29,8 +29,14 @@ impl AudioProcessor for NeuralAudioProcessor {
     fn type_id(&self) -> &str { "neural_audio" }
     fn kind(&self) -> ProcessorKind { ProcessorKind::Source }
 
-    fn process_block(&mut self, _input: &[f32], output: &mut [f32], ctx: &ProcessContext) {
-        self.buffer.read_into(output, ctx.block_size);
+    fn process_block(&mut self, input: &[f32], output: &mut [f32], ctx: &ProcessContext) {
+        // Capture upstream audio for the encoder (silently no-op if empty).
+        // The engine fills `input` with zeros when no upstream connection
+        // exists; the inference thread's gate drops empty/silent blocks.
+        if !input.is_empty() {
+            self.input_buffer.write(&input[..ctx.block_size.min(input.len())]);
+        }
+        self.output_buffer.read_into(output, ctx.block_size);
     }
 
     fn set_params(&mut self, _params: &[f32]) {}
