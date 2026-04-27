@@ -410,7 +410,7 @@ impl super::PatchworkApp {
                         target_ports.iter().position(|p| port_kinds_compatible(src_kind, p.kind))
                     } else { None };
 
-                    let new_id = self.graph.add_node(nt, [spawn_x, spawn_y_base]);
+                    let new_id = self.add_node_selected(nt, [spawn_x, spawn_y_base]);
                     if let Some((src_nid, src_port, src_is_output, _)) = wire_ctx {
                         if let Some(tp) = target_port_idx {
                             if src_is_output {

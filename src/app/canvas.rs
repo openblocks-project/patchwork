@@ -732,7 +732,7 @@ impl super::PatchworkApp {
                     };
 
                     self.push_undo();
-                    let new_id = self.graph.add_node(nt, mid_pos);
+                    let new_id = self.add_node_selected(nt, mid_pos);
                     // Remove the original wire (don't trust conn_idx after add_node).
                     self.graph.connections.retain(|c| !(
                         c.from_node == from_node && c.from_port == from_port &&

@@ -159,6 +159,11 @@ pub struct PatchworkApp {
     osc: OscManager,
     // Selection & clipboard
     selected_nodes: std::collections::HashSet<NodeId>,
+    /// Nodes whose click-popup (Slider, Comment, …) should auto-open on the
+    /// next render. Populated by `add_node_selected`, drained at the top of
+    /// `update()`. Lets newly created nodes show their click-options without
+    /// requiring an extra click after the user drops them from the palette.
+    pending_popup_open: std::collections::HashSet<NodeId>,
     selected_connection: Option<ConnectionId>,
     wire_menu_conn: Option<ConnectionId>,  // connection identity for wire context menu
     wire_menu_pos: egui::Pos2,
@@ -287,6 +292,7 @@ impl PatchworkApp {
             monitor: nodes::monitor::MonitorState::default(),
             osc: OscManager::new(),
             selected_nodes: std::collections::HashSet::new(),
+            pending_popup_open: std::collections::HashSet::new(),
             selected_connection: None,
             wire_menu_conn: None,
             wire_menu_pos: egui::Pos2::ZERO,
@@ -659,6 +665,23 @@ impl PatchworkApp {
         self.selected_nodes.iter().next().copied()
     }
 
+    /// Insert a node and immediately make it the sole selection. Use this for
+    /// every user-driven creation (palette, RMB, duplicate, wire-splice,
+    /// file-drop) so the new node is highlighted and ready for keyboard /
+    /// click actions. Programmatic creations (WGSL aux nodes, MCP, undo
+    /// internals) should keep using `self.graph.add_node` to avoid hijacking
+    /// the user's current selection.
+    pub(super) fn add_node_selected(&mut self, nt: NodeType, pos: [f32; 2]) -> NodeId {
+        let id = self.graph.add_node(nt, pos);
+        self.selected_nodes.clear();
+        self.selected_nodes.insert(id);
+        // For nodes that surface their settings via a click-popup (Slider,
+        // Comment, …), auto-open it. The actual ctx writes happen in
+        // `update()` at the top of the next frame — see the drain block.
+        self.pending_popup_open.insert(id);
+        id
+    }
+
     // Pinned nodes: pos is screen pixels, computed to egui coords inline in render
 
     /// Render nodes. If `pinned_only` is true, only render pinned nodes (at zoom 1.0).
@@ -1019,8 +1042,10 @@ impl PatchworkApp {
                     self.context_menu_opened_at = ctx.input(|i| i.time);
                 }
 
-                // Draw selection highlight (skip for custom_render nodes — they handle their own visual feedback)
-                if self.selected_nodes.contains(&node_id) && !is_custom_render {
+                // Draw selection highlight — consistent for every node type.
+                // (Custom-render nodes like Slider don't draw their own ring,
+                // so they previously appeared unselected even when active.)
+                if self.selected_nodes.contains(&node_id) {
                     let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("selection")));
                     let sel_accent = ctx.data_mut(|d| d.get_temp::<[u8; 3]>(egui::Id::new("theme_accent")))
                         .unwrap_or([80, 160, 255]);
@@ -1621,6 +1646,33 @@ impl eframe::App for PatchworkApp {
         // down, so the cache LRU doesn't see the previous project's
         // entries.
         self.clear_caches_if_dirty(ctx);
+
+        // ── Auto-open click-popups for freshly created Slider / Comment ─────
+        // (Other node types in the set are silently ignored — only those
+        // listed below get a popup-open hint. Set populated by
+        // `add_node_selected`.)
+        if !self.pending_popup_open.is_empty() {
+            let now = ctx.input(|i| i.time);
+            let ids: Vec<NodeId> = self.pending_popup_open.drain().collect();
+            for id in ids {
+                let Some(node) = self.graph.nodes.get(&id) else { continue };
+                match &node.node_type {
+                    NodeType::Slider { .. } => {
+                        ctx.data_mut(|d| {
+                            d.insert_temp(egui::Id::new(("slider_popup", id)), true);
+                            d.insert_temp(egui::Id::new(("slider_popup_time", id)), now);
+                        });
+                    }
+                    NodeType::Dynamic { inner } if inner.node.type_tag() == "comment" => {
+                        ctx.data_mut(|d| {
+                            d.insert_temp(egui::Id::new(("comment_popup_d", id)), true);
+                            d.insert_temp(egui::Id::new(("comment_popup_time_d", id)), now);
+                        });
+                    }
+                    _ => {}
+                }
+            }
+        }
 
         // ── OS-level menu bar (always visible) ──
         egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
@@ -2960,9 +3012,7 @@ impl eframe::App for PatchworkApp {
                         discovered: Vec::new(),
                     };
                     self.push_undo();
-                    let new_id = self.graph.add_node(nt, [src_pos[0] + 280.0, src_pos[1]]);
-                    self.selected_nodes.clear();
-                    self.selected_nodes.insert(new_id);
+                    let new_id = self.add_node_selected(nt, [src_pos[0] + 280.0, src_pos[1]]);
                     // Auto-start listening on the spawned node
                     self.osc.process(vec![crate::osc::OscAction::StartListening { node_id: new_id, port }]);
                 }
@@ -2991,9 +3041,7 @@ impl eframe::App for PatchworkApp {
                         _ => continue,
                     };
                     self.push_undo();
-                    let new_id = self.graph.add_node(nt, [hub_pos[0] + 250.0, hub_pos[1]]);
-                    self.selected_nodes.clear();
-                    self.selected_nodes.insert(new_id);
+                    let _ = self.add_node_selected(nt, [hub_pos[0] + 250.0, hub_pos[1]]);
                 }
             }
         }

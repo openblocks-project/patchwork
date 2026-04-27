@@ -11,3 +11,4 @@
 pub mod bundled;
 pub mod ep;
 pub mod match_node;
+pub mod regress_node;
