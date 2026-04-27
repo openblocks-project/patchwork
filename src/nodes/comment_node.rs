@@ -201,9 +201,11 @@ impl NodeBehavior for CommentNode {
         painter.text(egui::pos2(node_rect.left() + 14.0, node_rect.bottom() - 6.0),
             egui::Align2::LEFT_BOTTOM, "Comment", egui::FontId::proportional(10.0), dim);
 
-        // Accent border when editing
+        // Accent border only while text is actively being edited (typing).
+        // The selection ring is drawn centrally by PatchworkApp; the open
+        // popup is its own visible thing, no second ring needed for it.
         let popup_open = ui.ctx().data_mut(|d| d.get_temp::<bool>(popup_id).unwrap_or(false));
-        if popup_open || is_editing {
+        if is_editing {
             let accent = ui.visuals().hyperlink_color;
             painter.rect_stroke(node_rect.expand(2.0), 8.0,
                 egui::Stroke::new(2.0, accent), egui::StrokeKind::Outside);

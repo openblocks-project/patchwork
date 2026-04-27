@@ -130,19 +130,14 @@ pub fn render(
         super::inline_port_circle(ui, node_id, 0, false, connections, port_positions, dragging_from, pending_disconnects, PortKind::Number);
     });
 
-    // ── Accent highlight when popup is open ─────────────
-    let popup_is_open = ui.ctx().data_mut(|d| d.get_temp::<bool>(popup_id).unwrap_or(false));
-    if popup_is_open {
-        // Get accent color from Theme node (stored in egui temp data or default)
-        let accent = ui.ctx().data_mut(|d| d.get_temp::<[u8; 3]>(egui::Id::new("theme_accent")))
-            .unwrap_or([80, 160, 255]);
-        let accent_color = egui::Color32::from_rgb(accent[0], accent[1], accent[2]);
-        let node_rect = ui.min_rect();
-        let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new(("slider_highlight", node_id))));
-        painter.rect_stroke(node_rect.expand(3.0), 8.0, egui::Stroke::new(2.0, accent_color), egui::StrokeKind::Outside);
-    }
+    // Selection feedback (the orange/accent ring) is drawn centrally by
+    // PatchworkApp for every node — see `app/mod.rs` "Draw selection
+    // highlight". The popup-open state is signalled by the popup contents
+    // appearing alongside the node; a second ring here would just double
+    // up with the global selection ring.
 
     // ── Options popup (below the node) ──────────────────
+    let popup_is_open = ui.ctx().data_mut(|d| d.get_temp::<bool>(popup_id).unwrap_or(false));
     if popup_is_open {
         let popup_pos = egui::pos2(rect.right() + 8.0, rect.top());
         let opened_time = ui.ctx().data_mut(|d| d.get_temp::<f64>(popup_time_id).unwrap_or(0.0));

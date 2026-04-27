@@ -386,9 +386,8 @@ impl super::PatchworkApp {
                     (pos.x - off_e.x + 20.0, pos.y - off_e.y + 20.0)
                 };
                 self.push_undo();
-                let new_id = self.graph.add_node(nt, [cx, cy]);
-                self.selected_nodes.clear();
-                self.selected_nodes.insert(new_id);
+                let new_id = self.add_node_selected(nt, [cx, cy]);
+                let _ = new_id;
             }
         }
         // Cmd+D = duplicate (only when no text field is focused)
@@ -428,10 +427,8 @@ impl super::PatchworkApp {
                     let nt = node.node_type.clone();
                     let pos = node.pos;
                     self.push_undo();
-                    let new_id = self.graph.add_node(nt, [pos[0] + 30.0, pos[1] + 30.0]);
+                    let new_id = self.add_node_selected(nt, [pos[0] + 30.0, pos[1] + 30.0]);
                     self.opt_drag_created = Some(new_id);
-                    self.selected_nodes.clear();
-                    self.selected_nodes.insert(new_id);
                 }
             }
             if ctx.input(|i| i.pointer.any_released()) {
@@ -519,9 +516,7 @@ impl super::PatchworkApp {
                                     let nt = node.node_type.clone();
                                     let p = node.pos;
                                     self.push_undo();
-                                    let new_id = self.graph.add_node(nt, [p[0] + 30.0, p[1] + 30.0]);
-                                    self.selected_nodes.clear();
-                                    self.selected_nodes.insert(new_id);
+                                    let _ = self.add_node_selected(nt, [p[0] + 30.0, p[1] + 30.0]);
                                 }
                             }
                             keep_open = false;
@@ -613,9 +608,7 @@ impl super::PatchworkApp {
                                 if let Some(nt) = self.clipboard.clone() {
                                     self.push_undo();
                                     let off_e = self.canvas_offset / self.canvas_zoom;
-                                    let new_id = self.graph.add_node(nt, [pos.x - off_e.x + 20.0, pos.y - off_e.y + 20.0]);
-                                    self.selected_nodes.clear();
-                                    self.selected_nodes.insert(new_id);
+                                    let _ = self.add_node_selected(nt, [pos.x - off_e.x + 20.0, pos.y - off_e.y + 20.0]);
                                 }
                                 keep_open = false;
                             }
@@ -649,7 +642,7 @@ impl super::PatchworkApp {
                                 // Create new Theme node at click position
                                 let off_e = self.canvas_offset / self.canvas_zoom;
                                 let accent = crate::nodes::theme::random_accent();
-                                let new_id = self.graph.add_node(NodeType::Theme {
+                                let _ = self.add_node_selected(NodeType::Theme {
                                     dark_mode: true, accent, font_size: 14.0,
                                     bg_color: [20, 20, 20], text_color: [220, 220, 220],
                                     window_bg: [24, 24, 24], window_alpha: 240,
@@ -658,8 +651,6 @@ impl super::PatchworkApp {
                                     rounding: 16.0, spacing: 4.0, use_hsl: false,
                                     wire_thickness: 6.0, background_path: String::new(),
                                 }, [pos.x - off_e.x, pos.y - off_e.y]);
-                                self.selected_nodes.clear();
-                                self.selected_nodes.insert(new_id);
                             }
                             keep_open = false;
                         }

@@ -223,19 +223,20 @@ impl super::PatchworkApp {
         let video_exts = ["mp4", "mov", "avi", "webm", "mkv"];
         let audio_exts = ["mp3", "wav", "ogg", "flac", "aac", "m4a"];
         let off_e = self.canvas_offset / self.canvas_zoom;
+        let mut new_ids: std::collections::HashSet<crate::graph::NodeId> = std::collections::HashSet::new();
         for (idx, path) in dropped.iter().enumerate() {
             // Stack multiple dropped files vertically from the drop point
             let canvas_x = drop_pos.x - off_e.x;
             let canvas_y = drop_pos.y - off_e.y + (idx as f32 * 40.0);
 
             let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
-            if audio_exts.contains(&ext.as_str()) {
+            let nid = if audio_exts.contains(&ext.as_str()) {
                 self.graph.add_node(NodeType::AudioPlayer {
                     file_path: path.display().to_string(),
                     volume: 1.0,
                     looping: false,
                     duration_secs: 0.0,
-                }, [canvas_x, canvas_y]);
+                }, [canvas_x, canvas_y])
             } else if image_exts.contains(&ext.as_str()) {
                 let image_data = crate::nodes::image_node::load_image_from_path(&path.display().to_string());
                 self.graph.add_node(NodeType::ImageNode {
@@ -245,7 +246,7 @@ impl super::PatchworkApp {
                     preview_size: 150.0,
                     last_save_hash: 0,
                     cached_file: String::new(),
-                }, [canvas_x, canvas_y]);
+                }, [canvas_x, canvas_y])
             } else if video_exts.contains(&ext.as_str()) {
                 self.graph.add_node(NodeType::VideoPlayer {
                     path: path.display().to_string(),
@@ -254,13 +255,18 @@ impl super::PatchworkApp {
                     current_frame: None,
                     duration: 0.0, speed: 1.0,
                     status: "Loaded".into(),
-                }, [canvas_x, canvas_y]);
+                }, [canvas_x, canvas_y])
             } else {
                 let mut file_node = crate::nodes::file_node::FileNode::default();
                 file_node.path = path.display().to_string();
                 file_node.load_file();
-                self.graph.add_node(NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(file_node) } }, [canvas_x, canvas_y]);
-            }
+                self.graph.add_node(NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(file_node) } }, [canvas_x, canvas_y])
+            };
+            new_ids.insert(nid);
+        }
+        // Select all dropped nodes as a group (mirrors paste/duplicate flow).
+        if !new_ids.is_empty() {
+            self.selected_nodes = new_ids;
         }
     }
 
