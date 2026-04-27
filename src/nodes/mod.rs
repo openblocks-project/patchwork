@@ -644,6 +644,8 @@ pub fn catalog() -> Vec<NodeCatalogEntry> {
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(pose_detection::PoseDetectionNode::default()) } } },
         NodeCatalogEntry { wip: false, singleton: false, label: "Match", category: "ML",
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(crate::ml::match_node::MatchNode::default()) } } },
+        NodeCatalogEntry { wip: false, singleton: false, label: "Regress", category: "ML",
+            factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(crate::ml::regress_node::RegressNode::default()) } } },
         NodeCatalogEntry { wip: false, singleton: false, label: "Unpack (JSON)", category: "ML",
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(json_fields::JsonFieldsNode::default()) } } },
         NodeCatalogEntry { wip: false, singleton: false, label: "Pack (JSON)", category: "ML",

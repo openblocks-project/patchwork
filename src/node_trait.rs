@@ -255,6 +255,7 @@ pub static NODE_REGISTRY: std::sync::LazyLock<std::sync::Mutex<NodeRegistryInner
         crate::nodes::face_detection::register(&mut r);
         crate::nodes::pose_detection::register(&mut r);
         crate::ml::match_node::register(&mut r);
+        crate::ml::regress_node::register(&mut r);
         crate::nodes::json_fields::register(&mut r);
         crate::nodes::math_formula::register(&mut r);
         crate::nodes::blend::register(&mut r);
