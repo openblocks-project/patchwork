@@ -75,6 +75,10 @@ impl NodeBehavior for ImageGenNode {
 
     fn color_hint(&self) -> [u8; 3] { [220, 160, 110] }
 
+    /// Renders ports inline via `inline_port_circle` and `output_port_row` —
+    /// opt out of the framework's default top/bottom port rendering.
+    fn inline_ports(&self) -> bool { true }
+
     fn evaluate(&mut self, _inputs: &[PortValue]) -> Vec<(usize, PortValue)> {
         let img_val = match &self.image {
             Some(img) => PortValue::Image(img.clone()),

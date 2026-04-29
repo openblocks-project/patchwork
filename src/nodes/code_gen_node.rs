@@ -73,6 +73,10 @@ impl NodeBehavior for CodeGenNode {
 
     fn color_hint(&self) -> [u8; 3] { [200, 140, 220] }
 
+    /// Renders ports inline via `inline_port_circle` and `output_port_row` —
+    /// opt out of the framework's default top/bottom port rendering.
+    fn inline_ports(&self) -> bool { true }
+
     fn evaluate(&mut self, _inputs: &[PortValue]) -> Vec<(usize, PortValue)> {
         vec![
             (0, PortValue::Text(self.code.clone())),

@@ -177,6 +177,10 @@ impl NodeBehavior for AiConfigNode {
 
     fn color_hint(&self) -> [u8; 3] { [110, 160, 220] }
 
+    /// Renders ports inline via `output_port_row` — opt out of the
+    /// framework's default top/bottom port rendering so we don't double up.
+    fn inline_ports(&self) -> bool { true }
+
     fn evaluate(&mut self, _inputs: &[PortValue]) -> Vec<(usize, PortValue)> {
         let text = self.build_payload(&self.text_provider, &self.text_model).to_port_string();
         let image = self.build_payload(&self.image_provider, &self.image_model).to_port_string();

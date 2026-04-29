@@ -490,7 +490,11 @@ impl NodeBehavior for VideoInNode {
     fn outputs(&self) -> Vec<PortDef> { vec![PortDef::new("Frame", PortKind::Image)] }
     fn color_hint(&self) -> [u8; 3] { [80, 200, 140] }
     fn type_tag(&self) -> &str { "video_in" }
-    fn inline_ports(&self) -> bool { false }
+    /// The Frame output port is rendered inline via `output_port_row`
+    /// inside `render_with_ctx`, so the framework must skip its default
+    /// bottom-port rendering — otherwise the port shows twice and only
+    /// the framework one is wired up.
+    fn inline_ports(&self) -> bool { true }
 
     fn evaluate(&mut self, _inputs: &[PortValue]) -> Vec<(usize, PortValue)> {
         if let Some(frame) = self.current_frame.as_ref() {

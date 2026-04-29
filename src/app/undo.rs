@@ -56,6 +56,10 @@ impl super::PatchworkApp {
             pinned_nodes: self.pinned_nodes.clone(),
         };
         self.undo_history.push(snap);
+        // push_undo is called before every meaningful user mutation
+        // (node add/delete, connect, drag, property edit) — so this is
+        // the natural chokepoint to flip the dirty flag.
+        self.is_dirty = true;
     }
 
     pub(super) fn perform_undo(&mut self) {
@@ -76,6 +80,7 @@ impl super::PatchworkApp {
             // the restored node until the next interaction. Wipe both
             // at the top of the next frame.
             self.caches_dirty = true;
+            self.is_dirty = true;
         }
     }
 
@@ -92,6 +97,7 @@ impl super::PatchworkApp {
             self.selected_nodes.clear();
             self.selected_connection = None;
             self.caches_dirty = true;
+            self.is_dirty = true;
         }
     }
 }
