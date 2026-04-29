@@ -60,14 +60,20 @@ impl super::PatchworkApp {
         let mut keep_open = true;
         let menu_id = egui::Id::new("add_node_menu_window");
 
-        // No accent/brand colors in this menu — categories and node entries
-        // stay neutral. Colors and shapes are reserved for port kinds.
-        let dim = egui::Color32::from_rgb(110, 110, 120);
-        let text_normal = egui::Color32::from_rgb(200, 200, 210);
-        let pill_active_fill = egui::Color32::from_rgb(70, 70, 85);
-        let pill_inactive_fill = egui::Color32::from_rgba_unmultiplied(48, 48, 58, 140);
-        let selected_fill = egui::Color32::from_rgb(60, 60, 72);
-        let wip_color = egui::Color32::from_rgb(200, 160, 60);
+        // Menu chrome derives from the active theme so picker, body, and
+        // canvas read as one surface. Port-kind colors and the WIP amber
+        // are intentionally kept independent (they carry meaning).
+        let theme_text = crate::nodes::theme::current_text_arr(ctx);
+        let theme_bg = crate::nodes::theme::current_bg_arr(ctx);
+        let theme_accent = crate::nodes::theme::current_accent_arr(ctx);
+        let dim = egui::Color32::from_rgba_unmultiplied(theme_text[0], theme_text[1], theme_text[2], 110);
+        let text_normal = egui::Color32::from_rgb(theme_text[0], theme_text[1], theme_text[2]);
+        let pill_surface = crate::nodes::theme::brighten(theme_bg, 50);
+        let pill_active_fill = egui::Color32::from_rgb(pill_surface[0], pill_surface[1], pill_surface[2]);
+        let pill_inactive_surface = crate::nodes::theme::brighten(theme_bg, 28);
+        let pill_inactive_fill = egui::Color32::from_rgba_unmultiplied(pill_inactive_surface[0], pill_inactive_surface[1], pill_inactive_surface[2], 140);
+        let selected_fill = egui::Color32::from_rgba_unmultiplied(theme_accent[0], theme_accent[1], theme_accent[2], 60);
+        let wip_color = egui::Color32::from_rgb(200, 160, 60); // semantic — kept
 
         // Large modal sizing. Menu scales up with the screen but caps at
         // 1400×800 logical so it doesn't stretch absurdly on big monitors.
@@ -125,12 +131,15 @@ impl super::PatchworkApp {
                             self.node_menu_category == label
                         };
                         let text = egui::RichText::new(label).small();
+                        let inactive_text = egui::Color32::from_rgba_unmultiplied(
+                            theme_text[0], theme_text[1], theme_text[2], 170,
+                        );
                         let btn = if is_active {
-                            egui::Button::new(text.strong().color(egui::Color32::WHITE))
+                            egui::Button::new(text.strong().color(text_normal))
                                 .fill(pill_active_fill)
                                 .corner_radius(12.0)
                         } else {
-                            egui::Button::new(text.color(egui::Color32::from_rgb(160, 160, 170)))
+                            egui::Button::new(text.color(inactive_text))
                                 .fill(pill_inactive_fill)
                                 .corner_radius(12.0)
                         };
@@ -222,7 +231,14 @@ impl super::PatchworkApp {
                 let down = ui.ctx().input(|i| i.key_pressed(egui::Key::ArrowDown));
                 let left = ui.ctx().input(|i| i.key_pressed(egui::Key::ArrowLeft));
                 let right = ui.ctx().input(|i| i.key_pressed(egui::Key::ArrowRight));
-                let enter = ui.ctx().input(|i| i.key_pressed(egui::Key::Enter));
+                // `consume_key` (vs `key_pressed`) removes Enter from the
+                // input queue once we use it to spawn. Without this, the
+                // canvas-level Enter→open-menu shortcut would see the same
+                // press later in the frame (after the menu closes) and
+                // immediately re-open the picker.
+                let enter = ui.ctx().input_mut(|i| {
+                    i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)
+                });
 
                 // Up/Down walk within a single column (flat index is built
                 // column-major, so ±1 stays inside the current column until
@@ -339,11 +355,14 @@ impl super::PatchworkApp {
                                             let node_icon = crate::icons::node_icon(entry.label);
                                             let label_text = format!("{} {}", node_icon, entry.label);
 
-                                            // Text color stays neutral —
-                                            // WIP entries get dimmed; no
-                                            // accent on selected.
+                                            // Text color follows theme — WIP
+                                            // entries are dimmed (alpha-modulated
+                                            // theme text so dark/light themes
+                                            // both read correctly).
                                             let text_color = if entry.wip {
-                                                egui::Color32::from_rgb(100, 100, 110)
+                                                egui::Color32::from_rgba_unmultiplied(
+                                                    theme_text[0], theme_text[1], theme_text[2], 100,
+                                                )
                                             } else {
                                                 text_normal
                                             };
@@ -410,7 +429,7 @@ impl super::PatchworkApp {
                         target_ports.iter().position(|p| port_kinds_compatible(src_kind, p.kind))
                     } else { None };
 
-                    let new_id = self.add_node_selected(nt, [spawn_x, spawn_y_base]);
+                    let new_id = self.add_node_selected(ctx, nt, [spawn_x, spawn_y_base]);
                     if let Some((src_nid, src_port, src_is_output, _)) = wire_ctx {
                         if let Some(tp) = target_port_idx {
                             if src_is_output {
@@ -458,12 +477,18 @@ impl super::PatchworkApp {
         let new_project = ctx.data_mut(|d| d.get_temp::<bool>(egui::Id::new("file_action_new")).unwrap_or(false));
         let load_project = ctx.data_mut(|d| d.get_temp::<bool>(egui::Id::new("file_action_load")).unwrap_or(false));
         let save_project = ctx.data_mut(|d| d.get_temp::<bool>(egui::Id::new("file_action_save")).unwrap_or(false));
+        let load_recent: Option<String> = ctx.data_mut(|d| {
+            d.get_temp::<String>(egui::Id::new("file_action_load_recent"))
+        });
+        let clear_recent = ctx.data_mut(|d| d.get_temp::<bool>(egui::Id::new("file_action_clear_recent")).unwrap_or(false));
 
         // Clear flags
         ctx.data_mut(|d| {
             d.insert_temp(egui::Id::new("file_action_new"), false);
             d.insert_temp(egui::Id::new("file_action_load"), false);
             d.insert_temp(egui::Id::new("file_action_save"), false);
+            d.remove::<String>(egui::Id::new("file_action_load_recent"));
+            d.insert_temp(egui::Id::new("file_action_clear_recent"), false);
         });
 
         if new_project {
@@ -473,8 +498,13 @@ impl super::PatchworkApp {
             self.undo_history.clear();
             self.session_accent = crate::nodes::theme::random_accent();
             self.spawn_default_nodes();
+            // A brand-new untitled project starts clean — the user
+            // hasn't made any edits yet.
+            self.is_dirty = false;
         }
         if load_project { self.load_project(); }
+        if let Some(path) = load_recent { self.load_project_path(std::path::PathBuf::from(path)); }
+        if clear_recent { self.recent_projects.clear(); }
         if save_project { self.save_project(); }
 
         // Zoom control

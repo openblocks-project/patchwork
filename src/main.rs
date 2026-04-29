@@ -1,6 +1,8 @@
 mod app;
+mod artnet;
 mod audio;
 mod display;
+mod dmx;
 mod gpu_image;
 mod video_io;
 mod graph;

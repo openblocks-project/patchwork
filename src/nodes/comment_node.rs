@@ -35,68 +35,34 @@ impl NodeBehavior for CommentNode {
     fn outputs(&self) -> Vec<PortDef> { vec![] }
     fn color_hint(&self) -> [u8; 3] { self.bg_color }
 
+    fn apply_theme_defaults(&mut self, ctx: &egui::Context) {
+        // Only override the catalog default — never a user pick. Default a
+        // fresh sticky note to a slight elevation of the canvas bg so it
+        // reads as a card on the active theme.
+        if self.bg_color == [45, 45, 50] {
+            let bg = crate::nodes::theme::current_bg_arr(ctx);
+            self.bg_color = crate::nodes::theme::brighten(bg, 25);
+        }
+    }
+
     fn custom_render(&self) -> bool { true }
     fn no_title(&self) -> bool { true }
     fn min_width(&self) -> Option<f32> { Some(130.0) }
 
-    fn render_background(&self, painter: &egui::Painter, rect: egui::Rect) -> Option<egui::Frame> {
+    fn render_background(&self, _painter: &egui::Painter, _rect: egui::Rect) -> Option<egui::Frame> {
+        // The card fill is delegated to the returned Frame so it always
+        // covers the *actual* window rect — the framework only knows an
+        // approximate 100px height at the time render_background runs, so
+        // painting via the bg painter would leave the bottom of any tall
+        // note transparent. The paper-fold decoration is drawn separately
+        // in render_ui where we have body geometry.
         let bg = egui::Color32::from_rgb(self.bg_color[0], self.bg_color[1], self.bg_color[2]);
-        painter.rect_filled(rect, 8.0, bg);
-
-        // Paper fold — drawn here in render_background so we have the real
-        // outer rect and the fold sits exactly at the top-right corner of
-        // the node instead of an approximated position inside render_ui.
-        let fold_size = 14.0_f32;
-        let corner_r = 8.0_f32;
-        // Pull the fold inward by the corner radius so it doesn't poke past
-        // the rounded top-right corner of the node.
-        let tr = egui::pos2(rect.right() - corner_r * 0.25, rect.top() + corner_r * 0.25);
-
-        // Classic "lifted corner" look:
-        //   • shadow cast on the card underneath (the lower-left triangle
-        //     of the fold square) → darker
-        //   • the back of the lifted flap (the upper-right triangle) →
-        //     slightly lighter than the card color
-        let shadow = egui::Color32::from_rgb(
-            self.bg_color[0].saturating_sub(30),
-            self.bg_color[1].saturating_sub(30),
-            self.bg_color[2].saturating_sub(30),
-        );
-        let flap = egui::Color32::from_rgb(
-            self.bg_color[0].saturating_add(18),
-            self.bg_color[1].saturating_add(18),
-            self.bg_color[2].saturating_add(18),
-        );
-
-        // Shadow — lower-left triangle of the fold square
-        painter.add(egui::Shape::convex_polygon(
-            vec![
-                egui::pos2(tr.x - fold_size, tr.y),
-                egui::pos2(tr.x, tr.y + fold_size),
-                egui::pos2(tr.x - fold_size, tr.y + fold_size),
-            ],
-            shadow,
-            egui::Stroke::NONE,
-        ));
-        // Flap — upper-right triangle (the folded-over corner itself)
-        painter.add(egui::Shape::convex_polygon(
-            vec![
-                egui::pos2(tr.x - fold_size, tr.y),
-                egui::pos2(tr.x, tr.y),
-                egui::pos2(tr.x, tr.y + fold_size),
-            ],
-            flap,
-            egui::Stroke::NONE,
-        ));
-        // Crease line along the diagonal
-        let crease = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 60);
-        painter.line_segment(
-            [egui::pos2(tr.x - fold_size, tr.y), egui::pos2(tr.x, tr.y + fold_size)],
-            egui::Stroke::new(1.0, crease),
-        );
-
-        // Return frame for margins only (fill already drawn above)
-        Some(egui::Frame::NONE.inner_margin(12.0))
+        Some(
+            egui::Frame::NONE
+                .fill(bg)
+                .corner_radius(8.0)
+                .inner_margin(12.0),
+        )
     }
 
     fn evaluate(&mut self, _inputs: &[PortValue]) -> Vec<(usize, PortValue)> { vec![] }
@@ -124,9 +90,10 @@ impl NodeBehavior for CommentNode {
 
         let is_editing = ui.ctx().data_mut(|d| d.get_temp::<bool>(editing_id).unwrap_or(false));
 
-        // Allocate body area — size tightly to actual text so there's no
-        // extra right-side padding in the node background. When editing we
-        // give a slightly wider area for comfortable typing.
+        // ── Width ────────────────────────────────────────────────────
+        // Tight to longest line (so empty notes stay compact), capped at
+        // max_body_w (so a long single line wraps instead of dragging the
+        // node off the canvas).
         let font = egui::FontId::proportional(self.font_size);
         let placeholder = "Write a note...";
         let measure_line = |ui: &egui::Ui, s: &str| -> f32 {
@@ -141,45 +108,89 @@ impl NodeBehavior for CommentNode {
         let max_body_w = 360.0;
         let body_w = (longest + 10.0).clamp(min_body_w, max_body_w);
         let avail_w = ui.available_width().min(body_w);
-        let estimated_h = 80.0_f32.max(self.text.lines().count() as f32 * (self.font_size + 4.0) + 30.0);
-        let (body_rect, body_response) = ui.allocate_exact_size(
-            egui::vec2(avail_w, estimated_h), egui::Sense::click(),
-        );
 
+        // ── Height ───────────────────────────────────────────────────
+        // Lay the text out at the body width to find how tall the wrapped
+        // content actually is (the single-line `painter.text` was the bug:
+        // long inactive notes hid every line after the first). Then clamp
+        // the body height to a comfortable range — anything above MAX_H
+        // gets a vertical scrollbar via the ScrollArea below.
+        const MIN_BODY_H: f32 = 80.0;
+        const MAX_BODY_H: f32 = 220.0;
+        let display_text = if self.text.is_empty() { placeholder } else { self.text.as_str() };
+        let display_color = if self.text.is_empty() {
+            ui.visuals().widgets.noninteractive.fg_stroke.color
+        } else {
+            ui.visuals().text_color()
+        };
+        let inactive_galley = ui.fonts(|f| {
+            f.layout(
+                display_text.to_string(),
+                font.clone(),
+                display_color,
+                (avail_w - 8.0).max(1.0),
+            )
+        });
+        let content_h = inactive_galley.size().y + 16.0;
+        let body_h = content_h.clamp(MIN_BODY_H, MAX_BODY_H);
+
+        let (body_rect, body_response) = ui.allocate_exact_size(
+            egui::vec2(avail_w, body_h),
+            egui::Sense::click(),
+        );
         let text_rect = body_rect.shrink2(egui::vec2(4.0, 4.0));
         let just_entered = ui.ctx().data_mut(|d| d.get_temp::<bool>(just_entered_id).unwrap_or(false));
 
-        if is_editing {
+        // ── Render text in a ScrollArea (kicks in when content > body_h) ──
+        let mut start_editing_from_label = false;
+        {
             let mut child_ui = ui.new_child(egui::UiBuilder::new().max_rect(text_rect));
-            let text_resp = child_ui.add(
-                egui::TextEdit::multiline(&mut self.text)
-                    .desired_width(text_rect.width())
-                    .desired_rows(3)
-                    .frame(false)
-                    .font(egui::FontId::proportional(self.font_size))
-                    .hint_text("Write a note..."),
-            );
-            if just_entered {
-                text_resp.request_focus();
-                ui.ctx().data_mut(|d| d.insert_temp(just_entered_id, false));
-            }
-            if text_resp.lost_focus() && !just_entered {
-                ui.ctx().data_mut(|d| d.insert_temp(editing_id, false));
-            }
-        } else {
-            let painter = ui.painter();
-            let display_text = if self.text.is_empty() { "Write a note..." } else { self.text.as_str() };
-            let color = if self.text.is_empty() {
-                ui.visuals().widgets.noninteractive.fg_stroke.color
+            if is_editing {
+                egui::ScrollArea::vertical()
+                    .max_height(text_rect.height())
+                    .id_salt(("comment_edit_scroll", node_id))
+                    .show(&mut child_ui, |ui| {
+                        let text_resp = ui.add(
+                            egui::TextEdit::multiline(&mut self.text)
+                                .desired_width(text_rect.width())
+                                .desired_rows(3)
+                                .frame(false)
+                                .font(font.clone())
+                                .hint_text(placeholder),
+                        );
+                        if just_entered {
+                            text_resp.request_focus();
+                            ui.ctx().data_mut(|d| d.insert_temp(just_entered_id, false));
+                        }
+                        if text_resp.lost_focus() && !just_entered {
+                            ui.ctx().data_mut(|d| d.insert_temp(editing_id, false));
+                        }
+                    });
             } else {
-                ui.visuals().text_color()
-            };
-            painter.text(text_rect.left_top(), egui::Align2::LEFT_TOP, display_text,
-                egui::FontId::proportional(self.font_size), color);
+                egui::ScrollArea::vertical()
+                    .max_height(text_rect.height())
+                    .id_salt(("comment_view_scroll", node_id))
+                    .show(&mut child_ui, |ui| {
+                        // Label sized via RichText so it picks up the same
+                        // font/color the inactive_galley uses for measurement,
+                        // and wraps inside the ScrollArea's width.
+                        let label_resp = ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(display_text)
+                                    .font(font.clone())
+                                    .color(display_color),
+                            )
+                            .sense(egui::Sense::click()),
+                        );
+                        if label_resp.clicked() {
+                            start_editing_from_label = true;
+                        }
+                    });
+            }
         }
 
-        // Click = start editing
-        if body_response.clicked() && !is_editing {
+        // ── Click body / inactive label → start editing ──
+        if (body_response.clicked() || start_editing_from_label) && !is_editing {
             ui.ctx().data_mut(|d| {
                 d.insert_temp(editing_id, true);
                 d.insert_temp(just_entered_id, true);
@@ -193,23 +204,78 @@ impl NodeBehavior for CommentNode {
             }
         }
 
-        // "Comment" label bottom-left
-        let painter = ui.ctx().layer_painter(egui::LayerId::new(
-            egui::Order::Foreground, egui::Id::new(("comment_overlay_d", node_id))));
+        // ── Foreground overlays: paper fold + "Comment" footer label ──
+        // The card fill is now drawn by the Frame returned from
+        // render_background, which always covers the actual window rect.
+        // The fold is decorative; drawing it via a Foreground layer keeps
+        // it visible above the frame fill (Background paints would be
+        // covered) without blocking the options popup (Tooltip layer).
         let node_rect = body_rect.expand(12.0);
-        let dim = ui.visuals().widgets.noninteractive.fg_stroke.color;
-        painter.text(egui::pos2(node_rect.left() + 14.0, node_rect.bottom() - 6.0),
-            egui::Align2::LEFT_BOTTOM, "Comment", egui::FontId::proportional(10.0), dim);
+        let fold_painter = ui.ctx().layer_painter(egui::LayerId::new(
+            egui::Order::Foreground,
+            egui::Id::new(("comment_fold_d", node_id)),
+        ));
+        let fold_size = 14.0_f32;
+        let corner_r = 8.0_f32;
+        let tr = egui::pos2(
+            node_rect.right() - corner_r * 0.25,
+            node_rect.top() + corner_r * 0.25,
+        );
+        let shadow = egui::Color32::from_rgb(
+            self.bg_color[0].saturating_sub(30),
+            self.bg_color[1].saturating_sub(30),
+            self.bg_color[2].saturating_sub(30),
+        );
+        let flap = egui::Color32::from_rgb(
+            self.bg_color[0].saturating_add(18),
+            self.bg_color[1].saturating_add(18),
+            self.bg_color[2].saturating_add(18),
+        );
+        fold_painter.add(egui::Shape::convex_polygon(
+            vec![
+                egui::pos2(tr.x - fold_size, tr.y),
+                egui::pos2(tr.x, tr.y + fold_size),
+                egui::pos2(tr.x - fold_size, tr.y + fold_size),
+            ],
+            shadow,
+            egui::Stroke::NONE,
+        ));
+        fold_painter.add(egui::Shape::convex_polygon(
+            vec![
+                egui::pos2(tr.x - fold_size, tr.y),
+                egui::pos2(tr.x, tr.y),
+                egui::pos2(tr.x, tr.y + fold_size),
+            ],
+            flap,
+            egui::Stroke::NONE,
+        ));
+        fold_painter.line_segment(
+            [
+                egui::pos2(tr.x - fold_size, tr.y),
+                egui::pos2(tr.x, tr.y + fold_size),
+            ],
+            egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(0, 0, 0, 60)),
+        );
 
-        // Accent border only while text is actively being edited (typing).
-        // The selection ring is drawn centrally by PatchworkApp; the open
-        // popup is its own visible thing, no second ring needed for it.
+        // "Comment" label bottom-left (same Foreground layer, drawn after
+        // the fold so neither covers the other in practice — they don't
+        // overlap horizontally).
+        let label_painter = ui.ctx().layer_painter(egui::LayerId::new(
+            egui::Order::Foreground,
+            egui::Id::new(("comment_overlay_d", node_id)),
+        ));
+        let dim = ui.visuals().widgets.noninteractive.fg_stroke.color;
+        label_painter.text(
+            egui::pos2(node_rect.left() + 14.0, node_rect.bottom() - 6.0),
+            egui::Align2::LEFT_BOTTOM,
+            "Comment",
+            egui::FontId::proportional(10.0),
+            dim,
+        );
+
+        // No local edit-state ring — see the Scope/Slider notes; the
+        // framework already draws the selection highlight.
         let popup_open = ui.ctx().data_mut(|d| d.get_temp::<bool>(popup_id).unwrap_or(false));
-        if is_editing {
-            let accent = ui.visuals().hyperlink_color;
-            painter.rect_stroke(node_rect.expand(2.0), 8.0,
-                egui::Stroke::new(2.0, accent), egui::StrokeKind::Outside);
-        }
 
         // Options popup
         if popup_open {

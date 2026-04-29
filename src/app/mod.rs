@@ -129,6 +129,7 @@ mod canvas;
 mod interaction;
 mod io;
 mod menus;
+mod toast;
 
 use undo::UndoHistory;
 
@@ -157,6 +158,12 @@ pub struct PatchworkApp {
     console_messages: Vec<String>,
     monitor: nodes::monitor::MonitorState,
     osc: OscManager,
+    /// DMX-over-USB transport. Owns serial-port handles + per-node sender
+    /// threads. Mirrors the OSC/MIDI manager pattern.
+    dmx: crate::dmx::DmxManager,
+    /// Art-Net (DMX-over-UDP) transport. Owns the shared send socket and
+    /// per-node listener threads.
+    artnet: crate::artnet::ArtNetManager,
     // Selection & clipboard
     selected_nodes: std::collections::HashSet<NodeId>,
     /// Nodes whose click-popup (Slider, Comment, …) should auto-open on the
@@ -249,6 +256,23 @@ pub struct PatchworkApp {
     /// control of the toggle, so they can turn DSP off mid-playback without
     /// us immediately overriding them.
     prev_play_intent: bool,
+    /// True when the in-memory project differs from what's on disk. Drives
+    /// the `*` in the title bar and the save-on-quit confirmation.
+    is_dirty: bool,
+    /// Last title sent via ViewportCommand — cached so we only push a new
+    /// command when the displayed string actually changes.
+    last_title: String,
+    /// Showing the "save changes before quitting?" modal.
+    pending_quit_dialog: bool,
+    /// User chose Don't Save / saved successfully — next close request
+    /// is allowed through without re-prompting.
+    force_quit: bool,
+    /// MRU list of project directories (most recent first, capped at 10).
+    /// Persisted via SessionState; rendered as the File → Open Recent submenu.
+    recent_projects: Vec<String>,
+    /// Active toast notifications (top-center, auto-dismiss or sticky).
+    /// Pushed via `toast_warn` / `toast_info` / etc; rendered every frame.
+    toasts: Vec<toast::Toast>,
 }
 
 /// Results from background device enumeration thread
@@ -291,6 +315,8 @@ impl PatchworkApp {
             console_messages: Vec::new(),
             monitor: nodes::monitor::MonitorState::default(),
             osc: OscManager::new(),
+            dmx: crate::dmx::DmxManager::new(),
+            artnet: crate::artnet::ArtNetManager::new(),
             selected_nodes: std::collections::HashSet::new(),
             pending_popup_open: std::collections::HashSet::new(),
             selected_connection: None,
@@ -375,6 +401,12 @@ impl PatchworkApp {
             zoom_anchor_screen: None,
             eq_curve_hashes: HashMap::new(),
             prev_play_intent: false,
+            is_dirty: false,
+            last_title: String::new(),
+            pending_quit_dialog: false,
+            force_quit: false,
+            recent_projects: Vec::new(),
+            toasts: Vec::new(),
         };
         // Always start MCP server thread — auto-detects if stdin is a pipe (Claude Desktop)
         // vs terminal (normal launch). If stdin is a terminal, the thread exits immediately.
@@ -671,7 +703,8 @@ impl PatchworkApp {
     /// click actions. Programmatic creations (WGSL aux nodes, MCP, undo
     /// internals) should keep using `self.graph.add_node` to avoid hijacking
     /// the user's current selection.
-    pub(super) fn add_node_selected(&mut self, nt: NodeType, pos: [f32; 2]) -> NodeId {
+    pub(super) fn add_node_selected(&mut self, ctx: &egui::Context, mut nt: NodeType, pos: [f32; 2]) -> NodeId {
+        Self::apply_theme_defaults_to_new(ctx, &mut nt);
         let id = self.graph.add_node(nt, pos);
         self.selected_nodes.clear();
         self.selected_nodes.insert(id);
@@ -680,6 +713,45 @@ impl PatchworkApp {
         // `update()` at the top of the next frame — see the drain block.
         self.pending_popup_open.insert(id);
         id
+    }
+
+    /// Replace per-node default colors with the current theme's accent /
+    /// text color. Only fires when the field still holds the catalog's
+    /// hardcoded sentinel value, so users who explicitly picked a color
+    /// (and re-spawned a clone) keep their pick.
+    ///
+    /// Called inside `add_node_selected` and any programmatic spawn that
+    /// should follow the user's theme.
+    pub(super) fn apply_theme_defaults_to_new(ctx: &egui::Context, nt: &mut NodeType) {
+        let accent = crate::nodes::theme::current_accent_arr(ctx);
+        let text = crate::nodes::theme::current_text_arr(ctx);
+        match nt {
+            // Slider's catalog default is `[80, 160, 255]`.
+            NodeType::Slider { slider_color, .. } if *slider_color == [80, 160, 255] => {
+                *slider_color = accent;
+            }
+            // OB controllers all default to white labels.
+            NodeType::ObJoystick { label_color, .. }
+            | NodeType::ObEncoder { label_color, .. }
+            | NodeType::ObBend { label_color, .. }
+            | NodeType::ObPressure { label_color, .. }
+            | NodeType::ObDistance { label_color, .. }
+            | NodeType::ObKnob { label_color, .. }
+                if *label_color == [255, 255, 255] =>
+            {
+                *label_color = text;
+            }
+            NodeType::ObOrb { color, .. } if *color == [255, 255, 255] => {
+                *color = text;
+            }
+            // Dynamic nodes (Comment, Button, …) opt in via the
+            // `apply_theme_defaults` trait method. Default is a no-op,
+            // so existing node types don't need touching.
+            NodeType::Dynamic { inner } => {
+                inner.node.apply_theme_defaults(ctx);
+            }
+            _ => {}
+        }
     }
 
     // Pinned nodes: pos is screen pixels, computed to egui coords inline in render
@@ -714,6 +786,8 @@ impl PatchworkApp {
         let mut palette_spawns: Vec<([f32; 2], NodeType)> = Vec::new();
         let mut midi_actions: Vec<MidiAction> = Vec::new();
         let mut serial_actions: Vec<SerialAction> = Vec::new();
+        let mut dmx_actions: Vec<crate::dmx::DmxAction> = Vec::new();
+        let mut artnet_actions: Vec<crate::artnet::ArtNetAction> = Vec::new();
         let mut pending_disconnects: Vec<(NodeId, usize)> = Vec::new();
         let mut ob_manager = std::mem::replace(&mut self.ob, ObManager::new());
         let mut audio_manager = std::mem::replace(&mut self.audio, AudioManager::placeholder());
@@ -744,6 +818,9 @@ impl PatchworkApp {
             let midi_conn_in = self.midi.is_input_connected(node_id);
             let serial_conn = self.serial.is_connected(node_id);
             let osc_listening = self.osc.is_listening(node_id);
+            let dmx_output_open = self.dmx.is_output_open(node_id);
+            let dmx_listening = self.dmx.is_listening(node_id);
+            let artnet_listening = self.artnet.is_listening(node_id);
             let http_pending = self.http.is_pending(node_id);
 
             let _open = true;
@@ -851,8 +928,14 @@ impl PatchworkApp {
                 win = win.frame(frame);
             }
             let resp = win.show(ctx, |ui| {
-                    // Constrain width to prevent expanding nodes
-                    ui.set_max_width(node_width.max(180.0));
+                    // Constrain width to prevent expanding nodes — but Comment
+                    // sizes itself tightly to its text (see comment_node.rs
+                    // body_w computation), so the 180-floor here was leaving
+                    // empty padding to the right of short notes. Skip the
+                    // clamp for Comment so its window fits the visible card.
+                    if !is_comment {
+                        ui.set_max_width(node_width.max(180.0));
+                    }
 
                     // Top input ports (skip for inline-port nodes)
                     if !inline {
@@ -920,7 +1003,9 @@ impl PatchworkApp {
                         osc_listening, &mut osc_actions, &mut network_actions, &mut port_positions, &mut dragging_from,
                         &mut http_actions, http_pending, &api_keys, &wgpu_render_state,
                         &mut pending_disconnects, &mut ob_manager, &mut audio_manager,
-                        &self.mcp_log, self.mcp_rx.is_some());
+                        &self.mcp_log, self.mcp_rx.is_some(),
+                        &mut dmx_actions, &mut artnet_actions,
+                        dmx_output_open, dmx_listening, artnet_listening);
 
                     // Check if a Palette node wants to spawn new nodes
                     if matches!(node.node_type, NodeType::Palette { .. }) {
@@ -1118,17 +1203,25 @@ impl PatchworkApp {
                     let n_in = n_inputs;
                     let n_out = n_outputs;
                     let fg = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("collapsed_ports")));
+                    // Input dots: dim version of theme text color (subtle hint).
+                    // Output dots: theme accent so they read as the node's
+                    // outgoing identity, matching the selected-wire highlight.
+                    let theme_text = crate::nodes::theme::current_text_arr(ctx);
+                    let in_dot = egui::Color32::from_rgba_unmultiplied(
+                        theme_text[0], theme_text[1], theme_text[2], 90,
+                    );
+                    let out_dot = crate::nodes::theme::current_accent(ctx);
                     for i in 0..n_in {
                         let y_off = if n_in > 1 { (i as f32 - (n_in - 1) as f32 / 2.0) * 4.0 } else { 0.0 };
                         let pos = egui::pos2(rect.left() - PORT_RADIUS, rect.center().y + y_off);
                         port_positions.insert((node_id, i, true), pos);
-                        fg.circle_filled(pos, 3.0, egui::Color32::from_rgb(70, 75, 85));
+                        fg.circle_filled(pos, 3.0, in_dot);
                     }
                     for i in 0..n_out {
                         let y_off = if n_out > 1 { (i as f32 - (n_out - 1) as f32 / 2.0) * 4.0 } else { 0.0 };
                         let pos = egui::pos2(rect.right() + PORT_RADIUS, rect.center().y + y_off);
                         port_positions.insert((node_id, i, false), pos);
-                        fg.circle_filled(pos, 3.0, egui::Color32::from_rgb(60, 140, 255));
+                        fg.circle_filled(pos, 3.0, out_dot);
                     }
 
                     // For WGSL nodes: run the offscreen render pass even when collapsed
@@ -1264,8 +1357,12 @@ impl PatchworkApp {
                     if let Some(pointer) = ctx.pointer_latest_pos() {
                         // Find the CLOSEST compatible port within the hit radius,
                         // not the first arbitrary one from HashMap iteration.
+                        // Track the closest *incompatible* port too — if the user
+                        // released right on top of an incompatible port we want
+                        // to surface a toast instead of silently doing nothing.
                         let hit_radius = PORT_INTERACT * 2.0;
                         let mut best: Option<(f32, NodeId, usize, bool)> = None;
+                        let mut best_incompat: Option<(f32, PortKind, PortKind)> = None;
                         for (&(nid, pidx, is_input), &pos) in &port_positions {
                             let dist = pos.distance(pointer);
                             if dist < hit_radius && nid != src_node {
@@ -1283,6 +1380,10 @@ impl PatchworkApp {
                                         if best.as_ref().map(|b| dist < b.0).unwrap_or(true) {
                                             best = Some((dist, nid, pidx, is_input));
                                         }
+                                    } else if let (Some(s), Some(t)) = (src_kind, tgt_kind) {
+                                        if best_incompat.as_ref().map(|b| dist < b.0).unwrap_or(true) {
+                                            best_incompat = Some((dist, s, t));
+                                        }
                                     }
                                 }
                             }
@@ -1293,6 +1394,17 @@ impl PatchworkApp {
                             } else {
                                 pending_connections.push((nid, pidx, src_node, src_port));
                             }
+                        } else if let Some((_, src_kind, tgt_kind)) = best_incompat {
+                            // User dropped on a port but the kinds don't match —
+                            // tell them why nothing happened.
+                            let (from_k, to_k) = if is_output {
+                                (src_kind, tgt_kind)
+                            } else {
+                                (tgt_kind, src_kind)
+                            };
+                            self.toast_warn(format!(
+                                "Can't connect {:?} → {:?}", from_k, to_k
+                            ));
                         }
                     }
                     dragging_from = None;
@@ -1521,10 +1633,9 @@ impl PatchworkApp {
                 _ => {
                     // Slider with smart defaults
                     let (min, max, step, value) = crate::nodes::wgsl_viewer::slider_defaults_for_uniform(&req.uniform_name);
-                    let id = self.graph.add_node(
-                        NodeType::Slider { value, min, max, step, slider_color: [80, 160, 255], label: req.uniform_name.clone() },
-                        spawn_pos,
-                    );
+                    let mut nt = NodeType::Slider { value, min, max, step, slider_color: [80, 160, 255], label: req.uniform_name.clone() };
+                    Self::apply_theme_defaults_to_new(ctx, &mut nt);
+                    let id = self.graph.add_node(nt, spawn_pos);
                     (id, 0) // Slider output port 0 = Value
                 }
             };
@@ -1630,6 +1741,8 @@ impl PatchworkApp {
         self.osc.process(osc_actions);
         self.network.process(network_actions);
         self.http.process(http_actions);
+        self.dmx.process(dmx_actions);
+        self.artnet.process(artnet_actions);
     }
 }
 
@@ -1674,7 +1787,15 @@ impl eframe::App for PatchworkApp {
             }
         }
 
+        // Keep the OS title bar in sync with project + dirty state, and
+        // intercept close requests when there are unsaved changes.
+        self.update_window_title(ctx);
+        self.handle_close_request(ctx);
+
         // ── OS-level menu bar (always visible) ──
+        // Snapshot recent_projects to avoid borrowing `self` inside the
+        // menu closure (which already mutates ctx.data).
+        let recent_projects: Vec<String> = self.recent_projects.clone();
         egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
                 ui.menu_button("File", |ui| {
@@ -1686,6 +1807,31 @@ impl eframe::App for PatchworkApp {
                         ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("file_action_load"), true));
                         ui.close_menu();
                     }
+                    ui.add_enabled_ui(!recent_projects.is_empty(), |ui| {
+                        ui.menu_button("Open Recent", |ui| {
+                            for path in &recent_projects {
+                                let label = std::path::Path::new(path)
+                                    .file_name()
+                                    .map(|f| f.to_string_lossy().to_string())
+                                    .unwrap_or_else(|| path.clone());
+                                if ui.button(label).on_hover_text(path).clicked() {
+                                    ui.ctx().data_mut(|d| {
+                                        d.insert_temp(egui::Id::new("file_action_load_recent"), path.clone());
+                                    });
+                                    ui.close_menu();
+                                }
+                            }
+                            if !recent_projects.is_empty() {
+                                ui.separator();
+                                if ui.button("Clear Recent").clicked() {
+                                    ui.ctx().data_mut(|d| {
+                                        d.insert_temp(egui::Id::new("file_action_clear_recent"), true);
+                                    });
+                                    ui.close_menu();
+                                }
+                            }
+                        });
+                    });
                     if ui.button("\u{1f4be} Save").clicked() {
                         ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("file_action_save"), true));
                         ui.close_menu();
@@ -1706,6 +1852,14 @@ impl eframe::App for PatchworkApp {
             });
         });
 
+        // Floating modal for "save before quit?" — drawn after the menu
+        // so it visually layers on top of canvas chrome.
+        self.render_quit_dialog(ctx);
+
+        // Top-center toast notifications. Drawn last so they overlay the
+        // entire UI; auto-dismiss handled inside.
+        self.render_toasts(ctx);
+
         // set_zoom_factor scales everything (nodes, text, chrome) via GPU — zero overhead.
         // Pinned nodes compensate with inverse zoom style + zoom-keyed window IDs.
         ctx.set_zoom_factor(self.canvas_zoom);
@@ -1717,6 +1871,8 @@ impl eframe::App for PatchworkApp {
         self.poll_midi_inputs();
         self.poll_serial_inputs();
         self.poll_osc_inputs();
+        self.poll_dmx_inputs();
+        self.poll_artnet_inputs();
         self.poll_network_events();
         self.poll_http_responses();
         self.process_ai_gear_click(ctx);
@@ -3012,7 +3168,7 @@ impl eframe::App for PatchworkApp {
                         discovered: Vec::new(),
                     };
                     self.push_undo();
-                    let new_id = self.add_node_selected(nt, [src_pos[0] + 280.0, src_pos[1]]);
+                    let new_id = self.add_node_selected(ctx, nt, [src_pos[0] + 280.0, src_pos[1]]);
                     // Auto-start listening on the spawned node
                     self.osc.process(vec![crate::osc::OscAction::StartListening { node_id: new_id, port }]);
                 }
@@ -3041,7 +3197,7 @@ impl eframe::App for PatchworkApp {
                         _ => continue,
                     };
                     self.push_undo();
-                    let _ = self.add_node_selected(nt, [hub_pos[0] + 250.0, hub_pos[1]]);
+                    let _ = self.add_node_selected(ctx, nt, [hub_pos[0] + 250.0, hub_pos[1]]);
                 }
             }
         }

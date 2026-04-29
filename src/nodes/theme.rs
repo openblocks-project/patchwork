@@ -709,3 +709,61 @@ fn hue_to_rgb(p: f32, q: f32, mut t: f32) -> f32 {
     if t < 2.0 / 3.0 { return p + (q - p) * (2.0 / 3.0 - t) * 6.0; }
     p
 }
+
+// ── Read-side helpers ──────────────────────────────────────────────────────
+//
+// These read the colors that `apply_theme` (in `src/app/io.rs`) publishes
+// into `ctx.data` each frame. Callers anywhere in the app can use them to
+// stay in sync with the active Theme node without holding a reference to it.
+// Each helper returns the canonical fallback when no Theme is present, which
+// matches the defaults `apply_theme` would otherwise apply.
+
+const DEFAULT_ACCENT: [u8; 3] = [138, 180, 255];
+const DEFAULT_TEXT: [u8; 3] = [220, 220, 220];
+const DEFAULT_BG: [u8; 3] = [20, 20, 20];
+
+/// Current accent color as `[r, g, b]`. Cheap (single ctx.data read).
+pub fn current_accent_arr(ctx: &eframe::egui::Context) -> [u8; 3] {
+    ctx.data(|d| d.get_temp::<[u8; 3]>(eframe::egui::Id::new("theme_accent")))
+        .unwrap_or(DEFAULT_ACCENT)
+}
+
+/// Current text color as `[r, g, b]`.
+pub fn current_text_arr(ctx: &eframe::egui::Context) -> [u8; 3] {
+    ctx.data(|d| d.get_temp::<[u8; 3]>(eframe::egui::Id::new("theme_text")))
+        .unwrap_or(DEFAULT_TEXT)
+}
+
+/// Current background (panel_fill) color as `[r, g, b]`.
+pub fn current_bg_arr(ctx: &eframe::egui::Context) -> [u8; 3] {
+    ctx.data(|d| d.get_temp::<[u8; 3]>(eframe::egui::Id::new("theme_bg")))
+        .unwrap_or(DEFAULT_BG)
+}
+
+/// Convenience wrappers returning `egui::Color32` directly.
+pub fn current_accent(ctx: &eframe::egui::Context) -> eframe::egui::Color32 {
+    let [r, g, b] = current_accent_arr(ctx);
+    eframe::egui::Color32::from_rgb(r, g, b)
+}
+
+#[allow(dead_code)]
+pub fn current_text(ctx: &eframe::egui::Context) -> eframe::egui::Color32 {
+    let [r, g, b] = current_text_arr(ctx);
+    eframe::egui::Color32::from_rgb(r, g, b)
+}
+
+#[allow(dead_code)]
+pub fn current_bg(ctx: &eframe::egui::Context) -> eframe::egui::Color32 {
+    let [r, g, b] = current_bg_arr(ctx);
+    eframe::egui::Color32::from_rgb(r, g, b)
+}
+
+/// Brighten an `[r,g,b]` by `delta` per channel (saturating). Used for
+/// deriving subtle surface variants from `bg`/`surface` colors.
+pub fn brighten(c: [u8; 3], delta: i16) -> [u8; 3] {
+    [
+        (c[0] as i16 + delta).clamp(0, 255) as u8,
+        (c[1] as i16 + delta).clamp(0, 255) as u8,
+        (c[2] as i16 + delta).clamp(0, 255) as u8,
+    ]
+}

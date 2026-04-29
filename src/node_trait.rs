@@ -81,6 +81,13 @@ pub trait NodeBehavior: std::any::Any + Send + Sync {
     /// Simple nodes can use this (no graph context needed).
     fn render_ui(&mut self, _ui: &mut eframe::egui::Ui) {}
 
+    /// One-time hook fired right after a fresh instance is created via the
+    /// node palette / context menu. Implementors can swap any "factory
+    /// default" colors for the values currently published by the active
+    /// Theme node (read via `crate::nodes::theme::current_*(ctx)`).
+    /// Default is a no-op, so existing nodes don't need to opt in.
+    fn apply_theme_defaults(&mut self, _ctx: &eframe::egui::Context) {}
+
     /// Render with full context — port values, connections, port positions.
     /// Override this instead of render_ui if you need inline ports or to read values.
     /// Default implementation calls render_ui().

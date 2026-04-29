@@ -485,7 +485,11 @@ impl super::PatchworkApp {
                 let base_color = wire_colors[idx];
 
                 let (color, width) = if is_selected {
-                    (egui::Color32::from_rgb(255, 200, 60), wire_thickness + 2.0)
+                    // Keep the port-kind base color so the wire's type
+                    // identity stays readable while selected. The accent
+                    // appears as a halo drawn underneath (below) — selection
+                    // reads as a "border" around the wire, not a recolor.
+                    (base_color, wire_thickness + 1.0)
                 } else if is_hovered {
                     let arr = base_color.to_array();
                     (egui::Color32::from_rgb(
@@ -547,6 +551,14 @@ impl super::PatchworkApp {
                     speed: wiggle_speed,
                 };
 
+                // Accent halo under selected wires — sits below the 3D wire
+                // layers so the base color stays on top. Reads as a glowing
+                // border without obscuring the port-kind color identity.
+                if is_selected {
+                    let acc = crate::nodes::theme::current_accent(ctx).to_array();
+                    let halo = egui::Color32::from_rgba_unmultiplied(acc[0], acc[1], acc[2], 180);
+                    draw_wire(&painter, a, b, halo, width + 6.0, wire_style, &wp);
+                }
                 // 3D wire: shadow + dark edge + main + highlight
                 draw_wire_3d(&painter, a, b, color, width, wire_style, &wp);
 
@@ -732,7 +744,7 @@ impl super::PatchworkApp {
                     };
 
                     self.push_undo();
-                    let new_id = self.add_node_selected(nt, mid_pos);
+                    let new_id = self.add_node_selected(ctx, nt, mid_pos);
                     // Remove the original wire (don't trust conn_idx after add_node).
                     self.graph.connections.retain(|c| !(
                         c.from_node == from_node && c.from_port == from_port &&

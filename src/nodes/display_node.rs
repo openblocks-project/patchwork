@@ -273,6 +273,32 @@ impl NodeBehavior for DisplayNode {
                 "⏸", egui::FontId::proportional(10.0), egui::Color32::from_rgb(200, 200, 80));
         }
 
+        // ── Inline controls ─────────────────────────────────────
+        // Sit directly under the canvas so the most-used adjustments
+        // (signal count, pause/reset/auto-fit) don't require opening the
+        // options popup. Secondary tuning (samples, height, label,
+        // manual min/max) stays in the popup.
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Signals").small());
+            if ui.small_button("−").clicked() && self.signal_count > 1 {
+                let removed = self.signal_count - 1;
+                ctx.pending_disconnects.push((ctx.node_id, removed));
+                self.signal_count -= 1;
+                self.ensure_histories();
+            }
+            ui.label(egui::RichText::new(format!("{}", self.signal_count)).strong());
+            if ui.small_button("+").clicked() && self.signal_count < 8 {
+                self.signal_count += 1;
+                self.ensure_histories();
+            }
+            ui.separator();
+            if ui.selectable_label(self.paused, "⏸").on_hover_text("Pause").clicked() { self.paused = !self.paused; }
+            if ui.small_button("↺").on_hover_text("Reset").clicked() {
+                for h in &mut self.histories { h.clear(); }
+            }
+            if ui.selectable_label(self.auto_fit, "Auto").on_hover_text("Auto-fit Y range").clicked() { self.auto_fit = !self.auto_fit; }
+        });
+
         // Label
         if !self.label.is_empty() {
             let dim = ui.visuals().widgets.noninteractive.fg_stroke.color;
@@ -296,11 +322,11 @@ impl NodeBehavior for DisplayNode {
 
         let popup_open = ui.ctx().data_mut(|d| d.get_temp::<bool>(popup_id).unwrap_or(false));
         if popup_open {
-            let accent = ui.visuals().hyperlink_color;
-            let node_rect = ui.min_rect();
-            let fg = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new(("display_hl_d", ctx.node_id))));
-            fg.rect_stroke(node_rect.expand(3.0), 8.0, egui::Stroke::new(2.0, accent), egui::StrokeKind::Outside);
-
+            // No local accent ring — the framework already draws the
+            // selection highlight around every selected node (see
+            // `app/mod.rs` "Draw selection highlight"), and the popup
+            // panel appearing alongside is its own "options open" signal.
+            // Drawing one here doubled up with the global ring.
             let popup_pos = egui::pos2(rect.right() + 8.0, rect.top());
             let opened_time = ui.ctx().data_mut(|d| d.get_temp::<f64>(popup_time_id).unwrap_or(0.0));
 
@@ -310,42 +336,18 @@ impl NodeBehavior for DisplayNode {
                     egui::Frame::popup(ui.style()).corner_radius(10.0).inner_margin(10.0).show(ui, |ui| {
                         ui.set_min_width(170.0);
 
-                        // Signal count
-                        ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new("Signals").small());
-                            if ui.small_button("-").clicked() && self.signal_count > 1 {
-                                // Disconnect the removed signal port before shrinking
-                                let removed = self.signal_count - 1;
-                                ctx.pending_disconnects.push((ctx.node_id, removed));
-                                self.signal_count -= 1;
-                                self.ensure_histories();
-                            }
-                            ui.label(egui::RichText::new(format!("{}", self.signal_count)).strong());
-                            if ui.small_button("+").clicked() && self.signal_count < 8 {
-                                self.signal_count += 1;
-                                self.ensure_histories();
-                            }
-                        });
-
-                        ui.separator();
-
-                        ui.horizontal(|ui| {
-                            if ui.selectable_label(self.paused, "⏸").on_hover_text("Pause").clicked() { self.paused = !self.paused; }
-                            if ui.small_button("↺").on_hover_text("Reset").clicked() {
-                                for h in &mut self.histories { h.clear(); }
-                            }
-                            if ui.selectable_label(self.auto_fit, "Auto").on_hover_text("Auto-fit Y range").clicked() { self.auto_fit = !self.auto_fit; }
-                        });
+                        // Signals / Pause / Reset / Auto live inline under
+                        // the canvas — see render_with_context above. The
+                        // popup keeps only the secondary tuning.
 
                         if !self.auto_fit {
-                            ui.separator();
                             ui.horizontal(|ui| {
                                 ui.label("Min"); ui.add(egui::DragValue::new(&mut self.scope_min).speed(0.1));
                                 ui.label("Max"); ui.add(egui::DragValue::new(&mut self.scope_max).speed(0.1));
                             });
+                            ui.separator();
                         }
 
-                        ui.separator();
                         ui.horizontal(|ui| {
                             ui.label("Samples");
                             let mut hm = self.history_max as f32;

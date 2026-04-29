@@ -26,6 +26,11 @@ fn default_max_tokens() -> u32 { 1024 }
 fn default_provider() -> String { "anthropic".into() }
 fn default_model() -> String { "claude-sonnet-4-20250514".into() }
 fn default_temperature() -> f32 { 0.7 }
+fn default_dmx_frame_rate() -> u8 { 30 }
+fn default_dmx_channels() -> usize { 8 }
+fn default_dmx_start_at() -> u16 { 1 }
+fn default_artnet_host() -> String { "2.255.255.255".into() }
+fn default_artnet_port() -> u16 { 6454 }
 
 pub type NodeId = u64;
 
@@ -623,6 +628,67 @@ pub enum NodeType {
         /// Auto-discovered addresses: (address, arg_count, last_preview)
         #[serde(default)]
         discovered: Vec<(String, usize, String)>,
+    },
+    DmxOut {
+        #[serde(default)]
+        port_name: String,
+        #[serde(default)]
+        adapter: crate::dmx::DmxAdapter,
+        #[serde(default = "default_dmx_frame_rate")]
+        frame_rate_hz: u8,
+        #[serde(default = "default_dmx_channels")]
+        channel_count: usize,
+        /// 1-indexed DMX channel that node-port 0 maps to. So start_at = 1
+        /// means port 0 → channel 1 (the first DMX channel). 1..=512.
+        #[serde(default = "default_dmx_start_at")]
+        start_at: u16,
+        #[serde(default)]
+        active: bool,
+    },
+    DmxIn {
+        #[serde(default)]
+        port_name: String,
+        #[serde(default = "default_dmx_channels")]
+        channel_count: usize,
+        #[serde(default = "default_dmx_start_at")]
+        start_at: u16,
+        /// Latest received channel values (0–255), one per declared channel.
+        #[serde(default)]
+        last_values: Vec<u8>,
+        #[serde(default)]
+        listening: bool,
+    },
+    ArtNetOut {
+        #[serde(default = "default_artnet_host")]
+        dest_host: String,
+        #[serde(default = "default_artnet_port")]
+        dest_port: u16,
+        #[serde(default)]
+        universe: u16,
+        #[serde(default = "default_dmx_channels")]
+        channel_count: usize,
+        #[serde(default = "default_dmx_start_at")]
+        start_at: u16,
+        #[serde(default = "default_true")]
+        sequence_enabled: bool,
+        #[serde(default)]
+        active: bool,
+    },
+    ArtNetIn {
+        #[serde(default = "default_artnet_port")]
+        listen_port: u16,
+        #[serde(default)]
+        universe: u16,
+        #[serde(default = "default_true")]
+        universe_filter: bool,
+        #[serde(default = "default_dmx_channels")]
+        channel_count: usize,
+        #[serde(default = "default_dmx_start_at")]
+        start_at: u16,
+        #[serde(default)]
+        last_values: Vec<u8>,
+        #[serde(default)]
+        listening: bool,
     },
     Palette {
         #[serde(default)]
@@ -1349,6 +1415,10 @@ impl NodeBehavior for NodeType {
             NodeType::Console { .. } => "Console",
             NodeType::OscOut { .. } => "OSC Out",
             NodeType::OscIn { .. } => "OSC In",
+            NodeType::DmxOut { .. } => "DMX Out",
+            NodeType::DmxIn { .. } => "DMX In",
+            NodeType::ArtNetOut { .. } => "Art-Net Out",
+            NodeType::ArtNetIn { .. } => "Art-Net In",
             NodeType::Palette { .. } => "Node Palette",
             NodeType::HttpRequest { .. } => "HTTP Request",
             NodeType::AiRequest { .. } => "AI Request",
@@ -1456,6 +1526,18 @@ impl NodeBehavior for NodeType {
                 (0..*arg_count).map(|i| PortDef::dynamic(format!("Arg {}", i), Generic)).collect()
             }
             NodeType::OscIn { .. } => vec![],
+            NodeType::DmxOut { channel_count, start_at, .. }
+            | NodeType::ArtNetOut { channel_count, start_at, .. } => {
+                (0..*channel_count)
+                    .map(|i| {
+                        // 1-indexed DMX channel label so users see "Ch 1"
+                        // matching what their lighting console shows.
+                        let ch = (*start_at as usize).saturating_add(i);
+                        PortDef::dynamic(format!("Ch {}", ch), Normalized)
+                    })
+                    .collect()
+            }
+            NodeType::DmxIn { .. } | NodeType::ArtNetIn { .. } => vec![],
             NodeType::Palette { .. } => vec![],
             NodeType::HttpRequest { .. } => vec![PortDef::new("URL", Text), PortDef::new("Body", Text), PortDef::new("Headers", Text)],
             NodeType::AiRequest { .. } => vec![
@@ -1608,6 +1690,16 @@ impl NodeBehavior for NodeType {
                 ports.push(PortDef::new("Raw", Text));
                 ports.push(PortDef::new("Address", Text));
                 ports
+            }
+            NodeType::DmxOut { .. } | NodeType::ArtNetOut { .. } => vec![],
+            NodeType::DmxIn { channel_count, start_at, .. }
+            | NodeType::ArtNetIn { channel_count, start_at, .. } => {
+                (0..*channel_count)
+                    .map(|i| {
+                        let ch = (*start_at as usize).saturating_add(i);
+                        PortDef::dynamic(format!("Ch {}", ch), Normalized)
+                    })
+                    .collect()
             }
             NodeType::Script { output_names, .. } => {
                 output_names.iter().map(|n| PortDef::dynamic(n.clone(), Generic)).collect()
@@ -1773,6 +1865,10 @@ impl NodeBehavior for NodeType {
             NodeType::Console { .. } => [100, 150, 100],
             NodeType::OscOut { .. } => [220, 120, 60],
             NodeType::OscIn { .. } => [60, 160, 220],
+            NodeType::DmxOut { .. } => [255, 180, 60],
+            NodeType::DmxIn { .. } => [180, 220, 60],
+            NodeType::ArtNetOut { .. } => [255, 140, 100],
+            NodeType::ArtNetIn { .. } => [120, 220, 140],
             NodeType::Palette { .. } => [120, 120, 180],
             NodeType::HttpRequest { .. } => [60, 180, 120],
             NodeType::AiRequest { .. } => [180, 100, 255],
@@ -1830,7 +1926,7 @@ impl NodeBehavior for NodeType {
     fn inline_ports(&self) -> bool {
         match self {
             NodeType::Dynamic { inner } => inner.node.inline_ports(),
-            _ => matches!(self, NodeType::Theme { .. } | NodeType::MidiOut { .. } | NodeType::Synth { .. } | NodeType::WgslViewer { .. } | NodeType::ImageEffects { .. } | NodeType::Slider { .. } | NodeType::HttpRequest { .. } | NodeType::AiRequest { .. } | NodeType::AudioDelay { .. } | NodeType::AudioDistortion { .. } | NodeType::AudioLowPass { .. } | NodeType::AudioHighPass { .. } | NodeType::AudioGain { .. } | NodeType::AudioReverb { .. } | NodeType::AudioEq { .. } | NodeType::AudioPlayer { .. } | NodeType::AudioPlaylist { .. } | NodeType::Timer { .. } | NodeType::SampleHold { .. } | NodeType::Curve { .. } | NodeType::AudioMixer { .. } | NodeType::Speaker { .. } | NodeType::AudioInput { .. } | NodeType::AudioSampler { .. } | NodeType::ClapPlugin { .. } | NodeType::Console { .. } | NodeType::ObOrb { .. } | NodeType::AudioAnalyzer | NodeType::SpectrumAnalyzer),
+            _ => matches!(self, NodeType::Theme { .. } | NodeType::MidiOut { .. } | NodeType::Synth { .. } | NodeType::WgslViewer { .. } | NodeType::ImageEffects { .. } | NodeType::Slider { .. } | NodeType::HttpRequest { .. } | NodeType::AiRequest { .. } | NodeType::AudioDelay { .. } | NodeType::AudioDistortion { .. } | NodeType::AudioPitchShift { .. } | NodeType::AudioLowPass { .. } | NodeType::AudioHighPass { .. } | NodeType::AudioGain { .. } | NodeType::AudioReverb { .. } | NodeType::AudioEq { .. } | NodeType::AudioPlayer { .. } | NodeType::AudioPlaylist { .. } | NodeType::Timer { .. } | NodeType::SampleHold { .. } | NodeType::Curve { .. } | NodeType::AudioMixer { .. } | NodeType::Speaker { .. } | NodeType::AudioInput { .. } | NodeType::AudioSampler { .. } | NodeType::ClapPlugin { .. } | NodeType::Console { .. } | NodeType::ObOrb { .. } | NodeType::AudioAnalyzer | NodeType::SpectrumAnalyzer | NodeType::DmxOut { .. } | NodeType::DmxIn { .. } | NodeType::ArtNetOut { .. } | NodeType::ArtNetIn { .. }),
         }
     }
 
@@ -2572,6 +2668,17 @@ impl Graph {
                         values.insert((id, *arg_count), PortValue::Text(raw));
                         // Address output
                         values.insert((id, *arg_count + 1), PortValue::Text(address_filter.clone()));
+                    }
+                    NodeType::DmxOut { .. } | NodeType::ArtNetOut { .. } => {}
+                    NodeType::DmxIn { last_values, channel_count, .. }
+                    | NodeType::ArtNetIn { last_values, channel_count, .. } => {
+                        // Surface each declared channel as a 0..1 normalized
+                        // float so it integrates with everything else in
+                        // the graph. DMX is u8 0..255 → divide by 255.
+                        for i in 0..*channel_count {
+                            let v = last_values.get(i).copied().unwrap_or(0) as f32 / 255.0;
+                            values.insert((id, i), PortValue::Float(v));
+                        }
                     }
                     NodeType::NetworkSend { .. } => {}
                     NodeType::NetworkReceive { imported_schema, last_values, last_values_text, status, .. } => {

@@ -117,6 +117,12 @@ struct SessionState {
     project_path: Option<String>,
     #[serde(default)]
     api_keys: HashMap<String, String>,
+    /// Persisted across launches so the user gets the same `*` indicator
+    /// on relaunch as they had on quit (e.g. quit-with-Don't-Save).
+    #[serde(default)]
+    is_dirty: bool,
+    #[serde(default)]
+    recent_projects: Vec<String>,
 }
 
 fn session_path() -> std::path::PathBuf {
@@ -137,6 +143,8 @@ impl super::PatchworkApp {
             pinned_nodes: self.pinned_nodes.iter().copied().collect(),
             project_path: self.project_path.clone(),
             api_keys: self.api_keys.clone(),
+            is_dirty: self.is_dirty,
+            recent_projects: self.recent_projects.clone(),
         };
         if let Ok(json) = serde_json::to_string_pretty(&state) {
             let _ = std::fs::write(session_path(), json);
@@ -177,6 +185,8 @@ impl super::PatchworkApp {
         self.pinned_nodes = state.pinned_nodes.into_iter().collect();
         self.project_path = state.project_path;
         self.api_keys = state.api_keys;
+        self.is_dirty = state.is_dirty;
+        self.recent_projects = state.recent_projects;
         self.port_positions.clear();
         self.node_rects.clear();
         self.undo_history.clear();
@@ -354,6 +364,58 @@ impl super::PatchworkApp {
                                 }
                             }
                             *last_args_text = msg.args_text.clone();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Drain the manager's per-DmxIn-node receiver and stash the latest
+    /// universe slice on the node so `evaluate` can surface it as port
+    /// outputs. Mirrors `poll_osc_inputs` shape.
+    pub(super) fn poll_dmx_inputs(&mut self) {
+        let node_ids: Vec<NodeId> = self.graph.nodes.keys().copied().collect();
+        for nid in node_ids {
+            let frames = self.dmx.poll_input(nid);
+            if frames.is_empty() { continue; }
+            // Use the most recent frame — DMX is sampled, old frames stale.
+            if let Some(latest) = frames.into_iter().last() {
+                if let Some(node) = self.graph.nodes.get_mut(&nid) {
+                    if let NodeType::DmxIn { last_values, channel_count, start_at, .. } = &mut node.node_type {
+                        let start_idx = (*start_at as usize).saturating_sub(1).min(511);
+                        last_values.resize(*channel_count, 0);
+                        for i in 0..*channel_count {
+                            let ch = start_idx + i;
+                            last_values[i] = latest.data.get(ch).copied().unwrap_or(0);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Same as poll_dmx_inputs, but for Art-Net listener threads. Drops
+    /// frames whose universe doesn't match when the filter is on.
+    pub(super) fn poll_artnet_inputs(&mut self) {
+        let node_ids: Vec<NodeId> = self.graph.nodes.keys().copied().collect();
+        for nid in node_ids {
+            let frames = self.artnet.poll(nid);
+            if frames.is_empty() { continue; }
+            if let Some(node) = self.graph.nodes.get_mut(&nid) {
+                if let NodeType::ArtNetIn { last_values, channel_count, start_at, universe, universe_filter, .. } = &mut node.node_type {
+                    let want_univ = *universe;
+                    let filter_on = *universe_filter;
+                    // Pick the most recent matching frame.
+                    let latest = frames.into_iter()
+                        .filter(|f| !filter_on || f.universe == want_univ)
+                        .last();
+                    if let Some(latest) = latest {
+                        let start_idx = (*start_at as usize).saturating_sub(1).min(511);
+                        last_values.resize(*channel_count, 0);
+                        for i in 0..*channel_count {
+                            let ch = start_idx + i;
+                            last_values[i] = latest.data.get(ch).copied().unwrap_or(0);
                         }
                     }
                 }
@@ -748,18 +810,20 @@ impl super::PatchworkApp {
                 path
             };
             let dir_str = project_dir.display().to_string();
-            self.save_to_dir(dir_str.clone());
-            self.project_path = Some(dir_str);
+            if self.save_to_dir(dir_str.clone()) {
+                self.project_path = Some(dir_str);
+            }
         }
     }
 
     /// Write project.json + api_keys.json to the given directory.
     /// Asset paths are temporarily converted to relative for portability, then restored.
-    fn save_to_dir(&mut self, dir_str: String) {
+    /// Returns true on successful write — callers use this to update dirty/recent state.
+    fn save_to_dir(&mut self, dir_str: String) -> bool {
         let dir = Path::new(&dir_str);
         if let Err(e) = std::fs::create_dir_all(dir) {
             crate::system_log::error(format!("Failed to create project folder: {}", e));
-            return;
+            return false;
         }
         // Temporarily relativize paths, serialize, then restore absolute paths
         relativize_paths(&mut self.graph, &dir_str);
@@ -770,6 +834,7 @@ impl super::PatchworkApp {
             canvas_zoom: self.canvas_zoom,
         };
         let project_file = dir.join("project.json");
+        let mut ok = false;
         match serde_json::to_string_pretty(&pf) {
             Ok(json) => {
                 if json.len() < 10 {
@@ -778,6 +843,7 @@ impl super::PatchworkApp {
                     crate::system_log::error(format!("Save failed: {}", e));
                 } else {
                     crate::system_log::log(format!("Saved to {}", project_file.display()));
+                    ok = true;
                 }
             }
             Err(e) => {
@@ -791,77 +857,189 @@ impl super::PatchworkApp {
             let keys_json = serde_json::to_string_pretty(&self.api_keys).unwrap_or_default();
             let _ = std::fs::write(&keys_file, keys_json);
         }
+        if ok {
+            self.is_dirty = false;
+            self.add_recent(dir_str);
+        }
+        ok
     }
 
     pub(super) fn load_project(&mut self) {
         if let Some(path) = rfd::FileDialog::new().add_filter("Patchwork", &["json"]).pick_file() {
-            let dir = if path.file_name().map(|f| f == "project.json").unwrap_or(false) {
-                path.parent().map(|p| p.to_path_buf())
-            } else {
-                None
-            };
-            let dir_str = dir.as_ref().map(|d| d.display().to_string())
-                .unwrap_or_else(|| path.parent().map(|p| p.display().to_string()).unwrap_or_default());
+            self.load_project_path(path);
+        }
+    }
 
-            // Load project file
-            if let Ok(json) = std::fs::read_to_string(&path) {
-                match serde_json::from_str::<ProjectFile>(&json) {
-                    Ok(pf) => {
-                        let mut graph = pf.graph;
-                        graph.fix_next_id();
-                        absolutize_paths(&mut graph, &dir_str);
-                        // Always start with DSP, Camera, Mic off for safety —
-                        // prevents stale "active" state without actual streams running
-                        for node in graph.nodes.values_mut() {
-                            match &mut node.node_type {
-                                NodeType::AudioDevice { enabled, .. } => { *enabled = false; }
-                                NodeType::Camera { active, .. } => { *active = false; }
-                                NodeType::AudioInput { active, .. } => { *active = false; }
-                                NodeType::VideoPlayer { playing, .. } => { *playing = false; }
-                                _ => {}
-                            }
-                        }
-                        self.audio.stop_output();
-                        self.graph = graph;
-                        self.graph.audio_topology_dirty = true;
-                        // Restore UI state from project file
-                        self.pinned_nodes = pf.pinned_nodes.into_iter().collect();
-                        self.canvas_offset = egui::Vec2::new(pf.canvas_offset[0], pf.canvas_offset[1]);
-                        self.canvas_zoom = pf.canvas_zoom;
-                        self.target_zoom = pf.canvas_zoom;
-                        // Clear transient state
-                        self.port_positions.clear();
-                        self.node_rects.clear();
-                        self.undo_history.clear();
-                        self.selected_nodes.clear();
-                        self.selected_connection = None;
-                        self.wire_menu_conn = None;
-                        self.dragging_from = None;
-                        self.show_node_menu = false;
-                        self.show_context_menu = false;
-                        // The previous project's GPU textures and per-node
-                        // egui temp data must be wiped before any node from
-                        // the new project (whose ids restart at 1 after
-                        // `fix_next_id`) reads them back. Done at the top
-                        // of the next `update()` where ctx is in scope.
-                        self.caches_dirty = true;
-                        crate::system_log::log(format!("Loaded {}", path.display()));
-                    }
-                    Err(e) => {
-                        crate::system_log::error(format!("Load failed: {}", e));
-                    }
+    /// Load a project given a path to either `project.json` or its parent
+    /// directory. Used by both the file dialog and the Open Recent submenu.
+    pub(super) fn load_project_path(&mut self, path: std::path::PathBuf) {
+        // Resolve to the project.json file. Recent entries are stored as
+        // dirs; the dialog returns a file. Handle both shapes.
+        let json_path = if path.is_dir() {
+            path.join("project.json")
+        } else {
+            path
+        };
+        let dir = json_path.parent().map(|p| p.to_path_buf());
+        let dir_str = dir.as_ref().map(|d| d.display().to_string()).unwrap_or_default();
+
+        if !json_path.exists() {
+            crate::system_log::error(format!("Project not found: {}", json_path.display()));
+            // Drop the broken entry from recents so the user doesn't keep
+            // clicking a dead link.
+            self.recent_projects.retain(|p| p != &dir_str);
+            return;
+        }
+
+        let json = match std::fs::read_to_string(&json_path) {
+            Ok(j) => j,
+            Err(e) => {
+                crate::system_log::error(format!("Load failed: {}", e));
+                return;
+            }
+        };
+        let pf: ProjectFile = match serde_json::from_str(&json) {
+            Ok(pf) => pf,
+            Err(e) => {
+                crate::system_log::error(format!("Load failed: {}", e));
+                return;
+            }
+        };
+        let mut graph = pf.graph;
+        graph.fix_next_id();
+        absolutize_paths(&mut graph, &dir_str);
+        // Always start with DSP, Camera, Mic off for safety —
+        // prevents stale "active" state without actual streams running
+        for node in graph.nodes.values_mut() {
+            match &mut node.node_type {
+                NodeType::AudioDevice { enabled, .. } => { *enabled = false; }
+                NodeType::Camera { active, .. } => { *active = false; }
+                NodeType::AudioInput { active, .. } => { *active = false; }
+                NodeType::VideoPlayer { playing, .. } => { *playing = false; }
+                _ => {}
+            }
+        }
+        self.audio.stop_output();
+        self.graph = graph;
+        self.graph.audio_topology_dirty = true;
+        // Restore UI state from project file
+        self.pinned_nodes = pf.pinned_nodes.into_iter().collect();
+        self.canvas_offset = egui::Vec2::new(pf.canvas_offset[0], pf.canvas_offset[1]);
+        self.canvas_zoom = pf.canvas_zoom;
+        self.target_zoom = pf.canvas_zoom;
+        // Clear transient state
+        self.port_positions.clear();
+        self.node_rects.clear();
+        self.undo_history.clear();
+        self.selected_nodes.clear();
+        self.selected_connection = None;
+        self.wire_menu_conn = None;
+        self.dragging_from = None;
+        self.show_node_menu = false;
+        self.show_context_menu = false;
+        // The previous project's GPU textures and per-node
+        // egui temp data must be wiped before any node from
+        // the new project (whose ids restart at 1 after
+        // `fix_next_id`) reads them back. Done at the top
+        // of the next `update()` where ctx is in scope.
+        self.caches_dirty = true;
+        crate::system_log::log(format!("Loaded {}", json_path.display()));
+
+        // Load api_keys from the same folder
+        if let Some(dir) = &dir {
+            let keys_file = dir.join("api_keys.json");
+            if let Ok(json) = std::fs::read_to_string(&keys_file) {
+                if let Ok(keys) = serde_json::from_str::<HashMap<String, String>>(&json) {
+                    self.api_keys = keys;
                 }
             }
-            // Load api_keys from the same folder
-            if let Some(dir) = &dir {
-                let keys_file = dir.join("api_keys.json");
-                if let Ok(json) = std::fs::read_to_string(&keys_file) {
-                    if let Ok(keys) = serde_json::from_str::<HashMap<String, String>>(&json) {
-                        self.api_keys = keys;
-                    }
-                }
+        }
+        self.project_path = Some(dir_str.clone());
+        self.is_dirty = false;
+        self.add_recent(dir_str);
+    }
+
+    /// Push a project directory to the front of the recents list,
+    /// dedup, and cap at 10 entries.
+    pub(super) fn add_recent(&mut self, dir: String) {
+        if dir.is_empty() { return; }
+        self.recent_projects.retain(|p| p != &dir);
+        self.recent_projects.insert(0, dir);
+        self.recent_projects.truncate(10);
+    }
+
+    /// Push a `Title(...)` viewport command when the displayed title
+    /// changes. Format is "PatchWork — {project} [*]"; the `*` shows
+    /// when there are unsaved changes.
+    pub(super) fn update_window_title(&mut self, ctx: &egui::Context) {
+        let name = self.project_path.as_deref()
+            .and_then(|p| Path::new(p).file_name())
+            .map(|f| f.to_string_lossy().to_string())
+            .unwrap_or_else(|| "Untitled".to_string());
+        let title = if self.is_dirty {
+            format!("PatchWork — {} *", name)
+        } else {
+            format!("PatchWork — {}", name)
+        };
+        if title != self.last_title {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            self.last_title = title;
+        }
+    }
+
+    /// If the OS asks the window to close and we have unsaved changes,
+    /// cancel the close and pop the confirmation modal. Once the user
+    /// has chosen Save / Don't Save, `force_quit` lets the next request
+    /// through.
+    pub(super) fn handle_close_request(&mut self, ctx: &egui::Context) {
+        if !ctx.input(|i| i.viewport().close_requested()) { return; }
+        if self.force_quit || !self.is_dirty { return; }
+        ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        self.pending_quit_dialog = true;
+    }
+
+    /// Render the "Save changes before quitting?" modal when pending.
+    /// Save → save_project_quick (may show a dialog), then close on success.
+    /// Don't Save → close, dropping the in-memory edits.
+    /// Cancel → just dismiss the modal.
+    pub(super) fn render_quit_dialog(&mut self, ctx: &egui::Context) {
+        if !self.pending_quit_dialog { return; }
+        let mut dismiss = false;
+        let mut do_close = false;
+        let mut do_save = false;
+        egui::Window::new("Unsaved changes")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                let name = self.project_path.as_deref()
+                    .and_then(|p| Path::new(p).file_name())
+                    .map(|f| f.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "this project".to_string());
+                ui.label(format!("Save changes to {} before quitting?", name));
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Save").clicked() { do_save = true; }
+                    if ui.button("Don't Save").clicked() { do_close = true; }
+                    if ui.button("Cancel").clicked() { dismiss = true; }
+                });
+            });
+        if do_save {
+            self.save_project_quick();
+            // save_project_quick may have shown a dialog the user
+            // cancelled; only proceed to close if the dirty flag actually
+            // cleared.
+            if !self.is_dirty {
+                self.pending_quit_dialog = false;
+                self.force_quit = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
-            self.project_path = Some(dir_str);
+        } else if do_close {
+            self.pending_quit_dialog = false;
+            self.force_quit = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        } else if dismiss {
+            self.pending_quit_dialog = false;
         }
     }
 
@@ -893,8 +1071,14 @@ impl super::PatchworkApp {
     pub(super) fn apply_theme(&self, ctx: &egui::Context) {
         for node in self.graph.nodes.values() {
             if let NodeType::Theme { dark_mode, accent, font_size, bg_color, text_color, window_bg, window_alpha, grid_color: _, rounding, spacing, .. } = &node.node_type {
-                // Store accent color for other nodes (e.g., slider highlight)
-                ctx.data_mut(|d| d.insert_temp(egui::Id::new("theme_accent"), *accent));
+                // Publish theme colors to temp data so anywhere with a
+                // ctx can read them without crawling the graph. Read via
+                // `crate::nodes::theme::current_*(ctx)` helpers.
+                ctx.data_mut(|d| {
+                    d.insert_temp(egui::Id::new("theme_accent"), *accent);
+                    d.insert_temp(egui::Id::new("theme_text"), *text_color);
+                    d.insert_temp(egui::Id::new("theme_bg"), *bg_color);
+                });
                 nodes::theme::apply(ctx, *dark_mode, *accent, *font_size, *bg_color, *text_color, *window_bg, *window_alpha, *rounding, *spacing);
                 return;
             }
@@ -903,14 +1087,20 @@ impl super::PatchworkApp {
         // looks correct from the first frame without requiring a Theme node.
         // Each session gets a random accent hue for visual variety.
         let accent = self.session_accent;
-        ctx.data_mut(|d| d.insert_temp(egui::Id::new("theme_accent"), accent));
+        let bg_color: [u8; 3] = [20, 20, 20];
+        let text_color: [u8; 3] = [220, 220, 220];
+        ctx.data_mut(|d| {
+            d.insert_temp(egui::Id::new("theme_accent"), accent);
+            d.insert_temp(egui::Id::new("theme_text"), text_color);
+            d.insert_temp(egui::Id::new("theme_bg"), bg_color);
+        });
         nodes::theme::apply(
             ctx,
             true,                   // dark_mode
             accent,                 // accent
             14.0,                   // font_size
-            [20, 20, 20],           // bg_color
-            [220, 220, 220],        // text_color
+            bg_color,               // bg_color
+            text_color,             // text_color
             [24, 24, 24],           // window_bg
             240,                    // window_alpha
             16.0,                   // rounding

@@ -324,6 +324,27 @@ impl super::PatchworkApp {
                 self.node_menu_search.clear();
             }
         }
+        // Enter or Tab on canvas → open node menu (mirror of double-click).
+        // Skipped when a wire is being dragged (Tab there opens a port-filtered
+        // menu just above), when a text field has focus (so typing in a search
+        // box / DragValue doesn't pop the picker), and when any menu is already
+        // showing (so the menu's own Enter-to-select still works).
+        if !self.show_node_menu
+            && !self.show_context_menu
+            && self.dragging_from.is_none()
+            && !ctx.wants_keyboard_input()
+        {
+            let kb_open = ctx.input(|i| {
+                i.key_pressed(egui::Key::Enter) || i.key_pressed(egui::Key::Tab)
+            });
+            if kb_open {
+                let pos = ctx.pointer_latest_pos()
+                    .unwrap_or_else(|| ctx.screen_rect().center());
+                self.show_node_menu = true;
+                self.node_menu_pos = pos;
+                self.node_menu_search.clear();
+            }
+        }
         if self.show_node_menu && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.show_node_menu = false;
             self.node_menu_search.clear();
@@ -386,7 +407,7 @@ impl super::PatchworkApp {
                     (pos.x - off_e.x + 20.0, pos.y - off_e.y + 20.0)
                 };
                 self.push_undo();
-                let new_id = self.add_node_selected(nt, [cx, cy]);
+                let new_id = self.add_node_selected(ctx, nt, [cx, cy]);
                 let _ = new_id;
             }
         }
@@ -411,6 +432,8 @@ impl super::PatchworkApp {
                     self.network.cleanup_node(id);
                     self.ob.cleanup_node(id);
                     self.audio.cleanup_node(id);
+                    self.dmx.cleanup_node(id);
+                    self.artnet.cleanup_node(id);
                     crate::nodes::video_player::cleanup_node(id);
                     crate::gpu_image::request_node_invalidation(id);
                     self.graph.remove_node(id);
@@ -427,7 +450,7 @@ impl super::PatchworkApp {
                     let nt = node.node_type.clone();
                     let pos = node.pos;
                     self.push_undo();
-                    let new_id = self.add_node_selected(nt, [pos[0] + 30.0, pos[1] + 30.0]);
+                    let new_id = self.add_node_selected(ctx, nt, [pos[0] + 30.0, pos[1] + 30.0]);
                     self.opt_drag_created = Some(new_id);
                 }
             }
@@ -516,7 +539,7 @@ impl super::PatchworkApp {
                                     let nt = node.node_type.clone();
                                     let p = node.pos;
                                     self.push_undo();
-                                    let _ = self.add_node_selected(nt, [p[0] + 30.0, p[1] + 30.0]);
+                                    let _ = self.add_node_selected(ctx, nt, [p[0] + 30.0, p[1] + 30.0]);
                                 }
                             }
                             keep_open = false;
@@ -575,6 +598,8 @@ impl super::PatchworkApp {
                                 self.network.cleanup_node(id);
                                 self.ob.cleanup_node(id);
                                 self.audio.cleanup_node(id);
+                                self.dmx.cleanup_node(id);
+                                self.artnet.cleanup_node(id);
                                 crate::nodes::video_player::cleanup_node(id);
                                 crate::gpu_image::request_node_invalidation(id);
                                 self.graph.remove_node(id);
@@ -608,7 +633,7 @@ impl super::PatchworkApp {
                                 if let Some(nt) = self.clipboard.clone() {
                                     self.push_undo();
                                     let off_e = self.canvas_offset / self.canvas_zoom;
-                                    let _ = self.add_node_selected(nt, [pos.x - off_e.x + 20.0, pos.y - off_e.y + 20.0]);
+                                    let _ = self.add_node_selected(ctx, nt, [pos.x - off_e.x + 20.0, pos.y - off_e.y + 20.0]);
                                 }
                                 keep_open = false;
                             }
@@ -642,7 +667,7 @@ impl super::PatchworkApp {
                                 // Create new Theme node at click position
                                 let off_e = self.canvas_offset / self.canvas_zoom;
                                 let accent = crate::nodes::theme::random_accent();
-                                let _ = self.add_node_selected(NodeType::Theme {
+                                let _ = self.add_node_selected(ctx, NodeType::Theme {
                                     dark_mode: true, accent, font_size: 14.0,
                                     bg_color: [20, 20, 20], text_color: [220, 220, 220],
                                     window_bg: [24, 24, 24], window_alpha: 240,

@@ -10,6 +10,10 @@ pub mod console;
 pub mod monitor;
 pub mod osc_out;
 pub mod osc_in;
+pub mod dmx_out;
+pub mod dmx_in;
+pub mod artnet_out;
+pub mod artnet_in;
 pub mod palette;
 pub mod http_request;
 pub mod ai_request;
@@ -153,7 +157,7 @@ pub const CATEGORY_GROUPS: &[(&str, &[&str])] = &[
     ("Visual", &["Image", "Video", "Shader"]),
     ("AI / ML", &["AI", "ML"]),
     ("Audio", &["Audio", "MIDI"]),
-    ("I/O", &["IO", "Network", "Serial", "OSC", "Hardware", "Output"]),
+    ("I/O", &["IO", "Network", "Serial", "OSC", "Hardware", "Output", "Lighting"]),
     ("Utility", &["Utility", "Custom"]),
 ];
 
@@ -568,6 +572,33 @@ pub fn catalog() -> Vec<NodeCatalogEntry> {
         NodeCatalogEntry { wip: false, singleton: false, label: "OSC In", category: "OSC",
             factory: || NodeType::OscIn { port: 8000, address_filter: String::new(), arg_count: 1, last_args: vec![0.0], last_args_text: Vec::new(), log: Vec::new(), listening: false, discovered: Vec::new() } },
 
+        // ── Lighting (DMX / Art-Net) ─────────────────────────
+        // Marked WIP until tested against real hardware (Enttec USB Pro,
+        // Open DMX, and an Art-Net receiver like QLC+ / Resolume Wire).
+        NodeCatalogEntry { wip: true, singleton: false, label: "DMX Out", category: "Lighting",
+            factory: || NodeType::DmxOut {
+                port_name: String::new(),
+                adapter: crate::dmx::DmxAdapter::UsbPro,
+                frame_rate_hz: 30, channel_count: 8, start_at: 1, active: false,
+            } },
+        NodeCatalogEntry { wip: true, singleton: false, label: "DMX In", category: "Lighting",
+            factory: || NodeType::DmxIn {
+                port_name: String::new(),
+                channel_count: 8, start_at: 1,
+                last_values: vec![0; 8], listening: false,
+            } },
+        NodeCatalogEntry { wip: true, singleton: false, label: "Art-Net Out", category: "Lighting",
+            factory: || NodeType::ArtNetOut {
+                dest_host: "2.255.255.255".into(), dest_port: 6454, universe: 0,
+                channel_count: 8, start_at: 1, sequence_enabled: true, active: false,
+            } },
+        NodeCatalogEntry { wip: true, singleton: false, label: "Art-Net In", category: "Lighting",
+            factory: || NodeType::ArtNetIn {
+                listen_port: 6454, universe: 0, universe_filter: true,
+                channel_count: 8, start_at: 1,
+                last_values: vec![0; 8], listening: false,
+            } },
+
         // ── Network / AI ─────────────────────────────────────
         NodeCatalogEntry { wip: false, singleton: false, label: "HTTP Request", category: "Network",
             factory: || NodeType::HttpRequest {
@@ -728,6 +759,11 @@ pub fn render_content(
     audio_manager: &mut AudioManager,
     mcp_log: &crate::mcp::McpLog,
     mcp_active: bool,
+    dmx_actions: &mut Vec<crate::dmx::DmxAction>,
+    artnet_actions: &mut Vec<crate::artnet::ArtNetAction>,
+    dmx_output_open: bool,
+    _dmx_listening: bool,
+    _artnet_listening: bool,
 ) {
     // ── Property-edit undo detection ────────────────────────────────────
     // Snapshot egui interaction state BEFORE rendering widgets.
@@ -776,6 +812,22 @@ pub fn render_content(
             osc_out::render(ui, host, port, address, arg_count, node_id, values, osc_actions),
         NodeType::OscIn { port, address_filter, arg_count, last_args, last_args_text, log, listening, discovered, .. } =>
             osc_in::render(ui, port, address_filter, arg_count, last_args, last_args_text, log, listening, discovered, node_id, osc_listening, osc_actions),
+        NodeType::DmxOut { port_name, adapter, frame_rate_hz, channel_count, start_at, active } =>
+            dmx_out::render(ui, port_name, adapter, frame_rate_hz, channel_count, start_at, active,
+                node_id, values, connections, serial_ports, port_positions, dragging_from,
+                pending_disconnects, dmx_output_open, dmx_actions),
+        NodeType::DmxIn { port_name, channel_count, start_at, last_values, listening } =>
+            dmx_in::render(ui, port_name, channel_count, start_at, last_values, listening,
+                node_id, connections, serial_ports, port_positions, dragging_from,
+                pending_disconnects, dmx_actions),
+        NodeType::ArtNetOut { dest_host, dest_port, universe, channel_count, start_at, sequence_enabled, active } =>
+            artnet_out::render(ui, dest_host, dest_port, universe, channel_count, start_at, sequence_enabled, active,
+                node_id, values, connections, port_positions, dragging_from,
+                pending_disconnects, artnet_actions),
+        NodeType::ArtNetIn { listen_port, universe, universe_filter, channel_count, start_at, last_values, listening } =>
+            artnet_in::render(ui, listen_port, universe, universe_filter, channel_count, start_at,
+                last_values, listening, node_id, connections, port_positions, dragging_from,
+                pending_disconnects, artnet_actions),
         // KeyInput migrated to trait-based node
         NodeType::Script { name, input_names, output_names, code, last_values, error, continuous, trigger } =>
             script::render(ui, name, input_names, output_names, code, last_values, error, continuous, trigger, values, node_id, pending_disconnects),
