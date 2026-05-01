@@ -31,7 +31,10 @@ pub mod ob_orb;
 pub mod ob_distance;
 pub mod ob_pressure;
 pub mod ob_bend;
+pub mod is_changed_node;
 pub mod ob_knob;
+pub mod ob_light;
+pub mod ob_motor;
 pub mod ob_move;
 pub mod html_viewer;
 pub mod mcp_server;
@@ -409,6 +412,8 @@ pub fn catalog() -> Vec<NodeCatalogEntry> {
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(string_format_node::StringFormatNode::default()) } } },
         NodeCatalogEntry { wip: false, singleton: false, label: "Sample & Hold", category: "Math",
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(sample_hold_node::SampleHoldNode::default()) } } },
+        NodeCatalogEntry { wip: false, singleton: false, label: "Is Changed", category: "Math",
+            factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(is_changed_node::IsChangedNode::default()) } } },
         NodeCatalogEntry { wip: false, singleton: false, label: "Select", category: "Math",
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(select::SelectNode::default()) } } },
         NodeCatalogEntry { wip: false, singleton: false, label: "Route", category: "Math",
@@ -663,6 +668,13 @@ pub fn catalog() -> Vec<NodeCatalogEntry> {
             factory: || NodeType::ObKnob { device_id: 1, hub_node_id: 0, label_color: [255, 255, 255] } },
         NodeCatalogEntry { wip: false, singleton: false, label: "OB Orb", category: "Hardware",
             factory: || NodeType::ObOrb { device_id: 1, hub_node_id: 0, mode: 0, color: [255, 255, 255], param1: 0.0, param2: 0.0, speed: 1.0, brightness: 1.0 } },
+        // WIP: wireless stepper (TMC2208 + NEMA 17 over OB Hub).
+        // Hidden from default palette; spawn-from-hub still works.
+        NodeCatalogEntry { wip: true, singleton: false, label: "OB Motor", category: "Hardware",
+            factory: || NodeType::ObMotor { device_id: 1, hub_node_id: 0, mode: 0, dir: 1, speed: 400.0, amount: 90.0 } },
+        // WIP: wireless WS2812B LED strip (200 LEDs) over OB Hub.
+        NodeCatalogEntry { wip: true, singleton: false, label: "OB Light", category: "Hardware",
+            factory: || NodeType::ObLight { device_id: 1, hub_node_id: 0, mode: 0, color: [255, 180, 100], brightness: 0.20, position: 0.5, speed: 0.5, color_mode: 0, send_mode: 0 } },
         NodeCatalogEntry { wip: false, singleton: false, label: "Printer", category: "Hardware",
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(printer_node::PrinterNode::default()) } } },
         // Keypoint Extract removed from catalog — superseded by JSON Fields.
@@ -849,6 +861,8 @@ pub fn render_content(
         NodeType::ObDistance { .. } => ob_distance::render(ui, node_id, node_type, values, connections, ob_manager),
         NodeType::ObKnob { .. } => ob_knob::render(ui, node_id, node_type, values, connections, ob_manager),
         NodeType::ObOrb { .. } => ob_orb::render(ui, node_id, node_type, values, connections, ob_manager, port_positions, dragging_from, pending_disconnects),
+        NodeType::ObMotor { .. } => ob_motor::render(ui, node_id, node_type, values, connections, ob_manager, port_positions, dragging_from, pending_disconnects),
+        NodeType::ObLight { .. } => ob_light::render(ui, node_id, node_type, values, connections, ob_manager, port_positions, dragging_from, pending_disconnects),
         NodeType::Synth { .. } => synth::render(ui, node_id, node_type, values, connections, audio_manager, port_positions, dragging_from, pending_disconnects),
         NodeType::AudioPlayer { .. } => audio_player::render(ui, node_id, node_type, values, connections, audio_manager, port_positions, dragging_from, pending_disconnects),
         NodeType::AudioPlaylist { .. } => audio_playlist::render(ui, node_id, node_type, values, connections, audio_manager, port_positions, dragging_from, pending_disconnects),

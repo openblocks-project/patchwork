@@ -2182,6 +2182,25 @@ impl eframe::App for PatchworkApp {
                         }
                         ob_injected = true;
                     }
+                    NodeType::ObMotor { device_id, hub_node_id, .. } => {
+                        // DAT carries (moving, position_deg, target_deg).
+                        // Done port pulses on a moving→idle transition.
+                        let find = self.ob.get_hub(*hub_node_id)
+                            .and_then(|h| h.get_device("motor", *device_id))
+                            .or_else(|| self.ob.find_device("motor", *device_id).map(|(_, d)| d));
+                        if let Some(dev) = find {
+                            let pos = dev.values.get("position").copied().unwrap_or(0.0);
+                            let mov = dev.values.get("moving").copied().unwrap_or(0.0);
+                            values.insert((id, 0), PortValue::Float(pos));
+                            values.insert((id, 1), PortValue::Float(if mov > 0.5 { 1.0 } else { 0.0 }));
+                            let prev_key = egui::Id::new(("ob_prev", id));
+                            let prev: Option<f32> = ctx.data_mut(|d| d.get_temp(prev_key));
+                            let done_pulse = prev.map(|p| p > 0.5 && mov <= 0.5).unwrap_or(false);
+                            values.insert((id, 2), PortValue::Float(if done_pulse { 1.0 } else { 0.0 }));
+                            ctx.data_mut(|d| d.insert_temp(prev_key, mov));
+                        }
+                        ob_injected = true;
+                    }
                     _ => {}
                 }
             }
@@ -3194,6 +3213,8 @@ impl eframe::App for PatchworkApp {
                         "distance" => NodeType::ObDistance { device_id: did, hub_node_id: hub_id, label_color: [255, 255, 255] },
                         "knob" => NodeType::ObKnob { device_id: did, hub_node_id: hub_id, label_color: [255, 255, 255] },
                         "orb" => NodeType::ObOrb { device_id: did, hub_node_id: hub_id, mode: 0, color: [255, 255, 255], param1: 0.0, param2: 0.0, speed: 1.0, brightness: 1.0 },
+                        "motor" => NodeType::ObMotor { device_id: did, hub_node_id: hub_id, mode: 0, dir: 1, speed: 400.0, amount: 90.0 },
+                        "light" => NodeType::ObLight { device_id: did, hub_node_id: hub_id, mode: 0, color: [255, 180, 100], brightness: 0.20, position: 0.5, speed: 0.5, color_mode: 0, send_mode: 0 },
                         _ => continue,
                     };
                     self.push_undo();

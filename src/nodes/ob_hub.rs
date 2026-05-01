@@ -141,18 +141,26 @@ pub fn render(
         ui.separator();
         let cmd_id = egui::Id::new(("ob_hub_cmd", node_id));
         let mut cmd = ui.ctx().data_mut(|d| d.get_temp::<String>(cmd_id).unwrap_or_default());
+        let mut send_now = false;
         ui.horizontal(|ui| {
             ui.label("Cmd:");
             let r = ui.text_edit_singleline(&mut cmd);
+            // Enter inside the text input ALSO sends, but the Send button is
+            // the reliable path — Enter sometimes gets eaten by global hotkeys
+            // (Add menu, etc.) when focus shifts.
             if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                if !cmd.is_empty() {
-                    if let Some(hub) = ob_manager.get_hub_mut(node_id) {
-                        hub.send_command(&cmd);
-                    }
-                    cmd.clear();
-                }
+                send_now = true;
+            }
+            if ui.add_enabled(!cmd.is_empty(), egui::Button::new("Send")).clicked() {
+                send_now = true;
             }
         });
+        if send_now && !cmd.is_empty() {
+            if let Some(hub) = ob_manager.get_hub_mut(node_id) {
+                hub.send_command(&cmd);
+            }
+            cmd.clear();
+        }
         ui.ctx().data_mut(|d| d.insert_temp(cmd_id, cmd));
     }
 }

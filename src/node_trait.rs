@@ -211,6 +211,7 @@ pub static NODE_REGISTRY: std::sync::LazyLock<std::sync::Mutex<NodeRegistryInner
         crate::nodes::comment_node::register(&mut r);
         crate::nodes::timer_node::register(&mut r);
         crate::nodes::gate_node::register(&mut r);
+        crate::nodes::is_changed_node::register(&mut r);
         crate::nodes::sample_hold_node::register(&mut r);
         crate::nodes::key_input_node::register(&mut r);
         crate::nodes::button_node::register(&mut r);

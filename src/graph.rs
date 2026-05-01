@@ -818,6 +818,58 @@ pub enum NodeType {
         #[serde(default = "default_orb_color")]
         label_color: [u8; 3],
     },
+    /// OB Light — WIP. WS2812B strip (200 LEDs) driven by a Glyph C6 over an
+    /// OB Hub. Modes: 0=Solid, 1=Pointer (3 LEDs at `position`), 2=Pulse
+    /// (breathe at `speed`). Color can be overridden per-channel via R/G/B
+    /// input ports. Pure output device.
+    ObLight {
+        #[serde(default = "default_device_id")]
+        device_id: u8,
+        #[serde(default)]
+        hub_node_id: NodeId,
+        #[serde(default)]
+        mode: u8,
+        #[serde(default = "default_light_color")]
+        color: [u8; 3],
+        #[serde(default = "default_light_brightness")]
+        brightness: f32,
+        /// Pointer position 0..1
+        #[serde(default = "default_half", alias = "param")]
+        position: f32,
+        /// Pulse speed 0..1
+        #[serde(default = "default_half")]
+        speed: f32,
+        /// Channel-port interpretation: 0 = RGB, 1 = HSL.
+        /// Storage stays RGB; HSL is computed on the fly from per-channel ports.
+        #[serde(default)]
+        color_mode: u8,
+        /// Send behaviour: 0 = Continuous (auto-push on any change),
+        /// 1 = Triggered (only on Send button or rising edge of Trigger port).
+        #[serde(default)]
+        send_mode: u8,
+    },
+    /// OB Motor — WIP. Wireless stepper (TMC2208 + NEMA 17 driven by a Glyph C6
+    /// over an OB Hub). Two commands: `motor` moves by `amount` degrees, `spin`
+    /// moves by `amount` full rotations. No /stop yet — firmware busy-rejects
+    /// mid-move commands. Status DAT carries (moving, cur_deg, tgt_deg).
+    ObMotor {
+        #[serde(default = "default_device_id")]
+        device_id: u8,
+        #[serde(default)]
+        hub_node_id: NodeId,
+        /// 0 = move-by-degrees, 1 = spin-by-rotations
+        #[serde(default)]
+        mode: u8,
+        /// 0 = CCW, 1 = CW
+        #[serde(default = "default_one_u8")]
+        dir: u8,
+        /// Microsteps per second. Firmware accepts ~200..=2000.
+        #[serde(default = "default_motor_speed")]
+        speed: f32,
+        /// Degrees (mode=0) or full rotations (mode=1).
+        #[serde(default = "default_motor_amount")]
+        amount: f32,
+    },
     /// OB Orb — ESP32 with 8 WS2812B LED strips (output) + IMU accelerometer/gyroscope (input).
     /// Mode 0 = Manual per-strip RGB, 1 = Manual uniform color + brightness, 2+ = Effects.
     ObOrb {
@@ -1379,6 +1431,11 @@ pub struct DrawStroke {
 fn default_device_id() -> u8 { 1 }
 fn default_orb_color() -> [u8; 3] { [255, 255, 255] }
 fn default_orb_brightness() -> f32 { 1.0 }
+fn default_one_u8() -> u8 { 1 }
+fn default_motor_speed() -> f32 { 400.0 }
+fn default_motor_amount() -> f32 { 90.0 }
+fn default_light_color() -> [u8; 3] { [255, 180, 100] }   // warm
+fn default_light_brightness() -> f32 { 0.20 }              // conservative — LEDs pull A's quickly
 fn default_preview_size() -> f32 { 150.0 }
 fn default_draw_size() -> f32 { 200.0 }
 fn default_draw_width() -> f32 { 2.0 }
@@ -1435,6 +1492,8 @@ impl NodeBehavior for NodeType {
             NodeType::ObPressure { .. } => "OB Pressure",
             NodeType::ObDistance { .. } => "OB Distance",
             NodeType::ObKnob { .. } => "OB Knob",
+            NodeType::ObMotor { .. } => "OB Motor",
+            NodeType::ObLight { .. } => "OB Light",
             NodeType::ObOrb { .. } => "OB Orb",
             NodeType::Synth { .. } => "Synth",
             NodeType::AudioPlayer { .. } => "Audio Player",
@@ -1559,6 +1618,16 @@ impl NodeBehavior for NodeType {
             NodeType::ObOrb { .. } => {
                 vec![PortDef::new("Drive", Number)]
             },
+            NodeType::ObMotor { .. } => vec![PortDef::new("Trigger", Trigger)],
+            NodeType::ObLight { .. } => vec![
+                PortDef::new("Position",   Number),    // Pointer mode
+                PortDef::new("Speed",      Number),    // Pulse mode
+                PortDef::new("R",          Color),     // or H in HSL mode
+                PortDef::new("G",          Color),     // or S in HSL mode
+                PortDef::new("B",          Color),     // or L in HSL mode
+                PortDef::new("Trigger",    Trigger),   // fires Send in Triggered mode
+                PortDef::new("Brightness", Number),    // 0..1 — overrides slider
+            ],
             NodeType::Synth { .. } => vec![PortDef::new("Freq", Number), PortDef::new("Amp", Normalized), PortDef::new("Gate", Gate), PortDef::new("FM Wt", Normalized)],
             NodeType::AudioPlayer { .. } => vec![PortDef::new("Play", Trigger), PortDef::new("Volume", Normalized), PortDef::new("Seek", Normalized), PortDef::new("Speed", Number)],
             NodeType::AudioPlaylist { .. } => vec![
@@ -1783,6 +1852,12 @@ impl NodeBehavior for NodeType {
                 PortDef::new("Gyro X", Number), PortDef::new("Gyro Y", Number), PortDef::new("Gyro Z", Number),
                 PortDef::new("Changed", Trigger),
             ],
+            NodeType::ObMotor { .. } => vec![
+                PortDef::new("Position", Number),
+                PortDef::new("Moving", Gate),
+                PortDef::new("Done", Trigger),
+            ],
+            NodeType::ObLight { .. } => vec![],   // pure output device
             NodeType::Synth { .. } => vec![PortDef::new("Audio", Audio)],
             NodeType::AudioPlayer { .. } => vec![PortDef::new("Audio", Audio), PortDef::new("Progress", Normalized)],
             NodeType::AudioPlaylist { .. } => vec![
@@ -1883,6 +1958,8 @@ impl NodeBehavior for NodeType {
             NodeType::ObDistance { .. } => [200, 200, 60],
             NodeType::ObKnob { .. } => [140, 200, 220],
             NodeType::ObOrb { .. } => [60, 200, 200],
+            NodeType::ObMotor { .. } => [220, 100, 100],
+            NodeType::ObLight { .. } => [255, 200, 100],
             NodeType::Synth { .. } => [100, 220, 180],
             NodeType::AudioPlayer { .. } => [180, 100, 220],
             NodeType::AudioPlaylist { .. } => [140, 80, 200],
@@ -1926,7 +2003,7 @@ impl NodeBehavior for NodeType {
     fn inline_ports(&self) -> bool {
         match self {
             NodeType::Dynamic { inner } => inner.node.inline_ports(),
-            _ => matches!(self, NodeType::Theme { .. } | NodeType::MidiOut { .. } | NodeType::Synth { .. } | NodeType::WgslViewer { .. } | NodeType::ImageEffects { .. } | NodeType::Slider { .. } | NodeType::HttpRequest { .. } | NodeType::AiRequest { .. } | NodeType::AudioDelay { .. } | NodeType::AudioDistortion { .. } | NodeType::AudioPitchShift { .. } | NodeType::AudioLowPass { .. } | NodeType::AudioHighPass { .. } | NodeType::AudioGain { .. } | NodeType::AudioReverb { .. } | NodeType::AudioEq { .. } | NodeType::AudioPlayer { .. } | NodeType::AudioPlaylist { .. } | NodeType::Timer { .. } | NodeType::SampleHold { .. } | NodeType::Curve { .. } | NodeType::AudioMixer { .. } | NodeType::Speaker { .. } | NodeType::AudioInput { .. } | NodeType::AudioSampler { .. } | NodeType::ClapPlugin { .. } | NodeType::Console { .. } | NodeType::ObOrb { .. } | NodeType::AudioAnalyzer | NodeType::SpectrumAnalyzer | NodeType::DmxOut { .. } | NodeType::DmxIn { .. } | NodeType::ArtNetOut { .. } | NodeType::ArtNetIn { .. }),
+            _ => matches!(self, NodeType::Theme { .. } | NodeType::MidiOut { .. } | NodeType::Synth { .. } | NodeType::WgslViewer { .. } | NodeType::ImageEffects { .. } | NodeType::Slider { .. } | NodeType::HttpRequest { .. } | NodeType::AiRequest { .. } | NodeType::AudioDelay { .. } | NodeType::AudioDistortion { .. } | NodeType::AudioPitchShift { .. } | NodeType::AudioLowPass { .. } | NodeType::AudioHighPass { .. } | NodeType::AudioGain { .. } | NodeType::AudioReverb { .. } | NodeType::AudioEq { .. } | NodeType::AudioPlayer { .. } | NodeType::AudioPlaylist { .. } | NodeType::Timer { .. } | NodeType::SampleHold { .. } | NodeType::Curve { .. } | NodeType::AudioMixer { .. } | NodeType::Speaker { .. } | NodeType::AudioInput { .. } | NodeType::AudioSampler { .. } | NodeType::ClapPlugin { .. } | NodeType::Console { .. } | NodeType::ObOrb { .. } | NodeType::ObMotor { .. } | NodeType::ObLight { .. } | NodeType::AudioAnalyzer | NodeType::SpectrumAnalyzer | NodeType::DmxOut { .. } | NodeType::DmxIn { .. } | NodeType::ArtNetOut { .. } | NodeType::ArtNetIn { .. }),
         }
     }
 

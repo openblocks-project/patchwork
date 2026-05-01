@@ -124,6 +124,14 @@ impl ObDevice {
                     self.values.insert("val".into(), norm);
                 }
             }
+            ("motor", "status") => {
+                // OB Motor DAT: payload = [is_moving, current_angle_deg, target_angle_deg]
+                if values.len() >= 3 {
+                    self.values.insert("moving".into(), values[0]);
+                    self.values.insert("position".into(), values[1]);
+                    self.values.insert("target".into(), values[2]);
+                }
+            }
             ("orb", act) if act == "accel" || act == "gyro" || act == "imu" => {
                 match act {
                     "accel" => {
