@@ -17,6 +17,7 @@ use std::net::{SocketAddr, UdpSocket};
 use std::sync::mpsc;
 
 const ARTNET_HEADER: &[u8; 8] = b"Art-Net\0";
+const ARTNET_HEADER_LEN: usize = 18;
 const OP_OUTPUT: u16 = 0x5000;
 const ARTNET_PROTOCOL_VER: u16 = 14;
 #[allow(dead_code)]
@@ -79,7 +80,11 @@ impl ArtNetManager {
             // 2.255.255.255 destination address.
             match UdpSocket::bind("0.0.0.0:0") {
                 Ok(sock) => {
-                    let _ = sock.set_broadcast(true);
+                    if let Err(e) = sock.set_broadcast(true) {
+                        crate::system_log::warn(format!(
+                            "Art-Net: set_broadcast failed: {} (unicast still works)", e
+                        ));
+                    }
                     self.send_socket = Some(sock);
                 }
                 Err(e) => {
@@ -110,7 +115,7 @@ impl ArtNetManager {
                     // Skip the send if the payload is identical to the
                     // previous frame — keeps idle traffic off the network.
                     // The sequence byte is excluded from the comparison.
-                    let payload_for_diff = &packet[18..]; // skip header (18) before length
+                    let payload_for_diff = &packet[ARTNET_HEADER_LEN..];
                     if self.last_sent.get(&node_id).map(|v| v.as_slice()) == Some(payload_for_diff) {
                         continue;
                     }
@@ -137,7 +142,7 @@ impl ArtNetManager {
                     let _ = socket.set_read_timeout(Some(std::time::Duration::from_millis(100)));
 
                     let (tx, rx) = mpsc::channel();
-                    let handle = std::thread::Builder::new()
+                    let spawn_result = std::thread::Builder::new()
                         .name(format!("artnet-listen-{}", node_id))
                         .spawn(move || {
                             let mut buf = [0u8; 1024];
@@ -157,9 +162,19 @@ impl ArtNetManager {
                                     Err(_) => break,
                                 }
                             }
-                        })
-                        .expect("spawn artnet listener");
-                    self.listeners.insert(node_id, Listener { _thread: handle, rx });
+                        });
+                    match spawn_result {
+                        Ok(handle) => {
+                            self.listeners.insert(node_id, Listener { _thread: handle, rx });
+                        }
+                        Err(e) => {
+                            crate::system_log::error(format!(
+                                "Art-Net: spawn listener thread for node {} failed: {}", node_id, e
+                            ));
+                            // Drop tx by going out of scope; the node will see
+                            // is_listening() == false and can show "unavailable".
+                        }
+                    }
                 }
                 ArtNetAction::StopListening { node_id } => {
                     self.listeners.remove(&node_id);
@@ -213,7 +228,7 @@ fn encode_artdmx(sequence: u8, universe: u16, data: &[u8]) -> Vec<u8> {
     };
     let len = data_slice.len().min(512) as u16;
 
-    let mut buf = Vec::with_capacity(18 + len as usize);
+    let mut buf = Vec::with_capacity(ARTNET_HEADER_LEN + len as usize);
     buf.extend_from_slice(ARTNET_HEADER);
     buf.extend_from_slice(&OP_OUTPUT.to_le_bytes());
     buf.extend_from_slice(&ARTNET_PROTOCOL_VER.to_be_bytes());
@@ -229,15 +244,15 @@ fn encode_artdmx(sequence: u8, universe: u16, data: &[u8]) -> Vec<u8> {
 /// so the listener thread can silently drop unrelated UDP traffic that
 /// happens to arrive on the same port.
 fn decode_artdmx(buf: &[u8]) -> Option<ReceivedDmx> {
-    if buf.len() < 18 { return None; }
+    if buf.len() < ARTNET_HEADER_LEN { return None; }
     if &buf[0..8] != ARTNET_HEADER { return None; }
     let opcode = u16::from_le_bytes([buf[8], buf[9]]);
     if opcode != OP_OUTPUT { return None; }
     // sequence at buf[12], physical at buf[13] — ignored
     let universe = u16::from_le_bytes([buf[14], buf[15]]);
     let length = u16::from_be_bytes([buf[16], buf[17]]) as usize;
-    if buf.len() < 18 + length { return None; }
-    let data = buf[18..18 + length.min(512)].to_vec();
+    if buf.len() < ARTNET_HEADER_LEN + length { return None; }
+    let data = buf[ARTNET_HEADER_LEN..ARTNET_HEADER_LEN + length.min(512)].to_vec();
     Some(ReceivedDmx { universe, data })
 }
 

@@ -127,8 +127,14 @@ pub fn render(
     });
 
     if send_now {
+        // Clamp before serialising — catches NaN/Inf coming in from a
+        // deserialised project or (future) wired Speed/Amount ports, which
+        // the slider's UI clamp can't see. Bounds match the slider ranges
+        // above; firmware treats out-of-range as undefined.
+        let safe_speed = if speed.is_finite() { speed.clamp(100.0, 600.0) as i32 } else { 100 };
+        let safe_amount = if amount.is_finite() { amount.clamp(0.0, 10000.0) } else { 0.0 };
         let action = if *mode == MODE_SPIN { "spin" } else { "motor" };
-        let cmd = format!("/motor/{}/{} {} {} {}", did, action, *dir, *speed as i32, *amount);
+        let cmd = format!("/motor/{}/{} {} {} {}", did, action, *dir, safe_speed, safe_amount);
         if let Some(hub) = if hid != 0 { ob_manager.get_hub_mut(hid) } else { ob_manager.find_any_hub_mut() } {
             hub.send_command(&cmd);
         }

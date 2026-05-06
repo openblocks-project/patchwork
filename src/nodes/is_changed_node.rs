@@ -55,7 +55,19 @@ impl NodeBehavior for IsChangedNode {
     fn inline_ports(&self) -> bool { true }
 
     fn evaluate(&mut self, inputs: &[PortValue]) -> Vec<(usize, PortValue)> {
-        let val = inputs.first().map(|v| v.as_float()).unwrap_or(0.0);
+        // PortValue::None means the input is unwired — treat that as "no
+        // signal" rather than "value is 0", so disconnecting a slider does
+        // not fire a spurious change trigger and the next reconnect doesn't
+        // either (we re-seed `previous` on the first wired sample).
+        let wired = matches!(inputs.first(), Some(PortValue::Float(_)));
+        if !wired {
+            self.initialized = false;
+            return vec![
+                (0, PortValue::Float(0.0)),
+                (1, PortValue::Float(self.previous)),
+            ];
+        }
+        let val = inputs[0].as_float();
 
         // First evaluation has no previous to compare against — don't fire,
         // just seed the baseline. Otherwise, fire if |Δ| > threshold.

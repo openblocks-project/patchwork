@@ -128,15 +128,24 @@ struct ReceiveState {
 // ── NetworkManager ───────────────────────────────────────────────────────────
 
 pub struct NetworkManager {
-    action_tx: tokio::sync::mpsc::UnboundedSender<NetworkAction>,
+    /// Bounded so a stalled network loop can't grow the queue without
+    /// limit. UI may produce one action per Send Values node per frame
+    /// (~60 Hz); 256 is ~4 s of headroom for ~10 nodes.
+    action_tx: tokio::sync::mpsc::Sender<NetworkAction>,
     event_rx: std_mpsc::Receiver<NetworkEvent>,
-    _thread: std::thread::JoinHandle<()>,
+    /// `None` if the network thread failed to spawn; the manager then
+    /// behaves as a no-op (sends drop, polls return nothing).
+    _thread: Option<std::thread::JoinHandle<()>>,
 }
+
+const ACTION_CHANNEL_CAPACITY: usize = 256;
+const EVENT_CHANNEL_CAPACITY: usize = 1024;
 
 impl NetworkManager {
     pub fn new() -> Self {
-        let (action_tx, action_rx) = tokio::sync::mpsc::unbounded_channel::<NetworkAction>();
-        let (event_tx, event_rx) = std_mpsc::channel::<NetworkEvent>();
+        let (action_tx, action_rx) =
+            tokio::sync::mpsc::channel::<NetworkAction>(ACTION_CHANNEL_CAPACITY);
+        let (event_tx, event_rx) = std_mpsc::sync_channel::<NetworkEvent>(EVENT_CHANNEL_CAPACITY);
 
         let thread = std::thread::Builder::new()
             .name("patchwork-network".into())
@@ -154,8 +163,21 @@ impl NetworkManager {
                 // LocalSet is required for spawn_local to work
                 let local = tokio::task::LocalSet::new();
                 local.block_on(&rt, network_loop(action_rx, event_tx));
-            })
-            .expect("spawn network thread");
+            });
+
+        let thread = match thread {
+            Ok(handle) => Some(handle),
+            Err(e) => {
+                eprintln!(
+                    "[patchwork-network] thread spawn failed: {} — networking disabled", e
+                );
+                // action_rx and event_tx were captured by the failed
+                // closure and dropped with it; action_tx.send() will
+                // return Err from here on, which `try_send` below
+                // silently swallows.
+                None
+            }
+        };
 
         Self {
             action_tx,
@@ -166,7 +188,19 @@ impl NetworkManager {
 
     pub fn process(&self, actions: Vec<NetworkAction>) {
         for action in actions {
-            let _ = self.action_tx.send(action);
+            if let Err(e) = self.action_tx.try_send(action) {
+                use tokio::sync::mpsc::error::TrySendError;
+                match e {
+                    TrySendError::Full(_) => {
+                        eprintln!(
+                            "[patchwork-network] action queue full ({}); dropping — \
+                             network loop is stalled",
+                            ACTION_CHANNEL_CAPACITY
+                        );
+                    }
+                    TrySendError::Closed(_) => { /* thread gone, silent */ }
+                }
+            }
         }
     }
 
@@ -179,15 +213,15 @@ impl NetworkManager {
     }
 
     pub fn cleanup_node(&self, node_id: NodeId) {
-        let _ = self.action_tx.send(NetworkAction::DestroyNode { node_id });
+        let _ = self.action_tx.try_send(NetworkAction::DestroyNode { node_id });
     }
 }
 
 // ── Async event loop ─────────────────────────────────────────────────────────
 
 async fn network_loop(
-    mut action_rx: tokio::sync::mpsc::UnboundedReceiver<NetworkAction>,
-    event_tx: std_mpsc::Sender<NetworkEvent>,
+    mut action_rx: tokio::sync::mpsc::Receiver<NetworkAction>,
+    event_tx: std_mpsc::SyncSender<NetworkEvent>,
 ) {
     let mut send_states: HashMap<NodeId, SendState> = HashMap::new();
     let mut recv_states: HashMap<NodeId, ReceiveState> = HashMap::new();
@@ -275,12 +309,12 @@ async fn handle_action(
     router: &mut Option<iroh::protocol::Router>,
     send_states: &mut HashMap<NodeId, SendState>,
     recv_states: &mut HashMap<NodeId, ReceiveState>,
-    event_tx: &std_mpsc::Sender<NetworkEvent>,
+    event_tx: &std_mpsc::SyncSender<NetworkEvent>,
 ) {
     match action {
         NetworkAction::CreateSend { node_id, schema, secret_key_hex, label } => {
             if let Err(e) = ensure_iroh(endpoint, gossip, router).await {
-                let _ = event_tx.send(NetworkEvent::Error { node_id, error: e });
+                let _ = event_tx.try_send(NetworkEvent::Error { node_id, error: e });
                 return;
             }
 
@@ -323,7 +357,7 @@ async fn handle_action(
 
                     let secret_hex = secret_key_hex.unwrap_or_default();
 
-                    let _ = event_tx.send(NetworkEvent::LinkReady {
+                    let _ = event_tx.try_send(NetworkEvent::LinkReady {
                         node_id,
                         link: link_str,
                         secret_hex,
@@ -341,7 +375,7 @@ async fn handle_action(
                     tokio::task::spawn_local(peer_tracker(node_id, receiver, ev_tx));
                 }
                 Err(e) => {
-                    let _ = event_tx.send(NetworkEvent::Error {
+                    let _ = event_tx.try_send(NetworkEvent::Error {
                         node_id,
                         error: format!("Failed to subscribe: {}", e),
                     });
@@ -359,7 +393,7 @@ async fn handle_action(
                 };
                 if let Ok(bytes) = postcard::to_stdvec(&msg) {
                     if let Err(e) = state.sender.broadcast(Bytes::from(bytes)).await {
-                        let _ = event_tx.send(NetworkEvent::Error {
+                        let _ = event_tx.try_send(NetworkEvent::Error {
                             node_id,
                             error: format!("Send failed: {}", e),
                         });
@@ -374,13 +408,13 @@ async fn handle_action(
             let parsed = match decode_link(&link) {
                 Ok(l) => l,
                 Err(e) => {
-                    let _ = event_tx.send(NetworkEvent::Error { node_id, error: e });
+                    let _ = event_tx.try_send(NetworkEvent::Error { node_id, error: e });
                     return;
                 }
             };
 
             if let Err(e) = ensure_iroh(endpoint, gossip, router).await {
-                let _ = event_tx.send(NetworkEvent::Error { node_id, error: e });
+                let _ = event_tx.try_send(NetworkEvent::Error { node_id, error: e });
                 return;
             }
 
@@ -401,7 +435,7 @@ async fn handle_action(
                     tokio::task::spawn_local(recv_loop(node_id, receiver, ev_tx));
                 }
                 Err(e) => {
-                    let _ = event_tx.send(NetworkEvent::Error {
+                    let _ = event_tx.try_send(NetworkEvent::Error {
                         node_id,
                         error: format!("Failed to join topic: {}", e),
                     });
@@ -420,18 +454,18 @@ async fn handle_action(
 async fn peer_tracker(
     node_id: NodeId,
     mut receiver: iroh_gossip::api::GossipReceiver,
-    event_tx: std_mpsc::Sender<NetworkEvent>,
+    event_tx: std_mpsc::SyncSender<NetworkEvent>,
 ) {
     let mut peer_count: usize = 0;
     while let Some(Ok(event)) = receiver.next().await {
         match event {
             Event::NeighborUp(_) => {
                 peer_count += 1;
-                let _ = event_tx.send(NetworkEvent::SendStatus { node_id, peers: peer_count });
+                let _ = event_tx.try_send(NetworkEvent::SendStatus { node_id, peers: peer_count });
             }
             Event::NeighborDown(_) => {
                 peer_count = peer_count.saturating_sub(1);
-                let _ = event_tx.send(NetworkEvent::SendStatus { node_id, peers: peer_count });
+                let _ = event_tx.try_send(NetworkEvent::SendStatus { node_id, peers: peer_count });
             }
             _ => {}
         }
@@ -442,12 +476,12 @@ async fn peer_tracker(
 async fn recv_loop(
     node_id: NodeId,
     mut receiver: iroh_gossip::api::GossipReceiver,
-    event_tx: std_mpsc::Sender<NetworkEvent>,
+    event_tx: std_mpsc::SyncSender<NetworkEvent>,
 ) {
     while let Some(Ok(event)) = receiver.next().await {
         if let Event::Received(msg) = event {
             if let Ok(net_msg) = postcard::from_bytes::<NetMessage>(&msg.content) {
-                let _ = event_tx.send(NetworkEvent::Received {
+                let _ = event_tx.try_send(NetworkEvent::Received {
                     node_id,
                     values: net_msg.payload,
                     sender_short_id: net_msg.sender_short_id,

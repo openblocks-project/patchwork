@@ -45,6 +45,11 @@ pub struct Spectrum {
     buf: Vec<f32>,
     /// Precomputed Hann window.
     window: Vec<f32>,
+    /// FFT scratch — pre-allocated so `compute()` doesn't allocate per
+    /// hop (~94 Hz on the audio path). Real and imag parts of the in-
+    /// place radix-2 transform; rewritten from scratch each call.
+    fft_re: Vec<f32>,
+    fft_im: Vec<f32>,
 }
 
 impl Default for Spectrum {
@@ -60,6 +65,8 @@ impl Default for Spectrum {
             phases: vec![0.5; SPECTRUM_BINS],
             buf: Vec::with_capacity(SPECTRUM_FFT_SIZE),
             window,
+            fft_re: vec![0.0; SPECTRUM_FFT_SIZE],
+            fft_im: vec![0.0; SPECTRUM_FFT_SIZE],
         }
     }
 }
@@ -96,12 +103,13 @@ impl Spectrum {
 
     fn compute(&mut self, sample_rate: f32) {
         let n = SPECTRUM_FFT_SIZE;
-        let mut re = vec![0.0f32; n];
-        let mut im = vec![0.0f32; n];
+        // Reuse pre-allocated scratch — zeroing in place avoids a 16 KiB
+        // alloc/free pair on every FFT (~94 Hz on the audio thread).
+        for v in self.fft_im.iter_mut() { *v = 0.0; }
         for i in 0..n {
-            re[i] = self.buf[i] * self.window[i];
+            self.fft_re[i] = self.buf[i] * self.window[i];
         }
-        fft_radix2(&mut re, &mut im);
+        fft_radix2(&mut self.fft_re, &mut self.fft_im);
 
         // Half-spectrum, normalized by N/2. Keep re/im separate so we can
         // recover phase per display bin (atan2 of summed re/im) — Spectral
@@ -132,8 +140,8 @@ impl Spectrum {
             let mut im_sum = 0.0f32;
             let mut count = 0usize;
             for i in i0..i1 {
-                re_sum += re[i];
-                im_sum += im[i];
+                re_sum += self.fft_re[i];
+                im_sum += self.fft_im[i];
                 count += 1;
             }
             let (raw, phase_rad) = if count == 0 {

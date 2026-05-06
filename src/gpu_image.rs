@@ -115,11 +115,6 @@ pub fn clear_cpu_consumer_hints() {
     CPU_CONSUMER_HINTS.with(|m| m.borrow_mut().clear());
 }
 
-/// Maximum number of output ports per node we will sweep when invalidating.
-/// cache_node_output uses key = node_id*31 + port; we have to enumerate
-/// because we don't track which ports were ever cached.
-const MAX_NODE_PORTS_FOR_INVALIDATION: usize = 16;
-
 // ── GPU Texture Cache ───────────────────────────────────────────────────────
 // Avoids redundant CPU→GPU uploads when the same Arc<ImageData> flows through
 // multiple GPU nodes in one frame. Keyed by Arc pointer address.
@@ -244,11 +239,13 @@ impl GpuTextureCache {
         node_id: NodeId,
         render_state: Option<&eframe::egui_wgpu::RenderState>,
     ) {
-        // Per-node-output entries from cache_node_output.
-        for port in 0..MAX_NODE_PORTS_FOR_INVALIDATION {
-            let key = (node_id as u64).wrapping_mul(31).wrapping_add(port as u64);
-            self.entries.remove(&key);
-        }
+        // Per-node-output entries from cache_node_output. We tag those with
+        // `src_node = Some(...)` precisely so we can sweep them by node_id
+        // without enumerating ports — this previously assumed ≤ 16 ports
+        // per node and would silently leak VRAM if a node ever exposed more.
+        // Arc-pointer-keyed upload-cache entries have `src_node = None`
+        // and are left for the 2-frame LRU.
+        self.entries.retain(|_, v| v.src_node != Some(node_id));
         // Display + per-node-type pipeline store entries.
         if let Some(rs) = render_state {
             let mut renderer = rs.renderer.write();
