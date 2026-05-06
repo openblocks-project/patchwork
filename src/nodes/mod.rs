@@ -205,14 +205,14 @@ pub fn inline_port_circle(
     } else {
         (
             egui::Color32::from_rgb(
-                (base[0] as f32 * 0.35) as u8,
-                (base[1] as f32 * 0.35) as u8,
-                (base[2] as f32 * 0.35) as u8,
+                (base[0] as f32 * 0.45) as u8,
+                (base[1] as f32 * 0.45) as u8,
+                (base[2] as f32 * 0.45) as u8,
             ),
             egui::Color32::from_rgb(
-                (base[0] as f32 * 0.6) as u8,
-                (base[1] as f32 * 0.6) as u8,
-                (base[2] as f32 * 0.6) as u8,
+                (base[0] as f32 * 0.7) as u8,
+                (base[1] as f32 * 0.7) as u8,
+                (base[2] as f32 * 0.7) as u8,
             ),
         )
     };
@@ -399,9 +399,9 @@ pub fn catalog() -> Vec<NodeCatalogEntry> {
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(math_formula::MathNode::default()) } } },
         NodeCatalogEntry { wip: false, singleton: false, label: "Gate", category: "Math",
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(gate_node::GateNode::default()) } } },
-        NodeCatalogEntry { wip: false, singleton: false, label: "Clock", category: "Input",
+        NodeCatalogEntry { wip: false, singleton: false, label: "Clock", category: "Signal",
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(clock_node::ClockNode::default()) } } },
-        NodeCatalogEntry { wip: false, singleton: false, label: "Timer", category: "Input",
+        NodeCatalogEntry { wip: false, singleton: false, label: "Timer", category: "Signal",
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(timer_node::TimerNode::default()) } } },
         NodeCatalogEntry { wip: false, singleton: false, label: "Map/Range", category: "Math",
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(map_range_node::MapRangeNode::default()) } } },
@@ -625,7 +625,7 @@ pub fn catalog() -> Vec<NodeCatalogEntry> {
                 response_type: 0, mode: 0, last_trigger: 0.0,
                 api_key_name: String::new(), custom_url: String::new(),
             } },
-        NodeCatalogEntry { wip: false, singleton: false, label: "JSON Extract", category: "Network",
+        NodeCatalogEntry { wip: false, singleton: false, label: "JSON Extract", category: "Utility",
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(json_extract_node::JsonExtractNode::default()) } } },
         NodeCatalogEntry { wip: false, singleton: false, label: "Net Send", category: "Network",
             factory: || NodeType::NetworkSend {
@@ -677,9 +677,9 @@ pub fn catalog() -> Vec<NodeCatalogEntry> {
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(crate::ml::match_node::MatchNode::default()) } } },
         NodeCatalogEntry { wip: false, singleton: false, label: "Regress", category: "ML",
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(crate::ml::regress_node::RegressNode::default()) } } },
-        NodeCatalogEntry { wip: false, singleton: false, label: "Unpack (JSON)", category: "ML",
+        NodeCatalogEntry { wip: false, singleton: false, label: "Unpack (JSON)", category: "Utility",
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(json_fields::JsonFieldsNode::default()) } } },
-        NodeCatalogEntry { wip: false, singleton: false, label: "Pack (JSON)", category: "ML",
+        NodeCatalogEntry { wip: false, singleton: false, label: "Pack (JSON)", category: "Utility",
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(pack_node::PackNode::default()) } } },
         NodeCatalogEntry { wip: false, singleton: false, label: "Vision Model", category: "ML",
             factory: || NodeType::MlModel { model_path: String::new(), labels_path: String::new(), confidence: 0.05, preset: MlPreset::default(), result_text: String::new(), result_json: String::new(), annotated_frame: None, status: String::new(), last_input_hash: 0, interval_secs: 0.5, last_inference_secs: 0.0 } },
@@ -711,8 +711,6 @@ pub fn catalog() -> Vec<NodeCatalogEntry> {
         NodeCatalogEntry { wip: false, singleton: false, label: "Console", category: "Utility",
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(console_node::ConsoleNode::default()) } } },
         NodeCatalogEntry { wip: false, singleton: false, label: "Monitor", category: "Utility",
-            factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(monitor_node::MonitorNode::default()) } } },
-        NodeCatalogEntry { wip: false, singleton: false, label: "System Profiler", category: "Utility",
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(monitor_node::MonitorNode::default()) } } },
 
         // ── System (hidden from palette, visible in full catalog) ──

@@ -42,8 +42,8 @@ impl FileType {
         match self {
             FileType::Text => crate::icons::FILE_TEXT,
             FileType::Image => crate::icons::DIAMOND_FOUR,
-            FileType::Audio => crate::icons::FILE_TEXT,  // TODO: add audio icon
-            FileType::Video => crate::icons::FILE_TEXT,  // TODO: add video icon
+            FileType::Audio => crate::icons::MUSIC_NOTE,
+            FileType::Video => crate::icons::FILM_STRIP,
             FileType::Data => crate::icons::CODE,
             FileType::Unknown => crate::icons::FILE_TEXT,
         }
