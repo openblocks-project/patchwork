@@ -20,6 +20,34 @@ fn also_in(label: &str) -> &'static [&'static str] {
     }
 }
 
+/// Curated palette search aliases — symbols and shorthands that should
+/// surface a node even though they don't appear in its label or category.
+/// Match is exact (case-insensitive, whole query). Keep this list short
+/// and unambiguous — single common letters would shadow legitimate
+/// substring matches across many labels.
+fn alias_matches(label: &str, query: &str) -> bool {
+    matches!((label, query),
+        ("Add", "+")
+        | ("Multiply", "*") | ("Multiply", "x")
+        | ("Gain", "vol") | ("Gain", "volume")
+        | ("Low Pass", "lp") | ("Low Pass", "lpf")
+        | ("High Pass", "hp") | ("High Pass", "hpf")
+        | ("Clock", "bpm") | ("Clock", "tempo")
+        | ("MIDI Note", "note")
+        | ("Video In", "cam") | ("Video In", "camera") | ("Video In", "webcam")
+        | ("Video Out", "out") | ("Visual Output", "out")
+        | ("Map/Range", "lerp") | ("Map/Range", "remap")
+        | ("Route", "if") | ("Route", "cond") | ("Route", "ifthen")
+        | ("Switch", "mux") | ("Switch", "demux")
+        | ("Select", "ab")
+        | ("Sample & Hold", "sh") | ("Sample & Hold", "snh")
+        | ("Smoother", "lag") | ("Smoother", "lpf-cv")
+        | ("Math", "expr") | ("Math", "formula")
+        | ("Comment", "note") | ("Comment", "label")
+        | ("Color", "rgb") | ("Color", "hsv")
+    )
+}
+
 /// Check if two port kinds are compatible for the wire+Tab filtered menu.
 fn port_kinds_compatible(a: PortKind, b: PortKind) -> bool {
     use PortKind::*;
@@ -118,6 +146,16 @@ impl super::PatchworkApp {
                     self.node_menu_selected = 0;
                 }
 
+                // ── Keyboard hints (small, dim) ──────────────────────────
+                ui.add_space(2.0);
+                ui.label(
+                    egui::RichText::new(
+                        "Enter — open menu  ·  Tab — filter to compatible  ·  Cmd+1 — fit all",
+                    )
+                    .small()
+                    .color(dim),
+                );
+
                 ui.add_space(4.0);
 
                 // ── Category pills (neutral, no accent colors) ───────────
@@ -184,6 +222,7 @@ impl super::PatchworkApp {
                     if !query.is_empty()
                         && !entry.label.to_lowercase().contains(&query)
                         && !entry.category.to_lowercase().contains(&query)
+                        && !alias_matches(entry.label, &query)
                     { return None; }
                     if let Some((_, _, src_is_output, src_kind)) = wire_ctx {
                         let candidate = (entry.factory)();
