@@ -37,6 +37,12 @@ pub fn render(
                     }
                 }
             });
+
+        // Refresh — re-scan MIDI ports (e.g. after enabling IAC Driver
+        // in Audio MIDI Setup) without restarting Patchwork.
+        if ui.small_button("↻").on_hover_text("Refresh MIDI port list").clicked() {
+            midi_actions.push(MidiAction::RescanPorts);
+        }
     });
 
     ui.horizontal(|ui| {

@@ -55,6 +55,12 @@ pub fn render(
                 midi_actions.push(MidiAction::DisconnectOutput { node_id });
             }
         }
+
+        // Refresh — re-scan MIDI ports (e.g. after enabling IAC Driver
+        // in Audio MIDI Setup) without restarting Patchwork.
+        if ui.small_button("↻").on_hover_text("Refresh MIDI port list").clicked() {
+            midi_actions.push(MidiAction::RescanPorts);
+        }
     });
 
     // ── Mode toggle ─────────────────────────────────────────────────
