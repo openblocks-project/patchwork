@@ -767,11 +767,27 @@ impl AudioManager {
             .unwrap_or(false)
     }
 
-    /// Check if playback has finished (EOF reached and buffer drained)
+    /// Check if the decode thread has reached EOF. Note: this only means
+    /// "decoder is done writing"; the ring buffer may still have undelivered
+    /// samples that the audio callback hasn't consumed. Pair with
+    /// `is_file_buffer_drained` to detect actual end-of-playback.
     pub fn is_file_finished(&self, node_id: NodeId) -> bool {
         self.file_buffers.get(&node_id)
             .map(|b| b.finished.load(Ordering::Relaxed))
             .unwrap_or(false)
+    }
+
+    /// Returns true once the audio callback has consumed every decoded
+    /// sample (write_pos == read_pos). Used together with
+    /// `is_file_finished` so auto-stop only fires when playback has
+    /// actually finished, not just when the decode thread exits.
+    /// Without this, files shorter than the 2 s ring buffer get auto-
+    /// stopped milliseconds after Play — before any audio reaches the
+    /// speaker.
+    pub fn is_file_buffer_drained(&self, node_id: NodeId) -> bool {
+        self.file_buffers.get(&node_id)
+            .map(|b| b.buffered() == 0)
+            .unwrap_or(true)
     }
 
     /// Get duration of a file for a node (in seconds)

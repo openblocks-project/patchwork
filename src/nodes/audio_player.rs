@@ -63,10 +63,21 @@ pub fn render(
     // Keep looping flag in sync with decode thread
     audio.set_file_looping(node_id, *looping);
 
-    // Detect end of playback
-    if is_playing && !is_paused && audio.is_file_finished(node_id) {
+    // Detect end of playback. Wait for BOTH the decode thread to finish
+    // AND the audio callback to drain the ring buffer; without the drain
+    // check, files shorter than the 2 s ring buffer (i.e. anything brief
+    // — drum hits, UI sounds, "dog.mp3" at 0.48 s) get auto-stopped
+    // milliseconds after Play, before any samples reach the speaker.
+    // The decoder finishes in milliseconds, sets `finished=true`, and the
+    // very next render frame would tear the player down.
+    if is_playing && !is_paused
+        && audio.is_file_finished(node_id)
+        && audio.is_file_buffer_drained(node_id)
+    {
         if *looping && !file_path.is_empty() {
-            // Looping is handled by the decode thread — just restart
+            // Edge case: looping was toggled off-and-back-on between EOF
+            // and the drain, so the decode thread already exited and its
+            // internal seek-to-zero loop no longer applies. Re-spawn.
             audio.stop_file(node_id);
             let _ = audio.play_file(node_id, file_path);
         } else {
@@ -85,16 +96,35 @@ pub fn render(
         0.0
     };
 
-    // Read from input ports if connected
-    // Port 0: Play (>0.5 = play, <=0.5 = pause)
+    // Read from input ports if connected.
+    //
+    // Port 0: Play — rising-edge triggered (0 → 1 starts playback from the
+    // beginning). Falling edge is intentionally ignored so a momentary
+    // trigger pulse from Timer / IsChanged / a button click — which goes
+    // 0→1→0 across two adjacent frames — actually plays the file through
+    // instead of pausing on the next frame. Sliders / Gates wired to this
+    // port still work: dragging up triggers the rising edge; dragging
+    // back down does NOT auto-pause (use the Stop button or wire a
+    // separate Stop port). Previous play_val is stashed in egui temp
+    // data so the comparison survives across frames.
+    let prev_play_id = egui::Id::new(("audio_player_prev_play", node_id));
+    let prev_play = ui.ctx().data_mut(|d| d.get_temp::<f32>(prev_play_id).unwrap_or(0.0));
     let play_wired = connections.iter().any(|c| c.to_node == node_id && c.to_port == 0);
     if play_wired {
         let play_val = Graph::static_input_value(connections, values, node_id, 0).as_float();
-        if play_val > 0.5 && !is_playing && !file_path.is_empty() {
+        let rising = play_val > 0.5 && prev_play <= 0.5;
+        if rising && !file_path.is_empty() {
+            // Fresh restart — stop_file before play_file because play_file
+            // early-returns when a buffer already exists for this node.
+            audio.stop_file(node_id);
             let _ = audio.play_file(node_id, file_path);
-        } else if play_val <= 0.5 && is_playing {
-            audio.pause_file(node_id);
         }
+        ui.ctx().data_mut(|d| d.insert_temp(prev_play_id, play_val));
+    } else if prev_play != 0.0 {
+        // Wire was just disconnected — clear the stash so a future re-wire
+        // sees a clean rising edge from 0 instead of inheriting the last
+        // value that happened to be high.
+        ui.ctx().data_mut(|d| d.insert_temp(prev_play_id, 0.0_f32));
     }
     // Port 1: Volume
     if connections.iter().any(|c| c.to_node == node_id && c.to_port == 1) {

@@ -818,11 +818,32 @@ pub fn render_camera(
         ui.colored_label(color, egui::RichText::new(&*status).small());
     }
 
-    // Receive frame — detect camera/source disconnect
+    // Receive frame — detect camera/source disconnect.
+    //
+    // Mirrors `VideoInNode::poll_decoder` (src/nodes/video_in_node.rs):
+    // drain ffmpeg's stderr each tick and, if frames never start
+    // flowing, surface either ffmpeg's last complaint (after a 1.5 s
+    // grace for the normal pixel-format-negotiation chatter) or a
+    // generic "camera busy / TCC" hint after 3 s. Without this the
+    // node sits on green "Capturing" forever when ffmpeg wedges inside
+    // AVFoundation — typical when a previous capture child is still
+    // holding the device lock.
     VIDEO_DECODERS.with(|d| {
         if let Some(decoder) = d.borrow_mut().get_mut(&node_id) {
+            decoder.pump_stderr();
             if let Some(frame) = decoder.try_recv_frame() {
                 *current_frame = Some(frame);
+                if status != "Capturing" { *status = "Capturing".into(); }
+            } else if current_frame.is_none() {
+                let elapsed = decoder.started_at.elapsed().as_secs_f32();
+                if elapsed > 1.5 && !decoder.stderr_log.is_empty() {
+                    let last = decoder.stderr_log.lines().last().unwrap_or("").to_string();
+                    *status = format!("ffmpeg: {}", last);
+                } else if elapsed > 3.0 {
+                    *status =
+                        "No frames — camera busy, or check System Settings → Privacy → Camera"
+                            .into();
+                }
             }
             if decoder.disconnected {
                 *current_frame = None;
