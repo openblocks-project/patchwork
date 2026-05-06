@@ -10,6 +10,10 @@ pub enum MidiAction {
     Send { node_id: NodeId, message: [u8; 3] },
     ConnectInput { node_id: NodeId, port_name: String },
     DisconnectInput { node_id: NodeId },
+    /// Re-scan available MIDI input/output ports. Triggered from the ↻
+    /// button on midi_in / midi_out nodes so the user can pick up newly
+    /// enabled devices (e.g. macOS IAC Driver) without restarting Patchwork.
+    RescanPorts,
 }
 
 pub struct MidiManager {
@@ -103,6 +107,9 @@ impl MidiManager {
                 MidiAction::DisconnectInput { node_id } => {
                     self.input_conns.remove(&node_id);
                     self.input_rx.remove(&node_id);
+                }
+                MidiAction::RescanPorts => {
+                    self.refresh_ports();
                 }
             }
         }

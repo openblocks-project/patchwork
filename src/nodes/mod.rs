@@ -71,6 +71,7 @@ pub mod text_editor_node;
 pub mod mouse_tracker_node;
 pub mod point_2d_node;
 pub mod fill_node;
+pub mod text_to_image_node;
 pub mod image_scanner_node;
 pub mod frame_recorder_node;
 pub mod noise_removal_node;
@@ -361,6 +362,7 @@ pub fn node_type_has_scroll(nt: &NodeType) -> bool {
             inner.node.type_tag(),
             "comment"
             | "fill"
+            | "text_to_image"
             | "json_fields"
             | "json_extract"
             | "folder_browser"
@@ -480,6 +482,8 @@ pub fn catalog() -> Vec<NodeCatalogEntry> {
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(color_channel_node::ColorChannelNode::default()) } } },
         NodeCatalogEntry { wip: false, singleton: false, label: "Fill", category: "Image",
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(fill_node::FillNode::default()) } } },
+        NodeCatalogEntry { wip: false, singleton: false, label: "Text to Image", category: "Image",
+            factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(text_to_image_node::TextToImageNode::default()) } } },
         NodeCatalogEntry { wip: false, singleton: false, label: "Image Scanner", category: "Image",
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(image_scanner_node::ImageScannerNode::default()) } } },
         NodeCatalogEntry { wip: false, singleton: false, label: "Frame Recorder", category: "Image",

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>NSCameraUsageDescription</key>
+    <string>Patchwork uses the camera for the Video In node (camera source).</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Patchwork uses the microphone for audio input nodes.</string>
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>Patchwork uses screen recording for the Video In node (screen source).</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>Patchwork uses Apple Events for hardware integration.</string>
+    <key>NSBluetoothAlwaysUsageDescription</key>
+    <string>Patchwork uses Bluetooth to connect to OpenBlocks hardware sensors.</string>
+</dict>
+</plist>
