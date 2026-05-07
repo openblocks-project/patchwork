@@ -500,6 +500,16 @@ pub struct PitchShiftProcessor {
     /// Phase (0..grain_size) and fractional read offset for each of the 2 grains.
     grain_phase: [f64; 2],
     grain_read:  [f64; 2],
+    /// Absolute ring position (in samples) where each grain started.
+    /// Captured when the grain (re)wraps, then frozen — `read_pos`
+    /// is `grain_start + grain_read`. This is what makes ratio=1 a
+    /// passthrough: read advances at `ratio` per output sample, so
+    /// at ratio=1 read tracks write at a constant gs-sample delay.
+    /// Anchoring against the *current* write head instead — which
+    /// the previous version did — added an extra +1 sample per
+    /// output sample to the effective read rate, so ratio=1
+    /// pitched up an octave.
+    grain_start: [f64; 2],
 }
 
 impl PitchShiftProcessor {
@@ -511,6 +521,7 @@ impl PitchShiftProcessor {
             grain_size: 2048,
             grain_phase: [0.0, 0.0],
             grain_read:  [0.0, 0.0],
+            grain_start: [0.0, 0.0],
         }
     }
 
@@ -533,6 +544,7 @@ impl AudioProcessor for PitchShiftProcessor {
         if self.ring.is_empty() { return; }
         let n = self.ring.len();
         let gs = self.grain_size as f64;
+        let nf = n as f64;
 
         for i in 0..input.len() {
             // Write input into ring
@@ -549,18 +561,24 @@ impl AudioProcessor for PitchShiftProcessor {
                 let win = (std::f64::consts::PI * t).sin() as f32;
                 let win = win * win;
 
-                // Read from ring: start of grain is `grain_size` samples behind
-                // the write head; the grain's internal read cursor advances at ratio.
-                let read_pos = (write_f - gs + self.grain_read[g]).rem_euclid(n as f64);
+                // Read from ring: grain_start is the absolute position the
+                // grain anchored to when it last (re)started; grain_read
+                // advances at `ratio` per output sample so the effective
+                // read-rate vs. write-rate is exactly `ratio`.
+                let read_pos = (self.grain_start[g] + self.grain_read[g]).rem_euclid(nf);
                 out += self.read_lerp(read_pos) * win;
 
                 self.grain_phase[g] += 1.0;
                 self.grain_read[g]  += ratio;
 
-                // When grain completes, restart it
+                // When grain completes, restart it gs samples behind the
+                // current write head (write_f is the position we just wrote
+                // to, so write_f - gs + 1 would be the oldest "safe" sample
+                // — close enough; off-by-one is masked by the Hann window).
                 if self.grain_phase[g] >= gs {
                     self.grain_phase[g] = 0.0;
                     self.grain_read[g]  = 0.0;
+                    self.grain_start[g] = (write_f - gs).rem_euclid(nf);
                 }
             }
 
@@ -586,6 +604,16 @@ impl AudioProcessor for PitchShiftProcessor {
         // Stagger the two grains by half a grain so one is always at full window
         self.grain_phase = [0.0, self.grain_size as f64 / 2.0];
         self.grain_read  = [0.0, self.grain_size as f64 / 2.0];
+        // Anchor each grain `grain_size` samples behind the start of the
+        // ring, modulo n. With write=0 that lands at n - grain_size,
+        // which is in the silent prefill — the first ~gs samples of
+        // output are silence (natural latency) until the ring fills.
+        let nf = ring_size as f64;
+        let gsf = self.grain_size as f64;
+        self.grain_start = [
+            (-gsf).rem_euclid(nf),
+            (-gsf).rem_euclid(nf),
+        ];
         self.semitones = SmoothedParam::new(self.semitones.target, 30.0);
     }
 
@@ -594,5 +622,11 @@ impl AudioProcessor for PitchShiftProcessor {
         self.write = 0;
         self.grain_phase = [0.0, self.grain_size as f64 / 2.0];
         self.grain_read  = [0.0, self.grain_size as f64 / 2.0];
+        let nf = self.ring.len() as f64;
+        let gsf = self.grain_size as f64;
+        self.grain_start = [
+            (-gsf).rem_euclid(nf),
+            (-gsf).rem_euclid(nf),
+        ];
     }
 }
