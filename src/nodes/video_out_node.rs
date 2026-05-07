@@ -367,7 +367,10 @@ impl NodeBehavior for VideoOutNode {
                         // (shippable, just needs the user to install it).
                         // Other disabled sinks are "future phase" — show
                         // the phase tag so it's clear what's pending.
-                        let (text, tooltip) = if s.available() {
+                        // Type annotation on `tooltip` because on
+                        // non-macOS the Some(...) arm below is cfg'd
+                        // out, leaving None with no inference target.
+                        let (text, tooltip): (String, Option<&'static str>) = if s.available() {
                             (s.label().to_string(), None)
                         } else {
                             #[cfg(target_os = "macos")]

@@ -9,26 +9,45 @@
 //!
 //! Run: `cargo run --bin syphon_spike`  (macOS only)
 
-#![cfg(target_os = "macos")]
+// On non-macOS the spike compiles to a stub that exits with a clear
+// message — `#![cfg(target_os = "macos")]` at the file level would
+// remove `fn main` entirely on Windows / Linux and the bin would fail
+// to compile. Per-item gates plus a fallback main keep the bin
+// buildable everywhere.
+
+#[cfg(not(target_os = "macos"))]
+fn main() {
+    eprintln!("syphon_spike: macOS only — Syphon is a macOS interprocess texture protocol.");
+}
 
 // The `patchwork` package is binary-only (no `src/lib.rs`), so this
 // bin can't `use patchwork::video_io::…`. Point at the same source
 // files via `#[path]` instead — no duplication, the production node
 // code and the spike share identical module content.
+#[cfg(target_os = "macos")]
 #[path = "../video_io/wgpu_metal.rs"]
 mod wgpu_metal;
+#[cfg(target_os = "macos")]
 #[path = "../video_io/syphon.rs"]
 mod syphon;
 
+#[cfg(target_os = "macos")]
 use eframe::egui_wgpu::wgpu;
+#[cfg(target_os = "macos")]
 use foreign_types_shared::ForeignType;
+#[cfg(target_os = "macos")]
 use pollster::block_on;
+#[cfg(target_os = "macos")]
 use std::time::{Duration, Instant};
+#[cfg(target_os = "macos")]
 use syphon::SyphonServer;
 
+#[cfg(target_os = "macos")]
 const TEX_W: u32 = 256;
+#[cfg(target_os = "macos")]
 const TEX_H: u32 = 256;
 
+#[cfg(target_os = "macos")]
 fn main() {
     println!("[spike] starting wgpu→Metal→Syphon bridge test via video_io module");
 

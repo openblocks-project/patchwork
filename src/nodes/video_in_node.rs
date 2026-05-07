@@ -701,7 +701,11 @@ impl NodeBehavior for VideoInNode {
                         // Unavailable-reason is source-specific: NDI
                         // has a 1:1 install story (libndi missing);
                         // everything else is "not yet implemented".
-                        let (text, tooltip) = if s.available() {
+                        // The type annotation on `tooltip` is needed
+                        // because on non-macOS the Some(...) arm below
+                        // is cfg'd out, leaving only `None` with no
+                        // inference target.
+                        let (text, tooltip): (String, Option<&'static str>) = if s.available() {
                             (s.label().to_string(), None)
                         } else {
                             #[cfg(target_os = "macos")]

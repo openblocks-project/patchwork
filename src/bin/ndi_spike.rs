@@ -23,7 +23,22 @@
 //!
 //! Run: `cargo run --bin ndi_spike`  (macOS only)
 
-#![cfg(target_os = "macos")]
+// On non-macOS the spike is a no-op stub. A file-level
+// `#![cfg(target_os = "macos")]` would strip every item — including
+// `fn main` — leaving the binary unable to link on Windows / Linux.
+// Wrapping the macOS-only body in `mod imp` keeps the structure
+// readable while letting us provide a fallback `fn main`.
+
+#[cfg(not(target_os = "macos"))]
+fn main() {
+    eprintln!("ndi_spike: macOS only — NDI Runtime not probed on this platform.");
+}
+
+#[cfg(target_os = "macos")]
+fn main() { imp::entry(); }
+
+#[cfg(target_os = "macos")]
+mod imp {
 #![allow(non_camel_case_types)]
 
 use libloading::Library;
@@ -267,7 +282,7 @@ fn cstr(p: *const c_char) -> String {
     unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned()
 }
 
-fn main() {
+pub fn entry() {
     match run() {
         Ok(()) => println!("[ndi-spike] done."),
         Err(e) => {
@@ -276,3 +291,5 @@ fn main() {
         }
     }
 }
+
+} // end mod imp (cfg(target_os = "macos"))
