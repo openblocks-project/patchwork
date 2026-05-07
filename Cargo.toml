@@ -1,6 +1,6 @@
 [package]
 name = "patchwork"
-version = "0.0.7"
+version = "0.0.8"
 edition = "2024"
 license = "GPL-3.0"
 authors = ["Allwin Williams / OpenBlocks"]
@@ -49,6 +49,7 @@ rand = "0.9"
 tungstenite = "0.24"
 hidapi = "2"
 ab_glyph = "0.2"
+qrcode = { version = "0.14", default-features = false }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.5"
