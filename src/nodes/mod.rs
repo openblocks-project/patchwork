@@ -81,6 +81,7 @@ pub mod music_visualizer_node;
 pub mod spectral_synth_node;
 pub mod neural_audio_node;
 pub mod web_app_node;
+pub mod web_app_mjpeg;
 pub mod websocket_node;
 pub mod clock_node;
 pub mod key_input_node;

@@ -1,10 +1,12 @@
 use eframe::egui::{self, RichText};
 use crate::nodes::ScrollAreaExt;
+use crate::nodes::web_app_mjpeg::{JpegSlot, MjpegEncoder, PLACEHOLDER_JPEG};
 use std::collections::{HashMap, hash_map::DefaultHasher};
 use std::hash::{Hash, Hasher};
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use crate::graph::{PortDef, PortKind, PortValue};
 use crate::node_trait::{NodeBehavior, RenderContext};
 
@@ -16,10 +18,17 @@ use crate::node_trait::{NodeBehavior, RenderContext};
 // User writes custom HTML/JS. The injected `patchwork.inputs` object
 // provides real-time access to all connected input port values.
 //
-// Ports:
-//   In  0: HTML (Text, optional — overrides inline code editor)
-//   In  1..N: Named numeric inputs (p0, p1, p2, p3 by default)
-//   Out 0: URL (Text — the localhost URL)
+// Ports (indices are fixed so adding/removing numerics doesn't shift
+// the Image port's wire onto a different slot):
+//   In  0:    HTML (Text, optional — overrides inline code editor)
+//   In  1:    Image (RGBA frames; encoded to MJPEG and exposed at
+//             GET /stream)
+//   In  2..N+1: Named numeric inputs (p0, p1, p2, p3 by default)
+//   Out 0..M:  Named numeric outputs (Web → Patchwork)
+
+/// Fixed port index for the Image input. Wired up downstream of the
+/// HTML port; numeric inputs are at indices 2..N+1.
+const IMAGE_PORT_IDX: usize = 1;
 
 struct WebAppServerState {
     html: String,
@@ -33,6 +42,9 @@ struct WebAppServerState {
     /// "o0" → 0.42). The node reads this each evaluate frame and emits
     /// any name matching its `output_names` to the corresponding port.
     output_values: HashMap<String, f32>,
+    /// Shared MJPEG slot — server thread spawns per-connection
+    /// streamer threads that subscribe via this Arc.
+    jpeg_slot: Arc<JpegSlot>,
 }
 
 type SharedWebAppState = Arc<Mutex<WebAppServerState>>;
@@ -118,6 +130,12 @@ const DEFAULT_HTML: &str = r#"<!DOCTYPE html>
 </style></head>
 <body>
 <h2>Patchwork Web App</h2>
+
+<div class="section">
+  <small>Stream (Patchwork → Web)</small>
+  <img src="/stream" id="pwstream" alt="" style="width:100%;display:block;background:#000;border-radius:8px;margin-top:6px;" />
+  <small style="opacity:.6;">Wire any Image-emitting node into the Web App's Image input.</small>
+</div>
 
 <div class="section">
   <small>Inputs (Patchwork → Web)</small>
@@ -254,6 +272,18 @@ fn start_web_app_server(state: SharedWebAppState) -> u16 {
                     "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nAccess-Control-Allow-Origin: *\r\nCache-Control: no-cache\r\nContent-Length: {}\r\n\r\n{}",
                     html.len(), html);
                 let _ = stream.write_all(resp.as_bytes());
+            } else if request.contains("GET /stream") {
+                // MJPEG live stream. Hand off to a per-connection thread
+                // — the multipart response holds the socket open
+                // indefinitely, so leaving it inline would block every
+                // other route until the phone disconnects.
+                let slot = state.lock().ok().map(|s| s.jpeg_slot.clone());
+                if let Some(slot) = slot {
+                    let _ = stream.set_nodelay(true);
+                    let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+                    std::thread::spawn(move || serve_mjpeg_stream(stream, slot));
+                }
+                continue;
             } else {
                 // Serve full page with injected bridge
                 let (html, hash) = state.lock()
@@ -262,19 +292,26 @@ fn start_web_app_server(state: SharedWebAppState) -> u16 {
 
                 let bridge = PATCHWORK_JS_BRIDGE.replace("__HASH__", &hash.to_string());
 
+                // Inject the bridge at the START of <body> rather than
+                // before </body>. Eager inline scripts in the page body
+                // (including DEFAULT_HTML's `patchwork.onUpdate = ...`)
+                // run as the parser hits them, so they need
+                // `window.patchwork` to already be defined. End-of-body
+                // injection ran scripts BEFORE the bridge, throwing
+                // ReferenceError and silently dropping `onUpdate`.
                 let page = if html.is_empty() {
-                    // Serve default template with bridge injected before </body>
-                    DEFAULT_HTML.replace("</body>", &format!("{}</body>", bridge))
-                } else if html.contains("</body>") {
-                    // User HTML has </body> — inject bridge before it
-                    html.replace("</body>", &format!("{}</body>", bridge))
+                    DEFAULT_HTML.replace("<body>", &format!("<body>{}", bridge))
+                } else if html.contains("<body>") {
+                    html.replace("<body>", &format!("<body>{}", bridge))
                 } else if html.contains("</html>") {
                     html.replace("</html>", &format!("{}</html>", bridge))
                 } else {
-                    // Fragment — wrap in full page
+                    // Fragment — wrap in full page. Bridge first so
+                    // any inline scripts in the user fragment can use
+                    // `patchwork.*` immediately.
                     format!("<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>Web App</title>\
                         <style>body{{margin:0;padding:16px;font-family:sans-serif;background:#1a1a2e;color:#eee;}}</style>\
-                        </head><body>{}{}</body></html>", html, bridge)
+                        </head><body>{}{}</body></html>", bridge, html)
                 };
 
                 let resp = format!(
@@ -286,6 +323,65 @@ fn start_web_app_server(state: SharedWebAppState) -> u16 {
         }
     });
     port
+}
+
+/// One MJPEG client. Sends multipart headers + a placeholder JPEG, then
+/// loops on the shared slot's condvar emitting each new frame as a
+/// `multipart/x-mixed-replace` part. Exits when the socket dies (phone
+/// closed the page, network blip, write timeout).
+fn serve_mjpeg_stream(mut stream: std::net::TcpStream, slot: Arc<JpegSlot>) {
+    const BOUNDARY: &str = "pwframe";
+    let headers = format!(
+        "HTTP/1.1 200 OK\r\n\
+         Content-Type: multipart/x-mixed-replace; boundary={BOUNDARY}\r\n\
+         Cache-Control: no-cache, no-store, must-revalidate\r\n\
+         Pragma: no-cache\r\n\
+         Connection: close\r\n\
+         Access-Control-Allow-Origin: *\r\n\
+         \r\n"
+    );
+    if stream.write_all(headers.as_bytes()).is_err() {
+        return;
+    }
+
+    // Placeholder so `<img>` paints something before the encoder
+    // produces a real frame. Without this Chrome shows broken-image
+    // and Safari shows blank until the first encoded JPEG arrives.
+    if write_mjpeg_part(&mut stream, BOUNDARY, PLACEHOLDER_JPEG).is_err() {
+        return;
+    }
+
+    let mut last_seen: u64 = 0;
+    loop {
+        match slot.wait_next(last_seen, Duration::from_secs(30)) {
+            Some((generation, bytes)) => {
+                last_seen = generation;
+                if write_mjpeg_part(&mut stream, BOUNDARY, &bytes).is_err() {
+                    return;
+                }
+            }
+            None => {
+                // No new frame in 30 s. Don't break — the phone's <img>
+                // would freeze on a closed connection with no recovery.
+                // Just keep waiting; encoder may come back when the
+                // user wires Image again.
+                continue;
+            }
+        }
+    }
+}
+
+fn write_mjpeg_part(stream: &mut std::net::TcpStream, boundary: &str, jpeg: &[u8])
+    -> std::io::Result<()>
+{
+    let part_header = format!(
+        "--{boundary}\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\n\r\n",
+        jpeg.len()
+    );
+    stream.write_all(part_header.as_bytes())?;
+    stream.write_all(jpeg)?;
+    stream.write_all(b"\r\n")?;
+    stream.flush()
 }
 
 fn open_in_browser(url: &str) {
@@ -361,6 +457,20 @@ pub struct WebAppNode {
     /// changes (which only happens once at first start, unless the LAN
     /// IP shifts). Stored as (url, handle) so we can detect change.
     qr_texture: Option<(String, egui::TextureHandle)>,
+    /// MJPEG encoder. `None` when the Image port isn't wired or
+    /// hasn't received a frame yet. Spawned on first frame in
+    /// `evaluate()`; dropped on unwire in `render_with_context`.
+    encoder: Option<MjpegEncoder>,
+    /// Dimensions the current encoder is locked to. On a mismatch
+    /// the encoder is dropped + respawned.
+    encoder_dims: Option<(u32, u32)>,
+    /// Shared JPEG slot — written by the encoder's stdout reader,
+    /// read by per-`/stream` connection threads. Lives on the node
+    /// (not the encoder) so it survives encoder respawns.
+    jpeg_slot: Arc<JpegSlot>,
+    /// One-line status surfaced under the Image port row. Empty when
+    /// the encoder is healthy or the port is unwired.
+    image_status: String,
 }
 
 impl std::fmt::Debug for WebAppNode {
@@ -384,6 +494,10 @@ impl Clone for WebAppNode {
             input_values: self.input_values.clone(),
             output_cache: vec![0.0; self.output_names.len()],
             qr_texture: None,
+            encoder: None,
+            encoder_dims: None,
+            jpeg_slot: Arc::new(JpegSlot::new()),
+            image_status: String::new(),
         }
     }
 }
@@ -399,6 +513,10 @@ impl Default for WebAppNode {
             input_values: vec![0.0; 2],
             output_cache: vec![0.0; 2],
             qr_texture: None,
+            encoder: None,
+            encoder_dims: None,
+            jpeg_slot: Arc::new(JpegSlot::new()),
+            image_status: String::new(),
         }
     }
 }
@@ -411,7 +529,17 @@ impl NodeBehavior for WebAppNode {
     fn inline_ports(&self) -> bool { true }
 
     fn inputs(&self) -> Vec<PortDef> {
-        let mut ports = vec![PortDef::new("HTML", PortKind::Text)];
+        // Port indices are pinned so adding/removing named numerics
+        // doesn't shift the Image port's wire onto a different slot:
+        //   0 = HTML, 1 = Image, 2..N+1 = dynamic numerics.
+        // Visually we still render the Image port row at the bottom
+        // of the input list (per the "after the named numeric inputs"
+        // spec); the inline_port_circle keys positions by port index,
+        // not by render order.
+        let mut ports = vec![
+            PortDef::new("HTML", PortKind::Text),
+            PortDef::new("Image", PortKind::Image),
+        ];
         for name in &self.input_names {
             ports.push(PortDef::dynamic(name.clone(), PortKind::Number));
         }
@@ -428,13 +556,58 @@ impl NodeBehavior for WebAppNode {
         // Resize input_values to match input_names
         self.input_values.resize(self.input_names.len(), 0.0);
 
-        // Read numeric values from ports 1..N — only override if actually wired
+        // Read numeric values from ports 2..N+1 (port 0 = HTML,
+        // port 1 = Image, then dynamic numerics).
         for i in 0..self.input_names.len() {
-            let port_idx = i + 1;
+            let port_idx = i + 2;
             if let Some(PortValue::Float(f)) = inputs.get(port_idx) {
                 self.input_values[i] = *f;
             }
             // When not wired, keep the manual DragValue in self.input_values[i]
+        }
+
+        // Image input at fixed port 1. Spawn encoder on first frame,
+        // feed RGBA each call. Mismatched dims trigger a respawn
+        // (mirrors FileRecorder's lock-on-first-frame, but stream
+        // nodes should adapt rather than drop frames). Drop-on-unwire
+        // lives in render_with_context (where we have ctx.connections).
+        match inputs.get(IMAGE_PORT_IDX) {
+            Some(PortValue::Image(img)) => {
+                let dims = (img.width, img.height);
+                if self.encoder_dims != Some(dims) {
+                    self.encoder = None;
+                    match MjpegEncoder::new(dims.0, dims.1, self.jpeg_slot.clone()) {
+                        Ok(e) => {
+                            self.encoder = Some(e);
+                            self.encoder_dims = Some(dims);
+                            self.image_status.clear();
+                        }
+                        Err(e) => {
+                            self.encoder_dims = None;
+                            self.image_status = e;
+                        }
+                    }
+                }
+                if let Some(enc) = self.encoder.as_mut() {
+                    if let Err(e) = enc.write_frame(&img.pixels, dims.0, dims.1) {
+                        self.image_status = e;
+                        self.encoder = None;
+                        self.encoder_dims = None;
+                    }
+                }
+            }
+            Some(PortValue::GpuImage(_)) => {
+                if self.image_status.is_empty() {
+                    self.image_status = "GPU image not yet supported — \
+                        insert an image effect (e.g. Crop, Transform) before Web App".into();
+                }
+                self.encoder = None;
+                self.encoder_dims = None;
+            }
+            _ => {
+                // Unwired or no value yet; render_with_context handles
+                // dropping the encoder when truly unwired.
+            }
         }
 
         // Update shared server state + read back posted output values.
@@ -490,9 +663,23 @@ impl NodeBehavior for WebAppNode {
                 input_values: self.input_values.clone(),
                 input_names: self.input_names.clone(),
                 output_values: HashMap::new(),
+                jpeg_slot: self.jpeg_slot.clone(),
             }));
             self.server_port = start_web_app_server(state.clone());
             self.server_state = Some(state);
+        }
+
+        // ── Encoder lifecycle: drop on unwire ───────────────────────────
+        // Mirrors AudioPipeDecoder gating in video_in_node.rs:1326 —
+        // both spawn-on-demand and drop-on-unwire of an external decoder
+        // gated by a port-wiring check that lives in render. Spawning
+        // happens in evaluate() (we need dims from the first frame).
+        let image_wired = ctx.connections.iter()
+            .any(|c| c.to_node == node_id && c.to_port == IMAGE_PORT_IDX);
+        if !image_wired && self.encoder.is_some() {
+            self.encoder = None;
+            self.encoder_dims = None;
+            self.image_status.clear();
         }
 
         // ── Status + URLs ────────────────────────────────────────────────
@@ -587,6 +774,9 @@ impl NodeBehavior for WebAppNode {
             ui.label(RichText::new("Inputs").small().strong().color(dim));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.small_button(RichText::new("+").color(green)).clicked() {
+                    // Image port is pinned at index 1; adding a numeric
+                    // appends at the end of the dynamic range and never
+                    // displaces any existing wire.
                     let idx = self.input_names.len();
                     self.input_names.push(format!("p{}", idx));
                     self.input_values.push(0.0);
@@ -596,7 +786,7 @@ impl NodeBehavior for WebAppNode {
 
         let mut remove_idx: Option<usize> = None;
         for i in 0..self.input_names.len() {
-            let port_idx = i + 1; // +1 because port 0 is HTML
+            let port_idx = i + 2; // 0=HTML, 1=Image, 2..N+1=numerics
             let port_wired = ctx.connections.iter().any(|c| c.to_node == node_id && c.to_port == port_idx);
             ui.horizontal(|ui| {
                 crate::nodes::inline_port_circle(ui, node_id, port_idx, true,
@@ -628,11 +818,53 @@ impl NodeBehavior for WebAppNode {
         if let Some(idx) = remove_idx {
             self.input_names.remove(idx);
             if idx < self.input_values.len() { self.input_values.remove(idx); }
-            // Disconnect shifted ports
-            let port_idx = idx + 1;
-            for p in port_idx..=self.input_names.len() + 1 {
+            // Disconnect the removed numeric port + every numeric that
+            // shifted down. Image (port 1) is pinned and unaffected.
+            //   Pre-remove: numerics span ports 2..N+1.
+            //   Post-remove: numerics span ports 2..N (one shorter).
+            //   Wires on old indices ≥ idx+2 must be torn down or
+            //   they'd silently re-target the slot above.
+            let port_idx = idx + 2;
+            let old_max_numeric = self.input_names.len() + 2; // pre-remove last
+            for p in port_idx..=old_max_numeric {
                 ctx.pending_disconnects.push((node_id, p));
             }
+        }
+
+        // ── Image input port row ─────────────────────────────────────────
+        // Logical index is fixed (IMAGE_PORT_IDX = 1) but rendered
+        // visually at the end of the input list per the original spec.
+        // `inline_port_circle` keys port positions by index, not render
+        // order, so the wire connects to wherever this row sits.
+        let img_wired = image_wired;
+        ui.horizontal(|ui| {
+            crate::nodes::inline_port_circle(ui, node_id, IMAGE_PORT_IDX, true,
+                ctx.connections, ctx.port_positions, ctx.dragging_from,
+                ctx.pending_disconnects, PortKind::Image);
+            let label = if !self.image_status.is_empty() {
+                "Image ⚠"
+            } else if self.encoder.is_some() {
+                "Image ✓"
+            } else if img_wired {
+                "Image …" // wired but no frame yet
+            } else {
+                "Image"
+            };
+            let color = if !self.image_status.is_empty() {
+                egui::Color32::from_rgb(220, 160, 80)
+            } else if self.encoder.is_some() {
+                green
+            } else {
+                dim
+            };
+            ui.label(RichText::new(label).small().color(color));
+            if let Some((w, h)) = self.encoder_dims {
+                ui.label(RichText::new(format!("{}×{} → MJPEG", w, h)).small().monospace().color(dim));
+            }
+        });
+        if !self.image_status.is_empty() {
+            ui.label(RichText::new(&self.image_status).small()
+                .color(egui::Color32::from_rgb(220, 160, 80)));
         }
 
         ui.add_space(2.0);
