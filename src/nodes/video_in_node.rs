@@ -64,12 +64,11 @@ impl VideoSource {
     /// "(soon)" tag.
     fn available(self) -> bool {
         match self {
-            Self::Camera | Self::Screen => true,
+            Self::Camera | Self::Screen | Self::File | Self::Url => true,
             #[cfg(target_os = "macos")]
             Self::Syphon => true,
             #[cfg(target_os = "macos")]
             Self::Ndi => crate::video_io::ndi::library().is_ok(),
-            Self::Url => true,
             _ => false,
         }
     }
@@ -138,6 +137,31 @@ pub struct VideoInNode {
     /// it takes precedence over `effective_url` / `device_id` — no network
     /// fetch, no yt-dlp.
     #[serde(skip)] pub cached_abs: Option<std::path::PathBuf>,
+
+    // ── Playhead / scrubber state ───────────────────────────────────
+    /// Source duration in seconds. 0.0 means unknown / live (no fixed
+    /// length, scrubber hidden). Probed via ffprobe at file pick / URL
+    /// resolve. Persisted so projects re-open with the cached value
+    /// (saves a probe on Start), but re-probed on the actual Start to
+    /// catch length changes.
+    #[serde(default)] pub duration_secs: f32,
+
+    /// `Instant` that corresponds to the playhead being at
+    /// `position_anchor_secs`. `None` while paused / stopped — in those
+    /// states we read `paused_at_secs` instead. Set on Start, on Resume,
+    /// and on every Seek so live playhead = anchor + (now - anchor_at).
+    #[serde(skip)] pub position_anchor_instant: Option<std::time::Instant>,
+    #[serde(skip)] pub position_anchor_secs: f32,
+
+    /// Captured playhead while paused. None when actively playing.
+    #[serde(skip)] pub paused_at_secs: Option<f32>,
+
+    /// User's current scrub-drag intent. Read by the slider's value
+    /// during a drag (so the thumb tracks the cursor smoothly without
+    /// the live-position calculation overwriting it). Committed to a
+    /// real seek on `drag_stopped()`.
+    #[serde(skip)] pub scrub_value: f32,
+    #[serde(skip)] pub scrubbing: bool,
 
     // ── Runtime state (never serialised) ────────────────────────────
     #[serde(skip)] pub current_frame: Option<Arc<ImageData>>,
@@ -298,6 +322,12 @@ impl Clone for VideoInNode {
             volume: self.volume,
             cached_path: self.cached_path.clone(),
             cached_abs: None,
+            duration_secs: self.duration_secs,
+            position_anchor_instant: None,
+            position_anchor_secs: 0.0,
+            paused_at_secs: None,
+            scrub_value: 0.0,
+            scrubbing: false,
         }
     }
 }
@@ -337,6 +367,12 @@ impl Default for VideoInNode {
             volume: default_volume(),
             cached_path: String::new(),
             cached_abs: None,
+            duration_secs: 0.0,
+            position_anchor_instant: None,
+            position_anchor_secs: 0.0,
+            paused_at_secs: None,
+            scrub_value: 0.0,
+            scrubbing: false,
         }
     }
 }
@@ -403,7 +439,7 @@ impl VideoInNode {
         }
     }
 
-    fn open_decoder(&mut self, node_id: NodeId) {
+    fn open_decoder(&mut self, node_id: NodeId, start_time: f32) {
         // Enforce single-owner-per-device before spawning ffmpeg. Better
         // to fail cleanly here with a clear message than to let the
         // second ffmpeg race the first, silently stealing the camera
@@ -449,7 +485,17 @@ impl VideoInNode {
                 if url.is_empty() {
                     Err("URL is empty".into())
                 } else {
-                    VideoDecoder::open_url(&url, self.res_w, self.res_h)
+                    VideoDecoder::open_url(&url, self.res_w, self.res_h, start_time)
+                }
+            }
+            VideoSource::File => {
+                // device_id holds the absolute file path (set by the
+                // file picker in render_file_ui).
+                let path = self.device_id.trim();
+                if path.is_empty() {
+                    Err("No file selected".into())
+                } else {
+                    VideoDecoder::open_file(path, self.res_w, self.res_h, start_time)
                 }
             }
             _ => Err(format!("{} source not yet implemented", self.source.label())),
@@ -503,7 +549,7 @@ impl VideoInNode {
         crate::gpu_image::request_node_invalidation(node_id);
     }
 
-    fn poll_decoder(&mut self, node_id: NodeId) {
+    fn poll_decoder(&mut self, node_id: NodeId, ctx: Option<&mut RenderContext>) {
         let mut guard = match self.decoder.lock() {
             Ok(g) => g,
             Err(_) => return,
@@ -548,13 +594,14 @@ impl VideoInNode {
             }
         }
         if decoder.disconnected {
-            // For URL streams with Loop on, an EOF means "play it again"
-            // — drop the dead decoder, mark for restart on the next frame.
-            // The actual `open_decoder` call has to happen outside this
-            // borrow scope (we're holding the decoder lock guard here),
-            // so we set a transient flag and restart below the unlock.
+            // For File / URL streams with Loop on, an EOF means "play
+            // it again" — drop the dead decoder, mark for restart on
+            // the next frame. The actual `open_decoder` call has to
+            // happen outside this borrow scope (we're holding the
+            // decoder lock guard here), so we set a transient flag and
+            // restart below the unlock.
             let want_restart = self.loop_playback
-                && matches!(self.source, VideoSource::Url);
+                && matches!(self.source, VideoSource::Url | VideoSource::File);
             self.current_frame = None;
             self.active = false;
             decoder.disconnected = false;
@@ -563,7 +610,20 @@ impl VideoInNode {
             crate::gpu_image::request_node_invalidation(node_id);
             if want_restart {
                 self.status = "Looping".into();
-                self.open_decoder(node_id);
+                self.open_decoder(node_id, 0.0);
+                // Audio restart — only possible when called from a
+                // render_*_ui (which passes ctx). poll_decoder is also
+                // called from elsewhere; in those cases the audio
+                // restart waits for the next render frame.
+                if let Some(ctx) = ctx {
+                    ctx.audio.stop_file(node_id);
+                    let source = self.effective_input();
+                    if !source.is_empty() {
+                        let _ = ctx.audio.play_pipe_audio(node_id, &source, 0.0);
+                        ctx.audio.engine_write_param(node_id, 0, self.volume);
+                    }
+                }
+                self.anchor_position(0.0);
             } else {
                 self.status = "Disconnected".into();
                 crate::system_log::warn(format!("Video In disconnected (id:{})", node_id));
@@ -613,6 +673,7 @@ impl NodeBehavior for VideoInNode {
             self.loop_playback = l.loop_playback;
             self.volume = l.volume;
             self.cached_path = l.cached_path;
+            self.duration_secs = l.duration_secs;
             self.mirror_h = l.mirror_h;
             self.mirror_v = l.mirror_v;
             // `active` / `status` intentionally not restored — user clicks Start.
@@ -688,6 +749,7 @@ impl NodeBehavior for VideoInNode {
         match self.source {
             VideoSource::Camera => self.render_camera_ui(ui, ctx),
             VideoSource::Screen => self.render_screen_ui(ui, ctx),
+            VideoSource::File => self.render_file_ui(ui, ctx),
             VideoSource::Url => self.render_url_ui(ui, ctx),
             #[cfg(target_os = "macos")]
             VideoSource::Syphon => self.render_syphon_ui(ui, ctx),
@@ -776,7 +838,7 @@ impl VideoInNode {
             let was_active = self.active;
             self.close_decoder(ctx.node_id);
             self.device_id = idx.to_string();
-            if was_active { self.open_decoder(ctx.node_id); }
+            if was_active { self.open_decoder(ctx.node_id, 0.0); }
         }
 
         // Resolution
@@ -807,7 +869,7 @@ impl VideoInNode {
                 toggle_start = true;
             }
         });
-        if toggle_start { self.open_decoder(ctx.node_id); }
+        if toggle_start { self.open_decoder(ctx.node_id, 0.0); }
         if toggle_stop { self.close_decoder(ctx.node_id); }
 
         // Status line
@@ -823,7 +885,7 @@ impl VideoInNode {
         }
 
         // Pull any new frames from the decoder thread
-        self.poll_decoder(ctx.node_id);
+        self.poll_decoder(ctx.node_id, Some(ctx));
 
         // Preview (shared with Screen source)
         self.render_preview(ui, ctx);
@@ -1048,19 +1110,25 @@ impl VideoInNode {
         }
         if let Some(resolved) = resolved_ok {
             self.effective_url = resolved.clone();
+            // Probe duration of the resolved URL so the scrubber knows
+            // its range. ffprobe HEADs the moov atom; cheap on most
+            // CDN-backed mp4s. Returns None for live streams (HLS).
+            self.duration_secs = crate::nodes::video_player::get_duration(&resolved)
+                .unwrap_or(0.0);
             ui.ctx().data_mut(|d|
                 d.insert_temp(status_id, "Connecting…".to_string()));
-            self.open_decoder(node_id);
+            self.open_decoder(node_id, 0.0);
             // Always spawn audio when a URL source starts. The samples
             // flow into the engine immediately; whether sound reaches
             // the speaker depends on the user wiring Audio→Speaker.
             // Wiring after Start works without restart — the engine's
             // pending_connection_sync picks up the new edge.
             if self.active {
-                if let Err(e) = ctx.audio.play_url_audio(node_id, &resolved) {
+                if let Err(e) = ctx.audio.play_pipe_audio(node_id, &resolved, 0.0) {
                     crate::system_log::warn(format!("Video In audio: {}", e));
                 }
                 ctx.audio.engine_write_param(node_id, 0, self.volume);
+                self.anchor_position(0.0);
             }
             if self.active {
                 ui.ctx().data_mut(|d|
@@ -1125,14 +1193,17 @@ impl VideoInNode {
                     } else {
                         // Synchronous path — direct URL straight to ffmpeg.
                         self.effective_url = url.clone();
+                        self.duration_secs = crate::nodes::video_player::get_duration(&url)
+                            .unwrap_or(0.0);
                         ui.ctx().data_mut(|d|
                             d.insert_temp(status_id, "Connecting…".to_string()));
-                        self.open_decoder(node_id);
+                        self.open_decoder(node_id, 0.0);
                         if self.active {
-                            if let Err(e) = ctx.audio.play_url_audio(node_id, &url) {
+                            if let Err(e) = ctx.audio.play_pipe_audio(node_id, &url, 0.0) {
                                 crate::system_log::warn(format!("Video In audio: {}", e));
                             }
                             ctx.audio.engine_write_param(node_id, 0, self.volume);
+                            self.anchor_position(0.0);
                             ui.ctx().data_mut(|d|
                                 d.insert_temp(status_id, "Streaming".to_string()));
                         }
@@ -1144,12 +1215,15 @@ impl VideoInNode {
                 if is_paused {
                     if ui.button("▶ Resume").clicked() {
                         ctx.audio.resume_file(node_id);
+                        let pos = self.paused_at_secs.unwrap_or(0.0);
+                        self.anchor_position(pos);
                         ui.ctx().data_mut(|d|
                             d.insert_temp(status_id, "Streaming".to_string()));
                     }
                 } else {
                     if ui.button("⏸ Pause").clicked() {
                         ctx.audio.pause_file(node_id);
+                        self.pause_position();
                         ui.ctx().data_mut(|d|
                             d.insert_temp(status_id, "Paused".to_string()));
                     }
@@ -1157,6 +1231,7 @@ impl VideoInNode {
                 if ui.button("⏹ Stop").clicked() {
                     self.close_decoder(node_id);
                     ctx.audio.stop_file(node_id);
+                    self.clear_position();
                     ui.ctx().data_mut(|d| {
                         d.remove_temp::<String>(status_id);
                     });
@@ -1218,37 +1293,16 @@ impl VideoInNode {
             }
         });
 
-        // ── Audio controls (only meaningful while playing) ──────────
+        // ── Active-state controls (Volume / Scrubber / Audio hint) ──
         if self.active {
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Volume").small().color(dim));
-                let resp = ui.add(
-                    egui::Slider::new(&mut self.volume, 0.0..=2.0)
-                        .show_value(false),
-                );
-                // Push to the engine atomic — works while DSP is running
-                // because FilePlayerProcessor reads its volume param from
-                // node_params on every audio block.
-                if resp.changed() {
-                    ctx.audio.engine_write_param(node_id, 0, self.volume);
-                }
-            });
-            // Hint: if Audio output port has no consumer, the user won't
-            // hear anything regardless of volume. Common confusion the
-            // first time someone uses this node.
-            if !Self::audio_port_wired(ctx, node_id) {
-                ui.colored_label(
-                    egui::Color32::from_rgb(255, 180, 80),
-                    egui::RichText::new("🔇 Wire Audio → Speaker to hear sound").small(),
-                );
-            }
+            self.render_active_controls(ui, ctx);
         }
 
         // Pull any new frames from the decoder thread (same dance as
         // render_camera_ui / render_screen_ui — without this call the
         // ffmpeg subprocess runs but its frames are never read into
         // `self.current_frame` and the preview stays empty).
-        self.poll_decoder(node_id);
+        self.poll_decoder(node_id, Some(ctx));
         self.render_preview(ui, ctx);
 
         // If decode failed (Open returned Err inside open_decoder),
@@ -1271,9 +1325,296 @@ impl VideoInNode {
     fn audio_port_wired(ctx: &RenderContext, node_id: NodeId) -> bool {
         ctx.connections.iter().any(|c| c.from_node == node_id && c.from_port == 1)
     }
+
+    /// Current playhead in seconds. Wall-clock estimate accumulated since
+    /// the last anchor (Start / Resume / Seek). Returns the captured
+    /// position when paused, or zero before the first Start.
+    fn current_position(&self) -> f32 {
+        if let Some(p) = self.paused_at_secs { return p; }
+        if let Some(t) = self.position_anchor_instant {
+            return self.position_anchor_secs + t.elapsed().as_secs_f32();
+        }
+        self.position_anchor_secs
+    }
+
+    /// Anchor the playhead at `secs` and start the wall clock. Called on
+    /// Start (with 0.0), on Resume (with the paused value), and on every
+    /// successful Seek.
+    fn anchor_position(&mut self, secs: f32) {
+        self.position_anchor_secs = secs;
+        self.position_anchor_instant = Some(std::time::Instant::now());
+        self.paused_at_secs = None;
+    }
+
+    /// Capture current position into `paused_at_secs` and stop the wall
+    /// clock. Idempotent.
+    fn pause_position(&mut self) {
+        let p = self.current_position();
+        self.paused_at_secs = Some(p);
+        self.position_anchor_instant = None;
+    }
+
+    /// Reset position state to "not playing" (Stop).
+    fn clear_position(&mut self) {
+        self.position_anchor_instant = None;
+        self.position_anchor_secs = 0.0;
+        self.paused_at_secs = None;
+        self.scrub_value = 0.0;
+        self.scrubbing = false;
+    }
+
+    /// Seek the active stream to `target` seconds. Closes the decoders
+    /// and reopens with `-ss target` for both video and audio. ~1–2 s
+    /// glitch on URL streams (HTTP byte range), instant on local files.
+    fn seek_to(&mut self, node_id: NodeId, target: f32, ctx: &mut RenderContext) {
+        self.close_decoder(node_id);
+        ctx.audio.stop_file(node_id);
+        self.open_decoder(node_id, target);
+        if self.active {
+            let source = self.effective_input();
+            if !source.is_empty() {
+                if let Err(e) = ctx.audio.play_pipe_audio(node_id, &source, target) {
+                    crate::system_log::warn(format!("Video In seek audio: {}", e));
+                }
+                ctx.audio.engine_write_param(node_id, 0, self.volume);
+            }
+        }
+        self.anchor_position(target);
+    }
+
+    /// The string passed to ffmpeg `-i` — same precedence chain
+    /// open_decoder uses internally, but exposed for play_pipe_audio
+    /// and seek calls.
+    fn effective_input(&self) -> String {
+        match self.source {
+            VideoSource::Url => {
+                if let Some(p) = self.cached_abs.as_ref().filter(|p| p.exists()) {
+                    return p.to_string_lossy().into_owned();
+                }
+                if !self.effective_url.is_empty() { return self.effective_url.clone(); }
+                self.device_id.trim().to_string()
+            }
+            VideoSource::File => self.device_id.clone(),
+            _ => String::new(),
+        }
+    }
+
+    /// Render the slice of UI shared by File and URL sources while
+    /// playback is active: Volume slider, Scrubber (when duration is
+    /// known), and the "wire Audio" hint. Caller is responsible for the
+    /// source-specific bits above this (URL field / File picker / Start
+    /// button) and for `poll_decoder` + `render_preview` after.
+    fn render_active_controls(&mut self, ui: &mut egui::Ui, ctx: &mut RenderContext) {
+        let dim = ui.visuals().widgets.noninteractive.fg_stroke.color;
+        let node_id = ctx.node_id;
+
+        // Volume
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Volume").small().color(dim));
+            let resp = ui.add(
+                egui::Slider::new(&mut self.volume, 0.0..=2.0).show_value(false),
+            );
+            if resp.changed() {
+                ctx.audio.engine_write_param(node_id, 0, self.volume);
+            }
+        });
+
+        // Scrubber — only when duration is known (i.e. not a live stream
+        // and we successfully ffprobe'd it).
+        if self.duration_secs > 0.0 {
+            let pos = self.current_position();
+            // While not actively dragging, the slider value tracks the
+            // computed playhead so the thumb advances during playback.
+            // While dragging, scrub_value floats with the cursor and pos
+            // is unused.
+            if !self.scrubbing { self.scrub_value = pos; }
+            let display_left = if self.scrubbing { self.scrub_value } else { pos };
+            let dur = self.duration_secs;
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new(format_time(display_left))
+                        .small().monospace().color(dim),
+                );
+                let resp = ui.add(
+                    egui::Slider::new(&mut self.scrub_value, 0.0..=dur).show_value(false),
+                );
+                ui.label(
+                    egui::RichText::new(format_time(dur))
+                        .small().monospace().color(dim),
+                );
+                if resp.dragged() { self.scrubbing = true; }
+                if resp.drag_stopped() {
+                    let target = self.scrub_value;
+                    self.seek_to(node_id, target, ctx);
+                    self.scrubbing = false;
+                }
+            });
+        }
+
+        // Wire-audio hint
+        if !Self::audio_port_wired(ctx, node_id) {
+            ui.colored_label(
+                egui::Color32::from_rgb(255, 180, 80),
+                egui::RichText::new("🔇 Wire Audio → Speaker to hear sound").small(),
+            );
+        }
+    }
+}
+
+/// Format `s` seconds as either "M:SS" (under an hour) or "H:MM:SS".
+fn format_time(s: f32) -> String {
+    let s = s.max(0.0);
+    let h = (s / 3600.0) as u32;
+    let m = ((s % 3600.0) / 60.0) as u32;
+    let sec = (s % 60.0) as u32;
+    if h > 0 { format!("{}:{:02}:{:02}", h, m, sec) }
+    else { format!("{}:{:02}", m, sec) }
 }
 
 impl VideoInNode {
+    /// File-source UI. Picker via rfd, ffprobe duration probe on pick,
+    /// Start / Pause / Resume / Stop / Loop / Volume / Scrubber. Audio
+    /// goes through the same AudioPipeDecoder path the URL source uses,
+    /// so wiring Audio → Speaker is identical.
+    fn render_file_ui(&mut self, ui: &mut egui::Ui, ctx: &mut RenderContext) {
+        let dim = ui.visuals().widgets.noninteractive.fg_stroke.color;
+        let node_id = ctx.node_id;
+        let status_id = egui::Id::new(("vin_url_status", node_id));
+
+        // ── File picker + path ───────────────────────────────────────
+        ui.horizontal(|ui| {
+            if ui.button(egui::RichText::new("📁 Open").small()).clicked() {
+                if let Some(p) = rfd::FileDialog::new()
+                    .add_filter("Video", &["mp4", "mov", "m4v", "avi", "webm", "mkv", "gif", "mp3", "wav", "ogg", "flac", "aac"])
+                    .pick_file()
+                {
+                    let path = p.display().to_string();
+                    self.device_id = path.clone();
+                    // Probe duration immediately so the scrubber knows
+                    // its range before Start. Cheap (reads moov atom).
+                    self.duration_secs = crate::nodes::video_player::get_duration(&path)
+                        .unwrap_or(0.0);
+                    // Reset position state since we have a new source.
+                    self.clear_position();
+                    self.close_decoder(node_id);
+                    ctx.audio.stop_file(node_id);
+                    ui.ctx().data_mut(|d| d.remove_temp::<String>(status_id));
+                }
+            }
+            if !self.device_id.is_empty() {
+                let short = if self.device_id.len() > 38 {
+                    format!("…{}", &self.device_id[self.device_id.len() - 38..])
+                } else {
+                    self.device_id.clone()
+                };
+                ui.label(
+                    egui::RichText::new(short).small().monospace().color(dim),
+                ).on_hover_text(&self.device_id);
+                if ui.small_button("✕").on_hover_text("Clear file").clicked() {
+                    self.device_id.clear();
+                    self.duration_secs = 0.0;
+                    self.clear_position();
+                    self.close_decoder(node_id);
+                    ctx.audio.stop_file(node_id);
+                    ui.ctx().data_mut(|d| d.remove_temp::<String>(status_id));
+                }
+            }
+        });
+
+        // ── Resolution sliders ───────────────────────────────────────
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Size").small().color(dim));
+            ui.add(egui::DragValue::new(&mut self.res_w).range(64..=3840).speed(8));
+            ui.label(egui::RichText::new("×").small().color(dim));
+            ui.add(egui::DragValue::new(&mut self.res_h).range(64..=2160).speed(8));
+        });
+
+        // ── Loop checkbox ────────────────────────────────────────────
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut self.loop_playback, "Loop")
+              .on_hover_text("When the file ends, restart from the beginning.");
+        });
+
+        // ── Status label ─────────────────────────────────────────────
+        let status: Option<String> = ui.ctx().data_mut(|d| d.get_temp(status_id));
+        if let Some(s) = status {
+            let color = if s.starts_with("Error") {
+                egui::Color32::from_rgb(255, 100, 100)
+            } else if s == "Streaming" {
+                egui::Color32::from_rgb(80, 200, 120)
+            } else {
+                dim
+            };
+            ui.colored_label(color, egui::RichText::new(s).small());
+        } else if !self.status.is_empty() {
+            ui.colored_label(dim, egui::RichText::new(&self.status).small());
+        }
+
+        // ── Start / Pause-Resume / Stop ──────────────────────────────
+        ui.horizontal(|ui| {
+            if !self.active {
+                let can_start = !self.device_id.trim().is_empty();
+                if ui.add_enabled(can_start, egui::Button::new("▶ Start")).clicked() {
+                    let path = self.device_id.clone();
+                    ui.ctx().data_mut(|d|
+                        d.insert_temp(status_id, "Loading…".to_string()));
+                    self.open_decoder(node_id, 0.0);
+                    if self.active {
+                        if let Err(e) = ctx.audio.play_pipe_audio(node_id, &path, 0.0) {
+                            crate::system_log::warn(format!("Video In audio: {}", e));
+                        }
+                        ctx.audio.engine_write_param(node_id, 0, self.volume);
+                        self.anchor_position(0.0);
+                        ui.ctx().data_mut(|d|
+                            d.insert_temp(status_id, "Streaming".to_string()));
+                    }
+                }
+            } else {
+                let is_paused = ctx.audio.is_file_paused(node_id);
+                if is_paused {
+                    if ui.button("▶ Resume").clicked() {
+                        ctx.audio.resume_file(node_id);
+                        let pos = self.paused_at_secs.unwrap_or(0.0);
+                        self.anchor_position(pos);
+                        ui.ctx().data_mut(|d|
+                            d.insert_temp(status_id, "Streaming".to_string()));
+                    }
+                } else {
+                    if ui.button("⏸ Pause").clicked() {
+                        ctx.audio.pause_file(node_id);
+                        self.pause_position();
+                        ui.ctx().data_mut(|d|
+                            d.insert_temp(status_id, "Paused".to_string()));
+                    }
+                }
+                if ui.button("⏹ Stop").clicked() {
+                    self.close_decoder(node_id);
+                    ctx.audio.stop_file(node_id);
+                    self.clear_position();
+                    ui.ctx().data_mut(|d| d.remove_temp::<String>(status_id));
+                }
+            }
+        });
+
+        // ── Active-state controls (Volume / Scrubber / Audio hint) ──
+        if self.active {
+            self.render_active_controls(ui, ctx);
+        }
+
+        // Pull frames + render preview (same dance as camera/screen/url).
+        self.poll_decoder(node_id, Some(ctx));
+        self.render_preview(ui, ctx);
+
+        // Surface decoder open errors via the URL-flow status display.
+        if !self.active && !self.status.is_empty()
+            && self.status != "Stopped"
+            && self.status != "Capturing"
+        {
+            ui.ctx().data_mut(|d|
+                d.insert_temp(status_id, format!("Error: {}", self.status)));
+        }
+    }
+
     /// Screen-source UI. Symmetric to `render_camera_ui` but uses
     /// `list_screens()`, which on macOS filters to "Capture screen N"
     /// AVFoundation entries and on Linux synthesises one entry per
@@ -1312,7 +1653,7 @@ impl VideoInNode {
             let was_active = self.active;
             self.close_decoder(ctx.node_id);
             self.device_id = idx.to_string();
-            if was_active { self.open_decoder(ctx.node_id); }
+            if was_active { self.open_decoder(ctx.node_id, 0.0); }
         }
 
         if screens.is_empty() {
@@ -1340,7 +1681,7 @@ impl VideoInNode {
                 toggle_start = true;
             }
         });
-        if toggle_start { self.open_decoder(ctx.node_id); }
+        if toggle_start { self.open_decoder(ctx.node_id, 0.0); }
         if toggle_stop { self.close_decoder(ctx.node_id); }
 
         // Status
@@ -1357,7 +1698,7 @@ impl VideoInNode {
 
         // Poll + preview — same code path as camera so changes stay
         // localised if the two UIs ever diverge further.
-        self.poll_decoder(ctx.node_id);
+        self.poll_decoder(ctx.node_id, Some(ctx));
         self.render_preview(ui, ctx);
     }
 

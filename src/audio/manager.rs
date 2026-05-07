@@ -739,20 +739,22 @@ impl AudioManager {
         Ok(())
     }
 
-    /// Stream audio from a URL into the engine. Mirrors `play_file` but the
-    /// source is an ffmpeg subprocess decoding the URL on the fly. Used by
-    /// `Video In` when its source is a URL and its Audio output port is
-    /// wired — the same `FilePlayerBuffer` + `FilePlayerProcessor` pipeline
-    /// downstream, so once samples are in the buffer the rest of the engine
-    /// is identical to file playback.
-    pub fn play_url_audio(&mut self, node_id: NodeId, url: &str) -> Result<(), String> {
-        // If we're already streaming this URL (or any URL) on this node, stop
-        // the old pipeline first so the new one starts clean.
+    /// Stream audio from any ffmpeg-readable source (URL or local file
+    /// path) into the engine, optionally seeking to `start_time` first.
+    /// Mirrors `play_file` but the source is an ffmpeg subprocess
+    /// decoding on the fly — so the same `FilePlayerBuffer` +
+    /// `FilePlayerProcessor` pipeline downstream is identical to file
+    /// playback once samples land in the ring buffer.
+    ///
+    /// Used by Video In for both its URL source and its File source.
+    pub fn play_pipe_audio(&mut self, node_id: NodeId, source: &str, start_time: f32) -> Result<(), String> {
+        // If we're already streaming on this node, stop the old pipeline
+        // first so the new one starts clean.
         self.stop_file(node_id);
 
         let output_sr = self.engine_sample_rate;
 
-        let decoder = crate::nodes::video_player::AudioPipeDecoder::open_url(url, output_sr)?;
+        let decoder = crate::nodes::video_player::AudioPipeDecoder::open_url(source, output_sr, start_time)?;
 
         let capacity = (output_sr * 2.0) as usize;   // 2 s of slack — same as files
         let buffer = Arc::new(FilePlayerBuffer::new(capacity));

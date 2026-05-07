@@ -86,28 +86,41 @@ impl VideoDecoder {
     /// audio that ffmpeg can decode). YouTube/Vimeo *page* URLs need to be
     /// resolved by yt-dlp first; the caller passes the resolved direct URL.
     ///
+    /// `start_time` (seconds) seeks before decode begins. For HTTP URLs this
+    /// triggers a byte-range request — no full re-download. 0.0 = play from
+    /// the beginning.
+    ///
     /// Reconnect flags are enabled so a transient HTTP hiccup retries instead
     /// of killing the stream. ffmpeg downscales server-side via `-s` so the
     /// reader thread doesn't have to deal with arbitrary network resolutions.
-    pub fn open_url(url: &str, width: u32, height: u32) -> Result<Self, String> {
+    pub fn open_url(url: &str, width: u32, height: u32, start_time: f32) -> Result<Self, String> {
+        let mut args: Vec<String> = vec![
+            "-hide_banner".into(), "-loglevel".into(), "error".into(),
+            // HTTP resilience for direct URLs / HLS — harmless for non-HTTP inputs.
+            "-reconnect".into(), "1".into(),
+            "-reconnect_streamed".into(), "1".into(),
+            "-reconnect_delay_max".into(), "2".into(),
+            // Lower probe latency for live streams.
+            "-fflags".into(), "nobuffer".into(),
+            "-flags".into(), "low_delay".into(),
+        ];
+        if start_time > 0.0 {
+            // `-ss` BEFORE `-i` is the fast input-side seek (uses byte-range
+            // for HTTP). Keyframe-aligned, ~1–2 s precision on typical mp4.
+            args.extend(["-ss".into(), format!("{:.3}", start_time)]);
+        }
+        args.extend([
+            "-i".into(), url.to_string(),
+            "-an".into(),                       // discard audio in this pipe; audio uses AudioPipeDecoder
+            "-f".into(), "rawvideo".into(),
+            "-pix_fmt".into(), "rgba".into(),
+            "-s".into(), format!("{}x{}", width, height),
+            "-r".into(), "30".into(),
+            "pipe:1".into(),
+        ]);
+
         let process = Command::new("ffmpeg")
-            .args([
-                "-hide_banner", "-loglevel", "error",
-                // HTTP resilience for direct URLs / HLS — harmless for non-HTTP inputs.
-                "-reconnect", "1",
-                "-reconnect_streamed", "1",
-                "-reconnect_delay_max", "2",
-                // Lower probe latency for live streams.
-                "-fflags", "nobuffer",
-                "-flags", "low_delay",
-                "-i", url,
-                "-an",                       // discard audio in this pipe; audio uses AudioPipeDecoder
-                "-f", "rawvideo",
-                "-pix_fmt", "rgba",
-                "-s", &format!("{}x{}", width, height),
-                "-r", "30",
-                "pipe:1",
-            ])
+            .args(&args)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -400,24 +413,33 @@ impl Drop for AudioPipeDecoder {
 }
 
 impl AudioPipeDecoder {
-    /// Decode the audio track from `url` into mono f32 samples at `sample_rate`.
-    /// Reader thread pushes ~10 ms chunks into `samples_rx`.
-    pub fn open_url(url: &str, sample_rate: f32) -> Result<Self, String> {
+    /// Decode the audio track from `source` (either a URL or a local file
+    /// path — ffmpeg's `-i` accepts both) into mono f32 samples at
+    /// `sample_rate`. `start_time` seeks before decode (`-ss` before
+    /// `-i`, byte-range fast on HTTP, instant on disk). Reader thread
+    /// pushes ~10 ms chunks into `samples_rx`.
+    pub fn open_url(source: &str, sample_rate: f32, start_time: f32) -> Result<Self, String> {
+        let mut args: Vec<String> = vec![
+            "-hide_banner".into(), "-loglevel".into(), "error".into(),
+            "-reconnect".into(), "1".into(),
+            "-reconnect_streamed".into(), "1".into(),
+            "-reconnect_delay_max".into(), "2".into(),
+            "-fflags".into(), "nobuffer".into(),
+            "-flags".into(), "low_delay".into(),
+        ];
+        if start_time > 0.0 {
+            args.extend(["-ss".into(), format!("{:.3}", start_time)]);
+        }
+        args.extend([
+            "-i".into(), source.to_string(),
+            "-vn".into(),                                       // drop video
+            "-ac".into(), "1".into(),                           // mono
+            "-ar".into(), format!("{}", sample_rate as u32),    // resample server-side
+            "-f".into(), "f32le".into(),                        // raw little-endian f32
+            "pipe:1".into(),
+        ]);
         let process = Command::new("ffmpeg")
-            .args([
-                "-hide_banner", "-loglevel", "error",
-                "-reconnect", "1",
-                "-reconnect_streamed", "1",
-                "-reconnect_delay_max", "2",
-                "-fflags", "nobuffer",
-                "-flags", "low_delay",
-                "-i", url,
-                "-vn",                                         // drop video
-                "-ac", "1",                                    // mono
-                "-ar", &format!("{}", sample_rate as u32),     // resample server-side
-                "-f", "f32le",                                 // raw little-endian f32
-                "pipe:1",
-            ])
+            .args(&args)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -502,8 +524,10 @@ thread_local! {
     static CAMERA_LIST_CACHE: RefCell<(std::time::Instant, Vec<(u32, String)>)> = RefCell::new((std::time::Instant::now(), Vec::new()));
 }
 
-/// Get video duration using ffprobe
-fn get_duration(path: &str) -> Option<f32> {
+/// Get video / audio duration of a file or URL using ffprobe. Returns
+/// `None` for live streams (no fixed duration), unsupported sources, or
+/// when ffprobe isn't installed.
+pub(crate) fn get_duration(path: &str) -> Option<f32> {
     let output = Command::new("ffprobe")
         .args(["-v", "error", "-show_entries", "format=duration",
                "-of", "default=noprint_wrappers=1:nokey=1", path])
