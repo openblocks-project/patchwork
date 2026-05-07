@@ -498,6 +498,28 @@ impl AudioManager {
             }
         }
 
+        // Catch any active file_buffers whose processors weren't registered
+        // by the per-NodeType walk above. Trait-based Dynamic nodes like
+        // Video In feed audio through `play_pipe_audio` which inserts into
+        // `file_buffers`, but `create_processor_for_node` doesn't have an
+        // arm for them — so without this pass, toggling DSP off/on would
+        // leave Video In's URL audio mute (the pump thread keeps writing
+        // samples that nobody consumes). Detected by "buffer exists but
+        // node_params doesn't" and patched in with a FilePlayerProcessor.
+        let orphan_buffers: Vec<(NodeId, Arc<FilePlayerBuffer>)> = self.file_buffers.iter()
+            .filter(|(nid, _)| !self.node_params.contains_key(nid))
+            .map(|(nid, buf)| (*nid, buf.clone()))
+            .collect();
+        for (nid, buffer) in orphan_buffers {
+            let processor = Box::new(super::processors::input::FilePlayerProcessor {
+                buffer,
+                volume: 1.0,  // current volume comes from atomics; render
+                              // pushes the actual value next frame.
+            });
+            self.add_processor(nid, processor, 1);
+            self.pending_connection_sync.insert(nid);
+        }
+
         // Re-establish all audio connections
         for conn in &graph.connections {
             let from_audio = self.node_params.contains_key(&conn.from_node);

@@ -1408,16 +1408,15 @@ impl VideoInNode {
         let dim = ui.visuals().widgets.noninteractive.fg_stroke.color;
         let node_id = ctx.node_id;
 
-        // Volume
+        // Volume — pushed every frame (not just on slider change) so a
+        // DSP off/on cycle, which clears node_params and re-creates the
+        // volume atomic at default 1.0, picks the user's actual setting
+        // back up on the next render. The atomic write is cheap.
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("Volume").small().color(dim));
-            let resp = ui.add(
-                egui::Slider::new(&mut self.volume, 0.0..=2.0).show_value(false),
-            );
-            if resp.changed() {
-                ctx.audio.engine_write_param(node_id, 0, self.volume);
-            }
+            ui.add(egui::Slider::new(&mut self.volume, 0.0..=2.0).show_value(false));
         });
+        ctx.audio.engine_write_param(node_id, 0, self.volume);
 
         // Scrubber — only when duration is known (i.e. not a live stream
         // and we successfully ffprobe'd it).
