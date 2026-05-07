@@ -15,6 +15,7 @@ use crate::nodes::ai_shared::{
     provider_label, ConfigPayload, TEXT_PRESETS,
 };
 use eframe::egui;
+use crate::nodes::ScrollAreaExt;
 use serde::{Deserialize, Serialize};
 
 fn default_temperature() -> f32 { 0.7 }
@@ -265,7 +266,7 @@ fn render_generator(
         egui::ScrollArea::vertical()
             .max_height(60.0)
             .id_salt(format!("gen_sys_scroll_{}_{:?}", ctx.node_id, kind as u8))
-            .show(ui, |ui| {
+            .show_pannable(ui, |ui| {
                 ui.add(
                     egui::TextEdit::multiline(system_prompt)
                         .desired_rows(2)
@@ -433,7 +434,7 @@ fn render_generator(
     // ── Response preview ────────────────────────────────────────
     if !response.is_empty() {
         ui.collapsing(format!("Response ({} chars)", response.len()), |ui| {
-            egui::ScrollArea::vertical().max_height(150.0).show(ui, |ui| {
+            egui::ScrollArea::vertical().max_height(150.0).show_pannable(ui, |ui| {
                 ui.add(
                     egui::TextEdit::multiline(&mut response.to_string())
                         .desired_width(f32::INFINITY)

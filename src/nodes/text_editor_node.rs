@@ -2,6 +2,7 @@ use crate::graph::{PortDef, PortKind, PortValue, Graph};
 use crate::node_trait::{NodeBehavior, RenderContext};
 use serde::{Serialize, Deserialize};
 use eframe::egui;
+use crate::nodes::ScrollAreaExt;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TextEditorNode {
@@ -77,7 +78,7 @@ impl NodeBehavior for TextEditorNode {
         let dim = ui.visuals().widgets.noninteractive.fg_stroke.color;
         ui.label(egui::RichText::new(format!("{} chars", self.content.len())).small().color(dim));
 
-        egui::ScrollArea::vertical().max_height(250.0).show(ui, |ui| {
+        egui::ScrollArea::vertical().max_height(250.0).show_pannable(ui, |ui| {
             if let Some(ref upstream_text) = upstream {
                 self.content = upstream_text.clone();
                 let before = self.content.clone();

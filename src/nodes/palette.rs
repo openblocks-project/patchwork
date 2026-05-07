@@ -1,4 +1,5 @@
 use eframe::egui;
+use crate::nodes::ScrollAreaExt;
 use crate::graph::{NodeId, NodeType};
 use crate::node_trait::NodeBehavior;
 use crate::icons;
@@ -78,7 +79,7 @@ pub fn render(
     let cat = catalog();
 
     // Scrollable list with max height
-    egui::ScrollArea::vertical().max_height(400.0 * inv).show(ui, |ui| {
+    egui::ScrollArea::vertical().max_height(400.0 * inv).show_pannable(ui, |ui| {
         let mut last_cat = "";
         let mut any_shown = false;
 

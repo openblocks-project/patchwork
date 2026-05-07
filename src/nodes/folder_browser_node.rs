@@ -3,6 +3,7 @@ use crate::node_trait::NodeBehavior;
 use crate::icons;
 use serde::{Serialize, Deserialize};
 use eframe::egui;
+use crate::nodes::ScrollAreaExt;
 use std::path::Path;
 
 #[derive(Clone)]
@@ -119,7 +120,7 @@ impl NodeBehavior for FolderBrowserNode {
         });
 
         // File list
-        egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
+        egui::ScrollArea::vertical().max_height(300.0).show_pannable(ui, |ui| {
             if let Some(parent) = Path::new(&self.path).parent() {
                 let (clicked, _) = render_file_row(ui, "..", true, "", 0, false);
                 if clicked {

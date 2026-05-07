@@ -2,6 +2,7 @@ use crate::graph::{PortDef, PortKind, PortValue, Graph};
 use crate::node_trait::{NodeBehavior, RenderContext};
 use serde::{Serialize, Deserialize};
 use eframe::egui;
+use crate::nodes::ScrollAreaExt;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::sync::mpsc;
@@ -259,7 +260,7 @@ impl NodeBehavior for TerminalNode {
 
         let bg = ui.visuals().extreme_bg_color;
         egui::Frame::new().fill(bg).corner_radius(4.0).show(ui, |ui| {
-            scroll.show(ui, |ui| {
+            scroll.show_pannable(ui, |ui| {
                 ui.set_min_width(280.0);
                 if self.history.is_empty() {
                     ui.add_space(6.0);

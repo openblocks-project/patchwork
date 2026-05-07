@@ -1,5 +1,6 @@
 use crate::mcp::McpLog;
 use eframe::egui;
+use crate::nodes::ScrollAreaExt;
 
 pub fn render(
     ui: &mut egui::Ui,
@@ -49,7 +50,7 @@ pub fn render(
     if log_entries.is_empty() {
         ui.colored_label(egui::Color32::from_rgb(80, 80, 80), "Waiting for MCP client...");
     } else {
-        egui::ScrollArea::vertical().max_height(180.0).stick_to_bottom(true).show(ui, |ui| {
+        egui::ScrollArea::vertical().max_height(180.0).stick_to_bottom(true).show_pannable(ui, |ui| {
             for entry in log_entries.iter().rev().take(50).rev() {
                 let color = if entry.starts_with('→') {
                     egui::Color32::from_rgb(100, 180, 255) // command in

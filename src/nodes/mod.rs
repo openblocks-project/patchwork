@@ -322,60 +322,82 @@ pub fn output_port_row(
     });
 }
 
-/// Whether a node's render surface contains a scrollable widget
-/// (ScrollArea, multiline TextEdit, log panel, code editor, etc).
-///
-/// Used by `handle_pan_zoom` to suppress canvas scroll / pan / zoom when
-/// the pointer hovers such a node — so scrolling inside a Console log or
-/// Text Editor never bleeds through to move the canvas.
-///
-/// Nodes NOT listed here (Slider, Knob, Timer, Add, Multiply, Synth,
-/// etc.) allow scroll-through: the user can freely pan the canvas with
-/// the pointer hovering these nodes. That matches expectation — there's
-/// nothing in a Slider node that can meaningfully consume scroll.
-///
-/// Kept in one place so new scrollable node types get added here when
-/// their render gains a ScrollArea.
-pub fn node_type_has_scroll(nt: &NodeType) -> bool {
-    match nt {
-        // ── Legacy enum variants with known ScrollArea / TextEdit ──
-        NodeType::Console { .. }
-        | NodeType::Serial { .. }
-        | NodeType::MidiIn { .. }
-        | NodeType::OscIn { .. }
-        | NodeType::Script { .. }
-        | NodeType::HttpRequest { .. }
-        | NodeType::AiRequest { .. }
-        | NodeType::AudioPlaylist { .. }
-        | NodeType::RustPlugin { .. }
-        | NodeType::McpServer
-        | NodeType::HtmlViewer
-        | NodeType::ObHub { .. }
-        | NodeType::ClapPlugin { .. }
-        | NodeType::Palette { .. }
-        | NodeType::FolderBrowser { .. } => true,
+// ── ScrollArea hit-test registry ────────────────────────────────────────────
+//
+// The pan / pinch / Cmd-scroll handler in `app::interaction` needs to know
+// whether the pointer is over a *scroll-consuming widget* (an actual
+// ScrollArea or, in rare cases, a multiline TextEdit with internal scroll).
+// Earlier versions did this at NodeType granularity — block pan over the
+// whole body of any node that contained a ScrollArea — which left the user
+// unable to pan the canvas while hovering over a Comment or Console node's
+// header / padding / port labels. Per-widget granularity fixes that.
+//
+// Each ScrollArea call site captures `ScrollAreaOutput::inner_rect` and
+// passes it to `register_scroll_rect`. The pan handler reads
+// `pointer_in_scroll_rect(p)` once per frame to gate its behavior.
+//
+// Frame timing: rects are registered during node draw, which runs *after*
+// `handle_pan_zoom`. The pan handler therefore reads the *previous* frame's
+// rects (~16 ms staleness at 60 Hz — imperceptible for continuous gestures).
+// The buffer is cleared in `app/mod.rs` immediately after `handle_pan_zoom`
+// and before node rendering, so each frame's rects don't leak into the next.
+thread_local! {
+    static SCROLL_RECTS: std::cell::RefCell<Vec<egui::Rect>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
 
-        // ── Dynamic (trait-based) nodes — match by type_tag ──
-        // type_tag is the stable identifier registered in NODE_REGISTRY;
-        // saved projects use it for deserialization.
-        NodeType::Dynamic { inner } => matches!(
-            inner.node.type_tag(),
-            "comment"
-            | "fill"
-            | "text_to_image"
-            | "json_fields"
-            | "json_extract"
-            | "folder_browser"
-            | "web_app"
-            | "terminal"
-            | "text_editor"
-            | "string_format"
-            | "file"
-            | "html_viewer"
-            | "console"
-            | "mcp_server"
-        ),
-        _ => false,
+/// Register the inner-rect of a scroll-consuming widget (ScrollArea or
+/// multiline TextEdit) for this frame. Call immediately after the widget
+/// renders, e.g.:
+/// ```ignore
+/// let out = egui::ScrollArea::vertical().show(ui, |ui| { … });
+/// crate::nodes::register_scroll_rect(out.inner_rect);
+/// ```
+pub fn register_scroll_rect(rect: egui::Rect) {
+    SCROLL_RECTS.with(|v| v.borrow_mut().push(rect));
+}
+
+/// Returns true if `p` is inside any rect registered this frame.
+pub fn pointer_in_scroll_rect(p: egui::Pos2) -> bool {
+    SCROLL_RECTS.with(|v| v.borrow().iter().any(|r| r.contains(p)))
+}
+
+/// Drop all registered rects. Called once per frame in `app::update`,
+/// between the pan handler and node rendering.
+pub fn clear_scroll_rects() {
+    SCROLL_RECTS.with(|v| v.borrow_mut().clear());
+}
+
+/// Extension trait that gives every `egui::ScrollArea` builder a
+/// `.show_pannable(...)` method — drop-in replacement for `.show(...)`
+/// that also registers the resulting inner-rect with Patchwork's pan
+/// pass-through system. Use this in place of plain `.show()` for any
+/// ScrollArea drawn inside a node, so the user can still trackpad-pan
+/// the canvas while hovering over the node's header / padding /
+/// port labels around the scroll region.
+///
+/// Plugin-friendly: this trait is the public surface for third-party
+/// nodes to opt into the same behaviour; `register_scroll_rect` is the
+/// implementation detail and may change. Plugins should `use` this
+/// trait and call `.show_pannable(...)` instead of touching the
+/// registry directly.
+pub trait ScrollAreaExt {
+    fn show_pannable<R>(
+        self,
+        ui: &mut egui::Ui,
+        add_contents: impl FnOnce(&mut egui::Ui) -> R,
+    ) -> egui::scroll_area::ScrollAreaOutput<R>;
+}
+
+impl ScrollAreaExt for egui::ScrollArea {
+    fn show_pannable<R>(
+        self,
+        ui: &mut egui::Ui,
+        add_contents: impl FnOnce(&mut egui::Ui) -> R,
+    ) -> egui::scroll_area::ScrollAreaOutput<R> {
+        let out = self.show(ui, add_contents);
+        register_scroll_rect(out.inner_rect);
+        out
     }
 }
 

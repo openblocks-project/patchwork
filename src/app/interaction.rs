@@ -28,14 +28,17 @@ impl super::PatchworkApp {
         // (user expectation: the node doesn't scroll anything, so let
         // the gesture fall through to the canvas). Only block canvas
         // scroll when pointer is on something that genuinely consumes
-        // scroll — Console / Terminal / TextEditor / Add Node palette /
-        // tooltips / log views / etc.
+        // scroll — an actual ScrollArea inner-rect, the Add Node menu,
+        // or a tooltip / popup.
         //
         // Three cases to block:
         //   (1) Add Node menu is open AND pointer is over its window
         //   (2) Popups / tooltips above Middle order (always interactive)
-        //   (3) Pointer is over a node whose NodeType is known to contain
-        //       scrollable content (ScrollArea, multiline TextEdit, logs)
+        //   (3) Pointer is inside an actual ScrollArea inner-rect that
+        //       registered itself last frame. Per-widget granularity
+        //       (not per-node) so panning still works on the rest of a
+        //       node's body — header, padding, port labels around the
+        //       scroll region.
         let pointer_over_scroll_surface = ctx.pointer_latest_pos().map(|p| {
             // (1) + (2): layer-order heuristic for popups / menus. The
             // Add Node menu uses egui::Window (Middle), so we distinguish
@@ -55,15 +58,8 @@ impl super::PatchworkApp {
                 }
             }
 
-            // (3): over a node — check if its NodeType has scroll content.
-            for (&id, rect) in &self.node_rects {
-                if rect.contains(p) {
-                    if let Some(node) = self.graph.nodes.get(&id) {
-                        return crate::nodes::node_type_has_scroll(&node.node_type);
-                    }
-                }
-            }
-            false
+            // (3): inside a registered ScrollArea inner-rect.
+            crate::nodes::pointer_in_scroll_rect(p)
         }).unwrap_or(false);
 
         // Pan: delta is logical, multiply by zoom to get screen pixels for offset

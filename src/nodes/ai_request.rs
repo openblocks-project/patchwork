@@ -1,4 +1,5 @@
 use eframe::egui;
+use crate::nodes::ScrollAreaExt;
 use crate::graph::{NodeId, PortValue, Connection, Graph, PortKind};
 use crate::http::HttpAction;
 use std::collections::HashMap;
@@ -382,7 +383,7 @@ pub fn render(
         egui::ScrollArea::vertical()
             .max_height(60.0)
             .id_salt(format!("ai_sys_scroll_{}", node_id))
-            .show(ui, |ui| {
+            .show_pannable(ui, |ui| {
                 ui.add(
                     egui::TextEdit::multiline(system_prompt)
                         .desired_rows(2)
@@ -590,7 +591,7 @@ pub fn render(
     // ── Response preview ──
     if !response.is_empty() {
         ui.collapsing(format!("Response ({} chars)", response.len()), |ui| {
-            egui::ScrollArea::vertical().max_height(150.0).show(ui, |ui| {
+            egui::ScrollArea::vertical().max_height(150.0).show_pannable(ui, |ui| {
                 if *mode == 1 {
                     // Image mode: show as a hyperlink
                     ui.hyperlink(response);

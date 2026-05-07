@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 use crate::graph::*;
 use eframe::egui;
+use crate::nodes::ScrollAreaExt;
 use std::collections::HashMap;
 
 pub fn render(
@@ -45,7 +46,7 @@ pub fn render(
     egui::ScrollArea::vertical()
         .max_height(200.0)
         .stick_to_bottom(true)
-        .show(ui, |ui| {
+        .show_pannable(ui, |ui| {
             if messages.is_empty() {
                 ui.label(egui::RichText::new("No messages yet").small().italics()
                     .color(ui.visuals().widgets.noninteractive.fg_stroke.color));

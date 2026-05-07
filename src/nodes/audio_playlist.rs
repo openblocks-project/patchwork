@@ -1,6 +1,7 @@
 use crate::audio::AudioManager;
 use crate::graph::*;
 use eframe::egui;
+use crate::nodes::ScrollAreaExt;
 use std::collections::HashMap;
 
 const WAVEFORM_HEIGHT: f32 = 36.0;
@@ -208,7 +209,7 @@ pub fn render(
         .id_salt(egui::Id::new(("pl_scroll", node_id)))
         .max_height(LIST_MAX_H)
         .auto_shrink([false, false])
-        .show(ui, |ui| {
+        .show_pannable(ui, |ui| {
             // 3 buttons × 18px + 2px gap each = ~58px reserved on right
             const BTN_AREA: f32 = 58.0;
 

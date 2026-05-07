@@ -2,6 +2,7 @@ use crate::graph::{PortDef, PortKind, PortValue, Graph};
 use crate::node_trait::{NodeBehavior, RenderContext};
 use serde::{Serialize, Deserialize};
 use eframe::egui;
+use crate::nodes::ScrollAreaExt;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StringFormatNode {
@@ -126,7 +127,7 @@ impl NodeBehavior for StringFormatNode {
         let result = ctx.values.get(&(ctx.node_id, 0));
         if let Some(PortValue::Text(s)) = result {
             ui.label(egui::RichText::new("Output:").small().strong());
-            egui::ScrollArea::vertical().max_height(60.0).show(ui, |ui| {
+            egui::ScrollArea::vertical().max_height(60.0).show_pannable(ui, |ui| {
                 ui.add(egui::TextEdit::multiline(&mut s.as_str())
                     .desired_width(f32::INFINITY).font(egui::TextStyle::Monospace).interactive(false));
             });

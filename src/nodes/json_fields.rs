@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use eframe::egui::{self, RichText};
+use crate::nodes::ScrollAreaExt;
 use crate::graph::{PortDef, PortKind, PortValue};
 use crate::node_trait::{NodeBehavior, RenderContext};
 
@@ -416,7 +417,7 @@ impl NodeBehavior for JsonFieldsNode {
                 egui::ScrollArea::vertical()
                     .id_salt(egui::Id::new(("jf_tree_scroll", node_id)))
                     .max_height(200.0)
-                    .show(ui, |ui| {
+                    .show_pannable(ui, |ui| {
                         let mut tree_ctx = TreeCtx {
                             node_id,
                             pinned_paths:        &mut self.pinned_paths,

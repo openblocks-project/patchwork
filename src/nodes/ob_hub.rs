@@ -1,6 +1,7 @@
 use crate::graph::*;
 use crate::ob::{self, ObManager};
 use eframe::egui;
+use crate::nodes::ScrollAreaExt;
 
 pub fn render(
     ui: &mut egui::Ui,
@@ -127,7 +128,7 @@ pub fn render(
         // Log (collapsible)
         if !hub.log.is_empty() {
             ui.collapsing("Log", |ui| {
-                egui::ScrollArea::vertical().max_height(100.0).show(ui, |ui| {
+                egui::ScrollArea::vertical().max_height(100.0).show_pannable(ui, |ui| {
                     for line in hub.log.iter().rev().take(20) {
                         ui.label(egui::RichText::new(line).small().monospace());
                     }

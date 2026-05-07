@@ -17,6 +17,7 @@ use crate::nodes::ai_shared::{
 };
 use crate::nodes::text_gen_node::{apply_overrides, read_config, validation_error, GenKind};
 use eframe::egui;
+use crate::nodes::ScrollAreaExt;
 use serde::{Deserialize, Serialize};
 
 fn default_temperature() -> f32 { 0.4 }
@@ -277,7 +278,7 @@ impl NodeBehavior for CodeGenNode {
 
         if !self.code.is_empty() {
             ui.collapsing(format!("Code ({} chars)", self.code.len()), |ui| {
-                egui::ScrollArea::vertical().max_height(180.0).show(ui, |ui| {
+                egui::ScrollArea::vertical().max_height(180.0).show_pannable(ui, |ui| {
                     ui.add(
                         egui::TextEdit::multiline(&mut self.code.clone())
                             .code_editor()

@@ -2,6 +2,7 @@ use crate::graph::{PortDef, PortKind, PortValue, Graph};
 use crate::node_trait::{NodeBehavior, RenderContext};
 use serde::{Serialize, Deserialize};
 use eframe::egui;
+use crate::nodes::ScrollAreaExt;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::io::{Read, Write};
@@ -132,7 +133,7 @@ impl NodeBehavior for HtmlViewerNode {
                 let head: String = html.chars().take(300).collect();
                 format!("{}...", head)
             } else { html };
-            egui::ScrollArea::vertical().max_height(100.0).show(ui, |ui| {
+            egui::ScrollArea::vertical().max_height(100.0).show_pannable(ui, |ui| {
                 let mut p = preview;
                 ui.code_editor(&mut p);
             });

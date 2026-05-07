@@ -1,6 +1,7 @@
 use crate::graph::*;
 use crate::serial::SerialAction;
 use eframe::egui;
+use crate::nodes::ScrollAreaExt;
 use std::collections::HashMap;
 
 const MAX_LOG: usize = 500;
@@ -126,7 +127,7 @@ pub fn render(
         egui::ScrollArea::vertical()
             .max_height(180.0)
             .stick_to_bottom(true)
-            .show(ui, |ui| {
+            .show_pannable(ui, |ui| {
                 for line in log.iter() {
                     let color = if line.starts_with('>') {
                         egui::Color32::from_rgb(100, 180, 255)

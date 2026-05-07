@@ -1,6 +1,7 @@
 use crate::midi::MidiAction;
 use crate::graph::NodeId;
 use eframe::egui;
+use crate::nodes::ScrollAreaExt;
 
 const MAX_LOG_LINES: usize = 200;
 
@@ -79,7 +80,7 @@ pub fn render(
         egui::ScrollArea::vertical()
             .max_height(160.0)
             .stick_to_bottom(true)
-            .show(ui, |ui| {
+            .show_pannable(ui, |ui| {
                 for line in log.iter() {
                     ui.label(egui::RichText::new(line.as_str()).monospace().small());
                 }

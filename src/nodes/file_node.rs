@@ -11,6 +11,7 @@ use crate::graph::{PortDef, PortKind, PortValue, ImageData};
 use crate::node_trait::NodeBehavior;
 use serde::{Serialize, Deserialize};
 use eframe::egui;
+use crate::nodes::ScrollAreaExt;
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
@@ -341,7 +342,7 @@ impl NodeBehavior for FileNode {
                 // Text preview (first ~10 lines)
                 let preview: String = self.content.lines().take(10).collect::<Vec<_>>().join("\n");
                 let truncated = self.content.lines().count() > 10;
-                egui::ScrollArea::vertical().max_height(100.0).show(ui, |ui| {
+                egui::ScrollArea::vertical().max_height(100.0).show_pannable(ui, |ui| {
                     ui.add(egui::TextEdit::multiline(&mut preview.as_str())
                         .code_editor().desired_width(f32::INFINITY).interactive(false));
                 });

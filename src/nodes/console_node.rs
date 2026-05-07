@@ -2,6 +2,7 @@ use crate::graph::{PortDef, PortKind, PortValue};
 use crate::node_trait::{NodeBehavior, RenderContext};
 use serde::{Serialize, Deserialize};
 use eframe::egui;
+use crate::nodes::ScrollAreaExt;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConsoleNode {
@@ -118,7 +119,7 @@ impl NodeBehavior for ConsoleNode {
 
         ui.separator();
 
-        egui::ScrollArea::vertical().max_height(200.0).stick_to_bottom(true).show(ui, |ui| {
+        egui::ScrollArea::vertical().max_height(200.0).stick_to_bottom(true).show_pannable(ui, |ui| {
             if self.messages.is_empty() {
                 ui.label(egui::RichText::new("No messages yet").small().italics().color(dim));
             }

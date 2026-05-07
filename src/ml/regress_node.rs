@@ -20,6 +20,7 @@
 use crate::graph::{PortDef, PortKind, PortValue};
 use crate::node_trait::{NodeBehavior, RenderContext};
 use eframe::egui::{self, RichText};
+use crate::nodes::ScrollAreaExt;
 use serde::{Deserialize, Serialize};
 
 // ── Hyperparams ──────────────────────────────────────────────────────────────
@@ -593,7 +594,7 @@ impl NodeBehavior for RegressNode {
             egui::ScrollArea::vertical()
                 .max_height(120.0)
                 .auto_shrink([false, true])
-                .show(ui, |ui| {
+                .show_pannable(ui, |ui| {
                     for (i, ex) in self.examples.iter_mut().enumerate() {
                         ui.horizontal(|ui| {
                             let editing = matches!(self.rename_buf, Some((idx, _)) if idx == i);

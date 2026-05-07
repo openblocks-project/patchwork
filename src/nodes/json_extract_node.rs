@@ -2,6 +2,7 @@ use crate::graph::{PortDef, PortKind, PortValue};
 use crate::node_trait::{NodeBehavior, RenderContext};
 use serde::{Serialize, Deserialize};
 use eframe::egui;
+use crate::nodes::ScrollAreaExt;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JsonExtractNode {
@@ -84,7 +85,7 @@ impl NodeBehavior for JsonExtractNode {
         match output_val {
             Some(PortValue::Text(s)) if !s.is_empty() => {
                 ui.label("Extracted:");
-                egui::ScrollArea::vertical().max_height(80.0).show(ui, |ui| {
+                egui::ScrollArea::vertical().max_height(80.0).show_pannable(ui, |ui| {
                     ui.add(egui::TextEdit::multiline(&mut s.clone())
                         .code_editor()
                         .desired_width(f32::INFINITY)

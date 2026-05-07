@@ -1,5 +1,6 @@
 use crate::graph::*;
 use eframe::egui;
+use crate::nodes::ScrollAreaExt;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -79,7 +80,7 @@ pub fn render(
     egui::ScrollArea::vertical()
         .id_salt(egui::Id::new(("rust_code_scroll", node_id)))
         .max_height(200.0)
-        .show(ui, |ui| {
+        .show_pannable(ui, |ui| {
             ui.add(
                 egui::TextEdit::multiline(code)
                     .desired_rows(6)
@@ -140,7 +141,7 @@ pub fn render(
 
     // Show build error
     if let BuildStatus::Error(e) = &status {
-        egui::ScrollArea::vertical().max_height(80.0).show(ui, |ui| {
+        egui::ScrollArea::vertical().max_height(80.0).show_pannable(ui, |ui| {
             ui.colored_label(egui::Color32::from_rgb(255, 100, 100),
                 egui::RichText::new(e).small().monospace());
         });

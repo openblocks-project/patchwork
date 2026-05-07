@@ -8,6 +8,7 @@ use crate::graph::{PortDef, PortValue};
 use crate::node_trait::NodeBehavior;
 use serde::{Serialize, Deserialize};
 use eframe::egui;
+use crate::nodes::ScrollAreaExt;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommentNode {
@@ -149,7 +150,7 @@ impl NodeBehavior for CommentNode {
                 egui::ScrollArea::vertical()
                     .max_height(text_rect.height())
                     .id_salt(("comment_edit_scroll", node_id))
-                    .show(&mut child_ui, |ui| {
+                    .show_pannable(&mut child_ui, |ui| {
                         let text_resp = ui.add(
                             egui::TextEdit::multiline(&mut self.text)
                                 .desired_width(text_rect.width())
@@ -170,7 +171,7 @@ impl NodeBehavior for CommentNode {
                 egui::ScrollArea::vertical()
                     .max_height(text_rect.height())
                     .id_salt(("comment_view_scroll", node_id))
-                    .show(&mut child_ui, |ui| {
+                    .show_pannable(&mut child_ui, |ui| {
                         // Label sized via RichText so it picks up the same
                         // font/color the inactive_galley uses for measurement,
                         // and wraps inside the ScrollArea's width.

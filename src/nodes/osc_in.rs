@@ -1,6 +1,7 @@
 use crate::graph::NodeId;
 use crate::osc::OscAction;
 use eframe::egui;
+use crate::nodes::ScrollAreaExt;
 
 pub fn render(
     ui: &mut egui::Ui,
@@ -57,7 +58,7 @@ pub fn render(
             .id_salt(("osc_log", node_id))
             .max_height(80.0)
             .stick_to_bottom(true)
-            .show(ui, |ui| {
+            .show_pannable(ui, |ui| {
                 for msg in log.iter().rev().take(50).collect::<Vec<_>>().into_iter().rev() {
                     ui.label(egui::RichText::new(msg).small().monospace()
                         .color(egui::Color32::from_rgb(170, 170, 170)));

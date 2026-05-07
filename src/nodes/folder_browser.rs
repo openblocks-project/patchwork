@@ -2,6 +2,7 @@
 use crate::graph::*;
 use crate::icons;
 use eframe::egui;
+use crate::nodes::ScrollAreaExt;
 use std::path::Path;
 
 #[derive(Clone)]
@@ -80,7 +81,7 @@ pub fn render(
     });
 
     // File list
-    egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
+    egui::ScrollArea::vertical().max_height(300.0).show_pannable(ui, |ui| {
         // Parent directory
         if let Some(parent) = Path::new(dir_path.as_str()).parent() {
             let resp = render_file_row(ui, "..", true, "", 0, false);

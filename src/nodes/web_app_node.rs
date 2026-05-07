@@ -1,4 +1,5 @@
 use eframe::egui::{self, RichText};
+use crate::nodes::ScrollAreaExt;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::io::{Read, Write};
@@ -402,7 +403,7 @@ impl NodeBehavior for WebAppNode {
             let changed = egui::ScrollArea::vertical()
                 .id_salt(egui::Id::new(("webapp_code", node_id)))
                 .max_height(150.0)
-                .show(ui, |ui| {
+                .show_pannable(ui, |ui| {
                     ui.add(egui::TextEdit::multiline(&mut self.html_code)
                         .desired_rows(4)
                         .desired_width(f32::INFINITY)

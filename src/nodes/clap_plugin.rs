@@ -2,6 +2,7 @@ use crate::audio::AudioManager;
 use crate::audio::clap_host::ClapInstance;
 use crate::graph::*;
 use eframe::egui;
+use crate::nodes::ScrollAreaExt;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -140,7 +141,7 @@ pub fn render(
         ui.label(egui::RichText::new(format!("{} params", param_names.len())).small().color(egui::Color32::GRAY));
 
         let scroll_height = if param_names.len() > 8 { 180.0 } else { param_names.len() as f32 * 22.0 };
-        egui::ScrollArea::vertical().max_height(scroll_height).show(ui, |ui| {
+        egui::ScrollArea::vertical().max_height(scroll_height).show_pannable(ui, |ui| {
             for (i, name) in param_names.iter().enumerate() {
                 // For instruments: ports 0-2 = Note/Vel/Gate, params start at 3
                 // For effects: port 0 = Audio, params start at 1

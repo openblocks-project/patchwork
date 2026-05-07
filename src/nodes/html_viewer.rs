@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 use crate::graph::*;
 use eframe::egui;
+use crate::nodes::ScrollAreaExt;
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -242,7 +243,7 @@ pub fn render(
         } else {
             html
         };
-        egui::ScrollArea::vertical().max_height(100.0).show(ui, |ui| {
+        egui::ScrollArea::vertical().max_height(100.0).show_pannable(ui, |ui| {
             let mut p = preview;
             ui.code_editor(&mut p);
         });

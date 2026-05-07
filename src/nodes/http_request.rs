@@ -1,4 +1,5 @@
 use eframe::egui;
+use crate::nodes::ScrollAreaExt;
 use crate::graph::{NodeId, PortValue, Connection, Graph, PortKind};
 use crate::http::HttpAction;
 use crate::nodes::{inline_port_circle, output_port_row};
@@ -151,7 +152,7 @@ pub fn render(
     // Response preview (collapsible)
     if !response.is_empty() {
         ui.collapsing("Response Body", |ui| {
-            egui::ScrollArea::vertical().max_height(100.0).show(ui, |ui| {
+            egui::ScrollArea::vertical().max_height(100.0).show_pannable(ui, |ui| {
                 ui.add(egui::TextEdit::multiline(&mut response.to_string())
                     .code_editor().desired_width(ui.available_width()));
             });

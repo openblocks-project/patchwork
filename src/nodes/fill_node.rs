@@ -1,4 +1,5 @@
 use eframe::egui::{self, RichText, Sense};
+use crate::nodes::ScrollAreaExt;
 use std::sync::Arc;
 use crate::graph::{ImageData, PortDef, PortKind, PortValue};
 use crate::node_trait::{NodeBehavior, RenderContext};
@@ -403,7 +404,7 @@ impl NodeBehavior for FillNode {
                 egui::ScrollArea::vertical()
                     .id_salt(egui::Id::new(("fill_stops", node_id)))
                     .max_height(120.0)
-                    .show(ui, |ui| {
+                    .show_pannable(ui, |ui| {
                         for (i, stop) in self.stops.iter_mut().enumerate() {
                             ui.horizontal(|ui| {
                                 // Position

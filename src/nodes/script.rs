@@ -1,6 +1,7 @@
 use crate::graph::{NodeId, PortValue};
 use std::collections::HashMap;
 use eframe::egui;
+use crate::nodes::ScrollAreaExt;
 
 pub fn render(
     ui: &mut egui::Ui,
@@ -121,7 +122,7 @@ pub fn render(
     egui::ScrollArea::vertical()
         .id_salt(egui::Id::new(("script_code_scroll", node_id)))
         .max_height(200.0)
-        .show(ui, |ui| {
+        .show_pannable(ui, |ui| {
             ui.add(
                 egui::TextEdit::multiline(code)
                     .desired_rows(4)

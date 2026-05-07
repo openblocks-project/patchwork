@@ -1748,6 +1748,12 @@ impl PatchworkApp {
 
 impl eframe::App for PatchworkApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Drop the previous frame's ScrollArea inner-rect registrations
+        // before any node draws this frame and re-pushes its own. The pan
+        // handler at the end of update() reads what's in the registry
+        // *after* nodes have drawn, so it sees this frame's rects.
+        crate::nodes::clear_scroll_rects();
+
         // Drain any pending wholesale-cache wipe queued by load /
         // restore / undo / redo / delete on the previous frame.
         //
