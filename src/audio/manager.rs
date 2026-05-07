@@ -823,6 +823,17 @@ impl AudioManager {
         self.file_playing.insert(node_id, false);
     }
 
+    /// Resume a paused file/url-audio source. Symmetric to `pause_file` —
+    /// flips the buffer's `paused` flag back, the decode/pump thread sees
+    /// it and continues feeding samples into the ring buffer.
+    /// No-op if the node has no active buffer (e.g. nothing playing).
+    pub fn resume_file(&mut self, node_id: NodeId) {
+        if let Some(buf) = self.file_buffers.get(&node_id) {
+            buf.paused.store(false, Ordering::Release);
+            self.file_playing.insert(node_id, true);
+        }
+    }
+
     /// Seek file playback to a specific position (seconds).
     /// Signals the decode thread to seek — no thread restart needed.
     pub fn seek_file(&mut self, node_id: NodeId, _path: &str, position_secs: f64) -> Result<(), String> {

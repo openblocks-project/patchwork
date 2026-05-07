@@ -80,6 +80,7 @@ impl VideoSource {
 
 fn default_res_w() -> u32 { 640 }
 fn default_res_h() -> u32 { 480 }
+fn default_volume() -> f32 { 1.0 }
 
 #[derive(Serialize, Deserialize)]
 pub struct VideoInNode {
@@ -120,6 +121,11 @@ pub struct VideoInNode {
     /// that ended), should we transparently re-open and play it again?
     /// No-op for live streams (HLS / RTSP — those don't EOF). Persisted.
     #[serde(default)] pub loop_playback: bool,
+
+    /// Audio volume for the URL stream's audio output, 0.0–2.0.
+    /// Written to the FilePlayerProcessor's volume param atomic each
+    /// frame so the slider feels responsive. Persisted.
+    #[serde(default = "default_volume")] pub volume: f32,
 
     /// Path to a cached local copy of the URL's media, **relative** to the
     /// project folder (e.g. "assets/video_in/<id>.mp4"). Empty when not
@@ -289,6 +295,7 @@ impl Clone for VideoInNode {
             ndi_last_frame_at: None,
             effective_url: String::new(),
             loop_playback: self.loop_playback,
+            volume: self.volume,
             cached_path: self.cached_path.clone(),
             cached_abs: None,
         }
@@ -327,6 +334,7 @@ impl Default for VideoInNode {
             ndi_last_frame_at: None,
             effective_url: String::new(),
             loop_playback: false,
+            volume: default_volume(),
             cached_path: String::new(),
             cached_abs: None,
         }
@@ -603,6 +611,7 @@ impl NodeBehavior for VideoInNode {
             self.res_w = l.res_w;
             self.res_h = l.res_h;
             self.loop_playback = l.loop_playback;
+            self.volume = l.volume;
             self.cached_path = l.cached_path;
             self.mirror_h = l.mirror_h;
             self.mirror_v = l.mirror_v;
@@ -1042,10 +1051,16 @@ impl VideoInNode {
             ui.ctx().data_mut(|d|
                 d.insert_temp(status_id, "Connecting…".to_string()));
             self.open_decoder(node_id);
-            if self.active && Self::audio_port_wired(ctx, node_id) {
+            // Always spawn audio when a URL source starts. The samples
+            // flow into the engine immediately; whether sound reaches
+            // the speaker depends on the user wiring Audio→Speaker.
+            // Wiring after Start works without restart — the engine's
+            // pending_connection_sync picks up the new edge.
+            if self.active {
                 if let Err(e) = ctx.audio.play_url_audio(node_id, &resolved) {
                     crate::system_log::warn(format!("Video In audio: {}", e));
                 }
+                ctx.audio.engine_write_param(node_id, 0, self.volume);
             }
             if self.active {
                 ui.ctx().data_mut(|d|
@@ -1113,18 +1128,32 @@ impl VideoInNode {
                         ui.ctx().data_mut(|d|
                             d.insert_temp(status_id, "Connecting…".to_string()));
                         self.open_decoder(node_id);
-                        if self.active && Self::audio_port_wired(ctx, node_id) {
+                        if self.active {
                             if let Err(e) = ctx.audio.play_url_audio(node_id, &url) {
                                 crate::system_log::warn(format!("Video In audio: {}", e));
                             }
-                        }
-                        if self.active {
+                            ctx.audio.engine_write_param(node_id, 0, self.volume);
                             ui.ctx().data_mut(|d|
                                 d.insert_temp(status_id, "Streaming".to_string()));
                         }
                     }
                 }
             } else {
+                // ── Pause / Resume ─────────────────────────────────
+                let is_paused = ctx.audio.is_file_paused(node_id);
+                if is_paused {
+                    if ui.button("▶ Resume").clicked() {
+                        ctx.audio.resume_file(node_id);
+                        ui.ctx().data_mut(|d|
+                            d.insert_temp(status_id, "Streaming".to_string()));
+                    }
+                } else {
+                    if ui.button("⏸ Pause").clicked() {
+                        ctx.audio.pause_file(node_id);
+                        ui.ctx().data_mut(|d|
+                            d.insert_temp(status_id, "Paused".to_string()));
+                    }
+                }
                 if ui.button("⏹ Stop").clicked() {
                     self.close_decoder(node_id);
                     ctx.audio.stop_file(node_id);
@@ -1188,6 +1217,32 @@ impl VideoInNode {
                 }
             }
         });
+
+        // ── Audio controls (only meaningful while playing) ──────────
+        if self.active {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Volume").small().color(dim));
+                let resp = ui.add(
+                    egui::Slider::new(&mut self.volume, 0.0..=2.0)
+                        .show_value(false),
+                );
+                // Push to the engine atomic — works while DSP is running
+                // because FilePlayerProcessor reads its volume param from
+                // node_params on every audio block.
+                if resp.changed() {
+                    ctx.audio.engine_write_param(node_id, 0, self.volume);
+                }
+            });
+            // Hint: if Audio output port has no consumer, the user won't
+            // hear anything regardless of volume. Common confusion the
+            // first time someone uses this node.
+            if !Self::audio_port_wired(ctx, node_id) {
+                ui.colored_label(
+                    egui::Color32::from_rgb(255, 180, 80),
+                    egui::RichText::new("🔇 Wire Audio → Speaker to hear sound").small(),
+                );
+            }
+        }
 
         // Pull any new frames from the decoder thread (same dance as
         // render_camera_ui / render_screen_ui — without this call the
