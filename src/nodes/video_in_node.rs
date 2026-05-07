@@ -116,6 +116,23 @@ pub struct VideoInNode {
     /// page URL stays in `device_id` so save/load round-trips correctly.
     #[serde(skip)] pub effective_url: String,
 
+    /// When the URL source EOFs (finite mp4 / podcast / a YouTube video
+    /// that ended), should we transparently re-open and play it again?
+    /// No-op for live streams (HLS / RTSP — those don't EOF). Persisted.
+    #[serde(default)] pub loop_playback: bool,
+
+    /// Path to a cached local copy of the URL's media, **relative** to the
+    /// project folder (e.g. "assets/video_in/<id>.mp4"). Empty when not
+    /// cached. Persisted; survives save/load alongside the project.
+    #[serde(default)] pub cached_path: String,
+
+    /// Resolved absolute path of `cached_path` against the current project
+    /// directory. Set on first render after load (and on Cache-success);
+    /// cleared on Stop / source change. When the file at this path exists,
+    /// it takes precedence over `effective_url` / `device_id` — no network
+    /// fetch, no yt-dlp.
+    #[serde(skip)] pub cached_abs: Option<std::path::PathBuf>,
+
     // ── Runtime state (never serialised) ────────────────────────────
     #[serde(skip)] pub current_frame: Option<Arc<ImageData>>,
 
@@ -271,6 +288,9 @@ impl Clone for VideoInNode {
             #[cfg(target_os = "macos")]
             ndi_last_frame_at: None,
             effective_url: String::new(),
+            loop_playback: self.loop_playback,
+            cached_path: self.cached_path.clone(),
+            cached_abs: None,
         }
     }
 }
@@ -306,6 +326,9 @@ impl Default for VideoInNode {
             #[cfg(target_os = "macos")]
             ndi_last_frame_at: None,
             effective_url: String::new(),
+            loop_playback: false,
+            cached_path: String::new(),
+            cached_abs: None,
         }
     }
 }
@@ -400,18 +423,25 @@ impl VideoInNode {
                 VideoDecoder::open_screen(self.device_index(), self.res_w, self.res_h, 0, 0)
             }
             VideoSource::Url => {
-                // For direct URLs, render_url_ui copies device_id into
-                // effective_url before calling us. For YouTube / Vimeo,
-                // the yt-dlp worker writes the resolved URL into
-                // effective_url. Either way, effective_url is what
-                // ffmpeg sees — device_id stays as the user typed it
-                // (so save/load round-trips the page URL, not a
-                // temporary CDN URL that expires).
-                let url = self.effective_url.trim();
+                // Precedence:
+                //   1. cached_abs (local file copy) — fastest, survives
+                //      yt-dlp expiry, makes the project portable.
+                //   2. effective_url (direct URL or yt-dlp resolved).
+                //   3. device_id (the raw user-pasted URL — fallback).
+                let from_cache = self.cached_abs.as_ref()
+                    .filter(|p| p.exists())
+                    .map(|p| p.to_string_lossy().into_owned());
+                let url = if let Some(p) = from_cache {
+                    p
+                } else if !self.effective_url.is_empty() {
+                    self.effective_url.clone()
+                } else {
+                    self.device_id.trim().to_string()
+                };
                 if url.is_empty() {
                     Err("URL is empty".into())
                 } else {
-                    VideoDecoder::open_url(url, self.res_w, self.res_h)
+                    VideoDecoder::open_url(&url, self.res_w, self.res_h)
                 }
             }
             _ => Err(format!("{} source not yet implemented", self.source.label())),
@@ -510,13 +540,26 @@ impl VideoInNode {
             }
         }
         if decoder.disconnected {
+            // For URL streams with Loop on, an EOF means "play it again"
+            // — drop the dead decoder, mark for restart on the next frame.
+            // The actual `open_decoder` call has to happen outside this
+            // borrow scope (we're holding the decoder lock guard here),
+            // so we set a transient flag and restart below the unlock.
+            let want_restart = self.loop_playback
+                && matches!(self.source, VideoSource::Url);
             self.current_frame = None;
-            self.status = "Disconnected".into();
             self.active = false;
-            crate::system_log::warn(format!("Video In disconnected (id:{})", node_id));
             decoder.disconnected = false;
             *guard = None; // free the slot so next Start spawns fresh
+            drop(guard);
             crate::gpu_image::request_node_invalidation(node_id);
+            if want_restart {
+                self.status = "Looping".into();
+                self.open_decoder(node_id);
+            } else {
+                self.status = "Disconnected".into();
+                crate::system_log::warn(format!("Video In disconnected (id:{})", node_id));
+            }
         }
     }
 }
@@ -559,7 +602,12 @@ impl NodeBehavior for VideoInNode {
             self.device_id = l.device_id;
             self.res_w = l.res_w;
             self.res_h = l.res_h;
+            self.loop_playback = l.loop_playback;
+            self.cached_path = l.cached_path;
+            self.mirror_h = l.mirror_h;
+            self.mirror_v = l.mirror_v;
             // `active` / `status` intentionally not restored — user clicks Start.
+            // `cached_abs` resolves on first render once we have the project dir.
         }
     }
 
@@ -782,6 +830,95 @@ fn needs_yt_dlp(url: &str) -> bool {
     l.contains("youtube.com") || l.contains("youtu.be") || l.contains("vimeo.com")
 }
 
+/// Pick a sanitised filename for caching the URL's media. YouTube and
+/// Vimeo videos use their stable ID (so re-caching the same video twice
+/// is idempotent); direct URLs use the last path segment, scrubbed of
+/// anything non-alphanumeric. Falls back to "video.mp4" when nothing
+/// usable can be extracted.
+fn cache_filename(url: &str) -> String {
+    let no_query = url.split(['?', '#']).next().unwrap_or(url);
+    if let Some(id) = extract_youtube_id(no_query) { return format!("{}.mp4", id); }
+    if let Some(id) = extract_vimeo_id(no_query)   { return format!("{}.mp4", id); }
+    let last = no_query.rsplit('/').next().unwrap_or("video");
+    let sanitised: String = last.chars()
+        .filter(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '.'))
+        .collect();
+    if sanitised.is_empty() {
+        "video.mp4".to_string()
+    } else if !sanitised.contains('.') {
+        format!("{}.mp4", sanitised)
+    } else {
+        sanitised
+    }
+}
+
+fn extract_youtube_id(url: &str) -> Option<String> {
+    let take_id = |rest: &str| -> Option<String> {
+        let id: String = rest.chars().take(11)
+            .filter(|c| c.is_alphanumeric() || matches!(c, '_' | '-'))
+            .collect();
+        if id.len() == 11 { Some(id) } else { None }
+    };
+    if let Some(idx) = url.find("youtu.be/")  { return take_id(&url[idx + "youtu.be/".len()..]); }
+    if let Some(idx) = url.find("v=")          { return take_id(&url[idx + 2..]); }
+    if let Some(idx) = url.find("/embed/")     { return take_id(&url[idx + "/embed/".len()..]); }
+    None
+}
+
+fn extract_vimeo_id(url: &str) -> Option<String> {
+    let after_host = url.split("vimeo.com/").nth(1)?;
+    let after_video = after_host.strip_prefix("video/").unwrap_or(after_host);
+    let id: String = after_video.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if id.len() >= 5 { Some(id) } else { None }
+}
+
+/// Worker-thread entry: download `url` to `dest`. For YouTube/Vimeo URLs
+/// we go through yt-dlp; for direct URLs ffmpeg's stream copy (`-c copy`)
+/// gives us a byte-accurate file with no transcoding cost.
+fn download_to_disk(url: &str, dest: &std::path::Path) -> Result<(), String> {
+    // Make sure the parent dir exists — caller passes
+    // <project>/assets/video_in/<file>, so create that tree.
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Create assets/video_in: {}", e))?;
+    }
+    let status = if needs_yt_dlp(url) {
+        std::process::Command::new("yt-dlp")
+            .args([
+                "--no-playlist",
+                "-f", "best[ext=mp4]/best",
+                "-o",
+            ])
+            .arg(dest)
+            .arg(url)
+            .status()
+            .map_err(|e| {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    "yt-dlp not found. `brew install yt-dlp` to enable YouTube/Vimeo cache.".to_string()
+                } else { format!("yt-dlp launch failed: {}", e) }
+            })?
+    } else {
+        std::process::Command::new("ffmpeg")
+            .args([
+                "-hide_banner", "-loglevel", "error",
+                "-y",                       // overwrite if exists
+                "-i", url,
+                "-c", "copy",               // byte-exact, no transcode
+                "-bsf:a", "aac_adtstoasc",  // safety for HLS-AAC → mp4
+            ])
+            .arg(dest)
+            .status()
+            .map_err(|e| format!("ffmpeg launch failed: {}", e))?
+    };
+    if !status.success() {
+        return Err(format!("download failed (exit {})", status.code().unwrap_or(-1)));
+    }
+    if !dest.exists() {
+        return Err("download succeeded but no file written".into());
+    }
+    Ok(())
+}
+
 /// Run `yt-dlp -g` to resolve a page URL into a direct stream URL ffmpeg
 /// can play. Blocking — call from a worker thread. The 30 s wait covers
 /// network roundtrips even on slow connections; longer than that almost
@@ -824,12 +961,29 @@ impl VideoInNode {
     fn render_url_ui(&mut self, ui: &mut egui::Ui, ctx: &mut RenderContext) {
         let dim = ui.visuals().widgets.noninteractive.fg_stroke.color;
         let node_id = ctx.node_id;
-        let pending_id    = egui::Id::new(("vin_url_pending",      node_id));
-        let status_id     = egui::Id::new(("vin_url_status",       node_id));
+        let pending_id        = egui::Id::new(("vin_url_pending",         node_id));
+        let status_id         = egui::Id::new(("vin_url_status",          node_id));
         // Two keys instead of `Result<String, String>` because egui 0.31's
         // remove_temp requires `Default`, which Result doesn't implement.
-        let resolved_ok_id  = egui::Id::new(("vin_url_resolved_ok",  node_id));
-        let resolved_err_id = egui::Id::new(("vin_url_resolved_err", node_id));
+        let resolved_ok_id    = egui::Id::new(("vin_url_resolved_ok",     node_id));
+        let resolved_err_id   = egui::Id::new(("vin_url_resolved_err",    node_id));
+        let cache_pending_id  = egui::Id::new(("vin_url_cache_pending",   node_id));
+        let cache_done_id     = egui::Id::new(("vin_url_cache_done",      node_id));
+        let cache_err_id      = egui::Id::new(("vin_url_cache_err",       node_id));
+
+        // ── Lazy-resolve cached_abs from cached_path on first render ──
+        // load_state can't see the project_dir; render_with_context can.
+        // First time we render after load (or after a download), we
+        // promote `cached_path` (relative) to `cached_abs` (absolute)
+        // so the open_decoder precedence chain finds it.
+        if !self.cached_path.is_empty() && self.cached_abs.is_none() {
+            if let Some(pdir) = ctx.project_dir {
+                let abs = pdir.join(&self.cached_path);
+                if abs.exists() {
+                    self.cached_abs = Some(abs);
+                }
+            }
+        }
 
         // ── URL field ────────────────────────────────────────────────
         ui.horizontal(|ui| {
@@ -848,6 +1002,34 @@ impl VideoInNode {
             ui.label(egui::RichText::new("×").small().color(dim));
             ui.add(egui::DragValue::new(&mut self.res_h).range(64..=2160).speed(8));
         });
+
+        // ── Loop checkbox (URL-only feature) ─────────────────────────
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut self.loop_playback, "Loop")
+              .on_hover_text(
+                "When the source ends, restart it. No effect on live \
+                 streams. For YouTube/Vimeo, the resolved URL may expire \
+                 after a few hours — re-press Start in that case."
+              );
+        });
+
+        // ── Drain cache-worker result if one arrived this frame ──────
+        let cache_done: Option<String> = ui.ctx().data_mut(|d| d.remove_temp(cache_done_id));
+        let cache_err:  Option<String> = ui.ctx().data_mut(|d| d.remove_temp(cache_err_id));
+        if cache_done.is_some() || cache_err.is_some() {
+            ui.ctx().data_mut(|d| d.remove_temp::<bool>(cache_pending_id));
+        }
+        if let Some(rel_path) = cache_done {
+            // Worker wrote the file at <project>/<rel_path>. Promote it
+            // to cached_abs so the next Start picks the local file.
+            self.cached_path = rel_path.clone();
+            if let Some(pdir) = ctx.project_dir {
+                self.cached_abs = Some(pdir.join(&rel_path));
+            }
+        } else if let Some(e) = cache_err {
+            ui.ctx().data_mut(|d|
+                d.insert_temp(status_id, format!("Cache failed: {}", e)));
+        }
 
         // ── Drain yt-dlp result if one arrived this frame ────────────
         let resolved_ok:  Option<String> = ui.ctx().data_mut(|d| d.remove_temp(resolved_ok_id));
@@ -951,7 +1133,81 @@ impl VideoInNode {
                     });
                 }
             }
+
+            // ── Cache button ─────────────────────────────────────────
+            // Three states:
+            //   • Already cached → show ✓ Cached chip, no button.
+            //   • No project dir → "Save project first" disabled hint.
+            //   • Otherwise      → Cache button (or "Caching…" while pending).
+            let already_cached = self.cached_abs.as_ref()
+                .map(|p| p.exists()).unwrap_or(false);
+            let cache_pending: bool = ui.ctx()
+                .data_mut(|d| d.get_temp(cache_pending_id).unwrap_or(false));
+            if already_cached {
+                ui.colored_label(
+                    egui::Color32::from_rgb(80, 200, 120),
+                    egui::RichText::new("✓ Cached").small(),
+                );
+            } else if cache_pending {
+                ui.add_enabled_ui(false, |ui| {
+                    let _ = ui.button(egui::RichText::new("Caching…").small());
+                });
+            } else if ctx.project_dir.is_none() {
+                ui.add_enabled_ui(false, |ui| {
+                    let _ = ui.button(egui::RichText::new("Save project to cache").small())
+                        .on_disabled_hover_text(
+                            "Cache writes into <project>/assets/video_in/. \
+                             Save the project at least once to enable.",
+                        );
+                });
+            } else if !self.device_id.trim().is_empty() {
+                if ui.button(egui::RichText::new("⬇ Cache").small())
+                    .on_hover_text("Download to <project>/assets/video_in/ and play from disk on subsequent Starts.")
+                    .clicked()
+                {
+                    let url     = self.device_id.trim().to_string();
+                    let pdir    = ctx.project_dir.unwrap().to_path_buf();
+                    let rel     = std::path::PathBuf::from("assets/video_in")
+                        .join(cache_filename(&url));
+                    let abs_dst = pdir.join(&rel);
+                    let rel_str = rel.to_string_lossy().into_owned();
+                    ui.ctx().data_mut(|d| {
+                        d.insert_temp(cache_pending_id, true);
+                        d.insert_temp(status_id, "Caching…".to_string());
+                    });
+                    let ectx = ui.ctx().clone();
+                    std::thread::spawn(move || {
+                        match download_to_disk(&url, &abs_dst) {
+                            Ok(()) => ectx.data_mut(|d|
+                                d.insert_temp(cache_done_id, rel_str)),
+                            Err(e) => ectx.data_mut(|d|
+                                d.insert_temp(cache_err_id, e)),
+                        }
+                        ectx.request_repaint();
+                    });
+                }
+            }
         });
+
+        // Pull any new frames from the decoder thread (same dance as
+        // render_camera_ui / render_screen_ui — without this call the
+        // ffmpeg subprocess runs but its frames are never read into
+        // `self.current_frame` and the preview stays empty).
+        self.poll_decoder(node_id);
+        self.render_preview(ui, ctx);
+
+        // If decode failed (Open returned Err inside open_decoder),
+        // surface that error in the URL-flow status display so the user
+        // knows what happened. self.status holds the message; we copy
+        // it into the temp_data status so the URL section shows it
+        // instead of a stale "Connecting…".
+        if !self.active && !self.status.is_empty()
+            && self.status != "Stopped"
+            && self.status != "Capturing"
+        {
+            ui.ctx().data_mut(|d|
+                d.insert_temp(status_id, format!("Error: {}", self.status)));
+        }
     }
 
     /// True if anything is wired to our Audio output port (port index 1).

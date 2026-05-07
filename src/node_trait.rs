@@ -199,6 +199,12 @@ pub struct RenderContext<'a> {
     /// extracted audio into the engine via `audio.play_url_audio`).
     /// Most trait-based nodes never touch this.
     pub audio: &'a mut crate::audio::AudioManager,
+    /// Directory the current project is saved in, if any. `None` when the
+    /// project hasn't been saved yet. Nodes that write assets to the
+    /// project folder (Video In's URL cache, Frame Recorder, Image Save,
+    /// …) gate on this — when None, they show a "save the project first"
+    /// affordance instead of trying to write outside the project tree.
+    pub project_dir: Option<&'a std::path::Path>,
 }
 
 /// Registry for deserializing trait-based nodes from saved projects.

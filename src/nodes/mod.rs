@@ -800,6 +800,7 @@ pub fn render_content(
     dmx_output_open: bool,
     _dmx_listening: bool,
     _artnet_listening: bool,
+    project_dir: Option<&std::path::Path>,
 ) {
     // ── Property-edit undo detection ────────────────────────────────────
     // Snapshot egui interaction state BEFORE rendering widgets.
@@ -939,6 +940,7 @@ pub fn render_content(
                 wgpu_render_state: wgpu_render_state.as_ref(),
                 http_actions, http_pending,
                 audio: audio_manager,
+                project_dir,
             };
             inner.node.render_with_context(ui, &mut ctx);
         }

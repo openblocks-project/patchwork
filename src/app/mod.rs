@@ -997,6 +997,7 @@ impl PatchworkApp {
                         if !input_defs.is_empty() { ui.separator(); }
                     }
 
+                    let project_dir_path = self.project_path.as_deref().map(std::path::Path::new);
                     nodes::render_content(ui, &mut node.node_type, node_id, values, &connections,
                         &midi_out_ports, &midi_in_ports, midi_conn_out, midi_conn_in, &mut midi_actions,
                         &serial_ports, serial_conn, &mut serial_actions, &monitor_state,
@@ -1005,7 +1006,8 @@ impl PatchworkApp {
                         &mut pending_disconnects, &mut ob_manager, &mut audio_manager,
                         &self.mcp_log, self.mcp_rx.is_some(),
                         &mut dmx_actions, &mut artnet_actions,
-                        dmx_output_open, dmx_listening, artnet_listening);
+                        dmx_output_open, dmx_listening, artnet_listening,
+                        project_dir_path);
 
                     // Check if a Palette node wants to spawn new nodes
                     if matches!(node.node_type, NodeType::Palette { .. }) {
