@@ -938,6 +938,7 @@ pub fn render_content(
                 port_positions, dragging_from, pending_disconnects,
                 wgpu_render_state: wgpu_render_state.as_ref(),
                 http_actions, http_pending,
+                audio: audio_manager,
             };
             inner.node.render_with_context(ui, &mut ctx);
         }

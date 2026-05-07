@@ -35,6 +35,11 @@ pub enum VideoSource {
     Syphon,
     Ndi,
     Spout,
+    /// Network stream — a direct media URL that ffmpeg can open
+    /// (mp4 / m3u8 / mpd / rtsp / rtmp / etc.) OR a YouTube / Vimeo
+    /// page URL that gets routed through `yt-dlp` to extract the
+    /// real stream URL before ffmpeg sees it.
+    Url,
 }
 
 impl VideoSource {
@@ -46,12 +51,15 @@ impl VideoSource {
             Self::Syphon => "Syphon (mac)",
             Self::Ndi => "NDI",
             Self::Spout => "Spout (win)",
+            Self::Url => "URL",
         }
     }
     /// Whether this source is wired up in the current build + env.
     /// Phase 1 added Screen. Phase 2 added Syphon on macOS. Phase 3
     /// adds NDI — availability depends on `ndi::library()` because the
-    /// NDI Runtime is user-installed (EULA, can't bundle). File /
+    /// NDI Runtime is user-installed (EULA, can't bundle). URL arrived
+    /// in Phase 4 and is always available where ffmpeg is installed
+    /// (which is the same prerequisite as Camera / Screen / File). File /
     /// Spout arrive in later phases and show up disabled with a
     /// "(soon)" tag.
     fn available(self) -> bool {
@@ -61,11 +69,12 @@ impl VideoSource {
             Self::Syphon => true,
             #[cfg(target_os = "macos")]
             Self::Ndi => crate::video_io::ndi::library().is_ok(),
+            Self::Url => true,
             _ => false,
         }
     }
-    fn all() -> [Self; 6] {
-        [Self::Camera, Self::Screen, Self::File, Self::Syphon, Self::Ndi, Self::Spout]
+    fn all() -> [Self; 7] {
+        [Self::Camera, Self::Screen, Self::File, Self::Url, Self::Syphon, Self::Ndi, Self::Spout]
     }
 }
 
@@ -99,6 +108,13 @@ pub struct VideoInNode {
     #[serde(skip)] pub active: bool,
 
     #[serde(skip)] pub status: String,
+
+    /// Resolved URL for the URL source. For direct URLs this is just a
+    /// copy of `device_id`. For YouTube / Vimeo URLs this is the real
+    /// stream URL extracted by `yt-dlp` — typically temporary (expires
+    /// in a few hours). Cleared on Stop. Never persisted: the user-typed
+    /// page URL stays in `device_id` so save/load round-trips correctly.
+    #[serde(skip)] pub effective_url: String,
 
     // ── Runtime state (never serialised) ────────────────────────────
     #[serde(skip)] pub current_frame: Option<Arc<ImageData>>,
@@ -254,6 +270,7 @@ impl Clone for VideoInNode {
             ndi_last_dims: None,
             #[cfg(target_os = "macos")]
             ndi_last_frame_at: None,
+            effective_url: String::new(),
         }
     }
 }
@@ -288,6 +305,7 @@ impl Default for VideoInNode {
             ndi_last_dims: None,
             #[cfg(target_os = "macos")]
             ndi_last_frame_at: None,
+            effective_url: String::new(),
         }
     }
 }
@@ -381,6 +399,21 @@ impl VideoInNode {
                 // x11grab; ignored on macOS/Windows.
                 VideoDecoder::open_screen(self.device_index(), self.res_w, self.res_h, 0, 0)
             }
+            VideoSource::Url => {
+                // For direct URLs, render_url_ui copies device_id into
+                // effective_url before calling us. For YouTube / Vimeo,
+                // the yt-dlp worker writes the resolved URL into
+                // effective_url. Either way, effective_url is what
+                // ffmpeg sees — device_id stays as the user typed it
+                // (so save/load round-trips the page URL, not a
+                // temporary CDN URL that expires).
+                let url = self.effective_url.trim();
+                if url.is_empty() {
+                    Err("URL is empty".into())
+                } else {
+                    VideoDecoder::open_url(url, self.res_w, self.res_h)
+                }
+            }
             _ => Err(format!("{} source not yet implemented", self.source.label())),
         };
         match result {
@@ -424,6 +457,10 @@ impl VideoInNode {
         self.preview_tex = None;
         self.active = false;
         self.status = "Stopped".into();
+        // Drop the resolved URL so a Restart re-resolves YouTube / Vimeo
+        // (those URLs are signed and expire). For direct URLs the next
+        // Start just re-copies device_id into effective_url anyway.
+        self.effective_url.clear();
         // Release VRAM now instead of waiting for the frame-LRU sweep.
         crate::gpu_image::request_node_invalidation(node_id);
     }
@@ -487,7 +524,16 @@ impl VideoInNode {
 impl NodeBehavior for VideoInNode {
     fn title(&self) -> &str { "Video In" }
     fn inputs(&self) -> Vec<PortDef> { vec![] }
-    fn outputs(&self) -> Vec<PortDef> { vec![PortDef::new("Frame", PortKind::Image)] }
+    fn outputs(&self) -> Vec<PortDef> {
+        // Audio port is always present — for non-URL sources it just stays
+        // disconnected (Camera / Screen / Syphon / NDI don't carry audio
+        // in v1; that's a follow-up). Wiring it for URL streams kicks off
+        // a parallel audio-only ffmpeg subprocess via `play_url_audio`.
+        vec![
+            PortDef::new("Frame", PortKind::Image),
+            PortDef::new("Audio", PortKind::Audio),
+        ]
+    }
     fn color_hint(&self) -> [u8; 3] { [80, 200, 140] }
     fn type_tag(&self) -> &str { "video_in" }
     /// The Frame output port is rendered inline via `output_port_row`
@@ -585,6 +631,7 @@ impl NodeBehavior for VideoInNode {
         match self.source {
             VideoSource::Camera => self.render_camera_ui(ui, ctx),
             VideoSource::Screen => self.render_screen_ui(ui, ctx),
+            VideoSource::Url => self.render_url_ui(ui, ctx),
             #[cfg(target_os = "macos")]
             VideoSource::Syphon => self.render_syphon_ui(ui, ctx),
             #[cfg(target_os = "macos")]
@@ -609,6 +656,17 @@ impl NodeBehavior for VideoInNode {
             ui, "Frame", out_val, ctx.node_id, 0,
             ctx.port_positions, ctx.dragging_from, ctx.connections, ctx.pending_disconnects,
             PortKind::Image,
+        );
+        // Audio port — only meaningful for URL streams in v1, but always
+        // shown so the visual port shape is stable across source switches.
+        // For non-URL sources it stays disconnected at the engine level.
+        let audio_active = self.active
+            && matches!(self.source, VideoSource::Url)
+            && ctx.audio.file_buffers.contains_key(&ctx.node_id);
+        crate::nodes::output_port_row(
+            ui, "Audio", if audio_active { "●" } else { "—" }, ctx.node_id, 1,
+            ctx.port_positions, ctx.dragging_from, ctx.connections, ctx.pending_disconnects,
+            PortKind::Audio,
         );
 
         if self.active { ui.ctx().request_repaint(); }
@@ -712,6 +770,195 @@ impl VideoInNode {
 
         // Preview (shared with Screen source)
         self.render_preview(ui, ctx);
+    }
+}
+
+// ── URL source helpers ──────────────────────────────────────────────────────
+
+/// Hosts that need URL extraction via `yt-dlp` before ffmpeg can ingest.
+/// Cheap substring check — no need for full URL parsing.
+fn needs_yt_dlp(url: &str) -> bool {
+    let l = url.to_lowercase();
+    l.contains("youtube.com") || l.contains("youtu.be") || l.contains("vimeo.com")
+}
+
+/// Run `yt-dlp -g` to resolve a page URL into a direct stream URL ffmpeg
+/// can play. Blocking — call from a worker thread. The 30 s wait covers
+/// network roundtrips even on slow connections; longer than that almost
+/// always means yt-dlp is hung against an unsupported site.
+fn run_yt_dlp(url: &str) -> Result<String, String> {
+    let output = std::process::Command::new("yt-dlp")
+        .args([
+            "--no-playlist",                   // a single video, not the whole channel
+            "-f", "best[ext=mp4]/best",
+            "-g",                              // print resolved URL(s) to stdout
+            url,
+        ])
+        .output()
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                "yt-dlp not found. Install with `brew install yt-dlp` (mac) \
+                 or `pip install yt-dlp`. Direct URLs still work without it."
+                    .to_string()
+            } else {
+                format!("yt-dlp launch failed: {}", e)
+            }
+        })?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(stderr.lines().last().unwrap_or("yt-dlp failed").to_string());
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let resolved = stdout.lines().next().unwrap_or("").trim().to_string();
+    if resolved.is_empty() {
+        Err("yt-dlp returned no URL".into())
+    } else {
+        Ok(resolved)
+    }
+}
+
+impl VideoInNode {
+    /// URL-source UI. Single text field for any HTTP/HLS/RTSP/RTMP URL or
+    /// a YouTube / Vimeo page URL. The latter goes through `yt-dlp` in a
+    /// worker thread so the UI doesn't freeze during resolution.
+    fn render_url_ui(&mut self, ui: &mut egui::Ui, ctx: &mut RenderContext) {
+        let dim = ui.visuals().widgets.noninteractive.fg_stroke.color;
+        let node_id = ctx.node_id;
+        let pending_id    = egui::Id::new(("vin_url_pending",      node_id));
+        let status_id     = egui::Id::new(("vin_url_status",       node_id));
+        // Two keys instead of `Result<String, String>` because egui 0.31's
+        // remove_temp requires `Default`, which Result doesn't implement.
+        let resolved_ok_id  = egui::Id::new(("vin_url_resolved_ok",  node_id));
+        let resolved_err_id = egui::Id::new(("vin_url_resolved_err", node_id));
+
+        // ── URL field ────────────────────────────────────────────────
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("URL").small());
+            ui.add(
+                egui::TextEdit::singleline(&mut self.device_id)
+                    .hint_text("https://… or YouTube / Vimeo URL")
+                    .desired_width(ui.available_width() - 6.0),
+            );
+        });
+
+        // ── Resolution sliders (matches camera/screen) ───────────────
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Size").small().color(dim));
+            ui.add(egui::DragValue::new(&mut self.res_w).range(64..=3840).speed(8));
+            ui.label(egui::RichText::new("×").small().color(dim));
+            ui.add(egui::DragValue::new(&mut self.res_h).range(64..=2160).speed(8));
+        });
+
+        // ── Drain yt-dlp result if one arrived this frame ────────────
+        let resolved_ok:  Option<String> = ui.ctx().data_mut(|d| d.remove_temp(resolved_ok_id));
+        let resolved_err: Option<String> = ui.ctx().data_mut(|d| d.remove_temp(resolved_err_id));
+        if resolved_ok.is_some() || resolved_err.is_some() {
+            ui.ctx().data_mut(|d| d.remove_temp::<bool>(pending_id));
+        }
+        if let Some(resolved) = resolved_ok {
+            self.effective_url = resolved.clone();
+            ui.ctx().data_mut(|d|
+                d.insert_temp(status_id, "Connecting…".to_string()));
+            self.open_decoder(node_id);
+            if self.active && Self::audio_port_wired(ctx, node_id) {
+                if let Err(e) = ctx.audio.play_url_audio(node_id, &resolved) {
+                    crate::system_log::warn(format!("Video In audio: {}", e));
+                }
+            }
+            if self.active {
+                ui.ctx().data_mut(|d|
+                    d.insert_temp(status_id, "Streaming".to_string()));
+            }
+        } else if let Some(e) = resolved_err {
+            ui.ctx().data_mut(|d|
+                d.insert_temp(status_id, format!("Error: {}", e)));
+        }
+
+        // ── Status label ─────────────────────────────────────────────
+        let status: Option<String> = ui.ctx().data_mut(|d| d.get_temp(status_id));
+        if let Some(s) = status {
+            let color = if s.starts_with("Error") {
+                egui::Color32::from_rgb(255, 100, 100)
+            } else if s == "Streaming" {
+                egui::Color32::from_rgb(80, 200, 120)
+            } else {
+                dim
+            };
+            ui.colored_label(color, egui::RichText::new(s).small());
+        } else if !self.status.is_empty() {
+            ui.colored_label(dim, egui::RichText::new(&self.status).small());
+        }
+
+        // ── Start / Resolving / Stop ─────────────────────────────────
+        let pending: bool = ui.ctx().data_mut(|d| d.get_temp(pending_id).unwrap_or(false));
+        ui.horizontal(|ui| {
+            if pending {
+                ui.add_enabled_ui(false, |ui| {
+                    let _ = ui.add(egui::Button::new(
+                        egui::RichText::new("Resolving…").small()
+                    ));
+                });
+                if ui.small_button("✕").on_hover_text("Cancel resolve").clicked() {
+                    ui.ctx().data_mut(|d| {
+                        d.remove_temp::<bool>(pending_id);
+                        d.remove_temp::<String>(status_id);
+                        d.remove_temp::<String>(resolved_ok_id);
+                        d.remove_temp::<String>(resolved_err_id);
+                    });
+                }
+            } else if !self.active {
+                let can_start = !self.device_id.trim().is_empty();
+                if ui.add_enabled(can_start, egui::Button::new("▶ Start")).clicked() {
+                    let url = self.device_id.trim().to_string();
+                    if needs_yt_dlp(&url) {
+                        // Async path — yt-dlp resolves on a worker thread.
+                        ui.ctx().data_mut(|d| {
+                            d.insert_temp(status_id, "Resolving…".to_string());
+                            d.insert_temp(pending_id, true);
+                        });
+                        let ectx = ui.ctx().clone();
+                        let url2 = url.clone();
+                        std::thread::spawn(move || {
+                            match run_yt_dlp(&url2) {
+                                Ok(u) => ectx.data_mut(|d| d.insert_temp(resolved_ok_id, u)),
+                                Err(e) => ectx.data_mut(|d| d.insert_temp(resolved_err_id, e)),
+                            }
+                            ectx.request_repaint();
+                        });
+                    } else {
+                        // Synchronous path — direct URL straight to ffmpeg.
+                        self.effective_url = url.clone();
+                        ui.ctx().data_mut(|d|
+                            d.insert_temp(status_id, "Connecting…".to_string()));
+                        self.open_decoder(node_id);
+                        if self.active && Self::audio_port_wired(ctx, node_id) {
+                            if let Err(e) = ctx.audio.play_url_audio(node_id, &url) {
+                                crate::system_log::warn(format!("Video In audio: {}", e));
+                            }
+                        }
+                        if self.active {
+                            ui.ctx().data_mut(|d|
+                                d.insert_temp(status_id, "Streaming".to_string()));
+                        }
+                    }
+                }
+            } else {
+                if ui.button("⏹ Stop").clicked() {
+                    self.close_decoder(node_id);
+                    ctx.audio.stop_file(node_id);
+                    ui.ctx().data_mut(|d| {
+                        d.remove_temp::<String>(status_id);
+                    });
+                }
+            }
+        });
+    }
+
+    /// True if anything is wired to our Audio output port (port index 1).
+    /// Used to decide whether to spawn the audio-extraction ffmpeg —
+    /// nothing wired = no point burning CPU on a second decode.
+    fn audio_port_wired(ctx: &RenderContext, node_id: NodeId) -> bool {
+        ctx.connections.iter().any(|c| c.from_node == node_id && c.from_port == 1)
     }
 }
 

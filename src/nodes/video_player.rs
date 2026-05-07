@@ -82,6 +82,46 @@ impl VideoDecoder {
         Self::start_reader(process, width, height)
     }
 
+    /// Open a network stream (direct URL: mp4 / m3u8 / mpd / rtsp / rtmp / http
+    /// audio that ffmpeg can decode). YouTube/Vimeo *page* URLs need to be
+    /// resolved by yt-dlp first; the caller passes the resolved direct URL.
+    ///
+    /// Reconnect flags are enabled so a transient HTTP hiccup retries instead
+    /// of killing the stream. ffmpeg downscales server-side via `-s` so the
+    /// reader thread doesn't have to deal with arbitrary network resolutions.
+    pub fn open_url(url: &str, width: u32, height: u32) -> Result<Self, String> {
+        let process = Command::new("ffmpeg")
+            .args([
+                "-hide_banner", "-loglevel", "error",
+                // HTTP resilience for direct URLs / HLS — harmless for non-HTTP inputs.
+                "-reconnect", "1",
+                "-reconnect_streamed", "1",
+                "-reconnect_delay_max", "2",
+                // Lower probe latency for live streams.
+                "-fflags", "nobuffer",
+                "-flags", "low_delay",
+                "-i", url,
+                "-an",                       // discard audio in this pipe; audio uses AudioPipeDecoder
+                "-f", "rawvideo",
+                "-pix_fmt", "rgba",
+                "-s", &format!("{}x{}", width, height),
+                "-r", "30",
+                "pipe:1",
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    ffmpeg_install_hint()
+                } else {
+                    format!("Failed to start URL decoder: {}", e)
+                }
+            })?;
+
+        Self::start_reader(process, width, height)
+    }
+
     pub fn open_camera(device_index: u32, width: u32, height: u32) -> Result<Self, String> {
         // Platform-specific capture format and device input string.
         //
@@ -325,6 +365,125 @@ impl VideoDecoder {
             self.frame_changed = true;
         }
         latest
+    }
+}
+
+// ── Audio pipe decoder ──────────────────────────────────────────────────────
+//
+// Sibling of `VideoDecoder`. Spawns an ffmpeg subprocess that decodes the
+// *audio* track from a network URL into mono `f32le` samples at a chosen
+// sample rate, piped on stdout. A reader thread converts the byte stream
+// into `Vec<f32>` chunks and ships them through a bounded mpsc channel,
+// where `AudioManager` drains them into a `FilePlayerBuffer`.
+//
+// We use a separate ffmpeg invocation (rather than asking the video
+// decoder for audio too) so the Audio output port on Video In can be
+// optionally enabled — if nothing is wired to it, this whole pipeline
+// never spawns and CPU stays low. Trade-off: the source is decoded
+// twice and the two ffmpegs don't share a clock, so A/V can drift a
+// few hundred ms. Acceptable for v1; a single-process refactor is
+// queued as v2 work.
+pub struct AudioPipeDecoder {
+    process: Child,
+    pub samples_rx: mpsc::Receiver<Vec<f32>>,
+    pub disconnected: bool,
+    stderr_rx: mpsc::Receiver<String>,
+    pub stderr_log: String,
+    pub started_at: Instant,
+}
+
+impl Drop for AudioPipeDecoder {
+    fn drop(&mut self) {
+        let _ = self.process.kill();
+        let _ = self.process.wait();
+    }
+}
+
+impl AudioPipeDecoder {
+    /// Decode the audio track from `url` into mono f32 samples at `sample_rate`.
+    /// Reader thread pushes ~10 ms chunks into `samples_rx`.
+    pub fn open_url(url: &str, sample_rate: f32) -> Result<Self, String> {
+        let process = Command::new("ffmpeg")
+            .args([
+                "-hide_banner", "-loglevel", "error",
+                "-reconnect", "1",
+                "-reconnect_streamed", "1",
+                "-reconnect_delay_max", "2",
+                "-fflags", "nobuffer",
+                "-flags", "low_delay",
+                "-i", url,
+                "-vn",                                         // drop video
+                "-ac", "1",                                    // mono
+                "-ar", &format!("{}", sample_rate as u32),     // resample server-side
+                "-f", "f32le",                                 // raw little-endian f32
+                "pipe:1",
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    ffmpeg_install_hint()
+                } else {
+                    format!("Failed to start audio decoder: {}", e)
+                }
+            })?;
+
+        Self::start_reader(process)
+    }
+
+    fn start_reader(mut process: Child) -> Result<Self, String> {
+        let stdout = process.stdout.take().ok_or("No stdout")?;
+        let stderr = process.stderr.take().ok_or("No stderr")?;
+
+        // Bounded — backpressure if the consumer (audio decode thread) is slow.
+        // Each chunk = ~10 ms of audio; capacity 8 = ~80 ms of slack.
+        let (tx, rx) = mpsc::sync_channel::<Vec<f32>>(8);
+
+        std::thread::spawn(move || {
+            let mut reader = std::io::BufReader::with_capacity(8192, stdout);
+            // Read in chunks of 1024 frames (mono) ≈ 21 ms at 48 kHz.
+            const CHUNK_FRAMES: usize = 1024;
+            let mut byte_buf = vec![0u8; CHUNK_FRAMES * 4];
+            loop {
+                match reader.read_exact(&mut byte_buf) {
+                    Ok(()) => {
+                        let mut samples = Vec::with_capacity(CHUNK_FRAMES);
+                        for chunk in byte_buf.chunks_exact(4) {
+                            let s = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+                            samples.push(s);
+                        }
+                        if tx.send(samples).is_err() { break; }
+                    }
+                    Err(_) => break, // EOF or error
+                }
+            }
+        });
+
+        let (err_tx, err_rx) = mpsc::channel::<String>();
+        std::thread::spawn(move || {
+            let reader = std::io::BufReader::new(stderr);
+            for line in reader.lines().map_while(|l| l.ok()) {
+                if err_tx.send(line).is_err() { break; }
+            }
+        });
+
+        Ok(Self {
+            process,
+            samples_rx: rx,
+            disconnected: false,
+            stderr_rx: err_rx,
+            stderr_log: String::new(),
+            started_at: Instant::now(),
+        })
+    }
+
+    pub fn pump_stderr(&mut self) {
+        while let Ok(line) = self.stderr_rx.try_recv() {
+            if self.stderr_log.len() > 1024 { break; }
+            if !self.stderr_log.is_empty() { self.stderr_log.push('\n'); }
+            self.stderr_log.push_str(&line);
+        }
     }
 }
 

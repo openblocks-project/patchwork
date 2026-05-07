@@ -739,6 +739,82 @@ impl AudioManager {
         Ok(())
     }
 
+    /// Stream audio from a URL into the engine. Mirrors `play_file` but the
+    /// source is an ffmpeg subprocess decoding the URL on the fly. Used by
+    /// `Video In` when its source is a URL and its Audio output port is
+    /// wired — the same `FilePlayerBuffer` + `FilePlayerProcessor` pipeline
+    /// downstream, so once samples are in the buffer the rest of the engine
+    /// is identical to file playback.
+    pub fn play_url_audio(&mut self, node_id: NodeId, url: &str) -> Result<(), String> {
+        // If we're already streaming this URL (or any URL) on this node, stop
+        // the old pipeline first so the new one starts clean.
+        self.stop_file(node_id);
+
+        let output_sr = self.engine_sample_rate;
+
+        let decoder = crate::nodes::video_player::AudioPipeDecoder::open_url(url, output_sr)?;
+
+        let capacity = (output_sr * 2.0) as usize;   // 2 s of slack — same as files
+        let buffer = Arc::new(FilePlayerBuffer::new(capacity));
+        buffer.file_sample_rate.store(output_sr as u32, Ordering::Release);
+
+        // Reader-pump thread: takes ownership of the AudioPipeDecoder, pulls
+        // f32 sample chunks off its mpsc channel, writes them to the buffer.
+        // Thread exits (and drops the decoder, killing ffmpeg) when:
+        //   - the decoder's reader dies (ffmpeg EOF / disconnected stream), OR
+        //   - someone signals stop on the buffer.
+        let buf_clone = buffer.clone();
+        let handle = std::thread::Builder::new()
+            .name(format!("url-audio-pump-{}", node_id))
+            .spawn(move || {
+                let decoder = decoder;
+                loop {
+                    if buf_clone.stop_requested.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    if buf_clone.paused.load(Ordering::Relaxed) {
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                        continue;
+                    }
+                    // Backpressure: same gate the file decoder uses.
+                    let buffered = buf_clone.buffered();
+                    if buffered > buf_clone.capacity * 3 / 4 {
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                        continue;
+                    }
+                    match decoder.samples_rx.recv_timeout(std::time::Duration::from_millis(200)) {
+                        Ok(samples) => {
+                            buf_clone.decoded_position.fetch_add(samples.len(), Ordering::Relaxed);
+                            buf_clone.write(&samples);
+                        }
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                            // ffmpeg ended — mark finished so the AudioPlayer-style
+                            // auto-stop logic eventually tears this down.
+                            buf_clone.finished.store(true, Ordering::Release);
+                            break;
+                        }
+                    }
+                }
+            })
+            .map_err(|e| format!("Spawn url-audio thread: {}", e))?;
+
+        self.file_buffers.insert(node_id, buffer.clone());
+        self.file_threads.insert(node_id, handle);
+        self.file_playing.insert(node_id, true);
+
+        if self.engine_tx.is_some() && !self.has_processor(node_id) {
+            let processor = Box::new(super::processors::input::FilePlayerProcessor {
+                buffer: buffer.clone(),
+                volume: 1.0,
+            });
+            self.add_processor(node_id, processor, 1);
+            self.pending_connection_sync.insert(node_id);
+        }
+
+        Ok(())
+    }
+
     /// Pause file playback (keeps position, decode thread sleeps)
     pub fn pause_file(&mut self, node_id: NodeId) {
         if let Some(buf) = self.file_buffers.get(&node_id) {

@@ -194,6 +194,11 @@ pub struct RenderContext<'a> {
     /// Is the HttpManager already tracking an in-flight request for this
     /// node? Used by generator nodes to gate the Send button.
     pub http_pending: bool,
+    /// Direct handle to the audio manager — for nodes that need to start /
+    /// stop audio sources (e.g. Video In with a URL stream pushes its
+    /// extracted audio into the engine via `audio.play_url_audio`).
+    /// Most trait-based nodes never touch this.
+    pub audio: &'a mut crate::audio::AudioManager,
 }
 
 /// Registry for deserializing trait-based nodes from saved projects.
