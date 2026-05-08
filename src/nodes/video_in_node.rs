@@ -845,6 +845,54 @@ impl VideoInNode {
             if was_active { self.open_decoder(ctx.node_id, 0.0); }
         }
 
+        // Windows-only diagnostics: when ffmpeg's dshow enumeration
+        // returns nothing (the historical pain point), show what it
+        // actually said so the user can see the cause without a
+        // rebuild. Hidden by default once any device is found.
+        #[cfg(target_os = "windows")]
+        {
+            let audio_inputs = crate::nodes::video_player::cached_audio_input_list_dshow();
+            if cameras.is_empty() || audio_inputs.is_empty() {
+                let stderr = crate::nodes::video_player::last_dshow_stderr();
+                let header = if cameras.is_empty() && audio_inputs.is_empty() {
+                    "🪟 No cameras or mics enumerated"
+                } else if cameras.is_empty() {
+                    "🪟 No cameras enumerated"
+                } else {
+                    "🪟 No mics enumerated"
+                };
+                egui::CollapsingHeader::new(
+                    egui::RichText::new(header)
+                        .small()
+                        .color(egui::Color32::from_rgb(255, 180, 80)),
+                )
+                .id_salt(egui::Id::new(("vin_dshow_diag", ctx.node_id)))
+                .show(ui, |ui| {
+                    ui.label(egui::RichText::new("ffmpeg said:").small());
+                    let max = stderr.len().saturating_sub(1024);
+                    let tail = if max > 0 { &stderr[max..] } else { stderr.as_str() };
+                    let mut s = tail.to_string();
+                    egui::ScrollArea::vertical()
+                        .id_salt(egui::Id::new(("vin_dshow_stderr", ctx.node_id)))
+                        .max_height(160.0)
+                        .show(ui, |ui| {
+                            ui.add(egui::TextEdit::multiline(&mut s)
+                                .desired_width(f32::INFINITY)
+                                .font(egui::TextStyle::Monospace)
+                                .interactive(false));
+                        });
+                    ui.label(egui::RichText::new("Try running this in cmd.exe:").small());
+                    let cmd = "ffmpeg -list_devices true -f dshow -i dummy";
+                    ui.horizontal(|ui| {
+                        ui.code(cmd);
+                        if ui.small_button("📋").on_hover_text("Copy command").clicked() {
+                            ui.ctx().copy_text(cmd.to_string());
+                        }
+                    });
+                });
+            }
+        }
+
         // Resolution
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("Res").small());
@@ -873,8 +921,60 @@ impl VideoInNode {
                 toggle_start = true;
             }
         });
-        if toggle_start { self.open_decoder(ctx.node_id, 0.0); }
-        if toggle_stop { self.close_decoder(ctx.node_id); }
+        if toggle_start {
+            self.open_decoder(ctx.node_id, 0.0);
+            // Camera mode previously skipped audio entirely (open_camera
+            // uses `:none` for the audio device). Spawn a sibling ffmpeg
+            // pulling the system default mic so wiring the Audio port
+            // produces sound. Same buffer + processor pipeline as URL /
+            // File audio — wiring the port AFTER Start still works
+            // because `pending_connection_sync` picks up the new edge.
+            //
+            // macOS will prompt for mic permission on first open; that's
+            // the OS-level safeguard. If the user denies, ffmpeg exits
+            // and the pump thread sees disconnected → silence.
+            // Picks the platform-appropriate ffmpeg capture format +
+            // input string. The Windows arm enumerates dshow audio
+            // devices via the cached list (filled by the same
+            // ffmpeg -list_devices call as cameras) and picks the
+            // first one — there's no UI for choosing yet, "first mic
+            // found" matches the macOS `:0` / Linux `default` defaults.
+            #[cfg(target_os = "macos")]
+            let capture: Option<(&str, String)> = Some(("avfoundation", ":0".into()));
+            #[cfg(target_os = "linux")]
+            let capture: Option<(&str, String)> = Some(("alsa", "default".into()));
+            #[cfg(target_os = "windows")]
+            let capture: Option<(&str, String)> = {
+                let inputs = crate::nodes::video_player::cached_audio_input_list_dshow();
+                inputs.first()
+                    .map(|(_, name)| ("dshow", format!("audio={}", name)))
+            };
+            #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+            let capture: Option<(&str, String)> = None;
+            if let Some((fmt, input)) = capture {
+                if self.active {
+                    if let Err(e) = ctx.audio.play_capture_audio(ctx.node_id, fmt, &input) {
+                        crate::system_log::warn(format!("Camera audio: {}", e));
+                    }
+                    ctx.audio.engine_write_param(ctx.node_id, 0, self.volume);
+                }
+            } else if self.active {
+                // Windows with no enumerated audio device — surface a
+                // hint instead of silently giving up. The diagnostics
+                // panel below shows ffmpeg's stderr for debugging.
+                #[cfg(target_os = "windows")]
+                {
+                    self.status = "No audio input found — see diagnostics".into();
+                }
+            }
+        }
+        if toggle_stop {
+            // Tear down audio first — close_decoder drops the camera
+            // claim but doesn't touch the audio pipeline. Symmetric
+            // with the URL/File close paths.
+            ctx.audio.stop_file(ctx.node_id);
+            self.close_decoder(ctx.node_id);
+        }
 
         // Status line
         if !self.status.is_empty() {

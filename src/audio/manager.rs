@@ -839,6 +839,79 @@ impl AudioManager {
         Ok(())
     }
 
+    /// Stream audio from a system capture device (built-in mic, USB
+    /// audio interface, etc.) into the engine. Sibling of
+    /// `play_pipe_audio` — same buffer + processor pipeline downstream;
+    /// only the ffmpeg input is different.
+    ///
+    /// Used by Video In's Camera source so wiring the Audio output
+    /// captures the system mic alongside the camera frames.
+    pub fn play_capture_audio(
+        &mut self,
+        node_id: NodeId,
+        format: &str,
+        input: &str,
+    ) -> Result<(), String> {
+        self.stop_file(node_id);
+        let output_sr = self.engine_sample_rate;
+
+        let decoder = crate::nodes::video_player::AudioPipeDecoder::open_capture_input(
+            format, input, output_sr,
+        )?;
+
+        let capacity = (output_sr * 2.0) as usize;
+        let buffer = Arc::new(FilePlayerBuffer::new(capacity));
+        buffer.file_sample_rate.store(output_sr as u32, Ordering::Release);
+
+        let buf_clone = buffer.clone();
+        let handle = std::thread::Builder::new()
+            .name(format!("capture-audio-pump-{}", node_id))
+            .spawn(move || {
+                let decoder = decoder;
+                loop {
+                    if buf_clone.stop_requested.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    if buf_clone.paused.load(Ordering::Relaxed) {
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                        continue;
+                    }
+                    let buffered = buf_clone.buffered();
+                    if buffered > buf_clone.capacity * 3 / 4 {
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                        continue;
+                    }
+                    match decoder.samples_rx.recv_timeout(std::time::Duration::from_millis(200)) {
+                        Ok(samples) => {
+                            buf_clone.decoded_position.fetch_add(samples.len(), Ordering::Relaxed);
+                            buf_clone.write(&samples);
+                        }
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                            buf_clone.finished.store(true, Ordering::Release);
+                            break;
+                        }
+                    }
+                }
+            })
+            .map_err(|e| format!("Spawn capture-audio thread: {}", e))?;
+
+        self.file_buffers.insert(node_id, buffer.clone());
+        self.file_threads.insert(node_id, handle);
+        self.file_playing.insert(node_id, true);
+
+        if self.engine_tx.is_some() && !self.has_processor(node_id) {
+            let processor = Box::new(super::processors::input::FilePlayerProcessor {
+                buffer: buffer.clone(),
+                volume: 1.0,
+            });
+            self.add_processor(node_id, processor, 1);
+            self.pending_connection_sync.insert(node_id);
+        }
+
+        Ok(())
+    }
+
     /// Pause file playback (keeps position, decode thread sleeps)
     pub fn pause_file(&mut self, node_id: NodeId) {
         if let Some(buf) = self.file_buffers.get(&node_id) {

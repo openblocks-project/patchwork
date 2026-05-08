@@ -454,6 +454,49 @@ impl AudioPipeDecoder {
         Self::start_reader(process)
     }
 
+    /// Decode audio from a capture device (microphone / line-in) into
+    /// mono f32 samples at `sample_rate`. Sibling of `open_url`, but
+    /// uses `-f <format> -i <input>` instead of a URL — needed because
+    /// avfoundation / alsa / pulse / dshow inputs aren't URLs.
+    ///
+    /// Caller picks the platform-appropriate `format` and `input`:
+    /// - macOS:   format="avfoundation", input=":<audio_idx>" (`:0` = default mic)
+    /// - Linux:   format="alsa",         input="default" (or "pulse"/"default")
+    /// - Windows: format="dshow",        input="audio=<friendly-name>"
+    pub fn open_capture_input(
+        format: &str,
+        input: &str,
+        sample_rate: f32,
+    ) -> Result<Self, String> {
+        let args: Vec<String> = vec![
+            "-hide_banner".into(), "-loglevel".into(), "error".into(),
+            "-fflags".into(), "nobuffer".into(),
+            "-flags".into(), "low_delay".into(),
+            "-probesize".into(), "32".into(),
+            "-analyzeduration".into(), "0".into(),
+            "-f".into(), format.to_string(),
+            "-i".into(), input.to_string(),
+            "-vn".into(),
+            "-ac".into(), "1".into(),
+            "-ar".into(), format!("{}", sample_rate as u32),
+            "-f".into(), "f32le".into(),
+            "pipe:1".into(),
+        ];
+        let process = Command::new("ffmpeg")
+            .args(&args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    ffmpeg_install_hint()
+                } else {
+                    format!("Failed to start mic capture: {}", e)
+                }
+            })?;
+        Self::start_reader(process)
+    }
+
     fn start_reader(mut process: Child) -> Result<Self, String> {
         let stdout = process.stdout.take().ok_or("No stdout")?;
         let stderr = process.stderr.take().ok_or("No stderr")?;
@@ -609,36 +652,88 @@ fn list_cameras_v4l2() -> Vec<(u32, String)> {
     cameras
 }
 
+/// Run `ffmpeg -list_devices true -f dshow -i dummy` and parse the
+/// stderr into video + audio device lists, returning the raw stderr
+/// alongside so the UI can surface diagnostics when nothing is found.
+///
+/// One subprocess yields both video and audio device lists — saves
+/// the ~200 ms spawn cost of a second invocation.
+///
+/// Hardening over the original parser:
+/// - Section-aware: tracks "DirectShow video devices" vs
+///   "DirectShow audio devices" headers so audio names don't leak into
+///   the camera list.
+/// - Skips `Alternative name "@device_pnp_..."` lines, which the old
+///   parser mis-counted as separate cameras.
+/// - Returns the raw stderr so the diagnostic panel can show the user
+///   exactly what ffmpeg said when the list is empty.
 #[cfg(target_os = "windows")]
-fn list_cameras_dshow() -> Vec<(u32, String)> {
+fn enumerate_dshow_devices() -> (Vec<(u32, String)>, Vec<(u32, String)>, String) {
     let output = Command::new("ffmpeg")
         .args(["-f", "dshow", "-list_devices", "true", "-i", "dummy"])
         .stderr(Stdio::piped())
         .stdout(Stdio::null())
         .output();
-    let mut cameras = Vec::new();
-    let mut idx = 0u32;
-    if let Ok(output) = output {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let mut in_video = true;
-        for line in stderr.lines() {
-            // dshow lists video devices first, then audio after "DirectShow audio devices"
-            if line.contains("DirectShow audio devices") { break; }
-            // Device lines contain the name in quotes: "Device Name"
-            if in_video && line.contains('"') {
-                if let Some(start) = line.find('"') {
-                    if let Some(end) = line[start+1..].find('"') {
-                        let name = line[start+1..start+1+end].to_string();
-                        if !name.is_empty() {
-                            cameras.push((idx, name));
-                            idx += 1;
-                        }
-                    }
-                }
-            }
+    let stderr = match output {
+        Ok(o) => String::from_utf8_lossy(&o.stderr).into_owned(),
+        Err(e) => format!("ffmpeg invocation failed: {}", e),
+    };
+    let (videos, audios) = parse_dshow_devices(&stderr);
+    let cameras: Vec<(u32, String)> = videos.into_iter().enumerate()
+        .map(|(i, n)| (i as u32, n)).collect();
+    let audio_inputs: Vec<(u32, String)> = audios.into_iter().enumerate()
+        .map(|(i, n)| (i as u32, n)).collect();
+    (cameras, audio_inputs, stderr)
+}
+
+/// Parse ffmpeg dshow `-list_devices` stderr into (video_names,
+/// audio_names). Section-aware via "DirectShow video/audio devices"
+/// header detection. Drops "Alternative name" alias lines.
+#[cfg(target_os = "windows")]
+fn parse_dshow_devices(stderr: &str) -> (Vec<String>, Vec<String>) {
+    #[derive(Clone, Copy)]
+    enum Section { None, Video, Audio }
+    let mut section = Section::None;
+    let mut videos = Vec::new();
+    let mut audios = Vec::new();
+    for line in stderr.lines() {
+        let lower = line.to_lowercase();
+        if lower.contains("directshow video") {
+            section = Section::Video;
+            continue;
+        }
+        if lower.contains("directshow audio") {
+            section = Section::Audio;
+            continue;
+        }
+        // "Alternative name" lines describe device aliases (the
+        // `@device_pnp_...` form). Old parser counted these as
+        // additional cameras.
+        if line.contains("Alternative name") {
+            continue;
+        }
+        let Some(name) = extract_first_quoted(line) else { continue };
+        match section {
+            Section::Video => videos.push(name),
+            Section::Audio => audios.push(name),
+            Section::None  => {}
         }
     }
-    cameras
+    (videos, audios)
+}
+
+#[cfg(target_os = "windows")]
+fn extract_first_quoted(line: &str) -> Option<String> {
+    let start = line.find('"')?;
+    let after = &line[start + 1..];
+    let end = after.find('"')?;
+    let name = after[..end].to_string();
+    if name.is_empty() { None } else { Some(name) }
+}
+
+#[cfg(target_os = "windows")]
+fn list_cameras_dshow() -> Vec<(u32, String)> {
+    enumerate_dshow_devices().0
 }
 
 // ── Video Player Node ────────────────────────────────────────────────────────
@@ -803,42 +898,92 @@ pub fn render_video(
     }
 }
 
+/// Cached enumeration result. `cameras` is the cross-platform device
+/// list (used everywhere); `audio_inputs` and `last_stderr` are
+/// Windows-only diagnostics that stay empty on macOS / Linux.
+struct DshowCache {
+    refreshed_at: std::time::Instant,
+    cameras: Vec<(u32, String)>,
+    audio_inputs: Vec<(u32, String)>,
+    last_stderr: String,
+    refreshing: bool,
+}
+
 /// Get cached camera list — uses background thread to avoid blocking UI.
 /// Returns stale data while refresh is in progress.
 /// One shared cache for the ffmpeg device list. Both the legacy Camera
 /// enum‑variant render path and the new `VideoInNode` read from here, so
 /// a refresh in either UI benefits both.
 fn camera_list_cache_handle()
-    -> &'static std::sync::Mutex<(std::time::Instant, Vec<(u32, String)>, bool)>
+    -> &'static std::sync::Mutex<DshowCache>
 {
     use std::sync::{Mutex, OnceLock};
-    static CACHE: OnceLock<Mutex<(std::time::Instant, Vec<(u32, String)>, bool)>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new((
-        std::time::Instant::now() - std::time::Duration::from_secs(100),
-        Vec::new(),
-        false,
-    )))
+    static CACHE: OnceLock<Mutex<DshowCache>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(DshowCache {
+        refreshed_at: std::time::Instant::now() - std::time::Duration::from_secs(100),
+        cameras: Vec::new(),
+        audio_inputs: Vec::new(),
+        last_stderr: String::new(),
+        refreshing: false,
+    }))
+}
+
+/// Run a fresh enumeration. On Windows, calls `enumerate_dshow_devices`
+/// for the full (cameras, audio_inputs, stderr) tuple. Elsewhere, just
+/// fills the camera list — `audio_inputs` and `last_stderr` stay empty.
+fn enumerate_blocking() -> (Vec<(u32, String)>, Vec<(u32, String)>, String) {
+    #[cfg(target_os = "windows")]
+    {
+        return enumerate_dshow_devices();
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        return (list_cameras(), Vec::new(), String::new());
+    }
 }
 
 pub fn cached_camera_list() -> Vec<(u32, String)> {
     let cache = camera_list_cache_handle();
     let mut guard = match cache.lock() {
         Ok(g) => g,
-        Err(_) => return Vec::new(), // Mutex poisoned — return empty list
+        Err(_) => return Vec::new(),
     };
-    let (last_refresh, ref cameras, ref mut refreshing) = *guard;
-    if last_refresh.elapsed().as_secs() >= 10 && !*refreshing {
-        *refreshing = true;
+    if guard.refreshed_at.elapsed().as_secs() >= 10 && !guard.refreshing {
+        guard.refreshing = true;
         std::thread::spawn(move || {
-            let result = list_cameras();
+            let (cams, audios, stderr) = enumerate_blocking();
             if let Ok(mut g) = cache.lock() {
-                g.0 = std::time::Instant::now();
-                g.1 = result;
-                g.2 = false;
+                g.refreshed_at = std::time::Instant::now();
+                g.cameras = cams;
+                g.audio_inputs = audios;
+                g.last_stderr = stderr;
+                g.refreshing = false;
             }
         });
     }
-    cameras.clone()
+    guard.cameras.clone()
+}
+
+/// Cached audio input list (Windows-only — populated by the same
+/// `ffmpeg -list_devices` call that fills the camera list). On
+/// macOS / Linux this is unused because the camera-mode audio path
+/// uses `:0` (avfoundation) / `default` (alsa) directly rather than
+/// a friendly-name lookup.
+#[cfg(target_os = "windows")]
+pub fn cached_audio_input_list_dshow() -> Vec<(u32, String)> {
+    let cache = camera_list_cache_handle();
+    let guard = match cache.lock() { Ok(g) => g, Err(_) => return Vec::new() };
+    guard.audio_inputs.clone()
+}
+
+/// Last raw stderr from the dshow enumeration. Used by Video In's
+/// Camera UI to show users what ffmpeg actually said when the device
+/// list is empty. Windows-only debugging surface.
+#[cfg(target_os = "windows")]
+pub fn last_dshow_stderr() -> String {
+    let cache = camera_list_cache_handle();
+    let guard = match cache.lock() { Ok(g) => g, Err(_) => return String::new() };
+    guard.last_stderr.clone()
 }
 
 /// Force the next `cached_camera_list()` call to re-enumerate devices
@@ -852,15 +997,17 @@ pub fn cached_camera_list() -> Vec<(u32, String)> {
 pub fn refresh_camera_list_now() {
     let cache = camera_list_cache_handle();
     let mut guard = match cache.lock() { Ok(g) => g, Err(_) => return };
-    if guard.2 { return; } // already refreshing
-    guard.2 = true;
+    if guard.refreshing { return; }
+    guard.refreshing = true;
     drop(guard);
     std::thread::spawn(move || {
-        let result = list_cameras();
+        let (cams, audios, stderr) = enumerate_blocking();
         if let Ok(mut g) = cache.lock() {
-            g.0 = std::time::Instant::now();
-            g.1 = result;
-            g.2 = false;
+            g.refreshed_at = std::time::Instant::now();
+            g.cameras = cams;
+            g.audio_inputs = audios;
+            g.last_stderr = stderr;
+            g.refreshing = false;
         }
     });
 }

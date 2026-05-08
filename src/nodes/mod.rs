@@ -82,6 +82,10 @@ pub mod spectral_synth_node;
 pub mod neural_audio_node;
 pub mod web_app_node;
 pub mod web_app_mjpeg;
+pub mod web_stream_node;
+pub mod web_stream_rtc;
+pub mod web_stream_h264;
+pub mod web_stream_audio;
 pub mod websocket_node;
 pub mod clock_node;
 pub mod key_input_node;
@@ -467,6 +471,8 @@ pub fn catalog() -> Vec<NodeCatalogEntry> {
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(html_viewer_node::HtmlViewerNode) } } },
         NodeCatalogEntry { wip: false, singleton: false, label: "Web App", category: "Output",
             factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(web_app_node::WebAppNode::default()) } } },
+        NodeCatalogEntry { wip: true, singleton: false, label: "Web Stream", category: "Output",
+            factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(web_stream_node::WebStreamNode::default()) } } },
 
         // ── Shader ───────────────────────────────────────────
         NodeCatalogEntry { wip: false, singleton: false, label: "Visuals (WGSL)", category: "Shader", factory: || NodeType::WgslViewer {

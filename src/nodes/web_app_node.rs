@@ -384,7 +384,7 @@ fn write_mjpeg_part(stream: &mut std::net::TcpStream, boundary: &str, jpeg: &[u8
     stream.flush()
 }
 
-fn open_in_browser(url: &str) {
+pub(crate) fn open_in_browser(url: &str) {
     #[cfg(target_os = "macos")]
     let _ = std::process::Command::new("open").arg(url).spawn();
     #[cfg(target_os = "windows")]
@@ -399,7 +399,7 @@ fn open_in_browser(url: &str) {
 // trick — no actual packet is sent, the OS just picks the local interface
 // it would route through. Returns None if there's no routable interface
 // (e.g. machine is fully offline) — caller falls back to loopback.
-fn detect_lan_ip() -> Option<std::net::IpAddr> {
+pub(crate) fn detect_lan_ip() -> Option<std::net::IpAddr> {
     let s = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
     s.connect("8.8.8.8:80").ok()?;
     let ip = s.local_addr().ok()?.ip();
@@ -412,7 +412,7 @@ fn detect_lan_ip() -> Option<std::net::IpAddr> {
 // quiet zone and 4× scale per module. The egui::ColorImage is then uploaded
 // to a TextureHandle by the caller (cached on the node, regenerated only
 // when the URL string changes — typically just at startup).
-fn url_qr_image(url: &str) -> Option<egui::ColorImage> {
+pub(crate) fn url_qr_image(url: &str) -> Option<egui::ColorImage> {
     let code = qrcode::QrCode::new(url.as_bytes()).ok()?;
     let colors = code.to_colors();
     let side = code.width(); // QR is square, side = sqrt(colors.len())
