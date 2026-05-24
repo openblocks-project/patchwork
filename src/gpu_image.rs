@@ -320,7 +320,29 @@ impl GpuTextureCache {
                 entry.frame = self.current_frame;
             }
         }
-        &self.entries.get(&key).unwrap().view
+
+        // Defensive: by the logic above the entry must exist here, but if a future
+        // refactor breaks that invariant — or `upload_texture` ever surfaces a
+        // device-lost / OOM error — we don't want a UI-thread panic. Insert a 1×1
+        // black fallback and log the unexpected case so the bug stays visible.
+        if !self.entries.contains_key(&key) {
+            crate::system_log::log(
+                "gpu_image::get_or_upload: cache entry missing after upload — inserting 1×1 black fallback"
+            );
+            let fallback_data = crate::graph::ImageData::solid(1, 1, 0, 0, 0, 255);
+            let texture = upload_texture(device, queue, &fallback_data, "gpu_cache_fallback");
+            let view = texture.create_view(&Default::default());
+            self.entries.insert(key, CachedTexture {
+                texture, view, width: 1, height: 1,
+                frame: self.current_frame, src_node: None, src_port: 0,
+            });
+        }
+
+        // Safe: the `contains_key` + insert above guarantees this never fires; expect
+        // (not unwrap) makes the invariant explicit for future readers.
+        &self.entries.get(&key)
+            .expect("BUG: get_or_upload fallback insert did not insert key")
+            .view
     }
 
     /// Tag a previously-uploaded `get_or_upload` entry with its source
