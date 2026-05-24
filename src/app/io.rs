@@ -29,14 +29,64 @@ fn make_relative(abs_path: &str, project_dir: &str) -> String {
 }
 
 /// Convert a relative asset path to absolute (resolved against project directory).
+///
+/// **P0-4 hardening:** rejects path-traversal attempts (any `..` component in
+/// a relative path) so a malicious project can't reference files outside its
+/// own folder (e.g. `path: "../../../etc/passwd"` resolving to `/etc/passwd`).
+/// A rejected path returns empty — the node surfaces "file not found"
+/// gracefully rather than silently reading a system file.
+///
+/// Absolute paths inside `project.json` are still accepted (a user may
+/// legitimately reference a shared asset at a fixed location) but logged
+/// when the path looks suspicious (HOME / system dirs).
 fn make_absolute(rel_path: &str, project_dir: &str) -> String {
     if rel_path.is_empty() { return String::new(); }
     let p = Path::new(rel_path);
     if p.is_absolute() {
-        return rel_path.to_string(); // already absolute
+        // Light scrutiny on absolute paths: log a warning if they target a
+        // typically-sensitive location. Don't auto-reject — users may have
+        // legitimate references and the asset-relinking dialog (P2-28) is
+        // the right UX for full path cleanup.
+        if looks_sensitive_abs(rel_path) {
+            crate::system_log::warn(format!(
+                "Project references absolute path that looks sensitive: {} — \
+                 verify this asset is yours",
+                rel_path
+            ));
+        }
+        return rel_path.to_string();
+    }
+    // Lexical traversal check: reject any `..` component before join, so the
+    // resolved path can't escape `project_dir`.
+    use std::path::Component;
+    for comp in p.components() {
+        if matches!(comp, Component::ParentDir) {
+            crate::system_log::warn(format!(
+                "Rejected asset path with `..` traversal in project: {} — \
+                 path is suspicious (would escape project folder); ignoring",
+                rel_path
+            ));
+            return String::new();
+        }
     }
     let dir = Path::new(project_dir);
     dir.join(p).display().to_string()
+}
+
+/// Heuristic check for absolute paths that look like they target system or
+/// user-private locations. Used only for a warning log, not for hard rejection.
+fn looks_sensitive_abs(p: &str) -> bool {
+    const SENSITIVE_PREFIXES: &[&str] = &[
+        "/etc/", "/private/etc/",
+        "/var/", "/private/var/",
+        "/usr/", "/bin/", "/sbin/",
+        "/proc/", "/sys/",
+        "/.ssh", "/.aws", "/.gnupg",
+        "C:\\Windows\\", "C:\\Program Files",
+    ];
+    let lower = p.to_ascii_lowercase();
+    SENSITIVE_PREFIXES.iter().any(|pfx| lower.starts_with(&pfx.to_ascii_lowercase()))
+        || lower.contains("/.ssh/") || lower.contains("/.aws/") || lower.contains("/.gnupg/")
 }
 
 /// Convert all asset paths in a graph to relative (for saving).
