@@ -124,6 +124,8 @@ fn format_value(v: &PortValue) -> String {
         PortValue::Text(s) => format!("\"{}\"", s),
         PortValue::Image(img) => format!("[{}×{}]", img.width, img.height),
         PortValue::GpuImage(h) => format!("[gpu {}×{}]", h.width, h.height),
+        PortValue::Mesh(p) => format!("[mesh {}v]", p.mesh.vertices.len()),
+        PortValue::GpuMesh(h) => format!("[gpu mesh {}v]", h.vertex_count),
         PortValue::None => "—".into(),
     }
 }

@@ -2262,6 +2262,9 @@ impl eframe::App for PatchworkApp {
         // Hash either a CPU `Image` or a GPU `GpuImage` port value. The GPU
         // variant hashes (producer_node_id, port, frame_stamp) so a producer
         // re-render naturally invalidates the param-cache key downstream.
+        // Also covers Mesh / Text so 3D-pipeline nodes (3D Render) participate
+        // correctly — Material rides on a Text port now, so its content hash
+        // here is what flips the cache when the user edits the material.
         let img_or_gpu_hash = |val: &PortValue| -> u64 {
             match val {
                 PortValue::Image(img) => img_content_hash(img),
@@ -2269,6 +2272,19 @@ impl eframe::App for PatchworkApp {
                     let mut k = (h.node_id as u64).wrapping_mul(31).wrapping_add(h.port as u64);
                     k = k.wrapping_mul(31).wrapping_add(h.frame_stamp);
                     k
+                }
+                PortValue::Mesh(m) => std::sync::Arc::as_ptr(m) as usize as u64,
+                PortValue::GpuMesh(h) => {
+                    let mut k = (h.node_id as u64).wrapping_mul(31).wrapping_add(h.port as u64);
+                    k = k.wrapping_mul(31).wrapping_add(h.frame_stamp);
+                    k
+                }
+                PortValue::Text(s) => {
+                    use std::collections::hash_map::DefaultHasher;
+                    use std::hash::{Hash, Hasher};
+                    let mut h = DefaultHasher::new();
+                    s.hash(&mut h);
+                    h.finish()
                 }
                 _ => 0,
             }
@@ -2590,12 +2606,19 @@ impl eframe::App for PatchworkApp {
                     _ => false,
                 }).unwrap_or(false);
 
-                if is_dynamic && !is_async_ml_node && inputs.iter().any(|v| matches!(v, PortValue::Image(_) | PortValue::GpuImage(_))) {
-                    // Build cache key from image content + params + node state
+                if is_dynamic && !is_async_ml_node && inputs.iter().any(|v| matches!(v,
+                    PortValue::Image(_) | PortValue::GpuImage(_)
+                    | PortValue::Mesh(_) | PortValue::GpuMesh(_)
+                )) {
+                    // Build cache key from image content + params + node state.
+                    // Mesh / Material / Camera all flow through `img_or_gpu_hash`
+                    // so 3D Render reacts to upstream changes.
                     let mut cache_key: u64 = 0;
                     for inp in &inputs {
                         match inp {
-                            PortValue::Image(_) | PortValue::GpuImage(_) => {
+                            PortValue::Image(_) | PortValue::GpuImage(_)
+                            | PortValue::Mesh(_) | PortValue::GpuMesh(_)
+                            | PortValue::Text(_) => {
                                 cache_key = cache_key.wrapping_mul(31).wrapping_add(img_or_gpu_hash(inp))
                             }
                             PortValue::Float(f) => cache_key = cache_key.wrapping_mul(31).wrapping_add(f.to_bits() as u64),

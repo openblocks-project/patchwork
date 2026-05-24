@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::gpu_mesh::GpuMeshHandle;
+use crate::mesh::PlacedMesh;
 use crate::node_trait::NodeBehavior;
 
 fn default_true() -> bool { true }
@@ -160,6 +162,14 @@ pub enum PortValue {
     /// (no Arc, no GPU resources held by clones). Producers emit this when
     /// no immediate downstream consumer needs CPU pixels (Tier 2 GPU-handoff).
     GpuImage(GpuImageHandle),
+    /// 3D mesh + world-space placement. The inner `Arc<MeshData>` is shared
+    /// (so the GPU mesh cache hits across frames even when transforms
+    /// animate); the wrapping `PlacedMesh` carries the model matrix.
+    Mesh(Arc<PlacedMesh>),
+    /// GPU-resident mesh stub. Mirrors `GpuImage` but for vertex/index
+    /// buffers stored in `GpuMeshCache`. Phase 1 doesn't emit this yet —
+    /// reserved for nodes that transform meshes on GPU (deformers, etc.).
+    GpuMesh(GpuMeshHandle),
     None,
 }
 
@@ -192,12 +202,14 @@ impl Serialize for PortValue {
                 m.serialize_entry("Text", v)?;
                 m.end()
             }
-            // Image bytes and GpuImage handles are runtime-only; both
-            // serialize as the "None" token. On project load, downstream
+            // Image bytes, GpuImage handles, and Mesh data are runtime-only;
+            // all serialize as the "None" token. On project load, downstream
             // GPU-handoff handles regenerate naturally on the next eval pass.
-            PortValue::Image(_) | PortValue::GpuImage(_) | PortValue::None => {
-                s.serialize_str("None")
-            }
+            PortValue::Image(_)
+            | PortValue::GpuImage(_)
+            | PortValue::Mesh(_)
+            | PortValue::GpuMesh(_)
+            | PortValue::None => s.serialize_str("None"),
         }
     }
 }
@@ -233,6 +245,12 @@ impl PartialEq for PortValue {
                     && a.height == b.height
                     && a.frame_stamp == b.frame_stamp
             }
+            (PortValue::Mesh(a), PortValue::Mesh(b)) => Arc::ptr_eq(a, b),
+            (PortValue::GpuMesh(a), PortValue::GpuMesh(b)) => {
+                a.node_id == b.node_id
+                    && a.port == b.port
+                    && a.frame_stamp == b.frame_stamp
+            }
             (PortValue::None, PortValue::None) => true,
             _ => false,
         }
@@ -252,6 +270,11 @@ impl std::fmt::Display for PortValue {
             }
             PortValue::Image(img) => write!(f, "[Image {}x{}]", img.width, img.height),
             PortValue::GpuImage(h) => write!(f, "[GPU Image {}x{}]", h.width, h.height),
+            PortValue::Mesh(p) => {
+                let n = p.mesh.name.as_deref().unwrap_or("Mesh");
+                write!(f, "[{} {}v/{}i]", n, p.mesh.vertices.len(), p.mesh.indices.len())
+            }
+            PortValue::GpuMesh(h) => write!(f, "[GPU Mesh {}v/{}i]", h.vertex_count, h.index_count),
             PortValue::None => write!(f, "\u{2014}"),
         }
     }
@@ -263,6 +286,9 @@ impl PortValue {
     }
     pub fn as_image(&self) -> Option<&Arc<ImageData>> {
         match self { PortValue::Image(img) => Some(img), _ => None }
+    }
+    pub fn as_mesh(&self) -> Option<&Arc<PlacedMesh>> {
+        match self { PortValue::Mesh(m) => Some(m), _ => None }
     }
 
     /// Returns `(width, height)` for any image port (CPU `Image` or GPU
@@ -327,6 +353,8 @@ pub enum PortKind {
     Audio,
     /// Individual color channel (R, G, or B, 0–255)
     Color,
+    /// 3D mesh (vertex/index buffers).
+    Mesh,
     /// Unknown / any type (fallback)
     Generic,
 }
@@ -343,6 +371,7 @@ impl PortKind {
             Self::Image       => [200, 30, 255],    // purple
             Self::Audio       => [255, 50, 50],     // red
             Self::Color       => [80, 100, 230],    // blue (same family as Number)
+            Self::Mesh        => [80, 220, 220],    // cyan
             Self::Generic     => [80, 100, 230],    // blue (same family as Number)
         }
     }
@@ -358,12 +387,13 @@ impl PortKind {
             Self::Image       => crate::icons::IMAGE,
             Self::Audio       => crate::icons::WAVEFORM,
             Self::Color       => crate::icons::PALETTE,
+            Self::Mesh        => "",
             Self::Generic     => "",
         }
     }
 
     /// Shape identifier for rendering
-    /// 0=Circle, 1=RoundedSquare, 2=Triangle, 3=Diamond, 4=HalfMoon
+    /// 0=Circle, 1=RoundedSquare, 2=Triangle, 3=Diamond, 4=HalfMoon, 5=Square
     pub fn shape_id(&self) -> u8 {
         match self {
             Self::Number      => 0, // circle
@@ -374,6 +404,7 @@ impl PortKind {
             Self::Image       => 3, // diamond
             Self::Audio       => 0, // circle (with inner dot)
             Self::Color       => 0, // circle
+            Self::Mesh        => 5, // square (cyan stands in for "geometry")
             Self::Generic     => 0, // circle
         }
     }
@@ -384,6 +415,7 @@ impl PortKind {
             PortValue::Float(_) => Self::Number,
             PortValue::Text(_) => Self::Text,
             PortValue::Image(_) | PortValue::GpuImage(_) => Self::Image,
+            PortValue::Mesh(_) | PortValue::GpuMesh(_) => Self::Mesh,
             PortValue::None => Self::Generic,
         }
     }
@@ -404,6 +436,8 @@ impl PortKind {
             (Image, Image) => true,
             // Text only connects to Text
             (Text, Text) => true,
+            // 3D types: each only connects to itself
+            (Mesh, Mesh) => true,
             // Everything else is incompatible
             _ => false,
         }

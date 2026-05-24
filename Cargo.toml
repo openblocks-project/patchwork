@@ -25,6 +25,8 @@ naga = { version = "24", features = ["wgsl-in"] }
 pollster = "0.4"
 regex = "1"
 bytemuck = { version = "1", features = ["derive"] }
+glam = { version = "0.29", features = ["bytemuck", "serde"] }
+gltf = { version = "1", default-features = false, features = ["import", "utils", "names"] }
 libloading = "0.8"
 cpal = "0.15"
 symphonia = { version = "0.5", default-features = false, features = ["mp3", "ogg", "flac", "pcm", "isomp4", "aac"] }

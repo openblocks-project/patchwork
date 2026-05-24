@@ -224,6 +224,7 @@ impl NodeBehavior for SampleHoldNode {
             PortValue::Text(_)  => "Text",
             PortValue::Image(_) => "Image",
             PortValue::GpuImage(_) => "Image",  // shouldn't arrive; needs_cpu_image_input handles
+            PortValue::Mesh(_) | PortValue::GpuMesh(_) => "Mesh",
             PortValue::None => "—",
         };
 

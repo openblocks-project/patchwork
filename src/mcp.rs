@@ -450,6 +450,8 @@ pub fn execute_command(
                         PortValue::Text(s) => json!(s),
                         PortValue::Image(img) => json!(format!("[Image {}x{}]", img.width, img.height)),
                         PortValue::GpuImage(h) => json!(format!("[GpuImage {}x{} @ node {}:{}]", h.width, h.height, h.node_id, h.port)),
+                        PortValue::Mesh(p) => json!(format!("[Mesh {}v/{}i]", p.mesh.vertices.len(), p.mesh.indices.len())),
+                        PortValue::GpuMesh(h) => json!(format!("[GpuMesh {}v/{}i @ node {}:{}]", h.vertex_count, h.index_count, h.node_id, h.port)),
                         PortValue::None => json!(null),
                     };
                     result.insert(key, v);

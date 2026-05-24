@@ -287,6 +287,10 @@ pub static NODE_REGISTRY: std::sync::LazyLock<std::sync::Mutex<NodeRegistryInner
         crate::nodes::code_gen_node::register(&mut r);
         crate::nodes::video_in_node::register(&mut r);
         crate::nodes::video_out_node::register(&mut r);
+        // 3D pipeline (Phase 1)
+        crate::nodes::shape_3d::register(&mut r);
+        crate::nodes::material::register(&mut r);
+        crate::nodes::render_3d::register(&mut r);
         std::sync::Mutex::new(r)
     });
 

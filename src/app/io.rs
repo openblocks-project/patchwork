@@ -232,6 +232,7 @@ impl super::PatchworkApp {
         let image_exts = ["png", "jpg", "jpeg", "gif", "bmp", "webp"];
         let video_exts = ["mp4", "mov", "avi", "webm", "mkv"];
         let audio_exts = ["mp3", "wav", "ogg", "flac", "aac", "m4a"];
+        let mesh_exts  = ["gltf", "glb"];
         let off_e = self.canvas_offset / self.canvas_zoom;
         let mut new_ids: std::collections::HashSet<crate::graph::NodeId> = std::collections::HashSet::new();
         for (idx, path) in dropped.iter().enumerate() {
@@ -266,6 +267,39 @@ impl super::PatchworkApp {
                     duration: 0.0, speed: 1.0,
                     status: "Loaded".into(),
                 }, [canvas_x, canvas_y])
+            } else if mesh_exts.contains(&ext.as_str()) {
+                // If the drop landed on an existing 3D Shape node, update its
+                // custom path in place instead of spawning a fresh node — the
+                // user wanted to swap the asset, not duplicate it. Falls
+                // through to spawn-new on any miss.
+                let target_screen = drop_pos + egui::vec2(0.0, idx as f32 * 40.0);
+                let hit_id: Option<NodeId> = self.node_rects.iter()
+                    .find(|(_, r)| r.contains(target_screen))
+                    .map(|(&id, _)| id);
+                let mut updated_existing = false;
+                if let Some(id) = hit_id {
+                    if let Some(node) = self.graph.nodes.get_mut(&id) {
+                        if let NodeType::Dynamic { inner } = &mut node.node_type {
+                            let any_mut = &mut *inner.node as &mut dyn std::any::Any;
+                            if let Some(s) = any_mut.downcast_mut::<crate::nodes::shape_3d::Shape3DNode>() {
+                                s.kind = crate::nodes::shape_3d::ShapeKind::Custom;
+                                s.custom_path = path.display().to_string();
+                                s.cached_custom = None;
+                                s.custom_error = None;
+                                updated_existing = true;
+                            }
+                        }
+                    }
+                }
+                if updated_existing {
+                    hit_id.unwrap()
+                } else {
+                    let node = crate::nodes::shape_3d::Shape3DNode::from_gltf_path(path.display().to_string());
+                    self.graph.add_node(
+                        NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(node) } },
+                        [canvas_x, canvas_y],
+                    )
+                }
             } else {
                 let mut file_node = crate::nodes::file_node::FileNode::default();
                 file_node.path = path.display().to_string();
