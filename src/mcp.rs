@@ -604,6 +604,127 @@ pub fn execute_command(
 
 // ── MCP Thread (JSON-RPC over stdio) ─────────────────────────────────────────
 
+/// Format a `catch_unwind` payload as a human-readable string for logs / error
+/// responses. The payload is the `Box<dyn Any + Send>` returned by
+/// `catch_unwind(...).unwrap_err()`; in practice it's almost always a `&str` or
+/// `String` from `panic!()`.
+fn panic_payload_to_string(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = payload.downcast_ref::<&'static str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "unknown panic payload".to_string()
+    }
+}
+
+/// Dispatch a single parsed JSON-RPC request. Returns `true` if the MCP loop
+/// should break (e.g., the GUI thread has disconnected — app shutting down).
+/// Any panic inside is caught at the call site so the MCP thread survives
+/// individual malformed requests.
+fn handle_mcp_request(
+    request: Value,
+    stdout: &mut std::io::Stdout,
+    command_tx: &mpsc::Sender<McpRequest>,
+    log: &McpLog,
+) -> bool {
+    let id = request.get("id").cloned().unwrap_or(Value::Null);
+    let method = request.get("method").and_then(|m| m.as_str()).unwrap_or("");
+    let params = request.get("params").cloned().unwrap_or(json!({}));
+
+    match method {
+        "initialize" => {
+            let response = json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": { "tools": {} },
+                    "serverInfo": { "name": "patchwork", "version": "0.0.1" }
+                }
+            });
+            write_json(stdout, &response);
+        }
+
+        "notifications/initialized" => {
+            log_msg(log, "✓ Client initialized".into());
+        }
+
+        "tools/list" => {
+            let response = json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": { "tools": tool_definitions() }
+            });
+            write_json(stdout, &response);
+        }
+
+        "tools/call" => {
+            let tool_name = params.get("name").and_then(|n| n.as_str()).unwrap_or("");
+            let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
+            log_msg(log, format!("→ {} {}", tool_name, serde_json::to_string(&arguments).unwrap_or_default()));
+
+            let cmd = match parse_tool_call(tool_name, &arguments) {
+                Ok(cmd) => cmd,
+                Err(e) => {
+                    let response = json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": {
+                            "content": [{ "type": "text", "text": format!("Error: {}", e) }],
+                            "isError": true
+                        }
+                    });
+                    write_json(stdout, &response);
+                    return false;
+                }
+            };
+
+            // Send command to GUI thread and wait for result
+            let (resp_tx, resp_rx) = mpsc::channel();
+            let req = McpRequest { command: cmd, response_tx: resp_tx };
+            if command_tx.send(req).is_err() {
+                write_jsonrpc_error(stdout, id, -32603, "App disconnected");
+                return true;
+            }
+
+            // Wait for GUI to process (blocks until next frame)
+            match resp_rx.recv() {
+                Ok(result) => {
+                    let text = match &result {
+                        McpResult::Json(v) => serde_json::to_string_pretty(v).unwrap_or_default(),
+                        McpResult::Error { error } => format!("Error: {}", error),
+                    };
+                    let is_error = matches!(result, McpResult::Error { .. });
+                    let short = if text.chars().count() > 80 {
+                        let head: String = text.chars().take(80).collect();
+                        format!("{}...", head)
+                    } else { text.clone() };
+                    log_msg(log, format!("← {}{}", if is_error { "ERR " } else { "" }, short));
+                    let response = json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": {
+                            "content": [{ "type": "text", "text": text }],
+                            "isError": is_error
+                        }
+                    });
+                    write_json(stdout, &response);
+                }
+                Err(_) => {
+                    write_jsonrpc_error(stdout, id, -32603, "Response timeout");
+                }
+            }
+        }
+
+        _ => {
+            write_jsonrpc_error(stdout, id, -32601, &format!("Unknown method: {}", method));
+        }
+    }
+
+    false
+}
+
 pub fn run_mcp_thread(command_tx: mpsc::Sender<McpRequest>, log: McpLog) {
     // Check if stdin is a pipe (Claude Desktop) or terminal (normal launch)
     #[cfg(unix)]
@@ -642,99 +763,35 @@ pub fn run_mcp_thread(command_tx: mpsc::Sender<McpRequest>, log: McpLog) {
             }
         };
 
-        let id = request.get("id").cloned().unwrap_or(Value::Null);
-        let method = request.get("method").and_then(|m| m.as_str()).unwrap_or("");
-        let params = request.get("params").cloned().unwrap_or(json!({}));
+        // Preserve the request id in case the handler panics — we still need
+        // to send a JSON-RPC error response with the right id.
+        let id_for_panic = request.get("id").cloned().unwrap_or(Value::Null);
 
-        match method {
-            "initialize" => {
-                let response = json!({
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "result": {
-                        "protocolVersion": "2024-11-05",
-                        "capabilities": { "tools": {} },
-                        "serverInfo": { "name": "patchwork", "version": "0.0.1" }
-                    }
-                });
-                write_json(&mut stdout, &response);
+        // Top-level panic recovery: a malformed request, internal `unwrap`,
+        // or tool-implementation bug must not kill the MCP thread (it would
+        // silently break the Claude Desktop integration). Catch panics, send
+        // a JSON-RPC error response, log the panic, and continue serving the
+        // next request.
+        let handler_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            handle_mcp_request(request, &mut stdout, &command_tx, &log)
+        }));
+
+        let should_break = match handler_result {
+            Ok(brk) => brk,
+            Err(payload) => {
+                let msg = panic_payload_to_string(&*payload);
+                log_msg(&log, format!("MCP: handler panicked, recovering — {}", msg));
+                write_jsonrpc_error(
+                    &mut stdout,
+                    id_for_panic,
+                    -32603,
+                    &format!("Internal error: handler panic ({})", msg),
+                );
+                false
             }
+        };
 
-            "notifications/initialized" => {
-                log_msg(&log, "✓ Client initialized".into());
-            }
-
-            "tools/list" => {
-                let response = json!({
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "result": { "tools": tool_definitions() }
-                });
-                write_json(&mut stdout, &response);
-            }
-
-            "tools/call" => {
-                let tool_name = params.get("name").and_then(|n| n.as_str()).unwrap_or("");
-                let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
-                log_msg(&log, format!("→ {} {}", tool_name, serde_json::to_string(&arguments).unwrap_or_default()));
-
-                let cmd = match parse_tool_call(tool_name, &arguments) {
-                    Ok(cmd) => cmd,
-                    Err(e) => {
-                        let response = json!({
-                            "jsonrpc": "2.0",
-                            "id": id,
-                            "result": {
-                                "content": [{ "type": "text", "text": format!("Error: {}", e) }],
-                                "isError": true
-                            }
-                        });
-                        write_json(&mut stdout, &response);
-                        continue;
-                    }
-                };
-
-                // Send command to GUI thread and wait for result
-                let (resp_tx, resp_rx) = mpsc::channel();
-                let req = McpRequest { command: cmd, response_tx: resp_tx };
-                if command_tx.send(req).is_err() {
-                    write_jsonrpc_error(&mut stdout, id, -32603, "App disconnected");
-                    break;
-                }
-
-                // Wait for GUI to process (blocks until next frame)
-                match resp_rx.recv() {
-                    Ok(result) => {
-                        let text = match &result {
-                            McpResult::Json(v) => serde_json::to_string_pretty(v).unwrap_or_default(),
-                            McpResult::Error { error } => format!("Error: {}", error),
-                        };
-                        let is_error = matches!(result, McpResult::Error { .. });
-                        let short = if text.chars().count() > 80 {
-                            let head: String = text.chars().take(80).collect();
-                            format!("{}...", head)
-                        } else { text.clone() };
-                        log_msg(&log, format!("← {}{}", if is_error { "ERR " } else { "" }, short));
-                        let response = json!({
-                            "jsonrpc": "2.0",
-                            "id": id,
-                            "result": {
-                                "content": [{ "type": "text", "text": text }],
-                                "isError": is_error
-                            }
-                        });
-                        write_json(&mut stdout, &response);
-                    }
-                    Err(_) => {
-                        write_jsonrpc_error(&mut stdout, id, -32603, "Response timeout");
-                    }
-                }
-            }
-
-            _ => {
-                write_jsonrpc_error(&mut stdout, id, -32601, &format!("Unknown method: {}", method));
-            }
-        }
+        if should_break { break; }
     }
 }
 
