@@ -254,6 +254,14 @@ pub struct VideoInNode {
     #[cfg(target_os = "macos")]
     #[serde(skip)]
     ndi_last_frame_at: Option<std::time::Instant>,
+
+    /// When the last "Video In disconnected" warning was logged. Used to
+    /// throttle the warning if the user repeatedly clicks Start on a camera
+    /// the OS hasn't released yet — without this each failed start spawned
+    /// a fresh ffmpeg that immediately died, and each death logged. Cleared
+    /// when a frame successfully arrives.
+    #[serde(skip)]
+    last_disconnect_log_at: Option<std::time::Instant>,
 }
 
 /// Handle on the per-node receiver thread. Kept inside `VideoInNode`
@@ -317,6 +325,7 @@ impl Clone for VideoInNode {
             ndi_last_dims: None,
             #[cfg(target_os = "macos")]
             ndi_last_frame_at: None,
+            last_disconnect_log_at: None,
             effective_url: String::new(),
             loop_playback: self.loop_playback,
             volume: self.volume,
@@ -362,6 +371,7 @@ impl Default for VideoInNode {
             ndi_last_dims: None,
             #[cfg(target_os = "macos")]
             ndi_last_frame_at: None,
+            last_disconnect_log_at: None,
             effective_url: String::new(),
             loop_playback: false,
             volume: default_volume(),
@@ -570,6 +580,10 @@ impl VideoInNode {
             if self.status != "Capturing" {
                 self.status = "Capturing".into();
             }
+            // Reset the disconnect-log throttle so a future genuine
+            // disconnect logs once again instead of being silently
+            // suppressed by a stale throttle window.
+            self.last_disconnect_log_at = None;
         } else if self.current_frame.is_none() {
             // No frames yet. ffmpeg often prints a transient format-
             // negotiation warning during the first second (e.g.
@@ -626,7 +640,20 @@ impl VideoInNode {
                 self.anchor_position(0.0);
             } else {
                 self.status = "Disconnected".into();
-                crate::system_log::warn(format!("Video In disconnected (id:{})", node_id));
+                // Throttle the warning: if the user keeps clicking Start on a
+                // camera the OS hasn't released yet, each new ffmpeg dies
+                // immediately and we'd spam the log. Log at most once every
+                // 3 seconds; reset on first successful frame above so a
+                // genuine new disconnect after recovery logs again.
+                let now = std::time::Instant::now();
+                let should_log = self
+                    .last_disconnect_log_at
+                    .map(|t| now.duration_since(t).as_secs_f32() >= 3.0)
+                    .unwrap_or(true);
+                if should_log {
+                    crate::system_log::warn(format!("Video In disconnected (id:{}) — if you just clicked Start, the camera may still be in use by the previous ffmpeg; wait a moment before retrying", node_id));
+                    self.last_disconnect_log_at = Some(now);
+                }
             }
         }
     }
@@ -896,8 +923,12 @@ impl VideoInNode {
         // Resolution
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("Res").small());
-            ui.add(egui::DragValue::new(&mut self.res_w).range(160..=1920).speed(10).prefix("W:"));
-            ui.add(egui::DragValue::new(&mut self.res_h).range(120..=1080).speed(10).prefix("H:"));
+            // Wide range so users can request anything from a 1×1 stub
+            // (useful for "average colour of frame → signal" patches) up
+            // through 4K. ffmpeg negotiates the closest supported native
+            // resolution from the camera and scales if needed.
+            ui.add(egui::DragValue::new(&mut self.res_w).range(1..=4096).speed(10).prefix("W:"));
+            ui.add(egui::DragValue::new(&mut self.res_h).range(1..=4096).speed(10).prefix("H:"));
         });
 
         // Mirror toggles — applied in `poll_decoder` before emit, so
@@ -1173,9 +1204,9 @@ impl VideoInNode {
         // ── Resolution sliders (matches camera/screen) ───────────────
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("Size").small().color(dim));
-            ui.add(egui::DragValue::new(&mut self.res_w).range(64..=3840).speed(8));
+            ui.add(egui::DragValue::new(&mut self.res_w).range(1..=4096).speed(8));
             ui.label(egui::RichText::new("×").small().color(dim));
-            ui.add(egui::DragValue::new(&mut self.res_h).range(64..=2160).speed(8));
+            ui.add(egui::DragValue::new(&mut self.res_h).range(1..=4096).speed(8));
         });
 
         // ── Loop checkbox (URL-only feature) ─────────────────────────
@@ -1627,9 +1658,9 @@ impl VideoInNode {
         // ── Resolution sliders ───────────────────────────────────────
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("Size").small().color(dim));
-            ui.add(egui::DragValue::new(&mut self.res_w).range(64..=3840).speed(8));
+            ui.add(egui::DragValue::new(&mut self.res_w).range(1..=4096).speed(8));
             ui.label(egui::RichText::new("×").small().color(dim));
-            ui.add(egui::DragValue::new(&mut self.res_h).range(64..=2160).speed(8));
+            ui.add(egui::DragValue::new(&mut self.res_h).range(1..=4096).speed(8));
         });
 
         // ── Loop checkbox ────────────────────────────────────────────
@@ -1769,8 +1800,8 @@ impl VideoInNode {
         // Resolution (same as camera)
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("Res").small());
-            ui.add(egui::DragValue::new(&mut self.res_w).range(320..=3840).speed(10).prefix("W:"));
-            ui.add(egui::DragValue::new(&mut self.res_h).range(240..=2160).speed(10).prefix("H:"));
+            ui.add(egui::DragValue::new(&mut self.res_w).range(1..=4096).speed(10).prefix("W:"));
+            ui.add(egui::DragValue::new(&mut self.res_h).range(1..=4096).speed(10).prefix("H:"));
         });
 
         // Start / Stop — deferred-apply to avoid borrowing self twice
