@@ -133,9 +133,60 @@ fn session_path() -> std::path::PathBuf {
     dir.join("last_session.json")
 }
 
+/// Per-user API-keys store at `~/.patchwork/keys.json`. This is the canonical
+/// location — **never** writes inside a project folder, so keys don't ride
+/// along when a user zips/shares/posts their project. (`.env`-style: belongs
+/// to the user, not the artifact.)
+fn user_keys_path() -> std::path::PathBuf {
+    let dir = dirs::home_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join(".patchwork");
+    let _ = std::fs::create_dir_all(&dir);
+    dir.join("keys.json")
+}
+
+/// Persist the api-keys map to `~/.patchwork/keys.json`. Called on every save
+/// (project or session) so the canonical store stays in sync with in-memory
+/// state. Best-effort: failures are logged but don't block the calling save.
+pub(super) fn save_user_keys(keys: &HashMap<String, String>) {
+    let path = user_keys_path();
+    match serde_json::to_string_pretty(keys) {
+        Ok(json) => {
+            if let Err(e) = std::fs::write(&path, json) {
+                crate::system_log::warn(format!("Failed to write {}: {}", path.display(), e));
+            }
+            // Set mode 0600 on Unix so other users on a shared machine can't
+            // read the key file. Same hardening pattern as `ai_configs/`.
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+            }
+        }
+        Err(e) => {
+            crate::system_log::warn(format!("Failed to serialize api_keys: {}", e));
+        }
+    }
+}
+
+/// Load api-keys from `~/.patchwork/keys.json`. Returns empty if missing or
+/// unreadable (silent — first-run users haven't created it yet).
+pub(super) fn load_user_keys() -> HashMap<String, String> {
+    let path = user_keys_path();
+    std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|json| serde_json::from_str(&json).ok())
+        .unwrap_or_default()
+}
+
 impl super::PatchworkApp {
     /// Save current session state to ~/.patchwork/last_session.json
     pub fn save_session(&self) {
+        // P0-2: also persist api keys to the dedicated per-user store. They're
+        // still serialized into the session blob for now (backwards compat with
+        // older Patchwork builds that don't read keys.json), but the user store
+        // is the canonical source going forward.
+        save_user_keys(&self.api_keys);
         let state = SessionState {
             graph: self.graph.clone(),
             canvas_offset: [self.canvas_offset.x, self.canvas_offset.y],
@@ -184,7 +235,11 @@ impl super::PatchworkApp {
         self.canvas_zoom = state.canvas_zoom;
         self.pinned_nodes = state.pinned_nodes.into_iter().collect();
         self.project_path = state.project_path;
-        self.api_keys = state.api_keys;
+        // P0-2: user-store keys are canonical; if present, they override any
+        // keys carried in last_session.json (older builds wrote both; new
+        // builds read keys from `~/.patchwork/keys.json` first).
+        let user_keys = load_user_keys();
+        self.api_keys = if !user_keys.is_empty() { user_keys } else { state.api_keys };
         self.is_dirty = state.is_dirty;
         self.recent_projects = state.recent_projects;
         self.port_positions.clear();
@@ -816,7 +871,11 @@ impl super::PatchworkApp {
         }
     }
 
-    /// Write project.json + api_keys.json to the given directory.
+    /// Write project.json to the given directory. API keys are persisted to
+    /// the per-user store at `~/.patchwork/keys.json` (see `save_user_keys`) —
+    /// they never live in the project folder so they don't ride along when
+    /// the project is shared. Any legacy in-project `api_keys.json` is
+    /// migrated and removed.
     /// Asset paths are temporarily converted to relative for portability, then restored.
     /// Returns true on successful write — callers use this to update dirty/recent state.
     fn save_to_dir(&mut self, dir_str: String) -> bool {
@@ -852,10 +911,28 @@ impl super::PatchworkApp {
         }
         // Restore absolute paths so the running app continues working
         absolutize_paths(&mut self.graph, &dir_str);
+        // P0-2: API keys NEVER write into the project folder anymore — they
+        // would ride along when a user zips/shares the project. Persist to the
+        // per-user `~/.patchwork/keys.json` store on every save instead.
         if !self.api_keys.is_empty() {
-            let keys_file = dir.join("api_keys.json");
-            let keys_json = serde_json::to_string_pretty(&self.api_keys).unwrap_or_default();
-            let _ = std::fs::write(&keys_file, keys_json);
+            save_user_keys(&self.api_keys);
+        }
+        // Belt-and-suspenders: if a legacy `api_keys.json` is still present in
+        // this project dir (from an older Patchwork version), delete it now so
+        // the next zip/share doesn't leak. The keys are safely persisted to
+        // the user store above.
+        let legacy_keys_file = dir.join("api_keys.json");
+        if legacy_keys_file.exists() {
+            if let Err(e) = std::fs::remove_file(&legacy_keys_file) {
+                crate::system_log::warn(format!(
+                    "Failed to remove legacy api_keys.json from project folder: {}", e
+                ));
+            } else {
+                crate::system_log::log(
+                    "Migrated: removed legacy api_keys.json from project folder \
+                     (keys now stored at ~/.patchwork/keys.json)"
+                );
+            }
         }
         if ok {
             self.is_dirty = false;
@@ -945,14 +1022,33 @@ impl super::PatchworkApp {
         self.caches_dirty = true;
         crate::system_log::log(format!("Loaded {}", json_path.display()));
 
-        // Load api_keys from the same folder
+        // P0-2: load api keys from the per-user store, NOT the project folder.
+        // For backwards-compat, if a legacy `api_keys.json` is found in the
+        // project folder, merge any unknown entries into the user store and
+        // remove the legacy file (migration). User-store entries win on key
+        // collisions — they're the more authoritative source.
+        let user_keys = load_user_keys();
         if let Some(dir) = &dir {
-            let keys_file = dir.join("api_keys.json");
-            if let Ok(json) = std::fs::read_to_string(&keys_file) {
-                if let Ok(keys) = serde_json::from_str::<HashMap<String, String>>(&json) {
-                    self.api_keys = keys;
+            let legacy_keys_file = dir.join("api_keys.json");
+            if let Ok(json) = std::fs::read_to_string(&legacy_keys_file) {
+                if let Ok(legacy_keys) = serde_json::from_str::<HashMap<String, String>>(&json) {
+                    let mut merged = legacy_keys;
+                    merged.extend(user_keys);
+                    save_user_keys(&merged);
+                    self.api_keys = merged;
+                    let _ = std::fs::remove_file(&legacy_keys_file);
+                    crate::system_log::log(format!(
+                        "Migrated api_keys.json from project folder → ~/.patchwork/keys.json \
+                         and removed the project-local copy"
+                    ));
+                } else {
+                    self.api_keys = user_keys;
                 }
+            } else {
+                self.api_keys = user_keys;
             }
+        } else {
+            self.api_keys = user_keys;
         }
         self.project_path = Some(dir_str.clone());
         self.is_dirty = false;
@@ -1050,14 +1146,9 @@ impl super::PatchworkApp {
 
     #[allow(dead_code)]
     pub(super) fn load_api_keys(&mut self) {
-        if let Some(dir) = self.project_dir() {
-            let keys_file = dir.join("api_keys.json");
-            if let Ok(json) = std::fs::read_to_string(&keys_file) {
-                if let Ok(keys) = serde_json::from_str::<HashMap<String, String>>(&json) {
-                    self.api_keys = keys;
-                }
-            }
-        }
+        // P0-2: per-user store is the canonical source; project-folder copy
+        // is legacy and (if present) migrated by load_from_dir.
+        self.api_keys = load_user_keys();
     }
 
     pub(super) fn sync_console_messages(&mut self) {
