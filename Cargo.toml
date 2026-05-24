@@ -52,6 +52,10 @@ ab_glyph = "0.2"
 qrcode = { version = "0.14", default-features = false }
 webrtc = "0.17.1"
 opus = "0.3.1"
+# Used by the plugin-trust subsystem (src/plugin_trust.rs) to hash plugin
+# source bytes for the `~/.patchwork/trusted_plugins.json` allow-list.
+# Already a transitive dep via iroh/webrtc; this line just makes it direct.
+sha2 = "0.10"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.5"

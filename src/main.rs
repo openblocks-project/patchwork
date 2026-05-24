@@ -18,6 +18,7 @@ mod nodes;
 mod ob;
 mod network;
 mod osc;
+mod plugin_trust;
 mod serial;
 mod settings;
 pub mod system_log;

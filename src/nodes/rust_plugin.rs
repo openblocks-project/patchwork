@@ -105,30 +105,55 @@ pub fn render(
     // ── Build button ──
     ui.separator();
     let build_status_id = egui::Id::new(("rust_build_status", node_id));
+    // P0-1 trust gate: stores the SHA256 of unbuilt source whenever the user
+    // clicks Build on code that isn't yet in `~/.patchwork/trusted_plugins.json`.
+    // Reset on Cancel or after the user grants trust.
+    let pending_trust_id = egui::Id::new(("rust_pending_trust", node_id));
     let status: BuildStatus = ui.ctx().data_mut(|d| d.get_temp::<BuildStatus>(build_status_id).unwrap_or(BuildStatus::Idle));
+
+    // Closure shared by the "trusted → build directly" and "Trust & Build (after
+    // confirmation)" paths so the background-build logic isn't duplicated.
+    let start_build = |ctx: egui::Context, code_owned: String, ins: Vec<String>, outs: Vec<String>| {
+        ctx.data_mut(|d| d.insert_temp(build_status_id, BuildStatus::Building));
+        std::thread::spawn(move || {
+            let result = build_rust_plugin(&code_owned, &ins, &outs, node_id);
+            ctx.data_mut(|d| {
+                match result {
+                    Ok(dylib_path) => d.insert_temp(build_status_id, BuildStatus::Success(dylib_path)),
+                    Err(e) => d.insert_temp(build_status_id, BuildStatus::Error(e)),
+                }
+            });
+            ctx.request_repaint();
+        });
+    };
 
     ui.horizontal(|ui| {
         let building = matches!(status, BuildStatus::Building);
         if ui.add_enabled(!building, egui::Button::new("🔨 Build")).clicked() {
-            // Start build in background
-            let code_clone = code.clone();
-            let input_names_clone = input_names.clone();
-            let output_names_clone = output_names.clone();
-            let node_id_copy = node_id;
-            let ctx = ui.ctx().clone();
+            // P0-1: never auto-compile arbitrary Rust source. The threat is a
+            // poisoned `project.json` from another user with embedded code —
+            // one click on Build would otherwise compile + libloading-load it
+            // on the victim's machine. Gate on per-SHA trust; first time
+            // through, defer to a confirmation banner.
+            let sha = crate::plugin_trust::source_hash(code);
+            if crate::plugin_trust::is_trusted(&sha) {
+                start_build(ui.ctx().clone(), code.clone(), input_names.clone(), output_names.clone());
+            } else {
+                ui.ctx().data_mut(|d| d.insert_temp::<String>(pending_trust_id, sha));
+            }
+        }
 
-            ui.ctx().data_mut(|d| d.insert_temp(build_status_id, BuildStatus::Building));
-
-            std::thread::spawn(move || {
-                let result = build_rust_plugin(&code_clone, &input_names_clone, &output_names_clone, node_id_copy);
-                ctx.data_mut(|d| {
-                    match result {
-                        Ok(dylib_path) => d.insert_temp(build_status_id, BuildStatus::Success(dylib_path)),
-                        Err(e) => d.insert_temp(build_status_id, BuildStatus::Error(e)),
-                    }
-                });
-                ctx.request_repaint();
-            });
+        // Trust indicator next to the button so users see at a glance whether
+        // the current source is already in their allow-list.
+        let current_sha = crate::plugin_trust::source_hash(code);
+        if crate::plugin_trust::is_trusted(&current_sha) {
+            ui.label(egui::RichText::new("🔒 trusted")
+                .small()
+                .color(egui::Color32::from_rgb(120, 180, 120)));
+        } else if !code.trim().is_empty() {
+            ui.label(egui::RichText::new("⚠ untrusted")
+                .small()
+                .color(egui::Color32::from_rgb(200, 160, 80)));
         }
 
         match &status {
@@ -138,6 +163,46 @@ pub fn render(
             BuildStatus::Error(_) => { ui.colored_label(egui::Color32::from_rgb(255, 100, 100), "❌ Failed"); }
         }
     });
+
+    // Trust confirmation banner. Appears after the user clicks Build on code
+    // whose SHA256 isn't in `~/.patchwork/trusted_plugins.json`. Prevents the
+    // "open friend's project → click Build → arbitrary RCE" path: nothing
+    // compiles until the user explicitly accepts THIS code's hash.
+    let pending_sha: Option<String> = ui.ctx().data_mut(|d| d.get_temp::<String>(pending_trust_id));
+    if let Some(sha) = pending_sha {
+        ui.add_space(4.0);
+        egui::Frame::group(ui.style())
+            .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(220, 160, 80)))
+            .show(ui, |ui| {
+                ui.label(egui::RichText::new("⚠ Confirm: trust and build this code")
+                    .strong()
+                    .color(egui::Color32::from_rgb(220, 160, 80)));
+                ui.label(egui::RichText::new(
+                    "Building runs `cargo` and loads the compiled dylib in-process. \
+                     Only continue if you wrote this code or trust its source.")
+                    .small());
+                ui.label(egui::RichText::new(format!(
+                    "SHA256: {}…  (full hash stored in ~/.patchwork/trusted_plugins.json)",
+                    crate::plugin_trust::short_hash(&sha)
+                ))
+                    .small().monospace().color(egui::Color32::GRAY));
+                ui.horizontal(|ui| {
+                    if ui.button(egui::RichText::new("Trust & Build")
+                        .color(egui::Color32::from_rgb(80, 200, 80))).clicked()
+                    {
+                        crate::plugin_trust::add_trust(
+                            sha.clone(),
+                            format!("RustPlugin node #{}", node_id),
+                        );
+                        start_build(ui.ctx().clone(), code.clone(), input_names.clone(), output_names.clone());
+                        ui.ctx().data_mut(|d| d.remove::<String>(pending_trust_id));
+                    }
+                    if ui.button("Cancel").clicked() {
+                        ui.ctx().data_mut(|d| d.remove::<String>(pending_trust_id));
+                    }
+                });
+            });
+    }
 
     // Show build error
     if let BuildStatus::Error(e) = &status {
