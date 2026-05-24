@@ -316,6 +316,29 @@ impl super::PatchworkApp {
 
     pub(super) fn poll_midi_inputs(&mut self) {
         let node_ids: Vec<NodeId> = self.graph.nodes.keys().copied().collect();
+        // Reconcile MidiIn subscriptions with port_name: connect when set+unconnected,
+        // disconnect when cleared. Mirrors the OscIn pattern in poll_osc_inputs so
+        // MCP-driven `update_node({port_name: ...})` takes effect on the next frame.
+        let mut midi_actions: Vec<crate::midi::MidiAction> = Vec::new();
+        for &nid in &node_ids {
+            if let Some(node) = self.graph.nodes.get(&nid) {
+                if let NodeType::MidiIn { port_name, .. } = &node.node_type {
+                    let connected = self.midi.is_input_connected(nid);
+                    if !port_name.is_empty() && !connected {
+                        midi_actions.push(crate::midi::MidiAction::ConnectInput {
+                            node_id: nid,
+                            port_name: port_name.clone(),
+                        });
+                    } else if port_name.is_empty() && connected {
+                        midi_actions.push(crate::midi::MidiAction::DisconnectInput { node_id: nid });
+                    }
+                }
+            }
+        }
+        if !midi_actions.is_empty() {
+            self.midi.process(midi_actions);
+        }
+
         for nid in node_ids {
             if let Some(msg) = self.midi.poll_input(nid) {
                 if let Some(node) = self.graph.nodes.get_mut(&nid) {
@@ -337,6 +360,28 @@ impl super::PatchworkApp {
 
     pub(super) fn poll_serial_inputs(&mut self) {
         let node_ids: Vec<NodeId> = self.graph.nodes.keys().copied().collect();
+        // Reconcile Serial subscriptions with port_name+baud_rate (same shape as MIDI).
+        let mut serial_actions: Vec<crate::serial::SerialAction> = Vec::new();
+        for &nid in &node_ids {
+            if let Some(node) = self.graph.nodes.get(&nid) {
+                if let NodeType::Serial { port_name, baud_rate, .. } = &node.node_type {
+                    let connected = self.serial.is_connected(nid);
+                    if !port_name.is_empty() && !connected {
+                        serial_actions.push(crate::serial::SerialAction::Connect {
+                            node_id: nid,
+                            port_name: port_name.clone(),
+                            baud_rate: *baud_rate,
+                        });
+                    } else if port_name.is_empty() && connected {
+                        serial_actions.push(crate::serial::SerialAction::Disconnect { node_id: nid });
+                    }
+                }
+            }
+        }
+        if !serial_actions.is_empty() {
+            self.serial.process(serial_actions);
+        }
+
         for nid in node_ids {
             let lines = self.serial.poll(nid);
             if !lines.is_empty() {
