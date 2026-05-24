@@ -2752,7 +2752,12 @@ impl eframe::App for PatchworkApp {
                             let param_hash = ((*brightness * 1000.0) as u64) ^ ((*contrast * 1000.0) as u64) << 8
                                 ^ ((*saturation * 1000.0) as u64) << 16 ^ ((*hue * 10.0) as u64) << 24
                                 ^ ((*exposure * 1000.0) as u64) << 32 ^ ((*gamma * 1000.0) as u64) << 40;
-                            let cache_key = param_hash ^ img_or_gpu_hash(inputs.first().unwrap());
+                            // Defensive: `if let Some(img) = img_ref` above ensures
+                            // `inputs.first()` is Some here, but guard anyway so a
+                            // future refactor (e.g. default-texture fallback path) can't
+                            // panic the UI thread on a disconnected input.
+                            let cache_key = param_hash
+                                ^ inputs.first().map(|v| img_or_gpu_hash(v)).unwrap_or(0);
                             let cache_id = egui::Id::new(("img_fx_cache", id));
                             let cached: Option<(u64, PortValue)> = ctx.data_mut(|d| d.get_temp(cache_id));
                             if let Some((prev_key, prev_val)) = cached {
@@ -2845,7 +2850,11 @@ impl eframe::App for PatchworkApp {
                                     curve_hash = curve_hash.wrapping_mul(31).wrapping_add(p[1].to_bits() as u64);
                                 }
                             }
-                            let cache_key = img_or_gpu_hash(inputs.first().unwrap()) ^ curve_hash;
+                            // Defensive: same as the img_fx_cache site above — guarded
+                            // by the surrounding `if let Some(img) = img_ref` but the
+                            // .unwrap() is a refactor hazard, so fall back to 0 instead.
+                            let cache_key = inputs.first().map(|v| img_or_gpu_hash(v)).unwrap_or(0)
+                                ^ curve_hash;
                             let cache_id = egui::Id::new(("cc_cache", id));
                             let cached: Option<(u64, PortValue)> = ctx.data_mut(|d| d.get_temp(cache_id));
                             if let Some((prev_key, prev_val)) = cached {
