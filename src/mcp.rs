@@ -29,7 +29,15 @@ fn log_msg(log: &McpLog, msg: String) {
 // ── Commands & Results ───────────────────────────────────────────────────────
 
 pub enum McpCommand {
-    ListNodeTypes,
+    /// List node types. Defaults to summary mode (name/category/in_count/out_count
+    /// only). Pass `full: true` for the legacy verbose schema.
+    ListNodeTypes {
+        category: Option<String>,
+        name_filter: Option<String>,
+        full: bool,
+    },
+    /// Full schema for one node type (ports with index+kind, properties with defaults).
+    DescribeNodeType { name: String },
     CreateNode { type_name: String, position: [f32; 2], properties: Option<Value> },
     DeleteNode { node_id: NodeId },
     ListNodes,
@@ -82,18 +90,36 @@ fn tool_definitions() -> Value {
     json!([
         {
             "name": "list_node_types",
-            "description": "List all available node types with their categories, input ports, and output ports",
-            "inputSchema": { "type": "object", "properties": {} }
+            "description": "List available node types. Defaults to summary mode (name, category, in_count, out_count, wip) — typically <5KB. Use 'category' or 'name_filter' to narrow further. Pass 'full: true' for the legacy verbose schema (large; prefer describe_node_type for one node).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "category": { "type": "string", "description": "Filter by category (case-insensitive). Examples: Audio, Image, Math, Input, Signal, IO, MIDI, OSC, AI, ML, Hardware, Network, Shader, Utility, Output." },
+                    "name_filter": { "type": "string", "description": "Substring match against node name (case-insensitive)." },
+                    "full": { "type": "boolean", "description": "If true, include full per-node schema (ports with index+kind, properties with defaults). Default false (summary)." }
+                }
+            }
+        },
+        {
+            "name": "describe_node_type",
+            "description": "Full schema for one node type: ports as [{index, name, kind}] and properties as {key: {type, default}}. Use this after list_node_types narrows down a candidate.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Node type name (case-insensitive). Examples: 'Synth', 'Reverb', 'WGSL Viewer'." }
+                },
+                "required": ["name"]
+            }
         },
         {
             "name": "create_node",
-            "description": "Create a new node of the specified type at a canvas position",
+            "description": "Create a new node. Returns {node_id, applied, [ignored_unknown], [readonly_rejected], [errors]}. Unknown property keys land in 'ignored_unknown'; runtime fields (status, response, log, etc.) are 'readonly_rejected'.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "type": { "type": "string", "description": "Node type name (e.g., 'Slider', 'Synth', 'Add')" },
                     "position": { "type": "array", "items": { "type": "number" }, "description": "[x, y] canvas position, default [200, 200]" },
-                    "properties": { "type": "object", "description": "Initial property values (e.g., {\"value\": 0.5} for Slider)" }
+                    "properties": { "type": "object", "description": "Initial property values (e.g., {\"value\": 0.5} for Slider). See describe_node_type for valid keys." }
                 },
                 "required": ["type"]
             }
@@ -123,12 +149,12 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "update_node",
-            "description": "Update properties of an existing node (e.g., set slider value, change synth frequency)",
+            "description": "Update properties of an existing node. Returns {success, applied, [ignored_unknown], [readonly_rejected], [errors]}. Audio Manager 'enabled', OscIn 'listening', and MidiIn/Serial 'port_name' are wired to side effects: setting them takes effect on the next render frame (no separate trigger required).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "node_id": { "type": "integer" },
-                    "properties": { "type": "object", "description": "Properties to update" }
+                    "properties": { "type": "object", "description": "Properties to update. Use describe_node_type to see valid keys." }
                 },
                 "required": ["node_id", "properties"]
             }
@@ -195,8 +221,20 @@ fn tool_definitions() -> Value {
             }
         },
         {
+            "name": "trigger_node",
+            "description": "Trigger an action on a node. Actions by node type: HttpRequest/AiRequest='send'; VideoPlayer='play|pause|stop'; AudioPlayer='play'; Speaker/Synth/AudioInput='activate|deactivate' (Synth also accepts play/stop); OscIn='listen|stop_listen'; MidiIn/Serial='connect|disconnect' (port_name must be set first via update_node).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "node_id": { "type": "integer", "description": "Node ID" },
+                    "action": { "type": "string", "description": "Action verb (see node-type list in description)." }
+                },
+                "required": ["node_id", "action"]
+            }
+        },
+        {
             "name": "create_workflow",
-            "description": "Create multiple nodes and connections in one atomic operation. Connections use 0-based indices into the nodes array.",
+            "description": "Create multiple nodes and connections in one atomic operation. Connections use 0-based indices into the nodes array. Returns {node_ids, [property_warnings], [connection_errors]} — property_warnings entries include {index, node_id, ignored_unknown, readonly_rejected, errors}.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -228,43 +266,208 @@ fn tool_definitions() -> Value {
                 },
                 "required": ["nodes"]
             }
-        },
-        {
-            "name": "trigger_node",
-            "description": "Trigger an action on a node. Actions: 'send' (HttpRequest, AiRequest), 'play'/'pause'/'stop' (VideoPlayer, AudioPlayer), 'listen'/'stop_listen' (OscIn), 'activate'/'deactivate' (Speaker)",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "node_id": { "type": "integer", "description": "Node ID" },
-                    "action": { "type": "string", "description": "Action name: send, play, pause, stop, listen, stop_listen, activate, deactivate" }
-                },
-                "required": ["node_id", "action"]
-            }
         }
     ])
 }
 
 // ── Property Merge ───────────────────────────────────────────────────────────
 
-/// Merge JSON properties into a NodeType using serde serialization round-trip
-pub fn apply_properties(node_type: &mut NodeType, properties: Value) {
-    if let Value::Object(props) = properties {
-        if let Ok(mut current) = serde_json::to_value(&*node_type) {
-            // NodeType serializes as {"Slider": {"value": 0.5, ...}}
-            if let Value::Object(outer) = &mut current {
-                if let Some((_, inner)) = outer.iter_mut().next() {
-                    if let Value::Object(inner_map) = inner {
-                        for (k, v) in props {
-                            inner_map.insert(k, v);
-                        }
-                    }
-                }
+/// Fields that are runtime/auto-managed state, not user-controllable.
+/// `apply_properties` rejects writes to these and `extract_property_schema`
+/// hides them from `list_node_types` / `describe_node_type` output.
+pub const READONLY_FIELDS: &[&str] = &[
+    "response", "status", "log", "last_hash",
+    "last_args", "last_args_text", "discovered",
+    "result", "error", "result_text", "last_input_hash",
+    "current_frame", "duration", "variables",
+    "image_data", "last_save_hash", "content",
+    "messages", "detected_devices", "effects",
+    "x", "y", // mouse tracker runtime values
+];
+
+/// Diagnostics returned by `apply_properties` so callers can tell which keys
+/// were honored, which were silently dropped, and why.
+#[derive(Default, Debug)]
+pub struct PropResult {
+    /// Keys that matched a known property and were applied successfully.
+    pub applied: Vec<String>,
+    /// Keys that don't exist on this node type (likely typos or wrapped-state keys).
+    pub ignored_unknown: Vec<String>,
+    /// Keys rejected because they target runtime/auto-managed state.
+    pub readonly_rejected: Vec<String>,
+    /// Hard errors — usually a deserialize failure (wrong type for the field).
+    pub errors: Vec<String>,
+}
+
+impl PropResult {
+    /// True iff every key was applied without warnings or errors.
+    pub fn ok(&self) -> bool {
+        self.errors.is_empty()
+            && self.readonly_rejected.is_empty()
+            && self.ignored_unknown.is_empty()
+    }
+
+    /// Attach the non-empty diagnostic fields onto an existing JSON response.
+    pub fn merge_into(&self, resp: &mut Value) {
+        if let Value::Object(map) = resp {
+            map.insert("applied".into(), json!(self.applied));
+            if !self.ignored_unknown.is_empty() {
+                map.insert("ignored_unknown".into(), json!(self.ignored_unknown));
             }
-            if let Ok(updated) = serde_json::from_value::<NodeType>(current) {
-                *node_type = updated;
+            if !self.readonly_rejected.is_empty() {
+                map.insert("readonly_rejected".into(), json!(self.readonly_rejected));
+            }
+            if !self.errors.is_empty() {
+                map.insert("errors".into(), json!(self.errors));
             }
         }
     }
+}
+
+/// Merge JSON properties into a NodeType, returning per-key diagnostics.
+///
+/// Keys are validated against the node's serde shape:
+/// - matching keys → applied (overwrite previous value)
+/// - keys in `READONLY_FIELDS` → rejected with `readonly_rejected`
+/// - unknown keys → reported via `ignored_unknown`
+/// - whole-payload deserialize failure → `errors`
+pub fn apply_properties(node_type: &mut NodeType, properties: Value) -> PropResult {
+    let mut result = PropResult::default();
+
+    let Value::Object(props) = properties else {
+        result.errors.push("'properties' must be a JSON object".into());
+        return result;
+    };
+
+    let current = match serde_json::to_value(&*node_type) {
+        Ok(v) => v,
+        Err(e) => {
+            result.errors.push(format!("serialize current state: {}", e));
+            return result;
+        }
+    };
+
+    let mut outer_obj = match current {
+        Value::Object(m) => m,
+        _ => {
+            result.errors.push("unexpected NodeType serialization shape".into());
+            return result;
+        }
+    };
+
+    let tag = match outer_obj.keys().next().cloned() {
+        Some(k) => k,
+        None => {
+            result.errors.push("empty NodeType serialization".into());
+            return result;
+        }
+    };
+
+    let inner_value = outer_obj.get_mut(&tag).expect("tag was just read above");
+    let inner_map = match inner_value {
+        Value::Object(m) => m,
+        _ => {
+            result.errors.push("NodeType inner is not an object".into());
+            return result;
+        }
+    };
+
+    let known_keys: std::collections::HashSet<String> = inner_map.keys().cloned().collect();
+
+    for (k, v) in props {
+        if READONLY_FIELDS.contains(&k.as_str()) {
+            result.readonly_rejected.push(k);
+            continue;
+        }
+        if !known_keys.contains(&k) {
+            result.ignored_unknown.push(k);
+            continue;
+        }
+        inner_map.insert(k.clone(), v);
+        result.applied.push(k);
+    }
+
+    // Re-deserialize from the modified outer object
+    match serde_json::from_value::<NodeType>(Value::Object(outer_obj)) {
+        Ok(updated) => *node_type = updated,
+        Err(e) => result.errors.push(format!("deserialize after merge: {}", e)),
+    }
+
+    result
+}
+
+// ── Node-Type Description Helpers ────────────────────────────────────────────
+
+fn port_kind_str(k: PortKind) -> &'static str {
+    match k {
+        PortKind::Number => "Number",
+        PortKind::Normalized => "Normalized",
+        PortKind::Trigger => "Trigger",
+        PortKind::Gate => "Gate",
+        PortKind::Text => "Text",
+        PortKind::Image => "Image",
+        PortKind::Audio => "Audio",
+        PortKind::Color => "Color",
+        PortKind::Mesh => "Mesh",
+        PortKind::Generic => "Generic",
+    }
+}
+
+/// Build the `properties` schema dict for a node type, hiding runtime fields.
+fn extract_property_schema(nt: &NodeType) -> Value {
+    let val = match serde_json::to_value(nt) {
+        Ok(v) => v,
+        Err(_) => return json!({}),
+    };
+    let outer = match val {
+        Value::Object(m) => m,
+        _ => return json!({}),
+    };
+    let inner = match outer.into_iter().next() {
+        Some((_, v)) => v,
+        None => return json!({}),
+    };
+    let fields = match inner {
+        Value::Object(m) => m,
+        _ => return json!({}),
+    };
+    let schema: serde_json::Map<String, Value> = fields.into_iter()
+        .filter(|(k, _)| !READONLY_FIELDS.contains(&k.as_str()))
+        .map(|(k, v)| {
+            let type_str = match &v {
+                Value::Bool(_) => "boolean",
+                Value::Number(_) => "number",
+                Value::String(_) => "string",
+                Value::Array(_) => "array",
+                Value::Object(_) => "object",
+                Value::Null => "null",
+            };
+            (k, json!({ "type": type_str, "default": v }))
+        })
+        .collect();
+    Value::Object(schema)
+}
+
+/// Full per-node description used by `describe_node_type` and `list_node_types({full: true})`.
+fn describe_node_type_value(entry: &nodes::NodeCatalogEntry, nt: &NodeType) -> Value {
+    let inputs: Vec<Value> = nt.inputs().iter().enumerate().map(|(i, p)| json!({
+        "index": i,
+        "name": p.name.as_ref(),
+        "kind": port_kind_str(p.kind),
+    })).collect();
+    let outputs: Vec<Value> = nt.outputs().iter().enumerate().map(|(i, p)| json!({
+        "index": i,
+        "name": p.name.as_ref(),
+        "kind": port_kind_str(p.kind),
+    })).collect();
+    json!({
+        "name": entry.label,
+        "category": entry.category,
+        "wip": entry.wip,
+        "inputs": inputs,
+        "outputs": outputs,
+        "properties": extract_property_schema(nt),
+    })
 }
 
 // ── Command Execution (called by app.rs) ─────────────────────────────────────
@@ -275,65 +478,57 @@ pub fn execute_command(
     values: &HashMap<(NodeId, usize), PortValue>,
 ) -> McpResult {
     match cmd {
-        McpCommand::ListNodeTypes => {
+        McpCommand::ListNodeTypes { category, name_filter, full } => {
             let catalog = nodes::catalog();
-            let types: Vec<Value> = catalog.iter().map(|e| {
-                let nt = (e.factory)();
-                // Extract property names and default values from serialized NodeType
-                let properties = if let Ok(val) = serde_json::to_value(&nt) {
-                    if let Value::Object(outer) = val {
-                        if let Some((_, inner)) = outer.into_iter().next() {
-                            if let Value::Object(fields) = inner {
-                                let schema: serde_json::Map<String, Value> = fields.into_iter()
-                                    .filter(|(k, _)| {
-                                        // Skip internal/runtime fields
-                                        !matches!(k.as_str(),
-                                            "response" | "status" | "log" | "last_hash" |
-                                            "last_args" | "last_args_text" | "discovered" |
-                                            "result" | "error" | "result_text" | "last_input_hash" |
-                                            "current_frame" | "duration" | "variables" |
-                                            "image_data" | "last_save_hash" | "content" |
-                                            "messages" | "detected_devices" | "effects" |
-                                            "x" | "y" // mouse tracker runtime values
-                                        )
-                                    })
-                                    .map(|(k, v)| {
-                                        let type_str = match &v {
-                                            Value::Bool(_) => "boolean",
-                                            Value::Number(_) => "number",
-                                            Value::String(_) => "string",
-                                            Value::Array(_) => "array",
-                                            Value::Object(_) => "object",
-                                            Value::Null => "null",
-                                        };
-                                        (k, json!({ "type": type_str, "default": v }))
-                                    })
-                                    .collect();
-                                Value::Object(schema)
-                            } else { json!({}) }
-                        } else { json!({}) }
-                    } else { json!({}) }
-                } else { json!({}) };
-                json!({
-                    "name": e.label,
-                    "category": e.category,
-                    "inputs": nt.inputs().iter().map(|p| p.name.as_ref()).collect::<Vec<_>>(),
-                    "outputs": nt.outputs().iter().map(|p| p.name.as_ref()).collect::<Vec<_>>(),
-                    "properties": properties,
+            let cat_lower = category.as_ref().map(|c| c.to_lowercase());
+            let name_lower = name_filter.as_ref().map(|n| n.to_lowercase());
+            let types: Vec<Value> = catalog.iter()
+                .filter(|e| cat_lower.as_ref()
+                    .map_or(true, |c| e.category.to_lowercase() == *c))
+                .filter(|e| name_lower.as_ref()
+                    .map_or(true, |n| e.label.to_lowercase().contains(n)))
+                .map(|e| {
+                    let nt = (e.factory)();
+                    if full {
+                        describe_node_type_value(e, &nt)
+                    } else {
+                        json!({
+                            "name": e.label,
+                            "category": e.category,
+                            "in_count": nt.inputs().len(),
+                            "out_count": nt.outputs().len(),
+                            "wip": e.wip,
+                        })
+                    }
                 })
-            }).collect();
+                .collect();
             McpResult::Json(json!(types))
+        }
+
+        McpCommand::DescribeNodeType { name } => {
+            let catalog = nodes::catalog();
+            match catalog.iter().find(|e| e.label.eq_ignore_ascii_case(&name)) {
+                Some(entry) => {
+                    let nt = (entry.factory)();
+                    McpResult::Json(describe_node_type_value(entry, &nt))
+                }
+                None => McpResult::Error {
+                    error: format!("Unknown node type: '{}'. Use list_node_types to discover names.", name),
+                },
+            }
         }
 
         McpCommand::CreateNode { type_name, position, properties } => {
             let catalog = nodes::catalog();
             if let Some(entry) = catalog.iter().find(|e| e.label.eq_ignore_ascii_case(&type_name)) {
                 let mut nt = (entry.factory)();
-                if let Some(props) = properties {
-                    apply_properties(&mut nt, props);
-                }
+                let prop_result = properties
+                    .map(|props| apply_properties(&mut nt, props))
+                    .unwrap_or_default();
                 let id = graph.add_node(nt, position);
-                McpResult::Json(json!({ "node_id": id }))
+                let mut resp = json!({ "node_id": id });
+                prop_result.merge_into(&mut resp);
+                McpResult::Json(resp)
             } else {
                 McpResult::Error { error: format!("Unknown node type: '{}'. Use list_node_types to see available types.", type_name) }
             }
@@ -379,8 +574,10 @@ pub fn execute_command(
 
         McpCommand::UpdateNode { node_id, properties } => {
             if let Some(node) = graph.nodes.get_mut(&node_id) {
-                apply_properties(&mut node.node_type, properties);
-                McpResult::Json(json!({ "success": true }))
+                let prop_result = apply_properties(&mut node.node_type, properties);
+                let mut resp = json!({ "success": prop_result.errors.is_empty() });
+                prop_result.merge_into(&mut resp);
+                McpResult::Json(resp)
             } else {
                 McpResult::Error { error: format!("Node {} not found", node_id) }
             }
@@ -450,6 +647,8 @@ pub fn execute_command(
                         PortValue::Text(s) => json!(s),
                         PortValue::Image(img) => json!(format!("[Image {}x{}]", img.width, img.height)),
                         PortValue::GpuImage(h) => json!(format!("[GpuImage {}x{} @ node {}:{}]", h.width, h.height, h.node_id, h.port)),
+                        PortValue::Mesh(p) => json!(format!("[Mesh {}v/{}i]", p.mesh.vertices.len(), p.mesh.indices.len())),
+                        PortValue::GpuMesh(h) => json!(format!("[GpuMesh {}v/{}i @ node {}:{}]", h.vertex_count, h.index_count, h.node_id, h.port)),
                         PortValue::None => json!(null),
                     };
                     result.insert(key, v);
@@ -560,6 +759,52 @@ pub fn execute_command(
                     *active = false;
                     McpResult::Json(json!({ "success": true, "triggered": "deactivate" }))
                 }
+                // MidiIn — port_name drives subscription via the reconcile loop in
+                // app/io.rs::poll_midi_inputs. Setting port_name with update_node is
+                // the canonical way to bind; this trigger is mainly for explicit
+                // disconnect or to reaffirm an existing binding.
+                (NodeType::MidiIn { port_name, .. }, "connect" | "listen") => {
+                    let pn = port_name.clone();
+                    if pn.is_empty() {
+                        McpResult::Json(json!({
+                            "success": false,
+                            "error": "MidiIn.port_name is empty; set it via update_node first.",
+                        }))
+                    } else {
+                        McpResult::Json(json!({
+                            "success": true,
+                            "triggered": "connect",
+                            "port_name": pn,
+                            "note": "Reconcile loop will subscribe on the next frame.",
+                        }))
+                    }
+                }
+                (NodeType::MidiIn { port_name, .. }, "disconnect" | "stop_listen") => {
+                    port_name.clear();
+                    McpResult::Json(json!({ "success": true, "triggered": "disconnect" }))
+                }
+                // Serial — same shape as MidiIn. port_name + baud_rate set via
+                // update_node; reconcile loop opens the port on the next frame.
+                (NodeType::Serial { port_name, .. }, "connect" | "listen") => {
+                    let pn = port_name.clone();
+                    if pn.is_empty() {
+                        McpResult::Json(json!({
+                            "success": false,
+                            "error": "Serial.port_name is empty; set it via update_node first.",
+                        }))
+                    } else {
+                        McpResult::Json(json!({
+                            "success": true,
+                            "triggered": "connect",
+                            "port_name": pn,
+                            "note": "Reconcile loop will open the port on the next frame.",
+                        }))
+                    }
+                }
+                (NodeType::Serial { port_name, .. }, "disconnect" | "stop_listen") => {
+                    port_name.clear();
+                    McpResult::Json(json!({ "success": true, "triggered": "disconnect" }))
+                }
                 _ => McpResult::Error { error: format!(
                     "Action '{}' not supported for node type '{}'", action, node.node_type.title()
                 ) },
@@ -569,17 +814,27 @@ pub fn execute_command(
         McpCommand::CreateWorkflow { nodes: wf_nodes, connections: wf_conns } => {
             let catalog = nodes::catalog();
             let mut created_ids: Vec<NodeId> = Vec::new();
+            let mut prop_warnings: Vec<Value> = Vec::new();
 
             for (i, wf_node) in wf_nodes.iter().enumerate() {
                 let entry = catalog.iter().find(|e| e.label.eq_ignore_ascii_case(&wf_node.node_type));
                 if let Some(entry) = entry {
                     let mut nt = (entry.factory)();
-                    if let Some(ref props) = wf_node.properties {
-                        apply_properties(&mut nt, props.clone());
-                    }
+                    let prop_result = if let Some(ref props) = wf_node.properties {
+                        apply_properties(&mut nt, props.clone())
+                    } else {
+                        PropResult::default()
+                    };
                     let pos = wf_node.position.unwrap_or([200.0 + i as f32 * 250.0, 200.0]);
                     let id = graph.add_node(nt, pos);
                     created_ids.push(id);
+
+                    // Only emit a warning entry if something wasn't perfectly applied
+                    if !prop_result.ok() {
+                        let mut entry = json!({ "index": i, "node_id": id });
+                        prop_result.merge_into(&mut entry);
+                        prop_warnings.push(entry);
+                    }
                 } else {
                     return McpResult::Error {
                         error: format!("Unknown node type at index {}: '{}'", i, wf_node.node_type),
@@ -588,16 +843,28 @@ pub fn execute_command(
             }
 
             // Create connections using the resolved IDs
-            for wf_conn in &wf_conns {
+            let mut connection_errors: Vec<Value> = Vec::new();
+            for (ci, wf_conn) in wf_conns.iter().enumerate() {
                 if wf_conn.from_index >= created_ids.len() || wf_conn.to_index >= created_ids.len() {
-                    continue; // Skip invalid indices
+                    connection_errors.push(json!({
+                        "connection_index": ci,
+                        "error": "from_index or to_index out of range",
+                    }));
+                    continue;
                 }
                 let from_id = created_ids[wf_conn.from_index];
                 let to_id = created_ids[wf_conn.to_index];
                 graph.add_connection(from_id, wf_conn.from_port, to_id, wf_conn.to_port);
             }
 
-            McpResult::Json(json!({ "node_ids": created_ids }))
+            let mut resp = json!({ "node_ids": created_ids });
+            if !prop_warnings.is_empty() {
+                resp["property_warnings"] = json!(prop_warnings);
+            }
+            if !connection_errors.is_empty() {
+                resp["connection_errors"] = json!(connection_errors);
+            }
+            McpResult::Json(resp)
         }
     }
 }
@@ -797,7 +1064,18 @@ pub fn run_mcp_thread(command_tx: mpsc::Sender<McpRequest>, log: McpLog) {
 
 fn parse_tool_call(name: &str, args: &Value) -> Result<McpCommand, String> {
     match name {
-        "list_node_types" => Ok(McpCommand::ListNodeTypes),
+        "list_node_types" => {
+            let category = args.get("category").and_then(|v| v.as_str()).map(String::from);
+            let name_filter = args.get("name_filter").and_then(|v| v.as_str()).map(String::from);
+            let full = args.get("full").and_then(|v| v.as_bool()).unwrap_or(false);
+            Ok(McpCommand::ListNodeTypes { category, name_filter, full })
+        }
+
+        "describe_node_type" => {
+            let name = args.get("name").and_then(|v| v.as_str())
+                .ok_or("Missing 'name' parameter")?.to_string();
+            Ok(McpCommand::DescribeNodeType { name })
+        }
 
         "create_node" => {
             let type_name = args.get("type").and_then(|v| v.as_str())

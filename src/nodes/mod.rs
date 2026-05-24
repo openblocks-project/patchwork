@@ -138,6 +138,11 @@ pub mod hand_detection;
 pub mod face_detection;
 pub mod pose_detection;
 pub mod json_fields;
+// 3D rendering — Phase 1: procedural primitives + Material + 3D Render
+// (camera params live inline on the 3D Render node).
+pub mod shape_3d;
+pub mod material;
+pub mod render_3d;
 
 use crate::graph::*;
 use crate::midi::MidiAction;
@@ -163,7 +168,7 @@ pub const CATEGORY_GROUPS: &[(&str, &[&str])] = &[
     ("All", &[]),
     ("Input", &["Input", "Signal"]),
     ("Math", &["Math"]),
-    ("Visual", &["Image", "Video", "Shader"]),
+    ("Visual", &["Image", "Video", "Shader", "3D"]),
     ("AI / ML", &["AI", "ML"]),
     ("Audio", &["Audio", "MIDI"]),
     ("I/O", &["IO", "Network", "Serial", "OSC", "Hardware", "Output", "Lighting"]),
@@ -489,6 +494,14 @@ pub fn catalog() -> Vec<NodeCatalogEntry> {
             image_b_hint_shown: false,
             last_auto_reset_ms: 0,
         } },
+
+        // ── 3D ───────────────────────────────────────────────
+        NodeCatalogEntry { wip: true, singleton: false, label: "3D Shape", category: "3D",
+            factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(shape_3d::Shape3DNode::default()) } } },
+        NodeCatalogEntry { wip: true, singleton: false, label: "Material", category: "3D",
+            factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(material::MaterialNode::default()) } } },
+        NodeCatalogEntry { wip: true, singleton: false, label: "3D Render", category: "3D",
+            factory: || NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(render_3d::Render3DNode::default()) } } },
 
         // ── Image ────────────────────────────────────────────
         NodeCatalogEntry { wip: false, singleton: false, label: "Image", category: "Image",

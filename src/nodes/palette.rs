@@ -46,7 +46,7 @@ pub fn render(
         ("All", &[]),
         ("Math", &["Math", "Logic"]),
         ("Signal", &["Signal", "Input"]),
-        ("Visual", &["Image", "Video", "Shader", "ML"]),
+        ("Visual", &["Image", "Video", "Shader", "ML", "3D"]),
         ("Audio", &["Audio"]),
         ("I/O", &["IO", "Network", "Serial", "OSC", "MIDI", "Hardware"]),
         ("Utility", &["Utility", "Output", "Custom", "System"]),
