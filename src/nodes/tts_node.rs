@@ -559,12 +559,9 @@ pub fn run_tts_synthesis(
 
     let n = phoneme_ids.len();
 
-    // 3. Build ONNX tensors
-    use ort::session::Session;
-
-    let mut session = match Session::builder()
-        .and_then(|mut b| b.commit_from_file(&req.model_path))
-    {
+    // 3. Build ONNX tensors. Cached session: avoids per-inference rebuild of
+    // the (large) TTS model — was reloading on every utterance.
+    let session = match crate::ml::session_cache::get_file_session(&req.model_path) {
         Ok(s) => s,
         Err(e) => return fail(format!("ONNX load error: {}", e)),
     };
@@ -596,37 +593,43 @@ pub fn run_tts_synthesis(
         Err(e) => return fail(format!("Scales tensor error: {}", e)),
     };
 
-    // 4. Run inference
-    let outputs = if config.num_speakers > 1 {
-        let sid_tensor = match ort::value::Tensor::<i64>::from_array((
-            vec![1usize],
-            vec![req.speaker_id].into_boxed_slice(),
-        )) {
-            Ok(t) => t,
-            Err(e) => return fail(format!("Speaker ID tensor error: {}", e)),
-        };
-        match session.run(ort::inputs![
-            "input" => input_tensor,
-            "input_lengths" => lengths_tensor,
-            "scales" => scales_tensor,
-            "sid" => sid_tensor,
-        ]) {
-            Ok(o) => o,
-            Err(e) => return fail(format!("ONNX inference error: {}", e)),
-        }
-    } else {
-        match session.run(ort::inputs![
-            "input" => input_tensor,
-            "input_lengths" => lengths_tensor,
-            "scales" => scales_tensor,
-        ]) {
-            Ok(o) => o,
-            Err(e) => return fail(format!("ONNX inference error (no sid): {}", e)),
-        }
-    };
-
-    // 5. Extract waveform — output[0] shape [1, 1, T]
+    // 4. Run inference + extract waveform inside the session lock scope.
+    //    `outputs` borrows from the locked session, so we extract the waveform
+    //    into an owned `Vec<f32>` before dropping the guard.
     let waveform: Vec<f32> = {
+        let mut sess = match session.lock() {
+            Ok(g) => g,
+            Err(_) => return fail("TTS session lock poisoned".to_string()),
+        };
+        let outputs = if config.num_speakers > 1 {
+            let sid_tensor = match ort::value::Tensor::<i64>::from_array((
+                vec![1usize],
+                vec![req.speaker_id].into_boxed_slice(),
+            )) {
+                Ok(t) => t,
+                Err(e) => return fail(format!("Speaker ID tensor error: {}", e)),
+            };
+            match sess.run(ort::inputs![
+                "input" => input_tensor,
+                "input_lengths" => lengths_tensor,
+                "scales" => scales_tensor,
+                "sid" => sid_tensor,
+            ]) {
+                Ok(o) => o,
+                Err(e) => return fail(format!("ONNX inference error: {}", e)),
+            }
+        } else {
+            match sess.run(ort::inputs![
+                "input" => input_tensor,
+                "input_lengths" => lengths_tensor,
+                "scales" => scales_tensor,
+            ]) {
+                Ok(o) => o,
+                Err(e) => return fail(format!("ONNX inference error (no sid): {}", e)),
+            }
+        };
+
+        // Extract waveform — output[0] shape [1, 1, T]
         let (_shape, data) = match outputs[0].try_extract_tensor::<f32>() {
             Ok(t) => t,
             Err(e) => return fail(format!("Output extraction error: {}", e)),

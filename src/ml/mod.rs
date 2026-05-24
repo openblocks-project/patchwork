@@ -12,3 +12,4 @@ pub mod bundled;
 pub mod ep;
 pub mod match_node;
 pub mod regress_node;
+pub mod session_cache;

@@ -322,38 +322,36 @@ fn parse_expected_shape(err: &str) -> Option<(usize, bool)> {
 }
 
 fn run_inference_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult, String> {
-    use ort::session::Session;
-
-    let mut session = {
-        let mut builder = Session::builder()
-            .map_err(|e| format!("Session builder: {}", e))?;
-        if req.model_path == BUNDLED_HAND_SENTINEL {
-            builder.commit_from_memory(BUNDLED_HAND_MODEL)
-                .map_err(|e| format!("Load bundled hand model: {}", e))?
-        } else {
-            builder.commit_from_file(&req.model_path)
-                .map_err(|e| format!("Load model: {}", e))?
-        }
+    // Reuse the cached session if available — avoids rebuilding the ONNX
+    // graph + EP setup on every inference (the dominant per-frame cost).
+    let session = if req.model_path == BUNDLED_HAND_SENTINEL {
+        crate::ml::session_cache::get_bundled_session("hand_detect_generic", BUNDLED_HAND_MODEL)?
+    } else {
+        crate::ml::session_cache::get_file_session(&req.model_path)?
     };
 
-    let input_name = session.inputs().first().ok_or("No inputs in model")?.name().to_string();
+    let input_name = crate::ml::session_cache::input_name_of(&session)?;
 
     // Try preset defaults first. If the model rejects the shape, parse the error
     // to discover the correct dimensions, then retry. Works with ANY model.
     let mut target_size = req.preset.input_size();
     let mut is_nchw = !req.preset.is_nhwc();
 
-    // First attempt
+    // First attempt — lock the session for run + extract; outputs borrow from
+    // the session guard so finish_inference must complete inside this scope.
     let (tensor, _data) = build_input_tensor(req, target_size, is_nchw);
-    let first_err = match session.run(ort::inputs![&input_name => tensor]) {
-        Ok(out) => {
-            return finish_inference(req, &out, target_size);
+    let first_err = {
+        let mut sess = session.lock().map_err(|_| "Session lock poisoned".to_string())?;
+        match sess.run(ort::inputs![&input_name => tensor]) {
+            Ok(out) => {
+                return finish_inference(req, &out, target_size);
+            }
+            Err(e) => e.to_string(),
         }
-        Err(e) => e.to_string(),
     };
-    // Session is now consumed/dropped — we can create a new one.
 
-    // Parse expected shape from the error and retry
+    // Parse expected shape from the error and retry. The same cached session
+    // is reused for the retry — only the tensor shape changes between attempts.
     if let Some((detected_size, detected_nchw)) = parse_expected_shape(&first_err) {
         target_size = detected_size as u32;
         is_nchw = detected_nchw;
@@ -361,20 +359,9 @@ fn run_inference_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult, St
         return Err(format!("Run: {}", first_err));
     }
 
-    let mut session2 = {
-        let mut builder = Session::builder()
-            .map_err(|e| format!("Session builder: {}", e))?;
-        if req.model_path == BUNDLED_HAND_SENTINEL {
-            builder.commit_from_memory(BUNDLED_HAND_MODEL)
-                .map_err(|e| format!("Reload bundled hand model: {}", e))?
-        } else {
-            builder.commit_from_file(&req.model_path)
-                .map_err(|e| format!("Reload model: {}", e))?
-        }
-    };
-    let input_name2 = session2.inputs().first().ok_or("No inputs")?.name().to_string();
     let (tensor2, _data2) = build_input_tensor(req, target_size, is_nchw);
-    let outputs = session2.run(ort::inputs![&input_name2 => tensor2])
+    let mut sess = session.lock().map_err(|_| "Session lock poisoned".to_string())?;
+    let outputs = sess.run(ort::inputs![&input_name => tensor2])
         .map_err(|e| format!("Run (retry {}x{} {}): {}",
             target_size, target_size, if is_nchw { "NCHW" } else { "NHWC" }, e))?;
 
@@ -848,7 +835,6 @@ pub fn run_hand_tracking(req: &MlInferenceRequest) -> MlInferenceResult {
 }
 
 fn run_hand_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult, String> {
-    use ort::session::Session;
     use std::sync::Arc;
 
     let img_w = req.image.width as f32;
@@ -860,10 +846,10 @@ fn run_hand_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult
     let palm_sz = 256u32;
     let palm_sz_f = palm_sz as f32;
 
-    let mut palm_sess = Session::builder()
-        .map_err(|e| format!("Session builder: {}", e))?
-        .commit_from_memory(BUNDLED_HAND_MODEL)
-        .map_err(|e| format!("Load palm model: {}", e))?;
+    // Cached session: built once on first inference, reused thereafter.
+    let palm_sess = crate::ml::session_cache::get_bundled_session(
+        "hand_palm_detect", BUNDLED_HAND_MODEL,
+    )?;
 
     let palm_resized = resize_image(&req.image, palm_sz, palm_sz);
     let ts = palm_sz as usize;
@@ -880,16 +866,22 @@ fn run_hand_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult
         ([1usize, 3, ts, ts], palm_data.into_boxed_slice())
     ).map_err(|e| format!("Palm tensor: {}", e))?;
 
-    let palm_input_name = palm_sess.inputs().first().ok_or("No palm inputs")?.name().to_string();
-    let palm_outputs = palm_sess.run(ort::inputs![&palm_input_name => palm_tensor])
-        .map_err(|e| format!("Palm run: {}", e))?;
-
-    let mut tensors: Vec<(Vec<usize>, Vec<f32>)> = Vec::new();
-    for output in palm_outputs.iter() {
-        if let Ok((shape, data)) = output.1.try_extract_tensor::<f32>() {
-            tensors.push((shape.iter().map(|&d| d as usize).collect(), data.to_vec()));
+    // Lock the cached session for the entire run + output-extract scope; outputs
+    // borrow from the session guard, so the extraction (to owned f32 vecs) must
+    // happen here before the guard is dropped.
+    let tensors: Vec<(Vec<usize>, Vec<f32>)> = {
+        let mut sess = palm_sess.lock().map_err(|_| "Palm session lock poisoned".to_string())?;
+        let palm_input_name = sess.inputs().first().ok_or("No palm inputs")?.name().to_string();
+        let palm_outputs = sess.run(ort::inputs![&palm_input_name => palm_tensor])
+            .map_err(|e| format!("Palm run: {}", e))?;
+        let mut tensors = Vec::new();
+        for output in palm_outputs.iter() {
+            if let Ok((shape, data)) = output.1.try_extract_tensor::<f32>() {
+                tensors.push((shape.iter().map(|&d| d as usize).collect(), data.to_vec()));
+            }
         }
-    }
+        tensors
+    };
     let boxes_t = tensors.iter().find(|(d,_)| d.len()==3 && d[2]==18);
     let scores_t = tensors.iter().find(|(d,_)| d.len()==3 && d[2]==1)
         .or_else(|| tensors.iter().find(|(d,_)| d.len()==2 && d[1]==1));
@@ -969,12 +961,11 @@ fn run_hand_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult
     let lm_ts = lm_sz as usize;
     let lm_sz_f = lm_sz as f32;
 
-    // Load landmark session once, reuse for both hands
-    let mut lm_sess = Session::builder()
-        .map_err(|e| format!("Session builder: {}", e))?
-        .commit_from_memory(BUNDLED_HAND_LANDMARK_MODEL)
-        .map_err(|e| format!("Load landmark model: {}", e))?;
-    let lm_input_name = lm_sess.inputs().first().ok_or("No landmark inputs")?.name().to_string();
+    // Cached landmark session: built once on first inference, reused thereafter.
+    let lm_sess = crate::ml::session_cache::get_bundled_session(
+        "hand_landmark", BUNDLED_HAND_LANDMARK_MODEL,
+    )?;
+    let lm_input_name = crate::ml::session_cache::input_name_of(&lm_sess)?;
 
     // Per-hand colour palettes for annotation
     let hand_colors: [(u8,u8,u8); 2] = [(80,200,120), (100,160,255)]; // green, blue
@@ -1032,13 +1023,17 @@ fn run_hand_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult
             ([1usize, lm_ts, lm_ts, 3], lm_data.into_boxed_slice())
         ).map_err(|e| format!("Landmark tensor: {}", e))?;
 
-        let lm_outputs = lm_sess.run(ort::inputs![&lm_input_name => lm_tensor])
-            .map_err(|e| format!("Landmark run: {}", e))?;
-
-        let lm_out = &lm_outputs["Identity"];
-        let (_, lm_vals) = lm_out.try_extract_tensor::<f32>()
-            .map_err(|e| format!("Landmark extract: {}", e))?;
-        let lm: Vec<f32> = lm_vals.to_vec();
+        // Lock scope around run + extract; per-hand iteration locks briefly.
+        let lm: Vec<f32> = {
+            let mut sess = lm_sess.lock()
+                .map_err(|_| "Hand landmark session lock poisoned".to_string())?;
+            let lm_outputs = sess.run(ort::inputs![&lm_input_name => lm_tensor])
+                .map_err(|e| format!("Landmark run: {}", e))?;
+            let lm_out = &lm_outputs["Identity"];
+            let (_, lm_vals) = lm_out.try_extract_tensor::<f32>()
+                .map_err(|e| format!("Landmark extract: {}", e))?;
+            lm_vals.to_vec()
+        };
         if lm.len() < 63 { continue; }
 
         let crop_w = (cx2 - cx1) as f32;
@@ -1488,7 +1483,6 @@ pub fn run_face_tracking(req: &MlInferenceRequest) -> MlInferenceResult {
 }
 
 fn run_face_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult, String> {
-    use ort::session::Session;
 
     let img_w = req.image.width  as f32;
     let img_h = req.image.height as f32;
@@ -1500,10 +1494,9 @@ fn run_face_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult
     let ts = face_sz as usize;
     let face_sz_f = face_sz as f32;
 
-    let mut face_sess = Session::builder()
-        .map_err(|e| format!("Session builder: {}", e))?
-        .commit_from_memory(BUNDLED_FACE_MODEL)
-        .map_err(|e| format!("Load face model: {}", e))?;
+    let face_sess = crate::ml::session_cache::get_bundled_session(
+        "face_detect", BUNDLED_FACE_MODEL,
+    )?;
 
     // Resize input image to 128×128
     let face_resized = resize_image(&req.image, face_sz, face_sz);
@@ -1523,17 +1516,22 @@ fn run_face_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult
         ([1usize, ts, ts, 3], face_data.into_boxed_slice())
     ).map_err(|e| format!("Face tensor: {}", e))?;
 
-    let face_input_name = face_sess.inputs().first().ok_or("No face inputs")?.name().to_string();
-    let face_outputs = face_sess.run(ort::inputs![&face_input_name => face_tensor])
-        .map_err(|e| format!("Face run: {}", e))?;
-
-    // Extract output tensors
-    let mut tensors: Vec<(Vec<usize>, Vec<f32>)> = Vec::new();
-    for output in face_outputs.iter() {
-        if let Ok((shape, data)) = output.1.try_extract_tensor::<f32>() {
-            tensors.push((shape.iter().map(|&d| d as usize).collect(), data.to_vec()));
+    let face_input_name = crate::ml::session_cache::input_name_of(&face_sess)?;
+    // Lock scope around run + extraction; drops guard before the downstream
+    // landmark loop so the face-detect model isn't held against concurrent use.
+    let tensors: Vec<(Vec<usize>, Vec<f32>)> = {
+        let mut sess = face_sess.lock()
+            .map_err(|_| "Face session lock poisoned".to_string())?;
+        let face_outputs = sess.run(ort::inputs![&face_input_name => face_tensor])
+            .map_err(|e| format!("Face run: {}", e))?;
+        let mut tensors = Vec::new();
+        for output in face_outputs.iter() {
+            if let Ok((shape, data)) = output.1.try_extract_tensor::<f32>() {
+                tensors.push((shape.iter().map(|&d| d as usize).collect(), data.to_vec()));
+            }
         }
-    }
+        tensors
+    };
 
     let boxes_t = tensors.iter().find(|(d,_)| d.len()==3 && d[2]==16);
     let scores_t = tensors.iter().find(|(d,_)| d.len()==3 && d[2]==1)
@@ -1610,11 +1608,10 @@ fn run_face_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult
     let lm_ts = lm_sz as usize;
     let lm_sz_f = lm_sz as f32;
 
-    let mut lm_sess = Session::builder()
-        .map_err(|e| format!("Session builder: {}", e))?
-        .commit_from_memory(BUNDLED_FACE_LANDMARK_MODEL)
-        .map_err(|e| format!("Load face landmark model: {}", e))?;
-    let lm_input_name = lm_sess.inputs().first().ok_or("No landmark inputs")?.name().to_string();
+    let lm_sess = crate::ml::session_cache::get_bundled_session(
+        "face_landmark", BUNDLED_FACE_LANDMARK_MODEL,
+    )?;
+    let lm_input_name = crate::ml::session_cache::input_name_of(&lm_sess)?;
 
     // Per-face colour palettes
     let face_colors: [(u8,u8,u8); 2] = [(100,220,200), (220,120,200)]; // cyan, pink
@@ -1674,11 +1671,13 @@ fn run_face_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult
             ([1usize, 3, lm_ts, lm_ts], lm_data.into_boxed_slice())
         ).map_err(|e| format!("Landmark tensor: {}", e))?;
 
-        let lm_outputs = lm_sess.run(ort::inputs![&lm_input_name => lm_tensor])
-            .map_err(|e| format!("Face landmark run: {}", e))?;
-
+        // Lock scope around run + extract; per-face iteration locks briefly.
         // Output: "landmarks" [1, 468, 3] and "scores" [1]
         let lm_vals: Vec<f32> = {
+            let mut sess = lm_sess.lock()
+                .map_err(|_| "Face landmark session lock poisoned".to_string())?;
+            let lm_outputs = sess.run(ort::inputs![&lm_input_name => lm_tensor])
+                .map_err(|e| format!("Face landmark run: {}", e))?;
             let lm_out = lm_outputs.iter()
                 .find(|(name, _)| *name == "landmarks")
                 .or_else(|| lm_outputs.iter().next())
@@ -1870,7 +1869,6 @@ pub fn run_pose_tracking(req: &MlInferenceRequest) -> MlInferenceResult {
 }
 
 fn run_pose_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult, String> {
-    use ort::session::Session;
 
     let img_w = req.image.width  as f32;
     let img_h = req.image.height as f32;
@@ -1882,10 +1880,9 @@ fn run_pose_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult
     let ts = pose_sz as usize;
     let pose_sz_f = pose_sz as f32;
 
-    let mut pose_sess = Session::builder()
-        .map_err(|e| format!("Session builder: {}", e))?
-        .commit_from_memory(BUNDLED_POSE_MODEL)
-        .map_err(|e| format!("Load pose model: {}", e))?;
+    let pose_sess = crate::ml::session_cache::get_bundled_session(
+        "pose_detect", BUNDLED_POSE_MODEL,
+    )?;
 
     let pose_resized = resize_image(&req.image, pose_sz, pose_sz);
 
@@ -1903,16 +1900,22 @@ fn run_pose_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult
         ([1usize, 3, ts, ts], pose_data.into_boxed_slice())
     ).map_err(|e| format!("Pose tensor: {}", e))?;
 
-    let pose_input_name = pose_sess.inputs().first().ok_or("No pose inputs")?.name().to_string();
-    let pose_outputs = pose_sess.run(ort::inputs![&pose_input_name => pose_tensor])
-        .map_err(|e| format!("Pose run: {}", e))?;
-
-    let mut tensors: Vec<(Vec<usize>, Vec<f32>)> = Vec::new();
-    for output in pose_outputs.iter() {
-        if let Ok((shape, data)) = output.1.try_extract_tensor::<f32>() {
-            tensors.push((shape.iter().map(|&d| d as usize).collect(), data.to_vec()));
+    let pose_input_name = crate::ml::session_cache::input_name_of(&pose_sess)?;
+    // Lock scope around run + extraction; drops guard before the downstream
+    // landmark loop.
+    let tensors: Vec<(Vec<usize>, Vec<f32>)> = {
+        let mut sess = pose_sess.lock()
+            .map_err(|_| "Pose session lock poisoned".to_string())?;
+        let pose_outputs = sess.run(ort::inputs![&pose_input_name => pose_tensor])
+            .map_err(|e| format!("Pose run: {}", e))?;
+        let mut tensors = Vec::new();
+        for output in pose_outputs.iter() {
+            if let Ok((shape, data)) = output.1.try_extract_tensor::<f32>() {
+                tensors.push((shape.iter().map(|&d| d as usize).collect(), data.to_vec()));
+            }
         }
-    }
+        tensors
+    };
 
     // boxes: [1, 896, 12] — per-anchor: [cy,cx,h,w, kp0y,kp0x, kp1y,kp1x, kp2y,kp2x, kp3y,kp3x]
     let boxes_t = tensors.iter().find(|(d,_)| d.len()==3 && d[2]==12);
@@ -1989,11 +1992,10 @@ fn run_pose_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult
     let lm_ts = lm_sz as usize;
     let lm_sz_f = lm_sz as f32;
 
-    let mut lm_sess = Session::builder()
-        .map_err(|e| format!("Session builder: {}", e))?
-        .commit_from_memory(BUNDLED_POSE_LANDMARK_MODEL)
-        .map_err(|e| format!("Load pose landmark model: {}", e))?;
-    let lm_input_name = lm_sess.inputs().first().ok_or("No landmark inputs")?.name().to_string();
+    let lm_sess = crate::ml::session_cache::get_bundled_session(
+        "pose_landmark", BUNDLED_POSE_LANDMARK_MODEL,
+    )?;
+    let lm_input_name = crate::ml::session_cache::input_name_of(&lm_sess)?;
 
     let body_colors: [(u8,u8,u8); 2] = [(180,220,60), (255,160,60)]; // green-yellow, orange
 
@@ -2050,11 +2052,13 @@ fn run_pose_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult
             ([1usize, lm_ts, lm_ts, 3], lm_data.into_boxed_slice())
         ).map_err(|e| format!("Pose landmark tensor: {}", e))?;
 
-        let lm_outputs = lm_sess.run(ort::inputs![&lm_input_name => lm_tensor])
-            .map_err(|e| format!("Pose landmark run: {}", e))?;
-
+        // Lock scope around run + extract; per-pose iteration locks briefly.
         // Output Identity: [1, 195] = 39 landmarks × 5 (x, y, z, visibility, presence)
         let lm_vals: Vec<f32> = {
+            let mut sess = lm_sess.lock()
+                .map_err(|_| "Pose landmark session lock poisoned".to_string())?;
+            let lm_outputs = sess.run(ort::inputs![&lm_input_name => lm_tensor])
+                .map_err(|e| format!("Pose landmark run: {}", e))?;
             let lm_out = lm_outputs.iter()
                 .find(|(name, _)| *name == "Identity")
                 .or_else(|| lm_outputs.iter().next())
