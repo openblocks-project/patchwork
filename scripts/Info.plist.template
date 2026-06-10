@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>__BUNDLE_ID__</string>
+    <key>CFBundleName</key>
+    <string>__APP_NAME__</string>
+    <key>CFBundleDisplayName</key>
+    <string>__APP_NAME__</string>
+    <key>CFBundleExecutable</key>
+    <string>__EXECUTABLE__</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>CFBundleVersion</key>
+    <string>__VERSION__</string>
+    <key>CFBundleShortVersionString</key>
+    <string>__VERSION__</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>__MIN_MACOS__</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSPrincipalClass</key>
+    <string>NSApplication</string>
+
+    <!--
+        Permission prompts. macOS shows these strings to the user the
+        first time the app tries to access camera / mic / local network.
+        Strings here MUST be present or the OS denies access silently.
+    -->
+    <key>NSCameraUsageDescription</key>
+    <string>Patchwork uses the camera as a video input source for its Video In and Camera nodes.</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Patchwork uses the microphone as an audio input source for its Audio Input node.</string>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>Patchwork uses the local network for Web App / Web Stream sharing with phones on the same Wi-Fi, and for P2P collaboration via iroh.</string>
+    <key>NSBonjourServices</key>
+    <array>
+        <string>_iroh._udp</string>
+    </array>
+</dict>
+</plist>

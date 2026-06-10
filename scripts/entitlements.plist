@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+        Allow loading dynamic libraries not signed by Apple. Required for
+        the CLAP plugin host (src/audio/clap_host.rs) which loads third-party
+        .clap bundles, and for the RustPlugin node (src/nodes/rust_plugin.rs)
+        which compiles + libloading-loads user-written cdylibs. Without
+        this entitlement the hardened runtime rejects every third-party
+        dylib at load time.
+    -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+
+    <!--
+        Allow DYLD_* environment variables. Used during development for
+        pointing at custom ONNX runtime builds and for debugging dylib
+        resolution. Harmless for shipped users.
+    -->
+    <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+    <true/>
+
+    <!--
+        Allow writable + executable memory pages. Reserved for future
+        JIT work (Cranelift, libfaust audio DSL). Not strictly needed
+        today but cheap to include — saves a re-notarize cycle later.
+    -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+</dict>
+</plist>
