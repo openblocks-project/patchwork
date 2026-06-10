@@ -44,11 +44,20 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Auto-detect icon at scripts/icon.png if not given on the CLI
+# Auto-detect icon. Priority:
+#   1. --icon CLI argument
+#   2. assets/icons/icon.icns  (pre-built multi-resolution — fastest, best quality)
+#   3. assets/icons/icon.png   (1024×1024 PNG — script converts on the fly)
+#   4. scripts/icon.png        (canonical fallback for projects without assets/)
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$PROJECT_ROOT"
-if [[ -z "$ICON_SOURCE" && -f "scripts/icon.png" ]]; then
-    ICON_SOURCE="scripts/icon.png"
+if [[ -z "$ICON_SOURCE" ]]; then
+    for CAND in assets/icons/icon.icns assets/icons/icon.png scripts/icon.png; do
+        if [[ -f "$CAND" ]]; then
+            ICON_SOURCE="$CAND"
+            break
+        fi
+    done
 fi
 
 # ── Paths ──────────────────────────────────────────────────────
@@ -112,22 +121,29 @@ if [[ -n "$ORT_DYLIB" ]]; then
         "$APP_BUNDLE/Contents/MacOS/$EXECUTABLE_NAME" 2>/dev/null || true
 fi
 
-# ── 4. Convert icon → .icns ────────────────────────────────────
+# ── 4. Place icon ──────────────────────────────────────────────
+#   Use existing .icns directly when available (fastest, highest quality);
+#   convert from PNG via iconutil when only a PNG is provided.
 if [[ -n "$ICON_SOURCE" && -f "$ICON_SOURCE" ]]; then
-    echo ""
-    echo "▶ [3/9] Generating .icns from $ICON_SOURCE"
-    ICONSET="$BUILD_DIR/AppIcon.iconset"
-    mkdir -p "$ICONSET"
-    # Standard iconset variants — macOS picks the right one per display density.
-    for SIZE in 16 32 128 256 512; do
-        DBL=$(( SIZE * 2 ))
-        sips -z $SIZE $SIZE "$ICON_SOURCE" --out "$ICONSET/icon_${SIZE}x${SIZE}.png"     >/dev/null
-        sips -z $DBL  $DBL  "$ICON_SOURCE" --out "$ICONSET/icon_${SIZE}x${SIZE}@2x.png"  >/dev/null
-    done
-    # Top size (no @2x for 512 was added above; need bare 1024)
-    sips -z 1024 1024 "$ICON_SOURCE" --out "$ICONSET/icon_512x512@2x.png" >/dev/null
-    iconutil -c icns "$ICONSET" -o "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
-    rm -rf "$ICONSET"
+    if [[ "$ICON_SOURCE" == *.icns ]]; then
+        echo ""
+        echo "▶ [3/9] Copying existing .icns ($ICON_SOURCE)"
+        cp "$ICON_SOURCE" "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
+    else
+        echo ""
+        echo "▶ [3/9] Generating .icns from $ICON_SOURCE"
+        ICONSET="$BUILD_DIR/AppIcon.iconset"
+        mkdir -p "$ICONSET"
+        # Standard iconset variants — macOS picks the right one per display density.
+        for SIZE in 16 32 128 256 512; do
+            DBL=$(( SIZE * 2 ))
+            sips -z $SIZE $SIZE "$ICON_SOURCE" --out "$ICONSET/icon_${SIZE}x${SIZE}.png"     >/dev/null
+            sips -z $DBL  $DBL  "$ICON_SOURCE" --out "$ICONSET/icon_${SIZE}x${SIZE}@2x.png"  >/dev/null
+        done
+        sips -z 1024 1024 "$ICON_SOURCE" --out "$ICONSET/icon_512x512@2x.png" >/dev/null
+        iconutil -c icns "$ICONSET" -o "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
+        rm -rf "$ICONSET"
+    fi
 else
     echo ""
     echo "▶ [3/9] No icon — bundle gets the generic application icon."
