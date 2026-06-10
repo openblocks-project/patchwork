@@ -121,6 +121,35 @@ if [[ -n "$ORT_DYLIB" ]]; then
         "$APP_BUNDLE/Contents/MacOS/$EXECUTABLE_NAME" 2>/dev/null || true
 fi
 
+# ── 3b. Bundle Syphon.framework alongside the binary (if present) ──
+#   The `syphon-rs` crate links against a pre-built Syphon.framework that
+#   lives under vendor/ at build time. Without bundling the actual framework
+#   into the .app, the recipient Mac fails to launch with:
+#       "Library not loaded: @rpath/Syphon.framework/Versions/A/Syphon"
+#   The binary already has @loader_path/../Frameworks as one of its rpaths
+#   (set by the syphon-rs build.rs), so dropping the framework here is enough.
+SYPHON_FW_SRC="vendor/Syphon.framework.prebuilt/Syphon.framework"
+if [[ -d "$SYPHON_FW_SRC" ]]; then
+    echo "    → bundling Syphon.framework"
+    cp -R "$SYPHON_FW_SRC" "$APP_BUNDLE/Contents/Frameworks/"
+fi
+
+# ── 3c. Strip absolute /Users/ rpaths from the binary ──
+#   Rust embeds vendor/ search paths as absolute LC_RPATH entries at build
+#   time. Those paths don't exist on the recipient's Mac and were the root
+#   cause of the dyld "Library not loaded" crash. We've already copied each
+#   framework into Contents/Frameworks/ above, where the @loader_path/../
+#   Frameworks rpath resolves to — so stripping the absolute ones is safe
+#   AND avoids leaking the developer's home directory in the shipped binary.
+while IFS= read -r BAD_RPATH; do
+    [[ -n "$BAD_RPATH" ]] || continue
+    echo "    → stripping rpath: $BAD_RPATH"
+    install_name_tool -delete_rpath "$BAD_RPATH" \
+        "$APP_BUNDLE/Contents/MacOS/$EXECUTABLE_NAME" 2>&1 || true
+done < <(otool -l "$APP_BUNDLE/Contents/MacOS/$EXECUTABLE_NAME" | \
+         awk '/cmd LC_RPATH/{found=1; next} found && /^ *path /{print $2; found=0}' | \
+         grep '^/Users/' || true)
+
 # ── 4. Place icon ──────────────────────────────────────────────
 #   Use existing .icns directly when available (fastest, highest quality);
 #   convert from PNG via iconutil when only a PNG is provided.
@@ -158,6 +187,16 @@ echo "▶ [4/9] codesigning the bundle"
 find "$APP_BUNDLE/Contents/Frameworks" -name '*.dylib' -exec \
     codesign --force --options=runtime --timestamp \
         --sign "$SIGNING_IDENTITY" {} \;
+# Sign nested frameworks. We --force here because vendored frameworks
+# (Syphon, NDI, etc.) usually arrive pre-signed by their upstream author;
+# we have to overwrite that signature with our Developer ID so the
+# hardened runtime accepts the bundle as a coherent whole.
+for FW in "$APP_BUNDLE/Contents/Frameworks/"*.framework; do
+    [[ -d "$FW" ]] || continue
+    echo "    → signing $(basename "$FW")"
+    codesign --force --options=runtime --timestamp \
+        --sign "$SIGNING_IDENTITY" "$FW"
+done
 # Sign the main executable + bundle
 codesign --deep --force \
     --options=runtime \
