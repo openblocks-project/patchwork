@@ -1100,7 +1100,7 @@ fn download_to_disk(url: &str, dest: &std::path::Path) -> Result<(), String> {
             .status()
             .map_err(|e| {
                 if e.kind() == std::io::ErrorKind::NotFound {
-                    "yt-dlp not found. `brew install yt-dlp` to enable YouTube/Vimeo cache.".to_string()
+                    "yt-dlp not found. Install with `brew install yt-dlp`, `pip install yt-dlp`, or download a standalone binary from https://github.com/yt-dlp/yt-dlp/releases — drop it on your PATH (e.g. /usr/local/bin). Needed for YouTube/Vimeo cache; direct URLs still work without it.".to_string()
                 } else { format!("yt-dlp launch failed: {}", e) }
             })?
     } else {
@@ -1140,9 +1140,7 @@ fn run_yt_dlp(url: &str) -> Result<String, String> {
         .output()
         .map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
-                "yt-dlp not found. Install with `brew install yt-dlp` (mac) \
-                 or `pip install yt-dlp`. Direct URLs still work without it."
-                    .to_string()
+                "yt-dlp not found. Install with `brew install yt-dlp`, `pip install yt-dlp`, or grab a standalone binary from https://github.com/yt-dlp/yt-dlp/releases (no package manager required) — drop it on your PATH. Direct URLs still work without it.".to_string()
             } else {
                 format!("yt-dlp launch failed: {}", e)
             }
