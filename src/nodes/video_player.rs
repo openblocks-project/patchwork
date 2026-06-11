@@ -584,13 +584,13 @@ pub(crate) fn get_duration(path: &str) -> Option<f32> {
 /// the file recorder's spawn failure arm in `video_io::file_recorder`.
 pub fn ffmpeg_install_hint() -> String {
     #[cfg(target_os = "macos")]
-    return "ffmpeg not found. Install with: brew install ffmpeg".into();
+    return "ffmpeg not found. Install options: (1) `brew install ffmpeg` if you have Homebrew, (2) download a prebuilt static binary from https://evermeet.cx/ffmpeg/ — no package manager needed; drop the `ffmpeg` binary into /usr/local/bin, or (3) https://ffmpeg.org/download.html".into();
     #[cfg(target_os = "linux")]
-    return "ffmpeg not found. Install via your package manager (e.g. apt install ffmpeg)".into();
+    return "ffmpeg not found. Install via your package manager (Debian/Ubuntu: `apt install ffmpeg`; Fedora: `dnf install ffmpeg`; Arch: `pacman -S ffmpeg`).".into();
     #[cfg(target_os = "windows")]
-    return "ffmpeg not found. Download from https://ffmpeg.org/download.html and add ffmpeg.exe to PATH".into();
+    return "ffmpeg not found. Install with `winget install Gyan.FFmpeg`, `choco install ffmpeg`, or download from https://ffmpeg.org/download.html and add ffmpeg.exe to PATH.".into();
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    return "ffmpeg not found — required for camera/video capture".into();
+    return "ffmpeg not found — required for camera / video capture / streaming".into();
 }
 
 /// List available camera devices (cross-platform via ffmpeg)

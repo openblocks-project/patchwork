@@ -2,9 +2,10 @@
 //! source as `PortValue::Text` on a single output port. Downstream WGSL
 //! Viewer reads the text, auto-detects uniforms and renders.
 //!
-//! Presets are loaded from files in `assets/presets/wgsl/*.wgsl`. Drop a new
-//! `.wgsl` file in that directory and restart — it shows up automatically in
-//! the dropdown.
+//! Built-in presets are compile-time-embedded from `assets/presets/wgsl/*.wgsl`
+//! so they always appear in the dropdown — including in shipped `.app` bundles
+//! where the assets dir isn't on disk. Power users can drop additional `.wgsl`
+//! files in `~/.patchwork/presets/wgsl/` and restart to see them appended.
 //!
 //! A "Spawn paired WGSL Viewer" button emits a `WgslPresetsSpawnRequest`
 //! that the host (`app/mod.rs`) consumes to add a viewer to the right and
@@ -49,66 +50,74 @@ struct Preset {
     source: String,
 }
 
-/// Directory (relative to the running binary's CWD) scanned at startup for
-/// `.wgsl` files. Each file becomes a preset.
-const PRESET_DIR: &str = "assets/presets/wgsl";
+/// Built-in WGSL presets, embedded at compile time. Listed in curated order
+/// (gradient first since it's the simplest, ending with the more involved
+/// camera/edge/displacement effects). Adding a new bundled preset = drop the
+/// `.wgsl` file in `assets/presets/wgsl/` AND add one line here.
+const BUNDLED_PRESETS: &[(&str, &str)] = &[
+    ("gradient",     include_str!("../../assets/presets/wgsl/gradient.wgsl")),
+    ("plasma",       include_str!("../../assets/presets/wgsl/plasma.wgsl")),
+    ("particles",    include_str!("../../assets/presets/wgsl/particles.wgsl")),
+    ("spinsquare",   include_str!("../../assets/presets/wgsl/spinsquare.wgsl")),
+    ("julia",        include_str!("../../assets/presets/wgsl/julia.wgsl")),
+    ("kaleidoscope", include_str!("../../assets/presets/wgsl/kaleidoscope.wgsl")),
+    ("mandelbrot",   include_str!("../../assets/presets/wgsl/mandelbrot.wgsl")),
+    ("fractal_zoom", include_str!("../../assets/presets/wgsl/fractal_zoom.wgsl")),
+    ("lissajous",    include_str!("../../assets/presets/wgsl/lissajous.wgsl")),
+    ("camera_grade", include_str!("../../assets/presets/wgsl/camera_grade.wgsl")),
+    ("edge_detect",  include_str!("../../assets/presets/wgsl/edge_detect.wgsl")),
+    ("displacement", include_str!("../../assets/presets/wgsl/displacement.wgsl")),
+];
 
-/// Lazily-built preset list, sorted by filename.
+/// Optional user-customizable directory: `~/.patchwork/presets/wgsl/`. Any
+/// `.wgsl` files here are loaded on first preset-list access (so requires a
+/// Patchwork restart to pick up new ones). User-added presets append to the
+/// bundled list; bundled names win on collision.
+fn user_presets_dir() -> Option<std::path::PathBuf> {
+    dirs::home_dir().map(|h| h.join(".patchwork").join("presets").join("wgsl"))
+}
+
+/// Lazily-built preset list. Bundled first (always available), then any
+/// user-added presets from `~/.patchwork/presets/wgsl/`.
 fn all_presets() -> &'static Vec<Preset> {
     static CELL: OnceLock<Vec<Preset>> = OnceLock::new();
     CELL.get_or_init(|| {
-        // Try a few candidate roots so the picker works whether the binary
-        // is launched from the repo root, `target/debug/`, etc.
-        let candidates = [
-            std::path::PathBuf::from(PRESET_DIR),
-            std::path::PathBuf::from(format!("../{}", PRESET_DIR)),
-            std::path::PathBuf::from(format!("../../{}", PRESET_DIR)),
-            std::env::current_exe()
-                .ok()
-                .and_then(|p| p.parent().map(|d| d.join(PRESET_DIR)))
-                .unwrap_or_default(),
-        ];
-        let dir = candidates.into_iter().find(|p| p.is_dir());
+        let mut out: Vec<Preset> = Vec::with_capacity(BUNDLED_PRESETS.len() + 4);
 
-        let mut out: Vec<Preset> = Vec::new();
-        if let Some(dir) = dir {
+        // 1. Bundled presets (always there, even in a shipped .app).
+        for (stem, source) in BUNDLED_PRESETS {
+            out.push(Preset {
+                key: (*stem).to_string(),
+                label: humanize_stem(stem),
+                source: (*source).to_string(),
+            });
+        }
+
+        // 2. Optional user presets from `~/.patchwork/presets/wgsl/`.
+        if let Some(dir) = user_presets_dir() {
             if let Ok(entries) = std::fs::read_dir(&dir) {
                 let mut files: Vec<std::path::PathBuf> = entries
                     .filter_map(|e| e.ok().map(|e| e.path()))
-                    .filter(|p| {
-                        p.extension().and_then(|e| e.to_str()) == Some("wgsl")
-                    })
+                    .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("wgsl"))
                     .collect();
-                // Sort by curated order first, then alphabetical for the rest
-                let priority_order: &[&str] = &[
-                    "gradient", "plasma", "particles", "spinsquare",
-                    "julia", "kaleidoscope",
-                    "mandelbrot", "fractal_zoom", "lissajous",
-                    "camera_grade", "edge_detect", "displacement",
-                ];
-                files.sort_by(|a, b| {
-                    let sa = a.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-                    let sb = b.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-                    let ia = priority_order.iter().position(|&p| p == sa).unwrap_or(usize::MAX);
-                    let ib = priority_order.iter().position(|&p| p == sb).unwrap_or(usize::MAX);
-                    ia.cmp(&ib).then_with(|| sa.cmp(sb))
-                });
+                files.sort();
                 for path in files {
-                    if let Ok(text) = std::fs::read_to_string(&path) {
-                        let stem = path
-                            .file_stem()
-                            .and_then(|s| s.to_str())
-                            .unwrap_or("preset")
-                            .to_string();
-                        out.push(Preset {
-                            key: stem.clone(),
-                            label: humanize_stem(&stem),
-                            source: text,
-                        });
+                    if let Ok(source) = std::fs::read_to_string(&path) {
+                        if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                            // Skip if a bundled preset already owns this name —
+                            // we never let user files silently shadow shipped ones.
+                            if out.iter().any(|p| p.key == stem) { continue; }
+                            out.push(Preset {
+                                key: stem.to_string(),
+                                label: humanize_stem(stem),
+                                source,
+                            });
+                        }
                     }
                 }
             }
         }
+
         out
     })
 }
@@ -236,7 +245,7 @@ impl NodeBehavior for WgslPresetsNode {
 
         let dim = ui.visuals().widgets.noninteractive.fg_stroke.color;
         ui.label(
-            egui::RichText::new("Loads .wgsl files from assets/presets/wgsl/")
+            egui::RichText::new("Built-in presets. Drop your own .wgsl files in ~/.patchwork/presets/wgsl/ to extend.")
                 .small()
                 .color(dim),
         );
