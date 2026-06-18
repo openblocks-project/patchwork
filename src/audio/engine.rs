@@ -104,22 +104,41 @@ pub struct AudioEngine {
 
 impl AudioEngine {
     /// Create a new engine. The Receiver end of the command channel is moved in.
+    // pub fn new(commands: Receiver<AudioCommand>, sample_rate: f32, master_volume: Arc<AtomicF32>) -> Self {
+    //     // let max_block_size = 256; // supports up to 256 samples per callback; prefer 64
+    //     let max_block_size = 4096;  // Support up to 4096 samples per callback
+
+    //     Self {
+    //         slots: HashMap::new(),
+    //         commands,
+    //         silence: vec![0.0f32; max_block_size],
+    //         input_scratch: vec![0.0f32; max_block_size],
+    //         sample_rate,
+    //         master_volume,
+    //         master_analysis: AudioAnalysis::default(),
+    //         max_block_size,
+    //         speaker_ids: Vec::new(),
+    //         processor_ids: Vec::new(),
+    //         ids_dirty: true,
+    //     }
+    // }
+
     pub fn new(commands: Receiver<AudioCommand>, sample_rate: f32, master_volume: Arc<AtomicF32>) -> Self {
-        let max_block_size = 256; // supports up to 256 samples per callback; prefer 64
-        Self {
-            slots: HashMap::new(),
-            commands,
-            silence: vec![0.0f32; max_block_size],
-            input_scratch: vec![0.0f32; max_block_size],
-            sample_rate,
-            master_volume,
-            master_analysis: AudioAnalysis::default(),
-            max_block_size,
-            speaker_ids: Vec::new(),
-            processor_ids: Vec::new(),
-            ids_dirty: true,
-        }
+    let max_block_size = 4096;  // Large enough for any CPAL buffer
+    Self {
+        slots: HashMap::new(),
+        commands,
+        silence: vec![0.0f32; max_block_size],  // Now 4096
+        input_scratch: vec![0.0f32; max_block_size],  // Now 4096
+        sample_rate,
+        master_volume,
+        master_analysis: AudioAnalysis::default(),
+        max_block_size,
+        speaker_ids: Vec::new(),
+        processor_ids: Vec::new(),
+        ids_dirty: true,
     }
+}
 
     /// Drain all pending commands from the UI (non-blocking).
     fn process_commands(&mut self) {
