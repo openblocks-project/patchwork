@@ -730,13 +730,13 @@ impl PatchworkApp {
             NodeType::Slider { slider_color, .. } if *slider_color == [80, 160, 255] => {
                 *slider_color = accent;
             }
-            // OB controllers all default to white labels.
+            // Hub-relayed OB controllers default to white labels.
+            // Single-board OB nodes (Knob/Wheel/Pressure/Distance) are NOT
+            // listed here: for them white means "LED colour unassigned" — the
+            // render auto-assigns a distinct hue and pushes it to the device's
+            // strip on first appearance, and this rewrite would defeat that.
             NodeType::ObJoystick { label_color, .. }
-            | NodeType::ObEncoder { label_color, .. }
             | NodeType::ObBend { label_color, .. }
-            | NodeType::ObPressure { label_color, .. }
-            | NodeType::ObDistance { label_color, .. }
-            | NodeType::ObKnob { label_color, .. }
                 if *label_color == [255, 255, 255] =>
             {
                 *label_color = text;
@@ -1993,30 +1993,18 @@ impl eframe::App for PatchworkApp {
                         }
                         ob_injected = true;
                     }
-                    NodeType::ObEncoder { device_id, hub_node_id, .. } => {
-                        // Three lookup paths, same priority as other OB nodes:
-                        //   1. Bound hub → 2. Any serial hub → 3. HID auto-discovery
-                        //
-                        // HID path (OB Wheel): parse_encoder_report accumulates
-                        // position and writes turn/click/position keys directly
-                        // into the device map, so the readout here is identical
-                        // to the serial-hub path.
-                        //
-                        // Turn-pulse caveat: the HID parser writes the delta on
-                        // each report and leaves it stale between reports. We
-                        // clear it to 0 here AFTER reading so a single tick
-                        // produces a single frame of non-zero Turn output,
-                        // which matches the serial-hub behavior.
-                        let hub_lookup = self.ob.get_hub(*hub_node_id)
-                            .and_then(|h| h.get_device("encoder", *device_id))
-                            .or_else(|| self.ob.find_device("encoder", *device_id).map(|(_, d)| d))
+                    NodeType::ObEncoder { device_id, .. } => {
+                        // Bind by device type+id across all OB connections
+                        // (auto-discovered by USB descriptor, or a manual hub);
+                        // HID as a last-resort fallback. Encoder stores
+                        // turn/click/position (see ob.rs apply_data).
+                        let (turn, click, pos, from_serial) = self.ob.device("encoder", *device_id)
                             .map(|d| (
                                 d.values.get("turn").copied().unwrap_or(0.0),
                                 d.values.get("click").copied().unwrap_or(0.0),
                                 d.values.get("position").copied().unwrap_or(0.0),
-                                true, // was_hub
-                            ));
-                        let (turn, click, pos, was_hub) = hub_lookup
+                                true,
+                            ))
                             .or_else(|| crate::hid::global().find_device("encoder", *device_id)
                                 .map(|d| (
                                     d.values.get("turn").copied().unwrap_or(0.0),
@@ -2026,12 +2014,15 @@ impl eframe::App for PatchworkApp {
                                 )))
                             .unwrap_or((0.0, 0.0, 0.0, false));
 
-                        // Clear the one-shot "turn" field so a single detent
-                        // produces a single frame of non-zero Turn output.
-                        // Only do this for HID — the serial hub handles its
-                        // own turn lifecycle.
-                        if !was_hub && turn.abs() > 0.001 {
-                            crate::hid::global().clear_device_value("encoder", *device_id, "turn");
+                        // Clear the one-shot "turn" delta after reading so a
+                        // single detent produces a single non-zero Turn frame
+                        // (Position keeps the running total).
+                        if turn.abs() > 0.001 {
+                            if from_serial {
+                                self.ob.clear_device_value("encoder", *device_id, "turn");
+                            } else {
+                                crate::hid::global().clear_device_value("encoder", *device_id, "turn");
+                            }
                         }
 
                         values.insert((id, 0), PortValue::Float(turn));
@@ -2082,16 +2073,11 @@ impl eframe::App for PatchworkApp {
                         }
                         ob_injected = true;
                     }
-                    NodeType::ObPressure { device_id, hub_node_id, .. } => {
-                        // Three lookup paths, same priority as ObKnob/ObDistance:
-                        //   1. Bound hub → 2. Any serial hub → 3. HID auto-discovery
-                        // HID path uses parse_knob_report, which writes both
-                        // "val" (legacy key, used here) and "value" (knob key).
-                        let hub_lookup = self.ob.get_hub(*hub_node_id)
-                            .and_then(|h| h.get_device("pressure", *device_id))
-                            .or_else(|| self.ob.find_device("pressure", *device_id).map(|(_, d)| d))
-                            .map(|d| (d.values.get("val").copied().unwrap_or(0.0), d.is_active));
-                        let (val, _is_active) = hub_lookup
+                    NodeType::ObPressure { device_id, .. } => {
+                        // Bind by type+id across OB connections; HID fallback.
+                        // FSR firmware sends `/pressure/<id>/val <0..1>`.
+                        let (val, _is_active) = self.ob.device("pressure", *device_id)
+                            .map(|d| (d.values.get("val").copied().unwrap_or(0.0), d.is_active))
                             .or_else(|| crate::hid::global().find_device("pressure", *device_id)
                                 .map(|d| (d.values.get("val").copied().unwrap_or(0.0), d.is_active)))
                             .unwrap_or((0.0, false));
@@ -2104,26 +2090,17 @@ impl eframe::App for PatchworkApp {
                         ctx.data_mut(|d| d.insert_temp(prev_key, val));
                         ob_injected = true;
                     }
-                    NodeType::ObDistance { device_id, hub_node_id, .. } => {
-                        // Three lookup paths, same priority as ObKnob:
-                        //   1. Bound hub → 2. Any serial hub → 3. HID auto-discovery
+                    NodeType::ObDistance { device_id, .. } => {
+                        // Bind by type+id across OB connections; HID fallback.
                         // Ports: 0 = Value (0..1 normalized), 1 = Distance (mm),
-                        //        2 = Changed (trigger).
-                        // Firmware maps 0..300 mm → 0..1 for the normalized output;
-                        // mm port is the raw reading (useful for absolute distances
-                        // or when chaining a MapRange node for a custom range).
-                        // Serial-hub devices predate the `mm` key, so we fall back
-                        // to 0 on that path — downstream can use Value if absolute
-                        // mm isn't critical.
-                        let hub_lookup = self.ob.get_hub(*hub_node_id)
-                            .and_then(|h| h.get_device("distance", *device_id))
-                            .or_else(|| self.ob.find_device("distance", *device_id).map(|(_, d)| d))
+                        //        2 = Changed (trigger). Firmware sends raw mm via
+                        //        `/distance/<id>/mm` (ob.rs stores both mm + val).
+                        let (val, mm, _is_active) = self.ob.device("distance", *device_id)
                             .map(|d| (
                                 d.values.get("val").copied().unwrap_or(0.0),
                                 d.values.get("mm").copied().unwrap_or(0.0),
                                 d.is_active,
-                            ));
-                        let (val, mm, _is_active) = hub_lookup
+                            ))
                             .or_else(|| crate::hid::global().find_device("distance", *device_id)
                                 .map(|d| (
                                     d.values.get("val").copied().unwrap_or(0.0),
@@ -2142,20 +2119,13 @@ impl eframe::App for PatchworkApp {
 
                         ob_injected = true;
                     }
-                    NodeType::ObKnob { device_id, hub_node_id, .. } => {
-                        // Knob reading is stored under "value" (see ob.rs apply_data
-                        // for ("knob", "value"), and hid.rs parse_knob_report).
-                        // Three lookup sources tried in order:
-                        //   1. The node's bound hub (if any)
-                        //   2. Any connected serial hub
-                        //   3. HID auto-discovery (no hub required) — via the
-                        //      process-wide singleton in `crate::hid::global()`.
-                        // HID is the expected path for USB-direct knobs.
-                        let hub_lookup = self.ob.get_hub(*hub_node_id)
-                            .and_then(|h| h.get_device("knob", *device_id))
-                            .or_else(|| self.ob.find_device("knob", *device_id).map(|(_, d)| d))
-                            .map(|d| (d.values.get("value").copied().unwrap_or(0.0), d.is_active));
-                        let (val, _is_active) = hub_lookup
+                    NodeType::ObKnob { device_id, .. } => {
+                        // Bind by device type+id across all OB connections
+                        // (auto-discovered by USB descriptor, or a manual hub).
+                        // Value is stored under "value" (ob.rs apply_data for
+                        // ("knob","value")). HID is a last-resort fallback.
+                        let (val, _is_active) = self.ob.device("knob", *device_id)
+                            .map(|d| (d.values.get("value").copied().unwrap_or(0.0), d.is_active))
                             .or_else(|| crate::hid::global().find_device("knob", *device_id)
                                 .map(|d| (d.values.get("value").copied().unwrap_or(0.0), d.is_active)))
                             .unwrap_or((0.0, false));
@@ -3029,6 +2999,10 @@ impl eframe::App for PatchworkApp {
 
         // AudioAnalyzer + AudioPlayer values already injected before the image evaluation loop above.
 
+        // OB single-board devices (knob, …) are auto-discovered by USB
+        // descriptor string inside `self.ob.poll_all()` (see ob.rs::discover).
+        // Nodes bind by device type+id — no per-node port wiring here.
+
         // Sync OB Hub detected_devices from ObManager + auto-connect saved ports
         {
             let hub_nodes: Vec<(NodeId, String)> = self.graph.nodes.iter()
@@ -3246,15 +3220,15 @@ impl eframe::App for PatchworkApp {
                     let hub_pos = self.graph.nodes.get(&hub_id).map(|n| n.pos).unwrap_or([200.0, 200.0]);
                     let nt = match dtype.as_str() {
                         "joystick" => NodeType::ObJoystick { device_id: did, hub_node_id: hub_id, label_color: [255, 255, 255] },
-                        "encoder" => NodeType::ObEncoder { device_id: did, hub_node_id: hub_id, label_color: [255, 255, 255] },
+                        "encoder" => NodeType::ObEncoder { device_id: did, hub_node_id: hub_id, label_color: [255, 255, 255], port_name: String::new(), selected_port: String::new() },
                         "move" => NodeType::ObMove { device_id: did, hub_node_id: hub_id },
                         "bend" => NodeType::ObBend { device_id: did, hub_node_id: hub_id, label_color: [255, 255, 255] },
-                        "pressure" => NodeType::ObPressure { device_id: did, hub_node_id: hub_id, label_color: [255, 255, 255] },
-                        "distance" => NodeType::ObDistance { device_id: did, hub_node_id: hub_id, label_color: [255, 255, 255] },
-                        "knob" => NodeType::ObKnob { device_id: did, hub_node_id: hub_id, label_color: [255, 255, 255] },
+                        "pressure" => NodeType::ObPressure { device_id: did, hub_node_id: hub_id, label_color: [255, 255, 255], port_name: String::new(), selected_port: String::new() },
+                        "distance" => NodeType::ObDistance { device_id: did, hub_node_id: hub_id, label_color: [255, 255, 255], port_name: String::new(), selected_port: String::new() },
+                        "knob" => NodeType::ObKnob { device_id: did, hub_node_id: hub_id, label_color: [255, 255, 255], port_name: String::new(), selected_port: String::new() },
                         "orb" => NodeType::ObOrb { device_id: did, hub_node_id: hub_id, mode: 0, color: [255, 255, 255], param1: 0.0, param2: 0.0, speed: 1.0, brightness: 1.0 },
                         "motor" => NodeType::ObMotor { device_id: did, hub_node_id: hub_id, mode: 0, dir: 1, speed: 400.0, amount: 90.0 },
-                        "light" => NodeType::ObLight { device_id: did, hub_node_id: hub_id, mode: 0, color: [255, 180, 100], brightness: 0.20, position: 0.5, speed: 0.5, color_mode: 0, send_mode: 0 },
+                        "light" => NodeType::ObLight { device_id: did, hub_node_id: hub_id, mode: 0, color: [255, 180, 100], brightness: 0.20, position: 0.5, speed: 0.5, color_mode: 0, send_mode: 0, num_leds: 100, port_name: String::new(), selected_port: String::new() },
                         _ => continue,
                     };
                     self.push_undo();

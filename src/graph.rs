@@ -805,6 +805,12 @@ pub enum NodeType {
         hub_node_id: NodeId,
         #[serde(default = "default_orb_color")]
         label_color: [u8; 3],
+        /// Manual port override fallback (see ObKnob). Auto-discovery by USB
+        /// descriptor string is the primary path; these stay empty normally.
+        #[serde(default)]
+        port_name: String,
+        #[serde(default)]
+        selected_port: String,
     },
     ObMove {
         #[serde(default = "default_device_id")]
@@ -827,6 +833,12 @@ pub enum NodeType {
         hub_node_id: NodeId,
         #[serde(default = "default_orb_color")]
         label_color: [u8; 3],
+        /// Manual port override fallback (see ObKnob). Auto-discovery is primary;
+        /// these stay empty normally.
+        #[serde(default)]
+        port_name: String,
+        #[serde(default)]
+        selected_port: String,
     },
     /// OB Distance — Time-of-Flight sensor (VL53L0X) reporting a normalized
     /// 0..1 value mapped from a fixed firmware-side range (30..1200 mm for
@@ -839,11 +851,22 @@ pub enum NodeType {
         hub_node_id: NodeId,
         #[serde(default = "default_orb_color")]
         label_color: [u8; 3],
+        /// Manual port override fallback (see ObKnob). Auto-discovery by USB
+        /// descriptor / content-probe is the primary path; these stay empty.
+        #[serde(default)]
+        port_name: String,
+        #[serde(default)]
+        selected_port: String,
     },
-    /// OB Knob — single-axis rotary knob sensor reporting a normalized value
-    /// under `dev.values["value"]`. Symmetric with Bend/Pressure/Distance:
-    /// one Normalized output + one "Changed" trigger. `label_color` drives
-    /// the device's LED if it has one (harmless no-op otherwise).
+    /// OB Knob — single-axis rotary knob (potentiometer) on a dedicated
+    /// ESP32-S3 over USB serial. The node owns its own serial connection
+    /// (one sensor per board, wired) and reads a normalized 0..1 value from
+    /// `dev.values["value"]`. Outputs: one Normalized value + one "Changed"
+    /// trigger.
+    ///
+    /// `hub_node_id`/`label_color` are retained for save-compat with the old
+    /// hub-relayed model; the direct-USB path keyed by the node's own id takes
+    /// priority.
     ObKnob {
         #[serde(default = "default_device_id")]
         device_id: u8,
@@ -851,11 +874,24 @@ pub enum NodeType {
         hub_node_id: NodeId,
         #[serde(default = "default_orb_color")]
         label_color: [u8; 3],
+        /// USB serial port of this knob's ESP32-S3. Set on Connect; used to
+        /// auto-reconnect on project load. Empty = not bound.
+        #[serde(default)]
+        port_name: String,
+        /// Port currently highlighted in the dropdown (may differ from
+        /// `port_name` until Connect is pressed).
+        #[serde(default)]
+        selected_port: String,
     },
-    /// OB Light — WIP. WS2812B strip (200 LEDs) driven by a Glyph C6 over an
-    /// OB Hub. Modes: 0=Solid, 1=Pointer (3 LEDs at `position`), 2=Pulse
-    /// (breathe at `speed`). Color can be overridden per-channel via R/G/B
-    /// input ports. Pure output device.
+    /// OB LED Strip — WS2812B strip on a dedicated ESP32-S3 over USB serial
+    /// (DATA on GPIO2/A2). Pure output device, auto-discovered by USB
+    /// descriptor like the input nodes. Modes: 0=Solid, 1=Pointer (lit dot at
+    /// `position`), 2=Pulse (breathe at `speed`). Color can be overridden
+    /// per-channel via R/G/B input ports. `num_leds` is the strip length.
+    ///
+    /// Enum name kept as `ObLight` for save-compat (the UI label and device
+    /// string are "OB LED Strip" / "light"). `hub_node_id` retained for
+    /// save-compat with the old hub-relayed model.
     ObLight {
         #[serde(default = "default_device_id")]
         device_id: u8,
@@ -881,6 +917,16 @@ pub enum NodeType {
         /// 1 = Triggered (only on Send button or rising edge of Trigger port).
         #[serde(default)]
         send_mode: u8,
+        /// Number of LEDs in the physical strip. Pushed to firmware so the
+        /// effects span the whole strip. Editable from the node.
+        #[serde(default = "default_num_leds")]
+        num_leds: u16,
+        /// Manual port override fallback (see ObKnob). Auto-discovery is
+        /// primary; these stay empty normally.
+        #[serde(default)]
+        port_name: String,
+        #[serde(default)]
+        selected_port: String,
     },
     /// OB Motor — WIP. Wireless stepper (TMC2208 + NEMA 17 driven by a Glyph C6
     /// over an OB Hub). Two commands: `motor` moves by `amount` degrees, `spin`
@@ -1470,6 +1516,7 @@ fn default_motor_speed() -> f32 { 400.0 }
 fn default_motor_amount() -> f32 { 90.0 }
 fn default_light_color() -> [u8; 3] { [255, 180, 100] }   // warm
 fn default_light_brightness() -> f32 { 0.20 }              // conservative — LEDs pull A's quickly
+fn default_num_leds() -> u16 { 100 }
 fn default_preview_size() -> f32 { 150.0 }
 fn default_draw_size() -> f32 { 200.0 }
 fn default_draw_width() -> f32 { 2.0 }
@@ -1527,7 +1574,7 @@ impl NodeBehavior for NodeType {
             NodeType::ObDistance { .. } => "OB Distance",
             NodeType::ObKnob { .. } => "OB Knob",
             NodeType::ObMotor { .. } => "OB Motor",
-            NodeType::ObLight { .. } => "OB Light",
+            NodeType::ObLight { .. } => "OB LED Strip",
             NodeType::ObOrb { .. } => "OB Orb",
             NodeType::Synth { .. } => "Synth",
             NodeType::AudioPlayer { .. } => "Audio Player",

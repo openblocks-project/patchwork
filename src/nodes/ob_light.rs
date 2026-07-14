@@ -1,18 +1,20 @@
-// OB Light — WIP. WS2812B strip (200 LEDs) driven by a Glyph C6 over an OB
-// Hub. Three pattern modes (Solid/Pointer/Pulse), two channel-port modes
-// (RGB/HSL), and two send modes (Continuous/Triggered).
+// OB LED Strip — WS2812B strip on a dedicated ESP32-S3 over USB serial. DATA on
+// GPIO2 (A2). Pure output device, auto-discovered by USB descriptor
+// ("OpenBlocks" / "OB LED Strip") exactly like the OB input nodes.
 //
-// Every settable value has a port AND a manual control. When a port is
-// wired, it overrides the manual control and the row shows the live value
-// in blue. When unwired, the manual control sets the value.
+// Three pattern modes (Solid / Pointer / Pulse), two channel-port modes
+// (RGB / HSL), two send modes (Continuous / Triggered). Every settable value
+// has a port AND a manual control; a wired port overrides the manual control
+// and shows the live value in blue. The Position row shows only in Pointer
+// mode, the Speed row only in Pulse mode.
 //
-// Wire protocol always carries RGB:
+// Wire protocol (always RGB):
 //   /light/<id>/color R G B
-//   /light/<id>/effect mode param brightness
-// where `param` is `position` (Pointer) or `speed` (Pulse).
+//   /light/<id>/effect mode param brightness     (param = position | speed)
+//   /light/<id>/num N                            (strip length)
 
 use crate::graph::*;
-use crate::ob::ObManager;
+use crate::ob::{self, ObManager};
 use eframe::egui;
 use std::collections::HashMap;
 
@@ -106,9 +108,9 @@ pub fn render(
     dragging_from: &mut Option<(NodeId, usize, bool)>,
     pending_disconnects: &mut Vec<(NodeId, usize)>,
 ) {
-    let (device_id, hub_node_id, mode, color, brightness, position, speed, color_mode, send_mode) = match node_type {
-        NodeType::ObLight { device_id, hub_node_id, mode, color, brightness, position, speed, color_mode, send_mode } =>
-            (device_id, hub_node_id, mode, color, brightness, position, speed, color_mode, send_mode),
+    let (device_id, mode, color, brightness, position, speed, color_mode, send_mode, num_leds, port_name, selected_port) = match node_type {
+        NodeType::ObLight { device_id, mode, color, brightness, position, speed, color_mode, send_mode, num_leds, port_name, selected_port, .. } =>
+            (device_id, mode, color, brightness, position, speed, color_mode, send_mode, num_leds, port_name, selected_port),
         _ => return,
     };
 
@@ -118,41 +120,87 @@ pub fn render(
     if *send_mode  > SEND_MODE_TRIGGER { *send_mode = SEND_MODE_CONT; }
 
     let did = *device_id;
-    let hid = *hub_node_id;
+    let error_id = egui::Id::new(("ob_light_error", node_id));
 
-    let is_active = {
-        let dev = ob_manager.get_hub(hid)
-            .and_then(|h| h.get_device("light", did))
-            .or_else(|| ob_manager.find_device("light", did).map(|(_, d)| d));
-        dev.map(|d| d.is_active).unwrap_or(false)
+    // Snapshot device presence up front (owned) so we can take &mut ob_manager
+    // later for send commands without a borrow conflict.
+    let (present, active) = match ob_manager.device("light", did) {
+        Some(d) => (true, d.is_active),
+        None => (false, false),
     };
-
-    // ── WIP banner ─────────────────────────────────────────────
-    ui.colored_label(egui::Color32::from_rgb(220, 170, 60),
-        egui::RichText::new("⚠ WIP — wireless LED strip").small());
 
     // ── Header: ID + status ────────────────────────────────────
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new("ID:").small());
         ui.add(egui::DragValue::new(device_id).range(1..=255));
-        if is_active {
-            ui.colored_label(egui::Color32::from_rgb(80, 200, 80), "● Active");
+        if present && active {
+            ui.colored_label(egui::Color32::from_rgb(80, 200, 80), "● Connected");
+        } else if present {
+            ui.colored_label(egui::Color32::from_rgb(200, 180, 80), "○ Connecting…");
         } else {
-            ui.colored_label(egui::Color32::from_rgb(150, 150, 150), "○ Waiting");
+            ui.colored_label(egui::Color32::from_rgb(150, 150, 150), "○ Searching…");
         }
     });
 
-    // ── Pattern mode ───────────────────────────────────────────
+    // ── Manual port override (collapsed; only for non-OpenBlocks boards) ─────
+    ui.collapsing("Port (manual)", |ui| {
+        let ports = ob::available_ports();
+        let manual_connected = ob_manager.get_hub(node_id).is_some();
+        ui.horizontal(|ui| {
+            ui.label("Port:");
+            egui::ComboBox::from_id_salt(egui::Id::new(("ob_light_port", node_id)))
+                .selected_text(if selected_port.is_empty() { "Auto" } else { selected_port.as_str() })
+                .width(120.0)
+                .show_ui(ui, |ui| {
+                    for p in &ports {
+                        if ui.selectable_label(selected_port.as_str() == p.as_str(), p).clicked() {
+                            *selected_port = p.clone();
+                            ui.ctx().data_mut(|d| d.remove::<String>(error_id));
+                        }
+                    }
+                });
+        });
+        ui.horizontal(|ui| {
+            if manual_connected {
+                if ui.button("Disconnect").clicked() {
+                    ob_manager.disconnect_hub(node_id);
+                    port_name.clear();
+                    ui.ctx().data_mut(|d| d.remove::<String>(error_id));
+                }
+            } else {
+                let can_connect = !selected_port.is_empty();
+                if ui.add_enabled(can_connect, egui::Button::new("Connect")).clicked() {
+                    match ob_manager.connect_hub(node_id, selected_port) {
+                        Ok(()) => {
+                            *port_name = selected_port.clone();
+                            ui.ctx().data_mut(|d| d.remove::<String>(error_id));
+                        }
+                        Err(e) => { ui.ctx().data_mut(|d| d.insert_temp(error_id, e)); }
+                    }
+                }
+            }
+        });
+        let error_msg: Option<String> = ui.ctx().data_mut(|d| d.get_temp(error_id));
+        if let Some(err) = error_msg {
+            ui.colored_label(egui::Color32::from_rgb(255, 100, 100), format!("⚠ {}", err));
+        }
+        ui.label(egui::RichText::new("OpenBlocks devices auto-connect. Use this only for non-standard boards.")
+            .small().color(egui::Color32::GRAY));
+    });
+
+    // ── Pattern mode + LED count ───────────────────────────────
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new("Mode").small());
         let cur = MODES.iter().find(|(v, _)| *v == *mode).map(|(_, n)| *n).unwrap_or("Solid");
         egui::ComboBox::from_id_salt(egui::Id::new(("light_mode", node_id)))
-            .selected_text(cur).width(100.0)
+            .selected_text(cur).width(88.0)
             .show_ui(ui, |ui| {
                 for (val, name) in MODES {
                     if ui.selectable_label(*mode == *val, *name).clicked() { *mode = *val; }
                 }
             });
+        ui.label(egui::RichText::new("LEDs").small());
+        ui.add(egui::DragValue::new(num_leds).range(1..=1000).speed(1.0));
     });
 
     // ── Color picker + RGB/HSL toggle ──────────────────────────
@@ -292,37 +340,44 @@ pub fn render(
         }
     });
 
-    // ── Position (Pointer) ─────────────────────────────────────
-    let pos_wired = connections.iter().any(|c| c.to_node == node_id && c.to_port == PORT_POSITION);
-    ui.horizontal(|ui| {
-        crate::nodes::inline_port_circle(ui, node_id, PORT_POSITION, true, connections,
-            port_positions, dragging_from, pending_disconnects, PortKind::Number);
-        if pos_wired {
-            let v = Graph::static_input_value(connections, values, node_id, PORT_POSITION).as_float().clamp(0.0, 1.0);
-            *position = v;
-            ui.label(egui::RichText::new(format!("Pos: {:.2}", v))
-                .small().color(egui::Color32::from_rgb(80, 170, 255)));
-        } else {
-            ui.label(egui::RichText::new("Pos").small());
-            ui.add(egui::Slider::new(position, 0.0..=1.0).show_value(false));
-        }
-    });
+    // ── Position (Pointer mode only) ───────────────────────────
+    // Shown only when the mode uses it, so the port + slider don't clutter
+    // Solid/Pulse. A wire to this port is preserved while hidden — the canvas
+    // simply doesn't draw it until the row (and its port anchor) returns.
+    if *mode == MODE_POINTER {
+        let pos_wired = connections.iter().any(|c| c.to_node == node_id && c.to_port == PORT_POSITION);
+        ui.horizontal(|ui| {
+            crate::nodes::inline_port_circle(ui, node_id, PORT_POSITION, true, connections,
+                port_positions, dragging_from, pending_disconnects, PortKind::Number);
+            if pos_wired {
+                let v = Graph::static_input_value(connections, values, node_id, PORT_POSITION).as_float().clamp(0.0, 1.0);
+                *position = v;
+                ui.label(egui::RichText::new(format!("Pos: {:.2}", v))
+                    .small().color(egui::Color32::from_rgb(80, 170, 255)));
+            } else {
+                ui.label(egui::RichText::new("Pos").small());
+                ui.add(egui::Slider::new(position, 0.0..=1.0).show_value(false));
+            }
+        });
+    }
 
-    // ── Speed (Pulse) ──────────────────────────────────────────
-    let spd_wired = connections.iter().any(|c| c.to_node == node_id && c.to_port == PORT_SPEED);
-    ui.horizontal(|ui| {
-        crate::nodes::inline_port_circle(ui, node_id, PORT_SPEED, true, connections,
-            port_positions, dragging_from, pending_disconnects, PortKind::Number);
-        if spd_wired {
-            let v = Graph::static_input_value(connections, values, node_id, PORT_SPEED).as_float().clamp(0.0, 1.0);
-            *speed = v;
-            ui.label(egui::RichText::new(format!("Spd: {:.2}", v))
-                .small().color(egui::Color32::from_rgb(80, 170, 255)));
-        } else {
-            ui.label(egui::RichText::new("Spd").small());
-            ui.add(egui::Slider::new(speed, 0.0..=1.0).show_value(false));
-        }
-    });
+    // ── Speed (Pulse mode only) ────────────────────────────────
+    if *mode == MODE_PULSE {
+        let spd_wired = connections.iter().any(|c| c.to_node == node_id && c.to_port == PORT_SPEED);
+        ui.horizontal(|ui| {
+            crate::nodes::inline_port_circle(ui, node_id, PORT_SPEED, true, connections,
+                port_positions, dragging_from, pending_disconnects, PortKind::Number);
+            if spd_wired {
+                let v = Graph::static_input_value(connections, values, node_id, PORT_SPEED).as_float().clamp(0.0, 1.0);
+                *speed = v;
+                ui.label(egui::RichText::new(format!("Spd: {:.2}", v))
+                    .small().color(egui::Color32::from_rgb(80, 170, 255)));
+            } else {
+                ui.label(egui::RichText::new("Spd").small());
+                ui.add(egui::Slider::new(speed, 0.0..=1.0).show_value(false));
+            }
+        });
+    }
 
     // ── LED preview bar ────────────────────────────────────────
     let bar_w = ui.available_width().min(160.0);
@@ -375,7 +430,22 @@ pub fn render(
         ui.ctx().data_mut(|d| d.insert_temp(key, v));
     }
 
-    // ── Push to hub ────────────────────────────────────────────
+    // ── Reconcile strip length → device ────────────────────────
+    // Config, not a per-frame effect: push whenever it changes (either send
+    // mode) so the strip re-spans immediately. Cleared when the device drops
+    // so it re-pushes on reconnect.
+    let num_key = egui::Id::new(("light_num_sent", node_id));
+    if present {
+        let last_num: Option<u16> = ui.ctx().data_mut(|d| d.get_temp(num_key));
+        if last_num != Some(*num_leds) {
+            ob_manager.send_to_device("light", did, &format!("/light/{}/num {}", did, *num_leds));
+            ui.ctx().data_mut(|d| d.insert_temp(num_key, *num_leds));
+        }
+    } else {
+        ui.ctx().data_mut(|d| d.remove::<u16>(num_key));
+    }
+
+    // ── Push color + effect ────────────────────────────────────
     let active_param = match *mode {
         MODE_POINTER => *position,
         MODE_PULSE   => *speed,
@@ -384,6 +454,8 @@ pub fn render(
     let key = format!("{} {} {} {} {:.3} {:.3}",
         *mode, eff_r, eff_g, eff_b, *brightness, active_param);
     let kid = egui::Id::new(("light_cmd_key", node_id));
+    // Force a resend when the device (re)appears by clearing the last-sent key.
+    if !present { ui.ctx().data_mut(|d| d.remove::<String>(kid)); }
     let prev_key: Option<String> = ui.ctx().data_mut(|d| d.get_temp(kid));
     let key_changed = prev_key.as_deref() != Some(&key);
 
@@ -392,11 +464,9 @@ pub fn render(
         _              => send_now,
     };
 
-    if should_send {
+    if should_send && present {
         ui.ctx().data_mut(|d| d.insert_temp(kid, key));
-        if let Some(hub) = if hid != 0 { ob_manager.get_hub_mut(hid) } else { ob_manager.find_any_hub_mut() } {
-            hub.send_command(&format!("/light/{}/color {} {} {}", did, eff_r, eff_g, eff_b));
-            hub.send_command(&format!("/light/{}/effect {} {:.3} {:.3}", did, *mode, active_param, *brightness));
-        }
+        ob_manager.send_to_device("light", did, &format!("/light/{}/color {} {} {}", did, eff_r, eff_g, eff_b));
+        ob_manager.send_to_device("light", did, &format!("/light/{}/effect {} {:.3} {:.3}", did, *mode, active_param, *brightness));
     }
 }

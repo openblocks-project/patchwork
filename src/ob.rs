@@ -119,7 +119,10 @@ impl ObDevice {
             }
             ("distance", "mm") => {
                 if let Some(&v) = values.first() {
-                    // Normalize: 50mm=0.0 (close), 200mm=1.0 (far), clamped
+                    // Store the raw reading (drives the node's mm output) …
+                    self.values.insert("mm".into(), v);
+                    // … and a normalized 50..200 mm → 0..1 convenience value.
+                    // Chain a MapRange node off the mm output for any other range.
                     let norm = ((v - 50.0) / (200.0 - 50.0)).clamp(0.0, 1.0);
                     self.values.insert("val".into(), norm);
                 }
@@ -201,8 +204,14 @@ impl Drop for ObHub {
 }
 
 impl ObHub {
-    /// Start a new hub connection on the given serial port
+    /// Start a new hub connection on the given serial port (sends ACK).
     pub fn connect(port_name: &str) -> Result<Self, String> {
+        Self::connect_opts(port_name, true)
+    }
+
+    /// Open a connection; `send_ack` gates the "ACK" identification nudge so
+    /// content-probes can listen passively without poking non-OB devices.
+    pub fn connect_opts(port_name: &str, send_ack: bool) -> Result<Self, String> {
         let port = serialport::new(port_name, 115200)
             .timeout(std::time::Duration::from_millis(10))
             .open()
@@ -271,7 +280,9 @@ impl ObHub {
         if let Some(ref warn) = write_warning {
             hub.log_push(warn.clone());
         }
-        hub.send_command("ACK");
+        if send_ack {
+            hub.send_command("ACK");
+        }
         Ok(hub)
     }
 
@@ -377,7 +388,18 @@ impl ObHub {
 // ── Manager (multi-hub) ─────────────────────────────────────────────────────
 
 pub struct ObManager {
+    /// Hubs owned by an OB Hub node (legacy multi-device path), keyed by node id.
     pub hubs: HashMap<NodeId, ObHub>,
+    /// Auto-discovered single-board OB connections, keyed by serial port name.
+    /// A port lands here either via the USB-descriptor fast-path (manufacturer
+    /// "OpenBlocks") or after a content-probe confirms it speaks the OB protocol.
+    auto: HashMap<String, ObHub>,
+    /// USB-serial ports being content-probed: opened and listened to until they
+    /// either produce an OB device (→ promoted to `auto`) or time out (→ blacklisted).
+    probing: HashMap<String, (ObHub, Instant)>,
+    /// Ports probed and found NOT to speak OB; skipped until they disappear.
+    blacklist: std::collections::HashSet<String>,
+    last_scan: Option<Instant>,
 }
 
 impl ObManager {
@@ -389,7 +411,108 @@ impl ObManager {
         // hidapi concurrent-access crashes. Access HID via `hid::global()`.
         Self {
             hubs: HashMap::new(),
+            auto: HashMap::new(),
+            probing: HashMap::new(),
+            blacklist: std::collections::HashSet::new(),
+            last_scan: None,
         }
+    }
+
+    /// Auto-discover OB devices on USB-serial ports — transport- and chip-
+    /// agnostic. Two paths: a USB-descriptor fast-path (manufacturer
+    /// "OpenBlocks", adopted instantly) and a content-probe (open an unbranded
+    /// USB-serial port, listen ~1.5s; adopt only if it speaks the OB protocol,
+    /// otherwise blacklist it so it's never re-touched). Ports owned by an OB
+    /// Hub node, and unplugged ports, are handled too.
+    fn discover(&mut self) {
+        use std::collections::HashSet;
+        let now = Instant::now();
+        let ports = ob_ports();
+        let present: HashSet<String> = ports.iter().map(|p| p.name.clone()).collect();
+
+        // Drop everything for vanished ports (unplugged); a replug re-probes.
+        self.auto.retain(|n, _| present.contains(n));
+        self.probing.retain(|n, _| present.contains(n));
+        self.blacklist.retain(|n| present.contains(n));
+
+        // Resolve in-flight probes: a port that produced an OB device speaks the
+        // protocol → promote; one silent past the deadline → blacklist.
+        let mut promote: Vec<String> = Vec::new();
+        let mut reject: Vec<String> = Vec::new();
+        for (name, (hub, started)) in self.probing.iter() {
+            if !hub.devices.is_empty() {
+                promote.push(name.clone());
+            } else if now.duration_since(*started).as_millis() > 1500 {
+                reject.push(name.clone());
+            }
+        }
+        for name in promote {
+            if let Some((hub, _)) = self.probing.remove(&name) { self.auto.insert(name, hub); }
+        }
+        for name in reject {
+            self.probing.remove(&name);
+            self.blacklist.insert(name);
+        }
+
+        // Throttle the port-opening scan for new candidates.
+        if let Some(last) = self.last_scan {
+            if now.duration_since(last).as_millis() < 800 { return; }
+        }
+        self.last_scan = Some(now);
+
+        let claimed: HashSet<String> = self.hubs.values().map(|h| h.port_name.clone())
+            .chain(self.auto.keys().cloned())
+            .chain(self.probing.keys().cloned())
+            .collect();
+
+        for p in &ports {
+            if claimed.contains(&p.name) || self.blacklist.contains(&p.name) { continue; }
+            if is_openblocks(p) {
+                // Branded OpenBlocks device → adopt immediately, no probe.
+                if let Ok(hub) = ObHub::connect(&p.name) { self.auto.insert(p.name.clone(), hub); }
+            } else {
+                // Unbranded USB-serial port → content-probe (open quietly).
+                if let Ok(hub) = ObHub::connect_opts(&p.name, false) {
+                    self.probing.insert(p.name.clone(), (hub, now));
+                }
+            }
+        }
+    }
+
+    /// Find a device by type + id across auto-discovered and hub connections.
+    /// This is how single-board nodes bind — transport-agnostic, no port id.
+    pub fn device(&self, device_type: &str, id: u8) -> Option<&ObDevice> {
+        for h in self.auto.values() {
+            if let Some(d) = h.get_device(device_type, id) { return Some(d); }
+        }
+        for h in self.hubs.values() {
+            if let Some(d) = h.get_device(device_type, id) { return Some(d); }
+        }
+        None
+    }
+
+    /// Reset a device value to 0 (e.g. the encoder's one-shot "turn" delta,
+    /// cleared after each read so a detent yields a single non-zero frame).
+    pub fn clear_device_value(&mut self, device_type: &str, id: u8, key: &str) {
+        let dkey = (device_type.to_string(), id);
+        for h in self.auto.values_mut() {
+            if let Some(d) = h.devices.get_mut(&dkey) { d.values.insert(key.into(), 0.0); return; }
+        }
+        for h in self.hubs.values_mut() {
+            if let Some(d) = h.devices.get_mut(&dkey) { d.values.insert(key.into(), 0.0); return; }
+        }
+    }
+
+    /// Send a command to whichever connection hosts the given device
+    /// (e.g. an LED colour command). Returns true if it was routed.
+    pub fn send_to_device(&mut self, device_type: &str, id: u8, cmd: &str) -> bool {
+        for h in self.auto.values_mut() {
+            if h.get_device(device_type, id).is_some() { h.send_command(cmd); return true; }
+        }
+        for h in self.hubs.values_mut() {
+            if h.get_device(device_type, id).is_some() { h.send_command(cmd); return true; }
+        }
+        false
     }
 
     /// Connect a hub for a given node
@@ -406,11 +529,18 @@ impl ObManager {
         self.hubs.remove(&node_id);
     }
 
-    /// Poll all hubs
+    /// Poll all connections (hub + auto + in-flight probes) and run discovery.
     pub fn poll_all(&mut self) {
         for hub in self.hubs.values_mut() {
             hub.poll();
         }
+        for hub in self.auto.values_mut() {
+            hub.poll();
+        }
+        for (hub, _) in self.probing.values_mut() {
+            hub.poll();
+        }
+        self.discover();
     }
 
     /// Get a hub by node ID
@@ -529,4 +659,49 @@ pub fn available_ports() -> Vec<String> {
         .into_iter()
         .map(|p| p.port_name)
         .collect()
+}
+
+/// A USB serial port with its descriptor metadata.
+pub struct ObPort {
+    pub name: String,
+    pub manufacturer: Option<String>,
+    pub product: Option<String>,
+    #[allow(dead_code)]
+    pub serial_number: Option<String>,
+}
+
+/// All USB serial ports with descriptor strings. Chip-agnostic — we read the
+/// OS-provided metadata, never open the port here.
+pub fn ob_ports() -> Vec<ObPort> {
+    serialport::available_ports()
+        .unwrap_or_default()
+        .into_iter()
+        // macOS: prefer the call-out (/dev/cu.*) node, skip its blocking
+        // /dev/tty.* twin. Linux /dev/ttyUSB*/ttyACM* have no dot, so kept.
+        .filter(|p| !p.port_name.starts_with("/dev/tty."))
+        .filter_map(|p| match p.port_type {
+            serialport::SerialPortType::UsbPort(info) => Some(ObPort {
+                name: p.port_name,
+                manufacturer: info.manufacturer,
+                product: info.product,
+                serial_number: info.serial_number,
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
+/// True when a port's USB descriptor identifies it as an OpenBlocks device.
+/// Keys on the firmware-set strings (`manufacturer = "OpenBlocks"`, or a
+/// `product` of "OB …"), NOT the USB VID/PID — so any native-USB MCU works
+/// and there's no chip lock-in.
+fn is_openblocks(p: &ObPort) -> bool {
+    if let Some(m) = &p.manufacturer {
+        if m.eq_ignore_ascii_case("OpenBlocks") { return true; }
+    }
+    if let Some(pr) = &p.product {
+        let pr = pr.to_ascii_lowercase();
+        if pr.starts_with("ob ") || pr.starts_with("openblocks") { return true; }
+    }
+    false
 }
