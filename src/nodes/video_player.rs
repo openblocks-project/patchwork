@@ -669,8 +669,10 @@ fn list_cameras_v4l2() -> Vec<(u32, String)> {
 ///   exactly what ffmpeg said when the list is empty.
 #[cfg(target_os = "windows")]
 fn enumerate_dshow_devices() -> (Vec<(u32, String)>, Vec<(u32, String)>, String) {
+    eprintln!("[DEBUG] enumerate_dshow_devices() starting ffmpeg...");
     let output = Command::new("ffmpeg")
-        .args(["-f", "dshow", "-list_devices", "true", "-i", "dummy"])
+        // .args(["-f", "dshow", "-list_devices", "true", "-i", "dummy"])
+        .args(["-hide_banner", "-loglevel", "info", "-f", "dshow", "-list_devices", "true", "-i", "dummy"])
         .stderr(Stdio::piped())
         .stdout(Stdio::null())
         .output();
@@ -678,47 +680,79 @@ fn enumerate_dshow_devices() -> (Vec<(u32, String)>, Vec<(u32, String)>, String)
         Ok(o) => String::from_utf8_lossy(&o.stderr).into_owned(),
         Err(e) => format!("ffmpeg invocation failed: {}", e),
     };
+     eprintln!("[DEBUG] ffmpeg returned {} bytes of stderr", stderr.len());
     let (videos, audios) = parse_dshow_devices(&stderr);
     let cameras: Vec<(u32, String)> = videos.into_iter().enumerate()
         .map(|(i, n)| (i as u32, n)).collect();
     let audio_inputs: Vec<(u32, String)> = audios.into_iter().enumerate()
         .map(|(i, n)| (i as u32, n)).collect();
     (cameras, audio_inputs, stderr)
+   
 }
 
 /// Parse ffmpeg dshow `-list_devices` stderr into (video_names,
 /// audio_names). Section-aware via "DirectShow video/audio devices"
 /// header detection. Drops "Alternative name" alias lines.
+// #[cfg(target_os = "windows")]
+// fn parse_dshow_devices(stderr: &str) -> (Vec<String>, Vec<String>) {
+//     #[derive(Clone, Copy)]
+//     enum Section { None, Video, Audio }
+//     let mut section = Section::None;
+//     let mut videos = Vec::new();
+//     let mut audios = Vec::new();
+//     for line in stderr.lines() {
+//         let lower = line.to_lowercase();
+//         if lower.contains("directshow video") {
+//             section = Section::Video;
+//             continue;
+//         }
+//         if lower.contains("directshow audio") {
+//             section = Section::Audio;
+//             continue;
+//         }
+//         // "Alternative name" lines describe device aliases (the
+//         // `@device_pnp_...` form). Old parser counted these as
+//         // additional cameras.
+//         if line.contains("Alternative name") {
+//             continue;
+//         }
+//         let Some(name) = extract_first_quoted(line) else { continue };
+//         match section {
+//             Section::Video => videos.push(name),
+//             Section::Audio => audios.push(name),
+//             Section::None  => {}
+//         }
+//     }
+//     (videos, audios)
+// }
+
 #[cfg(target_os = "windows")]
 fn parse_dshow_devices(stderr: &str) -> (Vec<String>, Vec<String>) {
-    #[derive(Clone, Copy)]
-    enum Section { None, Video, Audio }
-    let mut section = Section::None;
     let mut videos = Vec::new();
     let mut audios = Vec::new();
+    
+    eprintln!("[DEBUG] parse_dshow_devices() parsing {} chars", stderr.len());
+    
     for line in stderr.lines() {
-        let lower = line.to_lowercase();
-        if lower.contains("directshow video") {
-            section = Section::Video;
+        // Skip alternative names and error messages
+        if line.contains("Alternative name") || line.contains("Error opening") {
             continue;
         }
-        if lower.contains("directshow audio") {
-            section = Section::Audio;
-            continue;
-        }
-        // "Alternative name" lines describe device aliases (the
-        // `@device_pnp_...` form). Old parser counted these as
-        // additional cameras.
-        if line.contains("Alternative name") {
-            continue;
-        }
-        let Some(name) = extract_first_quoted(line) else { continue };
-        match section {
-            Section::Video => videos.push(name),
-            Section::Audio => audios.push(name),
-            Section::None  => {}
+        
+        // Look for lines with quoted device names
+        // Format: [in#0 @ ...] "Device Name" (video|audio)
+        if let Some(quoted) = extract_first_quoted(line) {
+            if line.contains("(video)") {
+                eprintln!("[DEBUG]   Found video device: {}", quoted);
+                videos.push(quoted);
+            } else if line.contains("(audio)") {
+                eprintln!("[DEBUG]   Found audio device: {}", quoted);
+                audios.push(quoted);
+            }
         }
     }
+    
+    eprintln!("[DEBUG] parse_dshow_devices() found {} videos, {} audios", videos.len(), audios.len());
     (videos, audios)
 }
 
@@ -731,11 +765,31 @@ fn extract_first_quoted(line: &str) -> Option<String> {
     if name.is_empty() { None } else { Some(name) }
 }
 
+// #[cfg(target_os = "windows")]
+// fn list_cameras_dshow() -> Vec<(u32, String)> {
+//     enumerate_dshow_devices().0
+// }
+
+
 #[cfg(target_os = "windows")]
 fn list_cameras_dshow() -> Vec<(u32, String)> {
-    enumerate_dshow_devices().0
+    eprintln!("[DEBUG] list_cameras_dshow() called");
+    let (cameras, _, stderr) = enumerate_dshow_devices();
+    
+    eprintln!("[DEBUG] enumerate_dshow_devices returned {} cameras", cameras.len());
+    for (i, name) in &cameras {
+        eprintln!("[DEBUG]   Camera {}: {}", i, name);
+    }
+    
+    if cameras.is_empty() {
+        eprintln!("[DEBUG] No cameras found!");
+        eprintln!("[DEBUG] FFmpeg stderr first 500 chars:");
+        let truncated = if stderr.len() > 500 { &stderr[..500] } else { &stderr };
+        eprintln!("{}", truncated);
+    }
+    
+    cameras
 }
-
 // ── Video Player Node ────────────────────────────────────────────────────────
 
 pub fn render_video(
