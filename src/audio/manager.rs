@@ -183,70 +183,142 @@ impl AudioManager {
 
     /// Start audio output on the default (or named) device.
     /// Creates an AudioEngine on the audio thread, connected via command channel.
+    // pub fn start_output(&mut self, device_name: Option<&str>) -> Result<(), String> {
+    //     // Stop existing stream
+    //     self.stream = None;
+
+    //     let host = cpal::default_host();
+    //     let device = if let Some(name) = device_name {
+    //         host.output_devices()
+    //             .map_err(|e| e.to_string())?
+    //             .find(|d| d.name().ok().as_deref() == Some(name))
+    //             .ok_or_else(|| format!("Device '{}' not found", name))?
+    //     } else {
+    //         host.default_output_device()
+    //             .ok_or("No default output device")?
+    //     };
+
+    //     self.output_device_name = device.name().unwrap_or_default();
+
+    //     let config = device.default_output_config()
+    //         .map_err(|e| format!("No output config: {}", e))?;
+
+    //     let sample_rate = config.sample_rate().0 as f32;
+    //     let channels = config.channels() as usize;
+    //     self.engine_sample_rate = sample_rate;
+    //     self.output_channel_count = channels;
+
+
+    //     // Create command channel for the new engine.
+    //     // Clear stale state from any previous engine — node_params pointed to
+    //     // the old engine's processors which no longer exist.
+    //     let (tx, rx) = crossbeam_channel::unbounded();
+    //     self.engine_tx = Some(tx);
+    //     self.node_params.clear();
+    //     self.engine_needs_rebuild = true;
+
+    //     // Create engine — owned by the audio thread closure
+    //     let master_vol = self.master_volume.clone();
+    //     let mut engine = super::engine::AudioEngine::new(rx, sample_rate, master_vol);
+
+    //     // Request small buffer for low latency (~1.5ms at 44100Hz)
+    //     let mut stream_config: cpal::StreamConfig = config.into();
+    //     stream_config.buffer_size = cpal::BufferSize::Fixed(64);
+
+    //     let stream = device.build_output_stream(
+    //         &stream_config,
+    //         move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+    //             engine.execute(data, channels);
+    //         },
+    //         {
+    //             let error_flag = self.audio_error.clone();
+    //             move |err| {
+    //                 crate::system_log::error(format!("Audio error: {}", err));
+    //                 error_flag.store(true, Ordering::Relaxed);
+    //             }
+    //         },
+    //         None,
+    //     ).map_err(|e| format!("Build stream failed: {}", e))?;
+
+    //     stream.play().map_err(|e| format!("Play failed: {}", e))?;
+    //     self.stream = Some(stream);
+
+    //     crate::system_log::log(format!("DSP started: {} @ {}Hz", self.output_device_name, sample_rate));
+    //     Ok(())
+    // }
+
+
     pub fn start_output(&mut self, device_name: Option<&str>) -> Result<(), String> {
-        // Stop existing stream
-        self.stream = None;
+    self.stream = None;
 
-        let host = cpal::default_host();
-        let device = if let Some(name) = device_name {
-            host.output_devices()
-                .map_err(|e| e.to_string())?
-                .find(|d| d.name().ok().as_deref() == Some(name))
-                .ok_or_else(|| format!("Device '{}' not found", name))?
-        } else {
-            host.default_output_device()
-                .ok_or("No default output device")?
-        };
+    let host = cpal::default_host();
+    let device = if let Some(name) = device_name {
+        host.output_devices()
+            .map_err(|e| e.to_string())?
+            .find(|d| d.name().ok().as_deref() == Some(name))
+            .ok_or_else(|| format!("Device '{}' not found", name))?
+    } else {
+        host.default_output_device()
+            .ok_or("No default output device")?
+    };
 
-        self.output_device_name = device.name().unwrap_or_default();
+    self.output_device_name = device.name().unwrap_or_default();
 
-        let config = device.default_output_config()
-            .map_err(|e| format!("No output config: {}", e))?;
+    // ✅ Get device's native config
+    let config = device.default_output_config()
+        .map_err(|e| format!("No output config: {}", e))?;
 
-        let sample_rate = config.sample_rate().0 as f32;
-        let channels = config.channels() as usize;
-        self.engine_sample_rate = sample_rate;
-        self.output_channel_count = channels;
+    // ✅ Log what we're using
+    eprintln!("[AUDIO] Windows device config:");
+    eprintln!("[AUDIO]   Device: {}", self.output_device_name);
+    eprintln!("[AUDIO]   Sample rate: {} Hz", config.sample_rate().0);
+    eprintln!("[AUDIO]   Channels: {}", config.channels());
 
+    let sample_rate = config.sample_rate().0 as f32;
+    let channels = config.channels() as usize;
+    self.engine_sample_rate = sample_rate;
+    self.output_channel_count = channels;
 
-        // Create command channel for the new engine.
-        // Clear stale state from any previous engine — node_params pointed to
-        // the old engine's processors which no longer exist.
-        let (tx, rx) = crossbeam_channel::unbounded();
-        self.engine_tx = Some(tx);
-        self.node_params.clear();
-        self.engine_needs_rebuild = true;
+    let (tx, rx) = crossbeam_channel::unbounded();
+    self.engine_tx = Some(tx);
+    self.node_params.clear();
+    self.engine_needs_rebuild = true;
 
-        // Create engine — owned by the audio thread closure
-        let master_vol = self.master_volume.clone();
-        let mut engine = super::engine::AudioEngine::new(rx, sample_rate, master_vol);
+    let master_vol = self.master_volume.clone();
+    let mut engine = super::engine::AudioEngine::new(rx, sample_rate, master_vol);
 
-        // Request small buffer for low latency (~1.5ms at 44100Hz)
-        let mut stream_config: cpal::StreamConfig = config.into();
-        stream_config.buffer_size = cpal::BufferSize::Fixed(64);
+    // ✅ Use device's native config
+    let mut stream_config: cpal::StreamConfig = config.into();
+    // stream_config.buffer_size = cpal::BufferSize::Fixed(64);
+    stream_config.buffer_size = cpal::BufferSize::Default;
 
-        let stream = device.build_output_stream(
-            &stream_config,
-            move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                engine.execute(data, channels);
-            },
-            {
-                let error_flag = self.audio_error.clone();
-                move |err| {
-                    crate::system_log::error(format!("Audio error: {}", err));
-                    error_flag.store(true, Ordering::Relaxed);
-                }
-            },
-            None,
-        ).map_err(|e| format!("Build stream failed: {}", e))?;
+    eprintln!("[AUDIO] Building output stream...");
 
-        stream.play().map_err(|e| format!("Play failed: {}", e))?;
-        self.stream = Some(stream);
+    let stream = device.build_output_stream(
+        &stream_config,
+        move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+            engine.execute(data, channels);
+        },
+        {
+            let error_flag = self.audio_error.clone();
+            move |err| {
+                crate::system_log::error(format!("Audio error: {}", err));
+                error_flag.store(true, Ordering::Relaxed);
+            }
+        },
+        None,
+    ).map_err(|e| {
+        eprintln!("[AUDIO] ✗ FAILED: {}", e);
+        format!("Build stream failed: {}", e)
+    })?;
 
-        crate::system_log::log(format!("DSP started: {} @ {}Hz", self.output_device_name, sample_rate));
-        Ok(())
-    }
+    stream.play().map_err(|e| format!("Play failed: {}", e))?;
+    self.stream = Some(stream);
 
+    eprintln!("[AUDIO] ✓ DSP started: {} @ {}Hz", self.output_device_name, sample_rate);
+    crate::system_log::log(format!("DSP started: {} @ {}Hz", self.output_device_name, sample_rate));
+    Ok(())
+}
     /// Close all open CLAP plugin GUI windows. Call before stopping DSP.
     pub fn close_all_guis(&mut self) {
         for (_, handle) in &self.clap_gui_handles {
