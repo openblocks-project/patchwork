@@ -886,8 +886,10 @@ pub enum NodeType {
     /// OB LED Strip — WS2812B strip on a dedicated ESP32-S3 over USB serial
     /// (DATA on GPIO2/A2). Pure output device, auto-discovered by USB
     /// descriptor like the input nodes. Modes: 0=Solid, 1=Pointer (lit dot at
-    /// `position`), 2=Pulse (breathe at `speed`). Color can be overridden
-    /// per-channel via R/G/B input ports. `num_leds` is the strip length.
+    /// `position`), 2=Pulse (breathe at `speed`), 3=Rainbow (hue scroll at
+    /// `speed`), 4=Chase (comet runs at `speed`), 5=Sparkle (twinkle, density
+    /// at `speed`). Color can be overridden per-channel via R/G/B input ports.
+    /// `num_leds` is the strip length.
     ///
     /// Enum name kept as `ObLight` for save-compat (the UI label and device
     /// string are "OB LED Strip" / "light"). `hub_node_id` retained for

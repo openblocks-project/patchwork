@@ -2,11 +2,12 @@
 // GPIO2 (A2). Pure output device, auto-discovered by USB descriptor
 // ("OpenBlocks" / "OB LED Strip") exactly like the OB input nodes.
 //
-// Three pattern modes (Solid / Pointer / Pulse), two channel-port modes
-// (RGB / HSL), two send modes (Continuous / Triggered). Every settable value
-// has a port AND a manual control; a wired port overrides the manual control
-// and shows the live value in blue. The Position row shows only in Pointer
-// mode, the Speed row only in Pulse mode.
+// Six pattern modes (Solid / Pointer / Pulse / Rainbow / Chase / Sparkle),
+// two channel-port modes (RGB / HSL), two send modes (Continuous / Triggered).
+// Every settable value has a port AND a manual control; a wired port overrides
+// the manual control and shows the live value in blue. The Position row shows
+// only in Pointer mode; the Speed row shows in any mode that animates
+// (Pulse / Rainbow / Chase / Sparkle).
 //
 // Wire protocol (always RGB):
 //   /light/<id>/color R G B
@@ -21,6 +22,14 @@ use std::collections::HashMap;
 const MODE_SOLID:   u8 = 0;
 const MODE_POINTER: u8 = 1;
 const MODE_PULSE:   u8 = 2;
+const MODE_RAINBOW: u8 = 3;
+const MODE_CHASE:   u8 = 4;
+const MODE_SPARKLE: u8 = 5;
+
+/// True for modes whose animation rate is driven by the Speed control/port.
+fn mode_uses_speed(mode: u8) -> bool {
+    matches!(mode, MODE_PULSE | MODE_RAINBOW | MODE_CHASE | MODE_SPARKLE)
+}
 
 const COLOR_MODE_RGB: u8 = 0;
 const COLOR_MODE_HSL: u8 = 1;
@@ -41,6 +50,9 @@ const MODES: &[(u8, &str)] = &[
     (MODE_SOLID,   "Solid"),
     (MODE_POINTER, "Pointer"),
     (MODE_PULSE,   "Pulse"),
+    (MODE_RAINBOW, "Rainbow"),
+    (MODE_CHASE,   "Chase"),
+    (MODE_SPARKLE, "Sparkle"),
 ];
 
 // =========================================================================
@@ -193,7 +205,7 @@ pub fn render(
         ui.label(egui::RichText::new("Mode").small());
         let cur = MODES.iter().find(|(v, _)| *v == *mode).map(|(_, n)| *n).unwrap_or("Solid");
         egui::ComboBox::from_id_salt(egui::Id::new(("light_mode", node_id)))
-            .selected_text(cur).width(88.0)
+            .selected_text(cur).width(96.0)
             .show_ui(ui, |ui| {
                 for (val, name) in MODES {
                     if ui.selectable_label(*mode == *val, *name).clicked() { *mode = *val; }
@@ -361,8 +373,9 @@ pub fn render(
         });
     }
 
-    // ── Speed (Pulse mode only) ────────────────────────────────
-    if *mode == MODE_PULSE {
+    // ── Speed (animated modes only) ────────────────────────────
+    // Pulse breathe rate, Rainbow scroll, Chase run speed, Sparkle density.
+    if mode_uses_speed(*mode) {
         let spd_wired = connections.iter().any(|c| c.to_node == node_id && c.to_port == PORT_SPEED);
         ui.horizontal(|ui| {
             crate::nodes::inline_port_circle(ui, node_id, PORT_SPEED, true, connections,
@@ -396,6 +409,40 @@ pub fn render(
             let x = rect.left() + rect.width() * position.clamp(0.0, 1.0);
             let dot = egui::Rect::from_center_size(egui::pos2(x, rect.center().y), egui::vec2(8.0, 6.0));
             p.rect_filled(dot, 1.0, pc);
+        }
+        MODE_RAINBOW => {
+            // Static hue gradient across the bar (ignores base color, like firmware).
+            let n = rect.width().max(1.0) as usize;
+            for i in 0..n {
+                let h = i as f32 / n as f32;
+                let rgb = hsl_to_rgb(h, 1.0, 0.5);
+                let seg = egui::Rect::from_min_size(
+                    egui::pos2(rect.left() + i as f32, rect.top()),
+                    egui::vec2(1.0, rect.height()),
+                );
+                p.rect_filled(seg, 0.0, egui::Color32::from_rgb(
+                    (rgb[0] as f32 * bri) as u8,
+                    (rgb[1] as f32 * bri) as u8,
+                    (rgb[2] as f32 * bri) as u8,
+                ));
+            }
+        }
+        MODE_CHASE => {
+            // A few evenly spaced dots in the base color (a frozen chase).
+            for k in 0..4 {
+                let x = rect.left() + rect.width() * (0.12 + 0.25 * k as f32);
+                let dot = egui::Rect::from_center_size(egui::pos2(x, rect.center().y), egui::vec2(6.0, 6.0));
+                p.rect_filled(dot, 1.0, pc);
+            }
+        }
+        MODE_SPARKLE => {
+            // Scattered dots in the base color (a frozen sparkle).
+            let xs = [0.08, 0.23, 0.41, 0.55, 0.70, 0.88];
+            for f in xs {
+                let x = rect.left() + rect.width() * f;
+                let dot = egui::Rect::from_center_size(egui::pos2(x, rect.center().y), egui::vec2(4.0, 4.0));
+                p.rect_filled(dot, 1.0, pc);
+            }
         }
         _ => {}
     }
@@ -446,10 +493,12 @@ pub fn render(
     }
 
     // ── Push color + effect ────────────────────────────────────
-    let active_param = match *mode {
-        MODE_POINTER => *position,
-        MODE_PULSE   => *speed,
-        _            => 0.0,
+    let active_param = if *mode == MODE_POINTER {
+        *position
+    } else if mode_uses_speed(*mode) {
+        *speed
+    } else {
+        0.0
     };
     let key = format!("{} {} {} {} {:.3} {:.3}",
         *mode, eff_r, eff_g, eff_b, *brightness, active_param);

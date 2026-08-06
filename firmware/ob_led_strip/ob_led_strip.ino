@@ -25,7 +25,9 @@
 //                                                port that has announced it)
 //   ← Patchwork:  /light/<ID>/num N              strip length (LEDs)
 //                 /light/<ID>/color R G B        base colour, 0..255
-//                 /light/<ID>/effect M P B       M=mode(0 Solid/1 Pointer/2 Pulse)
+//                 /light/<ID>/effect M P B       M=mode(0 Solid / 1 Pointer /
+//                                                2 Pulse / 3 Rainbow / 4 Chase /
+//                                                5 Sparkle)
 //                                                P=param 0..1 (pos | speed)
 //                                                B=brightness 0..1
 //                 ACK                            identification nudge → /sys/ready
@@ -66,6 +68,9 @@ uint32_t lastFrameAt = 0;
 char     lineBuf[96];
 size_t   lineLen = 0;
 
+// Per-pixel fade buffer for Sparkle (0..255 intensity, decays each frame).
+uint8_t  sparkleLevel[MAX_LEDS] = {0};
+
 // ── Rendering ────────────────────────────────────────────────────────────────
 // Called every frame; `phase` (0..1) drives the Pulse breathe.
 void renderStrip(float phase) {
@@ -96,6 +101,45 @@ void renderStrip(float phase) {
     float b = bri * env;
     for (int i = 0; i < n; i++)
       strip.setPixelColor(i, strip.Color(baseR * b, baseG * b, baseB * b));
+  } else if (mode == 3) {
+    // Rainbow: full-spectrum hue sweep across the strip, scrolling with phase.
+    // Ignores base colour (the whole point is the spectrum). `param` = speed.
+    uint8_t val = (uint8_t)(bri * 255.0f);
+    for (int i = 0; i < n; i++) {
+      float h = (float)i / (float)n + phase;
+      h -= floorf(h);
+      uint16_t hue = (uint16_t)(h * 65535.0f);
+      strip.setPixelColor(i, strip.gamma32(strip.ColorHSV(hue, 255, val)));
+    }
+  } else if (mode == 4) {
+    // Chase: a comet (bright head + fading tail) runs along the strip in the
+    // base colour. `param` = run speed. Tail wraps around the ends.
+    for (int i = 0; i < n; i++) strip.setPixelColor(i, 0);
+    float headF = phase * (float)n;
+    float tailLen = n * 0.25f;
+    if (tailLen < 3.0f) tailLen = 3.0f;
+    for (int i = 0; i < n; i++) {
+      float d = headF - (float)i;
+      while (d < 0.0f) d += (float)n;
+      if (d <= tailLen) {
+        float b = (1.0f - d / tailLen) * bri;
+        strip.setPixelColor(i, strip.Color(baseR * b, baseG * b, baseB * b));
+      }
+    }
+  } else if (mode == 5) {
+    // Sparkle: random pixels flare to the base colour then fade out. `param`
+    // sets how densely new sparkles ignite. Uses the persistent fade buffer.
+    for (int i = 0; i < n; i++)
+      sparkleLevel[i] = (uint8_t)(sparkleLevel[i] * 0.86f);
+    int spawns = 1 + (int)(param * 4.0f);
+    for (int s = 0; s < spawns; s++) {
+      if (random(1000) < (int)((0.15f + param * 0.55f) * 1000.0f))
+        sparkleLevel[random(n)] = 255;
+    }
+    for (int i = 0; i < n; i++) {
+      float b = (sparkleLevel[i] / 255.0f) * bri;
+      strip.setPixelColor(i, strip.Color(baseR * b, baseG * b, baseB * b));
+    }
   } else {
     // Solid.
     float b = bri;
@@ -140,7 +184,7 @@ void handleLine(const char *line) {
   if (strncmp(line, prefix, strlen(prefix)) == 0) {
     int m; float pr, br;
     if (sscanf(line + strlen(prefix), "%d %f %f", &m, &pr, &br) == 3) {
-      mode = (uint8_t)constrain(m, 0, 2);
+      mode = (uint8_t)constrain(m, 0, 5);
       param = constrain(pr, 0.0f, 1.0f);
       brightness = constrain(br, 0.0f, 1.0f);
     }
