@@ -281,9 +281,20 @@ impl std::fmt::Display for PortValue {
 }
 
 impl PortValue {
+    // pub fn as_float(&self) -> f32 {
+    //     match self { PortValue::Float(v) => *v, _ => 0.0 }
+    // }
     pub fn as_float(&self) -> f32 {
-        match self { PortValue::Float(v) => *v, _ => 0.0 }
+    match self {
+        PortValue::Float(v) => *v,
+        // Text that looks like a number (e.g. a value pulled out of JSON
+        // by the JSON Extractor, which emits Text) coerces to Float so it
+        // can drive Math / 2D Pointer / any numeric input. Non-numeric
+        // text falls through to 0.0.
+        PortValue::Text(s) => s.trim().parse::<f32>().unwrap_or(0.0),
+        _ => 0.0,
     }
+}
     pub fn as_image(&self) -> Option<&Arc<ImageData>> {
         match self { PortValue::Image(img) => Some(img), _ => None }
     }
@@ -2100,7 +2111,18 @@ impl NodeBehavior for NodeType {
 // ── Node & Connection ───────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Node { pub id: NodeId, pub node_type: NodeType, pub pos: [f32; 2] }
+// pub struct Node { pub id: NodeId, pub node_type: NodeType, pub pos: [f32; 2] }
+
+pub struct Node {
+    pub id: NodeId,
+    pub node_type: NodeType,
+    pub pos: [f32; 2],
+    /// When true, this node is skipped during evaluation — it produces no
+    /// outputs, so downstream inputs read `None`. Lets users temporarily
+    /// disable a node without deleting it. Defaults to false (active).
+    #[serde(default)]
+    pub bypassed: bool,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Connection {
@@ -2172,7 +2194,7 @@ impl Graph {
     pub fn add_node(&mut self, node_type: NodeType, pos: [f32; 2]) -> NodeId {
         let id = self.next_id; self.next_id += 1;
         crate::system_log::log(format!("Added {} (id:{})", node_type.title(), id));
-        self.nodes.insert(id, Node { id, node_type, pos });
+        self.nodes.insert(id, Node { id, node_type, pos, bypassed: false });
         self.topo_dirty = true;
         self.audio_topology_dirty = true;
         id
@@ -2848,24 +2870,45 @@ impl Graph {
         // ── Single topo-ordered pass ─────────────────────────────────────────
         // All predecessors of any node are evaluated before it, so one pass is
         // correct and O(n) for any acyclic graph.
+        // for &id in &eval_order {
+        //     let inputs = self.collect_inputs(id, &values);
+        //     if let Some(node) = self.nodes.get_mut(&id) {
+        //         Self::evaluate_node(id, &mut node.node_type, &inputs, &mut values, real_dt, now_secs);
+        //     }
+        // }
+
         for &id in &eval_order {
-            let inputs = self.collect_inputs(id, &values);
-            if let Some(node) = self.nodes.get_mut(&id) {
-                Self::evaluate_node(id, &mut node.node_type, &inputs, &mut values, real_dt, now_secs);
-            }
-        }
+    // Skip bypassed nodes — they emit no outputs, so anything downstream
+    // reads `None` on the ports that would have come from here.
+    if self.nodes.get(&id).map(|n| n.bypassed).unwrap_or(false) {
+        continue;
+    }
+    let inputs = self.collect_inputs(id, &values);
+    if let Some(node) = self.nodes.get_mut(&id) {
+        Self::evaluate_node(id, &mut node.node_type, &inputs, &mut values, real_dt, now_secs);
+    }
+}
 
         // ── Extra passes for cyclic nodes (feedback loops) ───────────────────
         // Kahn's algorithm could not linearize these nodes. Two extra passes let
         // values propagate around short cycles without running the full graph again.
         if !cyclic_ids.is_empty() {
             for _ in 0..2 {
+                // for &id in &cyclic_ids {
+                //     let inputs = self.collect_inputs(id, &values);
+                //     if let Some(node) = self.nodes.get_mut(&id) {
+                //         Self::evaluate_node(id, &mut node.node_type, &inputs, &mut values, real_dt, now_secs);
+                //     }
+                // }
                 for &id in &cyclic_ids {
-                    let inputs = self.collect_inputs(id, &values);
-                    if let Some(node) = self.nodes.get_mut(&id) {
-                        Self::evaluate_node(id, &mut node.node_type, &inputs, &mut values, real_dt, now_secs);
-                    }
-                }
+    if self.nodes.get(&id).map(|n| n.bypassed).unwrap_or(false) {
+        continue;
+    }
+    let inputs = self.collect_inputs(id, &values);
+    if let Some(node) = self.nodes.get_mut(&id) {
+        Self::evaluate_node(id, &mut node.node_type, &inputs, &mut values, real_dt, now_secs);
+    }
+}
             }
         }
 

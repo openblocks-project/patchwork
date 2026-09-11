@@ -66,7 +66,7 @@ impl VideoDecoder {
             "pipe:1".into(),
         ]);
 
-        let process = Command::new("ffmpeg")
+        let process = Command::new(crate::nodes::video_player::ffmpeg_bin())
             .args(&args)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -119,7 +119,7 @@ impl VideoDecoder {
             "pipe:1".into(),
         ]);
 
-        let process = Command::new("ffmpeg")
+        let process = Command::new(crate::nodes::video_player::ffmpeg_bin())
             .args(&args)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -170,7 +170,7 @@ impl VideoDecoder {
         #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
         return Err("Camera capture not supported on this platform".into());
 
-        let process = Command::new("ffmpeg")
+        let process = Command::new(crate::nodes::video_player::ffmpeg_bin())
             .args([
                 "-hide_banner", "-loglevel", "error",
                 // Low-latency flags: skip probing/buffering for real-time capture
@@ -232,7 +232,7 @@ impl VideoDecoder {
             let _ = device_index;
             let display_env = std::env::var("DISPLAY").unwrap_or_else(|_| ":0.0".into());
             let input = format!("{}+{},{}", display_env, origin_x, origin_y);
-            let process = Command::new("ffmpeg")
+            let process = Command::new(crate::nodes::video_player::ffmpeg_bin())
                 .args([
                     "-hide_banner", "-loglevel", "error",
                     "-fflags", "nobuffer",
@@ -260,7 +260,7 @@ impl VideoDecoder {
         #[cfg(target_os = "windows")]
         {
             let _ = (device_index, origin_x, origin_y);
-            let process = Command::new("ffmpeg")
+            let process = Command::new(crate::nodes::video_player::ffmpeg_bin())
                 .args([
                     "-hide_banner", "-loglevel", "error",
                     "-fflags", "nobuffer",
@@ -438,7 +438,7 @@ impl AudioPipeDecoder {
             "-f".into(), "f32le".into(),                        // raw little-endian f32
             "pipe:1".into(),
         ]);
-        let process = Command::new("ffmpeg")
+        let process = Command::new(crate::nodes::video_player::ffmpeg_bin())
             .args(&args)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -482,7 +482,7 @@ impl AudioPipeDecoder {
             "-f".into(), "f32le".into(),
             "pipe:1".into(),
         ];
-        let process = Command::new("ffmpeg")
+        let process = Command::new(crate::nodes::video_player::ffmpeg_bin())
             .args(&args)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -593,6 +593,23 @@ pub fn ffmpeg_install_hint() -> String {
     return "ffmpeg not found — required for camera / video capture / streaming".into();
 }
 
+/// Resolve the ffmpeg binary. Prefers a copy bundled beside our own
+/// executable (installer builds ship one) and falls back to bare
+/// "ffmpeg" so PATH still works for dev builds and package-manager
+/// installs. Cached — `current_exe()` + `exists()` on every camera
+/// tick would be wasteful.
+pub fn ffmpeg_bin() -> &'static std::path::Path {
+    use std::sync::OnceLock;
+    static BIN: OnceLock<std::path::PathBuf> = OnceLock::new();
+    BIN.get_or_init(|| {
+        let name = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
+        std::env::current_exe().ok()
+            .and_then(|p| p.parent().map(|d| d.join(name)))
+            .filter(|p| p.exists())
+            .unwrap_or_else(|| std::path::PathBuf::from("ffmpeg"))
+    })
+}
+
 /// List available camera devices (cross-platform via ffmpeg)
 pub fn list_cameras() -> Vec<(u32, String)> {
     #[cfg(target_os = "macos")]
@@ -607,7 +624,7 @@ pub fn list_cameras() -> Vec<(u32, String)> {
 
 #[cfg(target_os = "macos")]
 fn list_cameras_avfoundation() -> Vec<(u32, String)> {
-    let output = Command::new("ffmpeg")
+    let output = Command::new(crate::nodes::video_player::ffmpeg_bin())
         .args(["-f", "avfoundation", "-list_devices", "true", "-i", ""])
         .stderr(Stdio::piped())
         .stdout(Stdio::null())
@@ -670,7 +687,7 @@ fn list_cameras_v4l2() -> Vec<(u32, String)> {
 #[cfg(target_os = "windows")]
 fn enumerate_dshow_devices() -> (Vec<(u32, String)>, Vec<(u32, String)>, String) {
     eprintln!("[DEBUG] enumerate_dshow_devices() starting ffmpeg...");
-    let output = Command::new("ffmpeg")
+    let output = Command::new(crate::nodes::video_player::ffmpeg_bin())
         // .args(["-f", "dshow", "-list_devices", "true", "-i", "dummy"])
         .args(["-hide_banner", "-loglevel", "info", "-f", "dshow", "-list_devices", "true", "-i", "dummy"])
         .stderr(Stdio::piped())

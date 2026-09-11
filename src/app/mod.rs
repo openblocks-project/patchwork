@@ -1,3 +1,6 @@
+
+
+
 use crate::graph::*;
 use crate::node_trait::NodeBehavior;
 use crate::http::{HttpAction, HttpManager};
@@ -11,7 +14,7 @@ use crate::nodes;
 use eframe::egui;
 use eframe::egui_wgpu;
 use std::collections::HashMap;
-
+use crate::app::undo::UndoSnapshot;
 
 const PORT_RADIUS: f32 = 8.0;    // visual radius of port shapes
 const PORT_INTERACT: f32 = 22.0; // clickable/draggable hit area
@@ -191,6 +194,8 @@ pub struct PatchworkApp {
     // Option+drag duplication
     opt_drag_source: Option<NodeId>,
     opt_drag_created: Option<NodeId>,
+    opt_drag_anchor_pos: [f32; 2],
+    opt_drag_anchor_ptr: [f32; 2],
     // Canvas pan & zoom
     canvas_offset: egui::Vec2,
     canvas_zoom: f32,
@@ -235,7 +240,9 @@ pub struct PatchworkApp {
     drag_undo_pushed: bool,
     /// Coalescing flag for property edits (slider drags, DragValue, text fields, etc.).
     /// Set true when a property-editing widget interaction starts, reset when interaction ends.
+    
     property_undo_pushed: bool,
+    pending_gesture_snapshot: Option<UndoSnapshot>,
     // Click-to-connect wiring mode (alternative to drag-and-drop)
     click_wiring: bool,
     // Monotonic clock reference for wall-clock timing
@@ -333,6 +340,8 @@ impl PatchworkApp {
             context_menu_opened_at: 0.0,
             opt_drag_source: None,
             opt_drag_created: None,
+            opt_drag_anchor_pos: [0.0; 2],
+            opt_drag_anchor_ptr: [0.0; 2],
             canvas_offset: egui::Vec2::ZERO,
             canvas_zoom: 1.0,
             _prev_zoom: 1.0,
@@ -394,7 +403,9 @@ impl PatchworkApp {
             caches_dirty: false,
             undo_history: UndoHistory::new(50),
             drag_undo_pushed: false,
+           
             property_undo_pushed: false,
+            pending_gesture_snapshot: None,
             click_wiring: false,
             session_accent: crate::nodes::theme::random_accent(),
             target_zoom: 1.0,
@@ -799,6 +810,14 @@ impl PatchworkApp {
         // With set_zoom_factor, normal nodes scale automatically via GPU.
         // We only need the original style to restore after pinned nodes' inverse-zoom.
         let _original_style = ctx.style();
+        // Capture a baseline when any pointer gesture begins. If the gesture
+        // changed the graph (slider drag, field edit), it's committed as one
+        // undo step on release. push()'s hash dedup drops no-op gestures.
+        if ctx.input(|i| i.pointer.any_pressed()) && self.pending_gesture_snapshot.is_none() {
+            self.pending_gesture_snapshot = Some(UndoSnapshot::new(
+                self.graph.clone(), self.pinned_nodes.clone()));
+        }
+
 
         for node_id in node_ids {
             let is_pinned = self.pinned_nodes.contains(&node_id);
@@ -1099,7 +1118,7 @@ impl PatchworkApp {
                 } else {
                     r.response.clicked() || r.response.drag_started()
                 };
-                if select_trigger {
+                if select_trigger && !ctx.input(|i| i.modifiers.alt) {
                     let shift = ctx.input(|i| i.modifiers.shift);
                     if shift {
                         if self.selected_nodes.contains(&node_id) {
@@ -1112,6 +1131,10 @@ impl PatchworkApp {
                         self.selected_nodes.insert(node_id);
                     }
                     self.selected_connection = None;
+                    crate::system_log::log(&format!(
+    "select block: node {:?} alt={} selected_nodes now = {:?}",
+    node_id, ctx.input(|i| i.modifiers.alt), self.selected_nodes
+));
                 }
 
                 // Right-click context menu — skip for custom_render nodes (they handle their own UI)
@@ -1133,14 +1156,16 @@ impl PatchworkApp {
                 // (Custom-render nodes like Slider don't draw their own ring,
                 // so they previously appeared unselected even when active.)
                 if self.selected_nodes.contains(&node_id) {
-                    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("selection")));
+                    // let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("selection")));
+                    let painter = ctx.layer_painter(r.response.layer_id);
                     let sel_accent = ctx.data_mut(|d| d.get_temp::<[u8; 3]>(egui::Id::new("theme_accent")))
                         .unwrap_or([80, 160, 255]);
                     painter.rect_stroke(r.response.rect.expand(2.0), 4.0, egui::Stroke::new(2.0, egui::Color32::from_rgb(sel_accent[0], sel_accent[1], sel_accent[2])), egui::StrokeKind::Outside);
                 }
                 // Pin indicator — solid accent circle with white pin icon
                 if is_pinned {
-                    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("pins")));
+                    // let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("pins")));
+                    let painter = ctx.layer_painter(r.response.layer_id);
                     let badge_center = egui::pos2(r.response.rect.left() + 12.0, r.response.rect.top() - 4.0);
                     let theme_accent = ctx.data_mut(|d| d.get_temp::<[u8; 3]>(egui::Id::new("theme_accent")))
                         .unwrap_or([80, 160, 255]);
@@ -1160,7 +1185,8 @@ impl PatchworkApp {
                 // Error badge — red border + ⚠ corner icon when this node has a
                 // recorded evaluation error. Click/hover to read the message.
                 if let Some(err) = crate::node_errors::get(node_id) {
-                    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("node_errors")));
+                    // let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("node_errors")));
+                    let painter = ctx.layer_painter(r.response.layer_id);
                     let err_red = egui::Color32::from_rgb(230, 80, 80);
                     // Red border around the whole node
                     painter.rect_stroke(
@@ -1269,6 +1295,7 @@ impl PatchworkApp {
                 let prop_signal_id = egui::Id::new("_patchwork_prop_edit_signal");
                 if ctx.data_mut(|d| d.get_temp::<bool>(prop_signal_id).unwrap_or(false)) {
                     ctx.data_mut(|d| d.remove::<bool>(prop_signal_id));
+                    crate::system_log::log("PROP SIGNAL READ".to_string());
                     if !self.property_undo_pushed {
                         self.push_undo();
                         self.property_undo_pushed = true;
@@ -1322,6 +1349,12 @@ impl PatchworkApp {
 
             self.graph.nodes.insert(node_id, node);
         }
+                if ctx.input(|i| i.pointer.any_released()) {
+            if let Some(base) = self.pending_gesture_snapshot.take() {
+                self.undo_history.push(base);
+                self.is_dirty = true;
+            }
+        }
 
         // Apply multi-node drag: move all other selected nodes by the same delta
         if let Some((dragged_id, delta)) = multi_drag {
@@ -1365,8 +1398,24 @@ impl PatchworkApp {
                         let hit_radius = PORT_INTERACT * 2.0;
                         let mut best: Option<(f32, NodeId, usize, bool)> = None;
                         let mut best_incompat: Option<(f32, PortKind, PortKind)> = None;
+                       
+                         crate::system_log::log(&format!(
+                            "drop: src=({},{}) is_output={} ptr=({:.0},{:.0}) radius={:.0} ports={}",
+                            src_node, src_port, is_output, pointer.x, pointer.y, hit_radius, port_positions.len()));
+
+                        for (&(n, p, i), &q) in &port_positions {
+                            crate::system_log::log(&format!(
+                                "    reg nid={} pidx={} is_input={} at=({:.0},{:.0})", n, p, i, q.x, q.y));
+                        }
+                       
                         for (&(nid, pidx, is_input), &pos) in &port_positions {
                             let dist = pos.distance(pointer);
+                              
+                            if dist < 120.0 {
+                                crate::system_log::log(&format!(
+                                    "  cand nid={} pidx={} is_input={} dist={:.0} same_node={}",
+                                    nid, pidx, is_input, dist, nid == src_node));
+                            }
                             if dist < hit_radius && nid != src_node {
                                 // Must be opposite direction (output→input or input→output)
                                 let valid_dir = (is_output && is_input) || (!is_output && !is_input);
@@ -1870,7 +1919,7 @@ impl eframe::App for PatchworkApp {
 
         // set_zoom_factor scales everything (nodes, text, chrome) via GPU — zero overhead.
         // Pinned nodes compensate with inverse zoom style + zoom-keyed window IDs.
-        ctx.set_zoom_factor(self.canvas_zoom);
+        // ctx.set_zoom_factor(self.canvas_zoom);
 
         self.apply_theme(ctx);
         self.handle_file_drop(ctx);
@@ -2245,20 +2294,54 @@ impl eframe::App for PatchworkApp {
             });
         }
 
-        // Fast image content hash — samples ~32 pixels spread across the image.
-        // Detects real content changes without hashing the full pixel buffer.
+        // Fast image content hash — samples ~64 pixels spread across the image.
+        // The old version computed `step` for 128 samples but took only 32, so
+        // it never read past the first quarter of the buffer; animation below
+        // that line was invisible and froze every downstream node's param cache.
+        // let img_content_hash = |img: &ImageData| -> u64 {
+        //     let mut h: u64 = (img.width as u64).wrapping_mul(31).wrapping_add(img.height as u64);
+        //     let len = img.pixels.len();
+        //     if len > 0 {
+        //         // `| 1` keeps step odd so consecutive samples land on different
+        //         // RGBA channels — an even step can sample only alpha, which is
+        //         // a constant 255 in every visualizer render path.
+        //         const SAMPLES: usize = 64;
+        //         let step = ((len / SAMPLES).max(1)) | 1;
+        //         for i in (0..len).step_by(step).take(SAMPLES) {
+        //             h = h.wrapping_mul(31).wrapping_add(img.pixels[i] as u64);
+        //         }
+        //         h = h.wrapping_mul(31).wrapping_add(img.pixels[len - 1] as u64);
+        //     }
+        //     h
+        // };
+
         let img_content_hash = |img: &ImageData| -> u64 {
             let mut h: u64 = (img.width as u64).wrapping_mul(31).wrapping_add(img.height as u64);
             let len = img.pixels.len();
-            if len > 0 {
-                let step = (len / 128).max(1);
-                for i in (0..len).step_by(step).take(32) {
-                    h = h.wrapping_mul(31).wrapping_add(img.pixels[i] as u64);
+            // Read 64 bits at a time and cap the sample count, so cost is
+            // bounded (~8k iterations) regardless of resolution. A sparse
+            // sample misses small moving features against a static
+            // background — bars on black — and silently freezes every
+            // downstream node's param cache.
+            const MAX_WORDS: usize = 8192;
+            let n_words = len / 8;
+            if n_words > 0 {
+                // Odd stride so successive reads don't lock onto one column.
+                let stride = ((n_words / MAX_WORDS).max(1)) | 1;
+                let mut i = 0usize;
+                while i < n_words {
+                    let o = i * 8;
+                    let w = u64::from_le_bytes(img.pixels[o..o + 8].try_into().unwrap());
+                    h = (h ^ w).wrapping_mul(0x0000_0100_0000_01b3);
+                    i += stride;
                 }
+            }
+            // Tail bytes that the word loop can't cover.
+            for &b in &img.pixels[n_words * 8..] {
+                h = (h ^ b as u64).wrapping_mul(0x0000_0100_0000_01b3);
             }
             h
         };
-
         // Hash either a CPU `Image` or a GPU `GpuImage` port value. The GPU
         // variant hashes (producer_node_id, port, frame_stamp) so a producer
         // re-render naturally invalidates the param-cache key downstream.
