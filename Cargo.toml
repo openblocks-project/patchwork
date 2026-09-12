@@ -76,7 +76,7 @@ block2 = "0.5"
 foreign-types-shared = "0.3"
 
 [target.'cfg(target_os = "windows")'.dependencies]
-ort = { version = "2.0.0-rc.12", features = ["directml"] }
+ort = { version = "2.0.0-rc.12", features = ["cuda", "directml"] }
 
 [package.metadata.packager]
 product-name = "PatchWork"

@@ -6,3 +6,7 @@
 .claude/
 examples/api-test/
 vendor/windows/
+# Built Windows installers — publish as GitHub release assets, never track
+*.exe
+# …but keep the note on where the Windows vendored runtime files come from
+!vendor/windows/README.md
