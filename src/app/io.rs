@@ -1235,6 +1235,7 @@ impl super::PatchworkApp {
         egui::Window::new("Unsaved changes")
             .collapsible(false)
             .resizable(false)
+            .order(egui::Order::Tooltip)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
                 let name = self.project_path.as_deref()

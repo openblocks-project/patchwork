@@ -565,6 +565,10 @@ impl NodeBehavior for ImageStyleNode {
         ui.separator();
         crate::nodes::audio_port_row(ui, "Image", ctx.node_id, 0, false, ctx.port_positions,
             ctx.dragging_from, ctx.connections, ctx.pending_disconnects, PortKind::Image);
+                    if ctx.connections.iter().any(|c| c.to_node == ctx.node_id && c.to_port == 0) {
+            ui.ctx().request_repaint();
+        }
+
     }
 }
 

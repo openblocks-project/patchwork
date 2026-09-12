@@ -400,7 +400,8 @@ impl super::PatchworkApp {
     }
 
     pub(super) fn render_connections(&mut self, ctx: &egui::Context, values: &HashMap<(NodeId, usize), PortValue>) {
-        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Middle, egui::Id::new("connections")));
+        // let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Middle, egui::Id::new("connections")));
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Background, egui::Id::new("connections")));
         let pointer = ctx.pointer_latest_pos();
         let clicked = ctx.input(|i| i.pointer.button_clicked(egui::PointerButton::Primary));
         let now = ctx.input(|i| i.time) as f32;

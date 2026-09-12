@@ -658,7 +658,7 @@ impl egui_wgpu::CallbackTrait for GpuBlendCallback {
 
         let w = self.img_a.width.max(self.img_b.width);
         let h = self.img_a.height.max(self.img_b.height);
-
+        
         // Upload params
         let params = [self.mode, self.mix.to_bits(), 0u32, 0u32];
         queue.write_buffer(&res.uniform_buffer, 0, bytemuck::cast_slice(&params));

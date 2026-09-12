@@ -967,12 +967,31 @@ pub fn render_content(
     }
 
     // ── Post-render: detect if a NEW widget interaction started ──────────
+    // let focused_after = ui.ctx().memory(|mem| mem.focused());
+    // let dragged_after = ui.ctx().dragged_id().is_some();
+    // let new_interaction =
+    //     (!dragged_before && dragged_after) ||
+    //     (focused_before != focused_after && focused_after.is_some());
+    // // if new_interaction {
+    // //     ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("_patchwork_prop_edit_signal"), true));
+    // // }
+    // if new_interaction {
+    //     crate::system_log::log("PROP SIGNAL SET".to_string());
+    //     ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("_patchwork_prop_edit_signal"), true));
+    // }
+    // ── Post-render: detect if a NEW widget interaction started ──────
     let focused_after = ui.ctx().memory(|mem| mem.focused());
     let dragged_after = ui.ctx().dragged_id().is_some();
     let new_interaction =
         (!dragged_before && dragged_after) ||
         (focused_before != focused_after && focused_after.is_some());
     if new_interaction {
+        // Signals app/mod.rs (prop_signal_id) to push one coalesced undo
+        // snapshot for this property edit. While this was commented out,
+        // parameter changes never entered undo history — Ctrl+Z jumped to
+        // the last node add/delete, which read as "undo skipped my last
+        // action" and "param edits aren't undoable".
+        //  crate::system_log::log("PROP SIGNAL SET".to_string());
         ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("_patchwork_prop_edit_signal"), true));
     }
 }

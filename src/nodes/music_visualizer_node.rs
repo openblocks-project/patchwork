@@ -404,9 +404,25 @@ impl NodeBehavior for MusicVisualizerNode {
         crate::nodes::output_port_row(ui, "Image", if self.cached_image.is_some() { "✓" } else { "—" }, node_id, 0,
             ctx.port_positions, ctx.dragging_from, ctx.connections, ctx.pending_disconnects, PortKind::Image);
 
-        if self.bass > 0.001 || self.mid > 0.001 || self.treble > 0.001 {
-            ui.ctx().request_repaint();
-        }
+        // if self.bass > 0.001 || self.mid > 0.001 || self.treble > 0.001 {
+        //     ui.ctx().request_repaint();
+        // }
+        // Always keep the frame loop alive while this node exists. Gating
+        // repaint on audio energy froze the visualizer whenever the signal
+        // went quiet or the transport was paused/at 0:00 — and any
+        // downstream node (Transform, Blend) then saw a static frame.
+        // crate::system_log::log(&format!("mviz render bass={:.3}", self.bass));
+        // {
+        //     use std::sync::atomic::{AtomicUsize, Ordering};
+        //     static N: AtomicUsize = AtomicUsize::new(0);
+        //     if N.fetch_add(1, Ordering::Relaxed) % 60 == 0 {
+        //         crate::system_log::log(&format!(
+        //             "mviz bass={:.3} mid={:.3} treble={:.3}", self.bass, self.mid, self.treble));
+        //     }
+        // }
+    
+        ui.ctx().request_repaint();
+        
     }
 
     fn save_state(&self) -> serde_json::Value {

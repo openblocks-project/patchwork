@@ -1976,7 +1976,18 @@ fn render_with_wgpu(
     }
 
     // Allocate canvas rect
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(canvas_w, canvas_h), egui::Sense::hover());
+    // let (rect, response) = ui.allocate_exact_size(egui::vec2(canvas_w, canvas_h), egui::Sense::hover());
+    // Allocate at a stable display size, letterboxed to the output aspect.
+    // Previously this allocated canvas_w × canvas_h directly, so raising the
+    // render resolution (800×600 → 1280×720) grew the node itself.
+    const PREVIEW_MAX: f32 = 400.0;
+    let aspect = canvas_w / canvas_h.max(1.0);
+    let (disp_w, disp_h) = if aspect >= 1.0 {
+        (PREVIEW_MAX, PREVIEW_MAX / aspect)
+    } else {
+        (PREVIEW_MAX * aspect, PREVIEW_MAX)
+    };
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(disp_w, disp_h), egui::Sense::hover());
 
     // Update mouse relative to canvas
     if let Some(pos) = response.hover_pos() {

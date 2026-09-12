@@ -191,14 +191,14 @@ impl super::PatchworkApp {
             if modifiers.shift && ctx.input(|i| i.key_pressed(egui::Key::S)) {
                 self.save_project();
             }
-            // Cmd+Z → Undo
-            if !modifiers.shift && ctx.input(|i| i.key_pressed(egui::Key::Z)) {
-                self.perform_undo();
-            }
-            // Cmd+Shift+Z → Redo
-            if modifiers.shift && ctx.input(|i| i.key_pressed(egui::Key::Z)) {
-                self.perform_redo();
-            }
+            // // Cmd+Z → Undo
+            // if !modifiers.shift && ctx.input(|i| i.key_pressed(egui::Key::Z)) {
+            //     self.perform_undo();
+            // }
+            // // Cmd+Shift+Z → Redo
+            // if modifiers.shift && ctx.input(|i| i.key_pressed(egui::Key::Z)) {
+            //     self.perform_redo();
+            // }
         }
 
         // Delete / Backspace → delete selected nodes (when no text field focused)
@@ -438,16 +438,62 @@ impl super::PatchworkApp {
         }
     }
 
-    pub(super) fn handle_opt_drag(&mut self, ctx: &egui::Context) {
+//     pub(super) fn handle_opt_drag(&mut self, ctx: &egui::Context) {
+//         if let Some(source_id) = self.opt_drag_source {
+//             if self.opt_drag_created.is_none() {
+//                 // Create duplicate at same position
+//                 if let Some(node) = self.graph.nodes.get(&source_id) {
+//                     let nt = node.node_type.clone();
+//                     let pos = node.pos;
+//                     self.push_undo();
+//                     let new_id = self.add_node_selected(ctx, nt, [pos[0] + 30.0, pos[1] + 30.0]);
+//                     crate::system_log::log(&format!(
+//     "opt_drag: created {:?} from {:?}, selected_nodes now = {:?}",
+//     new_id, source_id, self.selected_nodes
+// ));
+//                     self.opt_drag_created = Some(new_id);
+//                 }
+//             }
+//             if ctx.input(|i| i.pointer.any_released()) {
+//                 self.opt_drag_source = None;
+//                 self.opt_drag_created = None;
+//             }
+//         }
+//     }
+pub(super) fn handle_opt_drag(&mut self, ctx: &egui::Context) {
         if let Some(source_id) = self.opt_drag_source {
             if self.opt_drag_created.is_none() {
-                // Create duplicate at same position
+                // Create the duplicate at the source's exact position; the
+                // block below drives it from the pointer so it tracks the
+                // cursor while the source stays put.
                 if let Some(node) = self.graph.nodes.get(&source_id) {
                     let nt = node.node_type.clone();
                     let pos = node.pos;
                     self.push_undo();
-                    let new_id = self.add_node_selected(ctx, nt, [pos[0] + 30.0, pos[1] + 30.0]);
+                    let new_id = self.add_node_selected(ctx, nt, pos);
                     self.opt_drag_created = Some(new_id);
+                    // Anchor the source position and the pointer start so the
+                    // duplicate follows the drag 1:1.
+                    self.opt_drag_anchor_pos = pos;
+                    self.opt_drag_anchor_ptr = ctx.pointer_latest_pos()
+                        .map(|p| [p.x, p.y]).unwrap_or(pos);
+                }
+            }
+            // Move the DUPLICATE (not the source) with the pointer. egui keeps
+            // the drag bound to the source's widget, so the source stays put
+            // and the copy tracks the cursor — leaving the copy as the active,
+            // selected node (which add_node_selected already made it).
+            if let (Some(new_id), Some(ptr)) =
+                (self.opt_drag_created, ctx.pointer_latest_pos())
+            {
+                let zoom = self.canvas_zoom;
+                let dx = (ptr.x - self.opt_drag_anchor_ptr[0]) / zoom;
+                let dy = (ptr.y - self.opt_drag_anchor_ptr[1]) / zoom;
+                if let Some(n) = self.graph.nodes.get_mut(&new_id) {
+                    n.pos = [
+                        self.opt_drag_anchor_pos[0] + dx,
+                        self.opt_drag_anchor_pos[1] + dy,
+                    ];
                 }
             }
             if ctx.input(|i| i.pointer.any_released()) {
@@ -456,7 +502,6 @@ impl super::PatchworkApp {
             }
         }
     }
-
     pub(super) fn duplicate_selected(&mut self) {
         let ids: Vec<NodeId> = self.selected_nodes.iter().copied().collect();
         if ids.is_empty() { return; }
@@ -569,6 +614,36 @@ impl super::PatchworkApp {
                             }
                         }
                         ui.separator();
+                        // ── Bypass / Enable toggle ─────────────────────
+                        if let Some(id) = self.context_menu_node {
+                            let is_bypassed = self.graph.nodes.get(&id)
+                                .map(|n| n.bypassed)
+                                .unwrap_or(false);
+                            let (icon, label) = if is_bypassed {
+                                (icons::PLAY, "Enable node")
+                            } else {
+                                (icons::PAUSE, "Bypass node")
+                            };
+                            if icon_menu_item(ui, icon, label).clicked() {
+                                self.push_undo();
+                                // Toggle bypass on all selected nodes if this node is
+                                // part of a multi-selection; otherwise just this one.
+                                let targets: Vec<NodeId> = if self.selected_nodes.contains(&id)
+                                    && self.selected_nodes.len() > 1
+                                {
+                                    self.selected_nodes.iter().copied().collect()
+                                } else {
+                                    vec![id]
+                                };
+                                for tid in targets {
+                                    if let Some(node) = self.graph.nodes.get_mut(&tid) {
+                                        node.bypassed = !is_bypassed;
+                                    }
+                                }
+                                keep_open = false;
+                            }
+                            ui.separator();
+                        }
                         let del_label = if self.selected_nodes.len() > 1 {
                             format!("Delete {}", self.selected_nodes.len())
                         } else {
