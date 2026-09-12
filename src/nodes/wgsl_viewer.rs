@@ -1991,8 +1991,8 @@ fn render_with_wgpu(
 
     // Update mouse relative to canvas
     if let Some(pos) = response.hover_pos() {
-        let rel_x = (pos.x - rect.min.x) / canvas_w;
-        let rel_y = (pos.y - rect.min.y) / canvas_h;
+        let rel_x = (pos.x - rect.min.x) / disp_w;
+        let rel_y = (pos.y - rect.min.y) / disp_h;
         packed_uniforms[4] = rel_x.clamp(0.0, 1.0); // mouse_x at index 4
         packed_uniforms[5] = rel_y.clamp(0.0, 1.0); // mouse_y at index 5
     }
