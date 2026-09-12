@@ -103,12 +103,19 @@ pub fn models_for(provider: &str, mode: u8) -> Vec<(&'static str, &'static str)>
             ("gemini-1.5-flash", "Gemini 1.5 Flash"),
         ],
         // ── Image-generation models ──────────────────────────────
+        // ("openai", 1) => vec![
+        //     ("dall-e-3", "DALL·E 3"),
+        // ],
         ("openai", 1) => vec![
-            ("dall-e-3", "DALL·E 3"),
-        ],
+    ("gpt-image-2", "GPT Image 2"),
+    ("gpt-image-1-mini", "GPT Image 1 Mini"),
+],
+        // ("google", 1) => vec![
+        //     ("imagen-3-generate-002", "Imagen 3"),
+        // ],
         ("google", 1) => vec![
-            ("imagen-3.0-generate-002", "Imagen 3"),
-        ],
+    ("imagen-3-generate-002", "Imagen 3"),
+],
         // anthropic + image: empty (no native image generation API)
         _ => vec![],
     }
@@ -746,7 +753,7 @@ pub fn build_request(
                     "prompt": user_prompt,
                     "n": 1,
                     "size": "1024x1024",
-                    "response_format": "url",
+                    // "response_format": "url",
                 });
                 (url, headers, body.to_string())
             } else {
@@ -887,6 +894,18 @@ pub fn try_save_imagen_image(body: &str) -> Option<String> {
 /// Extract the text content (or image URL) from a provider's response JSON.
 pub fn extract_ai_response(provider: &str, body: &str) -> String {
     // DALL-E / gpt-image-1 URL response
+    // if let Ok(json) = serde_json::from_str::<serde_json::Value>(body) {
+    //     if let Some(url) = json
+    //         .get("data")
+    //         .and_then(|d| d.get(0))
+    //         .and_then(|d| d.get("url"))
+    //         .and_then(|u| u.as_str())
+    //     {
+    //         return url.to_string();
+    //     }
+    // }
+
+    // OpenAI image response — URL (legacy) or b64_json (gpt-image-*)
     if let Ok(json) = serde_json::from_str::<serde_json::Value>(body) {
         if let Some(url) = json
             .get("data")
@@ -896,8 +915,25 @@ pub fn extract_ai_response(provider: &str, body: &str) -> String {
         {
             return url.to_string();
         }
+        if let Some(b64) = json
+            .get("data")
+            .and_then(|d| d.get(0))
+            .and_then(|d| d.get("b64_json"))
+            .and_then(|u| u.as_str())
+        {
+            if let Some(bytes) = base64_decode(b64) {
+                let mut path = std::env::temp_dir();
+                let stamp = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos())
+                    .unwrap_or(0);
+                path.push(format!("patchwork_openai_{}.png", stamp));
+                if std::fs::write(&path, &bytes).is_ok() {
+                    return format!("file://{}", path.to_string_lossy());
+                }
+            }
+        }
     }
-
     // Imagen inline image response
     if let Some(file_url) = try_save_imagen_image(body) {
         return file_url;
