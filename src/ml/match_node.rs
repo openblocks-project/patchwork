@@ -25,6 +25,7 @@ pub enum Metric {
     Cosine,
     L2,
 }
+
 impl Default for Metric {
     fn default() -> Self { Self::Cosine }
 }

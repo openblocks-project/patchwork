@@ -408,6 +408,18 @@ impl Default for VideoInNode {
 static CAMERA_OWNERS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<(VideoSource, u32), NodeId>>> =
     std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
+/// Drop every camera/screen ownership claim. Called when the whole graph
+/// is being replaced (New file / Open project): the decoders themselves
+/// stop when their `VideoInNode`s drop, but there is no `Drop` on the node
+/// that clears this global registry, so without wiping it the next file's
+/// Video In sees a stale "Device in use by #N" owner and can't reclaim the
+/// camera. Safe to call anytime — a fresh graph owns nothing.
+pub fn release_all_cameras() {
+    if let Ok(mut owners) = CAMERA_OWNERS.lock() {
+        owners.clear();
+    }
+}
+
 impl VideoInNode {
     fn device_index(&self) -> u32 {
         self.device_id.parse::<u32>().unwrap_or(0)
