@@ -1,0 +1,441 @@
+{
+  "nodes": {
+    "1": {
+      "id": 1,
+      "node_type": {
+        "Dynamic": {
+          "inner": {
+            "type_tag": "file_menu",
+            "state": {}
+          }
+        }
+      },
+      "pos": [
+        10.0,
+        10.0
+      ]
+    },
+    "18": {
+      "id": 18,
+      "node_type": {
+        "Speaker": {
+          "active": true,
+          "volume": 0.6,
+          "pan": 0.0,
+          "channel_offset": 0,
+          "device": ""
+        }
+      },
+      "pos": [
+        2249.9907,
+        1049.94
+      ]
+    },
+    "13": {
+      "id": 13,
+      "node_type": {
+        "Dynamic": {
+          "inner": {
+            "type_tag": "math",
+            "state": {
+              "formula": "55.0 * pow(2.0, [0.0,8.0,3.0,10.0][(A*3.99).floor().to_int()] / 12.0)",
+              "result": 55.0,
+              "variables": [
+                "A"
+              ]
+            }
+          }
+        }
+      },
+      "pos": [
+        899.99084,
+        1349.94
+      ]
+    },
+    "9": {
+      "id": 9,
+      "node_type": {
+        "Curve": {
+          "points": [
+            [
+              0.0,
+              0.0
+            ],
+            [
+              0.03,
+              1.0
+            ],
+            [
+              0.3,
+              0.45
+            ],
+            [
+              1.0,
+              0.0
+            ]
+          ],
+          "mode": 1,
+          "speed": 4.0,
+          "looping": false,
+          "manual_gate": false,
+          "sustain_index": null
+        }
+      },
+      "pos": [
+        599.99084,
+        999.93994
+      ]
+    },
+    "6": {
+      "id": 6,
+      "node_type": {
+        "Dynamic": {
+          "inner": {
+            "type_tag": "clock",
+            "state": {
+              "beats_per_bar": 4,
+              "bpm": 100.0,
+              "channels": [
+                {
+                  "shift": 0.0,
+                  "subdivision": 2.0
+                }
+              ]
+            }
+          }
+        }
+      },
+      "pos": [
+        299.9908,
+        799.93994
+      ]
+    },
+    "17": {
+      "id": 17,
+      "node_type": {
+        "AudioReverb": {
+          "room_size": 0.7,
+          "damping": 0.5,
+          "mix": 0.3
+        }
+      },
+      "pos": [
+        1999.9908,
+        1049.94
+      ]
+    },
+    "8": {
+      "id": 8,
+      "node_type": {
+        "Dynamic": {
+          "inner": {
+            "type_tag": "math",
+            "state": {
+              "formula": "220.0 * pow(2.0, [0.0,3.0,5.0,7.0,10.0,12.0,15.0,17.0,19.0,22.0][(A*9.99).floor().to_int()] / 12.0)",
+              "result": 220.0,
+              "variables": [
+                "A"
+              ]
+            }
+          }
+        }
+      },
+      "pos": [
+        899.99084,
+        759.93994
+      ]
+    },
+    "7": {
+      "id": 7,
+      "node_type": {
+        "Dynamic": {
+          "inner": {
+            "type_tag": "noise",
+            "state": {
+              "chance": 1.0,
+              "mode": "Trigger",
+              "seed": 7,
+              "speed": 1.0
+            }
+          }
+        }
+      },
+      "pos": [
+        599.99084,
+        759.93994
+      ]
+    },
+    "4": {
+      "id": 4,
+      "node_type": {
+        "Dynamic": {
+          "inner": {
+            "type_tag": "monitor",
+            "state": {}
+          }
+        }
+      },
+      "pos": [
+        1100.0,
+        500.0
+      ]
+    },
+    "10": {
+      "id": 10,
+      "node_type": {
+        "Synth": {
+          "waveform": "Triangle",
+          "frequency": 220.0,
+          "amplitude": 0.0,
+          "active": true,
+          "fm_depth": 0.0
+        }
+      },
+      "pos": [
+        1199.9908,
+        849.93994
+      ]
+    },
+    "11": {
+      "id": 11,
+      "node_type": {
+        "Dynamic": {
+          "inner": {
+            "type_tag": "clock",
+            "state": {
+              "beats_per_bar": 4,
+              "bpm": 100.0,
+              "channels": [
+                {
+                  "shift": 0.0,
+                  "subdivision": 0.25
+                }
+              ]
+            }
+          }
+        }
+      },
+      "pos": [
+        299.9908,
+        1349.94
+      ]
+    },
+    "3": {
+      "id": 3,
+      "node_type": {
+        "Palette": {
+          "search": ""
+        }
+      },
+      "pos": [
+        10.0,
+        200.0
+      ]
+    },
+    "2": {
+      "id": 2,
+      "node_type": {
+        "Dynamic": {
+          "inner": {
+            "type_tag": "zoom_control",
+            "state": {
+              "zoom_value": 0.48912665247917175
+            }
+          }
+        }
+      },
+      "pos": [
+        1100.0,
+        10.0
+      ]
+    },
+    "5": {
+      "id": 5,
+      "node_type": {
+        "AudioDevice": {
+          "selected_output": "",
+          "selected_input": "",
+          "master_volume": 0.8,
+          "enabled": true
+        }
+      },
+      "pos": [
+        1100.0,
+        350.0
+      ]
+    },
+    "12": {
+      "id": 12,
+      "node_type": {
+        "Dynamic": {
+          "inner": {
+            "type_tag": "noise",
+            "state": {
+              "chance": 1.0,
+              "mode": "Trigger",
+              "seed": 3,
+              "speed": 1.0
+            }
+          }
+        }
+      },
+      "pos": [
+        599.99084,
+        1349.94
+      ]
+    },
+    "14": {
+      "id": 14,
+      "node_type": {
+        "Synth": {
+          "waveform": "Triangle",
+          "frequency": 55.0,
+          "amplitude": 0.4,
+          "active": true,
+          "fm_depth": 0.0
+        }
+      },
+      "pos": [
+        1199.9908,
+        1349.94
+      ]
+    },
+    "15": {
+      "id": 15,
+      "node_type": {
+        "AudioMixer": {
+          "channel_count": 2,
+          "gains": [
+            0.7,
+            0.6
+          ]
+        }
+      },
+      "pos": [
+        1749.9908,
+        1049.94
+      ]
+    },
+    "16": {
+      "id": 16,
+      "node_type": {
+        "AudioDelay": {
+          "time_ms": 450.0,
+          "feedback": 0.35
+        }
+      },
+      "pos": [
+        1479.9908,
+        849.93994
+      ]
+    }
+  },
+  "connections": [
+    {
+      "from_node": 6,
+      "from_port": 0,
+      "to_node": 7,
+      "to_port": 0,
+      "label": ""
+    },
+    {
+      "from_node": 7,
+      "from_port": 0,
+      "to_node": 8,
+      "to_port": 0,
+      "label": ""
+    },
+    {
+      "from_node": 8,
+      "from_port": 0,
+      "to_node": 10,
+      "to_port": 0,
+      "label": ""
+    },
+    {
+      "from_node": 6,
+      "from_port": 0,
+      "to_node": 9,
+      "to_port": 1,
+      "label": ""
+    },
+    {
+      "from_node": 9,
+      "from_port": 0,
+      "to_node": 10,
+      "to_port": 1,
+      "label": ""
+    },
+    {
+      "from_node": 10,
+      "from_port": 0,
+      "to_node": 16,
+      "to_port": 0,
+      "label": ""
+    },
+    {
+      "from_node": 16,
+      "from_port": 0,
+      "to_node": 15,
+      "to_port": 0,
+      "label": ""
+    },
+    {
+      "from_node": 11,
+      "from_port": 0,
+      "to_node": 12,
+      "to_port": 0,
+      "label": ""
+    },
+    {
+      "from_node": 12,
+      "from_port": 0,
+      "to_node": 13,
+      "to_port": 0,
+      "label": ""
+    },
+    {
+      "from_node": 13,
+      "from_port": 0,
+      "to_node": 14,
+      "to_port": 0,
+      "label": ""
+    },
+    {
+      "from_node": 14,
+      "from_port": 0,
+      "to_node": 15,
+      "to_port": 2,
+      "label": ""
+    },
+    {
+      "from_node": 15,
+      "from_port": 0,
+      "to_node": 17,
+      "to_port": 0,
+      "label": ""
+    },
+    {
+      "from_node": 17,
+      "from_port": 0,
+      "to_node": 18,
+      "to_port": 0,
+      "label": ""
+    },
+    {
+      "from_node": 17,
+      "from_port": 0,
+      "to_node": 18,
+      "to_port": 1,
+      "label": ""
+    },
+    {
+      "from_node": 6,
+      "from_port": 2,
+      "to_node": 11,
+      "to_port": 1,
+      "label": ""
+    }
+  ],
+  "next_id": 19
+}

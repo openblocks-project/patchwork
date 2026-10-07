@@ -1,0 +1,523 @@
+{
+  "nodes": {
+    "21": {
+      "id": 21,
+      "node_type": {
+        "Dynamic": {
+          "inner": {
+            "type_tag": "web_app",
+            "state": {
+              "html_code": "",
+              "input_names": [
+                "p0",
+                "p1"
+              ],
+              "output_names": [
+                "o0",
+                "button"
+              ]
+            }
+          }
+        }
+      },
+      "pos": [
+        1177.5684,
+        953.3308
+      ]
+    },
+    "10": {
+      "id": 10,
+      "node_type": {
+        "Dynamic": {
+          "inner": {
+            "type_tag": "text_gen",
+            "state": {
+              "max_tokens": 1024,
+              "model_override": "",
+              "provider_override": "",
+              "system_prompt": "",
+              "temperature": 0.699999988079071,
+              "user_prompt": ""
+            }
+          }
+        }
+      },
+      "pos": [
+        324.2246,
+        2076.8933
+      ]
+    },
+    "25": {
+      "id": 25,
+      "node_type": {
+        "ObLight": {
+          "device_id": 1,
+          "hub_node_id": 0,
+          "mode": 2,
+          "color": [
+            234,
+            0,
+            255
+          ],
+          "brightness": 0.2,
+          "position": 0.5,
+          "speed": 0.5,
+          "color_mode": 0,
+          "send_mode": 0,
+          "num_leds": 100,
+          "port_name": "",
+          "selected_port": ""
+        }
+      },
+      "pos": [
+        2553.9434,
+        2674.3308
+      ]
+    },
+    "7": {
+      "id": 7,
+      "node_type": {
+        "Dynamic": {
+          "inner": {
+            "type_tag": "wgsl_presets",
+            "state": {
+              "preset_key": "plasma"
+            }
+          }
+        }
+      },
+      "pos": [
+        185.25586,
+        1525.4558
+      ]
+    },
+    "6": {
+      "id": 6,
+      "node_type": {
+        "WgslViewer": {
+          "wgsl_code": "@fragment\nfn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {\n    let uv = in.uv;\n    let t = u.time;\n    let p = uv * 6.0 * u.abc;\n    let v1 = sin(p.x + t);\n    let v2 = sin(p.y + t * 0.7);\n    let v3 = sin(p.x + p.y + t * 0.5);\n    let v4 = sin(length(p - vec2<f32>(3.0, 3.0)) + t);\n    let v = (v1 + v2 + v3 + v4) * 0.25;\n    let r = sin(v * 3.14) * 0.5 + 0.5;\n    let g = sin(v * 3.14 + 2.09) * 0.5 + 0.5;\n    let b = sin(v * 3.14 + 4.18) * 0.5 + 0.5;\n    return vec4<f32>(r, g, b, 1.0);\n}\n",
+          "uniform_names": [
+            "time",
+            "abc"
+          ],
+          "uniform_types": [
+            "float",
+            "float"
+          ],
+          "uniform_values": [
+            0.0,
+            3.72
+          ],
+          "uniform_min": [],
+          "uniform_max": [],
+          "canvas_w": 400.0,
+          "canvas_h": 300.0,
+          "resolution": 120,
+          "expanded": false,
+          "image_a_mode": "Unused",
+          "image_b_mode": "Unused"
+        }
+      },
+      "pos": [
+        878.63086,
+        1542.6746
+      ]
+    },
+    "1": {
+      "id": 1,
+      "node_type": {
+        "Dynamic": {
+          "inner": {
+            "type_tag": "file_menu",
+            "state": {}
+          }
+        }
+      },
+      "pos": [
+        10.0,
+        10.0
+      ]
+    },
+    "9": {
+      "id": 9,
+      "node_type": {
+        "Dynamic": {
+          "inner": {
+            "type_tag": "ai_config",
+            "state": {
+              "code_model": "claude-sonnet-4-20250514",
+              "code_provider": "anthropic",
+              "custom_auth_format": "",
+              "custom_auth_header": "",
+              "custom_base_url": "",
+              "image_model": "dall-e-3",
+              "image_provider": "openai",
+              "label": "",
+              "profile": "default",
+              "text_model": "claude-sonnet-4-20250514",
+              "text_provider": "anthropic"
+            }
+          }
+        }
+      },
+      "pos": [
+        69.34961,
+        1932.8933
+      ]
+    },
+    "23": {
+      "id": 23,
+      "node_type": {
+        "ObHub": {
+          "port_name": "",
+          "selected_port": "",
+          "detected_devices": []
+        }
+      },
+      "pos": [
+        1940.5996,
+        1825.987
+      ]
+    },
+    "8": {
+      "id": 8,
+      "node_type": {
+        "Dynamic": {
+          "inner": {
+            "type_tag": "text_editor",
+            "state": {
+              "content": "@fragment\nfn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {\n    let uv = in.uv;\n    let t = u.time;\n    let p = uv * 6.0 * u.abc;\n    let v1 = sin(p.x + t);\n    let v2 = sin(p.y + t * 0.7);\n    let v3 = sin(p.x + p.y + t * 0.5);\n    let v4 = sin(length(p - vec2<f32>(3.0, 3.0)) + t);\n    let v = (v1 + v2 + v3 + v4) * 0.25;\n    let r = sin(v * 3.14) * 0.5 + 0.5;\n    let g = sin(v * 3.14 + 2.09) * 0.5 + 0.5;\n    let b = sin(v * 3.14 + 4.18) * 0.5 + 0.5;\n    return vec4<f32>(r, g, b, 1.0);\n}\n"
+            }
+          }
+        }
+      },
+      "pos": [
+        570.1621,
+        1548.8933
+      ]
+    },
+    "16": {
+      "id": 16,
+      "node_type": {
+        "Dynamic": {
+          "inner": {
+            "type_tag": "json_fields",
+            "state": {
+              "pinned_paths": [
+                "[4].x",
+                "[4].y"
+              ]
+            }
+          }
+        }
+      },
+      "pos": [
+        906.94336,
+        2377.737
+      ]
+    },
+    "17": {
+      "id": 17,
+      "node_type": {
+        "Dynamic": {
+          "inner": {
+            "type_tag": "point_2d",
+            "state": {
+              "auto_range": true,
+              "max_x": 1000.0,
+              "max_y": 500.0,
+              "min_x": 0.0,
+              "min_y": 0.0,
+              "x": 0.0,
+              "y": 0.0
+            }
+          }
+        }
+      },
+      "pos": [
+        1243.1934,
+        2429.862
+      ]
+    },
+    "12": {
+      "id": 12,
+      "node_type": {
+        "Dynamic": {
+          "inner": {
+            "type_tag": "video_in",
+            "state": {
+              "cached_path": "",
+              "device_id": "0",
+              "duration_secs": 0.0,
+              "loop_playback": false,
+              "mirror_h": false,
+              "mirror_v": false,
+              "res_h": 480,
+              "res_w": 640,
+              "source": "Camera",
+              "volume": 1.0
+            }
+          }
+        }
+      },
+      "pos": [
+        230.44336,
+        2510.6746
+      ]
+    },
+    "20": {
+      "id": 20,
+      "node_type": {
+        "Dynamic": {
+          "inner": {
+            "type_tag": "map_range",
+            "state": {
+              "clamp": false,
+              "in_max": 1.0,
+              "in_min": 0.0,
+              "in_val": 0.5,
+              "out_max": 20.0,
+              "out_min": 0.0
+            }
+          }
+        }
+      },
+      "pos": [
+        376.25586,
+        1135.4246
+      ]
+    },
+    "5": {
+      "id": 5,
+      "node_type": {
+        "AudioDevice": {
+          "selected_output": "",
+          "selected_input": "",
+          "master_volume": 0.8,
+          "enabled": false
+        }
+      },
+      "pos": [
+        1296.324,
+        381.87894
+      ]
+    },
+    "2": {
+      "id": 2,
+      "node_type": {
+        "Dynamic": {
+          "inner": {
+            "type_tag": "zoom_control",
+            "state": {
+              "zoom_value": 1.0
+            }
+          }
+        }
+      },
+      "pos": [
+        1100.0,
+        10.0
+      ]
+    },
+    "22": {
+      "id": 22,
+      "node_type": {
+        "Dynamic": {
+          "inner": {
+            "type_tag": "web_stream",
+            "state": {
+              "html_code": "",
+              "input_names": [
+                "p0",
+                "p1"
+              ],
+              "input_types": [
+                "f",
+                "f"
+              ],
+              "output_names": [
+                "o0",
+                "button"
+              ],
+              "output_types": [
+                "f",
+                "b"
+              ]
+            }
+          }
+        }
+      },
+      "pos": [
+        1520.8184,
+        1203.9558
+      ]
+    },
+    "18": {
+      "id": 18,
+      "node_type": {
+        "Slider": {
+          "value": 3.72,
+          "min": 0.0,
+          "max": 20.0,
+          "step": 0.01,
+          "slider_color": [
+            103,
+            149,
+            228
+          ],
+          "label": ""
+        }
+      },
+      "pos": [
+        694.8496,
+        1259.2058
+      ]
+    },
+    "13": {
+      "id": 13,
+      "node_type": {
+        "Dynamic": {
+          "inner": {
+            "type_tag": "hand_detection",
+            "state": {
+              "confidence": 0.9700000286102295,
+              "interval_ms": 100
+            }
+          }
+        }
+      },
+      "pos": [
+        585.7246,
+        2665.2996
+      ]
+    },
+    "4": {
+      "id": 4,
+      "node_type": {
+        "Dynamic": {
+          "inner": {
+            "type_tag": "monitor",
+            "state": {}
+          }
+        }
+      },
+      "pos": [
+        1100.0,
+        500.0
+      ]
+    },
+    "3": {
+      "id": 3,
+      "node_type": {
+        "Palette": {
+          "search": ""
+        }
+      },
+      "pos": [
+        10.0,
+        200.0
+      ]
+    },
+    "14": {
+      "id": 14,
+      "node_type": {
+        "ImageNode": {
+          "path": "",
+          "save_path": "",
+          "preview_size": 150.0,
+          "cached_file": ""
+        }
+      },
+      "pos": [
+        915.81836,
+        2640.737
+      ]
+    },
+    "19": {
+      "id": 19,
+      "node_type": {
+        "ObKnob": {
+          "device_id": 1,
+          "hub_node_id": 0,
+          "label_color": [
+            255,
+            89,
+            234
+          ],
+          "port_name": "",
+          "selected_port": ""
+        }
+      },
+      "pos": [
+        103.38086,
+        1138.112
+      ]
+    }
+  },
+  "connections": [
+    {
+      "from_node": 8,
+      "from_port": 0,
+      "to_node": 6,
+      "to_port": 0,
+      "label": ""
+    },
+    {
+      "from_node": 12,
+      "from_port": 0,
+      "to_node": 13,
+      "to_port": 0,
+      "label": ""
+    },
+    {
+      "from_node": 13,
+      "from_port": 0,
+      "to_node": 14,
+      "to_port": 0,
+      "label": ""
+    },
+    {
+      "from_node": 13,
+      "from_port": 1,
+      "to_node": 16,
+      "to_port": 0,
+      "label": ""
+    },
+    {
+      "from_node": 16,
+      "from_port": 0,
+      "to_node": 17,
+      "to_port": 0,
+      "label": ""
+    },
+    {
+      "from_node": 16,
+      "from_port": 1,
+      "to_node": 17,
+      "to_port": 1,
+      "label": ""
+    },
+    {
+      "from_node": 19,
+      "from_port": 0,
+      "to_node": 20,
+      "to_port": 0,
+      "label": ""
+    },
+    {
+      "from_node": 21,
+      "from_port": 0,
+      "to_node": 6,
+      "to_port": 1,
+      "label": ""
+    },
+    {
+      "from_node": 18,
+      "from_port": 0,
+      "to_node": 21,
+      "to_port": 2,
+      "label": ""
+    }
+  ],
+  "next_id": 26
+}
