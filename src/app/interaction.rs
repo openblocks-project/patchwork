@@ -171,6 +171,7 @@ impl super::PatchworkApp {
             // Cmd+N → New project (fresh graph + randomised accent color)
             if ctx.input(|i| i.key_pressed(egui::Key::N)) {
                 self.push_undo();
+                self.release_input_devices();   // free camera/audio from the outgoing file
                 self.graph = crate::graph::Graph::new();
                 self.project_path = None;
                 self.pinned_nodes.clear();

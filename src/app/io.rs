@@ -279,6 +279,7 @@ impl super::PatchworkApp {
                 _ => {}
             }
         }
+        self.release_input_devices();   // free camera/audio from the outgoing file
         self.graph = graph;
         self.graph.audio_topology_dirty = true;
         self.canvas_offset = egui::Vec2::new(state.canvas_offset[0], state.canvas_offset[1]);
@@ -1076,6 +1077,26 @@ impl super::PatchworkApp {
         }
     }
 
+    /// Release OS input devices held by the CURRENT graph before it is
+    /// replaced by New / Open. Camera + audio-input capture would otherwise
+    /// leak into the next file: the old Video In's ffmpeg decoder stops when
+    /// the node drops, but its claim in the global `CAMERA_OWNERS` registry
+    /// survives (there is no `Drop` clearing it) and audio-input streams live
+    /// on the persistent `AudioManager`, not on the graph. Symptom: a fresh
+    /// file reports "Device in use by Video In #N" for a node that no longer
+    /// exists. Call this on the OLD graph, before swapping in the new one.
+    pub(super) fn release_input_devices(&mut self) {
+        let ids: Vec<crate::graph::NodeId> = self.graph.nodes.keys().copied().collect();
+        for id in ids {
+            // cleanup_node stops file playback AND input capture (stop_input),
+            // releasing any mic / audio-in device this node held.
+            self.audio.cleanup_node(id);
+            crate::nodes::video_player::cleanup_node(id);
+        }
+        // Camera ownership is a process-global registry keyed by device→node.
+        crate::nodes::video_in_node::release_all_cameras();
+    }
+
     /// Load a project given a path to either `project.json` or its parent
     /// directory. Used by both the file dialog and the Open Recent submenu.
     pub(super) fn load_project_path(&mut self, path: std::path::PathBuf) {
@@ -1126,6 +1147,7 @@ impl super::PatchworkApp {
             }
         }
         self.audio.stop_output();
+        self.release_input_devices();   // free camera/audio from the outgoing file
         self.graph = graph;
         self.graph.audio_topology_dirty = true;
         // Restore UI state from project file

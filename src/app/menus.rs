@@ -531,6 +531,7 @@ impl super::PatchworkApp {
         });
 
         if new_project {
+            self.release_input_devices();   // free camera/audio from the outgoing file
             self.graph = Graph::new();
             self.project_path = None;
             self.pinned_nodes.clear();
