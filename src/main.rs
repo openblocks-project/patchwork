@@ -24,6 +24,7 @@ mod osc;
 mod plugin_trust;
 mod serial;
 mod settings;
+mod document;
 pub mod system_log;
 pub mod transport;
 

@@ -142,6 +142,7 @@ use undo::UndoHistory;
 type ConnectionId = (NodeId, usize, NodeId, usize);
 
 pub struct PatchworkApp {
+    documents: crate::document::DocumentManager,
     graph: Graph,
     port_positions: HashMap<(NodeId, usize, bool), egui::Pos2>,
     node_rects: HashMap<NodeId, egui::Rect>,
@@ -304,7 +305,8 @@ impl PatchworkApp {
         let wgpu_render_state = cc.wgpu_render_state.clone();
         let (ml_tx, ml_rx) = std::sync::mpsc::channel();
         let (tts_tx, tts_rx) = std::sync::mpsc::channel();
-        let mut app = Self {
+       let mut app = Self {
+            documents: crate::document::DocumentManager::new(),
             graph: Graph::new(),
             port_positions: HashMap::new(),
             node_rects: HashMap::new(),
