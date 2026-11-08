@@ -164,6 +164,8 @@ pub struct NodeCatalogEntry {
 }
 
 /// Category pill groups for the Add Node menu.
+
+/// Category pill groups for the Add Node menu.
 pub const CATEGORY_GROUPS: &[(&str, &[&str])] = &[
     ("All", &[]),
     ("Input", &["Input", "Signal"]),
@@ -173,8 +175,8 @@ pub const CATEGORY_GROUPS: &[(&str, &[&str])] = &[
     ("Audio", &["Audio", "MIDI"]),
     ("I/O", &["IO", "Network", "Serial", "OSC", "Hardware", "Output", "Lighting"]),
     ("Utility", &["Utility", "Custom"]),
+    ("Library", &["Library"]),
 ];
-
 /// UTF-8-safe truncation for UI previews. `&str[..n]` panics when `n`
 /// lands mid-character (em-dash, emoji, CJK, …); every node preview that
 /// shows upstream / AI-generated text must route through this helper

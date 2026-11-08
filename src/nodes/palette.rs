@@ -43,13 +43,14 @@ pub fn render(
     let mut active_cat: String = ui.ctx().data_mut(|d| d.get_temp(pill_id).unwrap_or_default());
     let accent = ui.visuals().hyperlink_color;
     let categories: &[(&str, &[&str])] = &[
-        ("All", &[]),
-        ("Math", &["Math", "Logic"]),
-        ("Signal", &["Signal", "Input"]),
-        ("Visual", &["Image", "Video", "Shader", "ML", "3D"]),
-        ("Audio", &["Audio"]),
-        ("I/O", &["IO", "Network", "Serial", "OSC", "MIDI", "Hardware"]),
-        ("Utility", &["Utility", "Output", "Custom", "System"]),
+    ("All", &[]),
+    ("Math", &["Math", "Logic"]),
+    ("Signal", &["Signal", "Input"]),
+    ("Visual", &["Image", "Video", "Shader", "ML", "3D"]),
+    ("Audio", &["Audio"]),
+    ("I/O", &["IO", "Network", "Serial", "OSC", "MIDI", "Hardware"]),
+    ("Utility", &["Utility", "Output", "Custom", "System"]),
+    ("Library", &["Library"]),
     ];
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 2.0 * inv;

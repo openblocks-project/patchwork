@@ -1940,6 +1940,33 @@ impl eframe::App for PatchworkApp {
                     self.save_as_open = true;
                     ui.close_menu();
                 }
+                ui.separator();
+                   
+         let can_publish =
+    self.documents.active().kind
+        == crate::document::DocumentKind::CustomNode
+    && self.documents.active().path.is_some()
+    && !self.is_dirty
+    && !self.documents.active().is_dirty;
+
+            if ui
+                .add_enabled(
+                can_publish,
+                egui::Button::new("Publish to Library"),
+                )
+                .on_hover_text(
+    "Save the custom node before publishing it to the shared Library"
+)
+                .clicked()
+            {
+                ui.ctx().data_mut(|d| {
+                d.insert_temp(
+                egui::Id::new("file_action_publish_library"),
+                true,
+            );
+         });
+            ui.close_menu();
+       }
                 });
                 ui.menu_button("Edit", |ui| {
                     let can_undo = self.undo_history.can_undo();

@@ -86,6 +86,7 @@ impl super::PatchworkApp {
         let orig_style = self.apply_inverse_zoom_style(ctx);
         let _ = self.node_menu_pos; // retained for spawn offset (used below)
         let mut keep_open = true;
+        let mut selected_library_path: Option<std::path::PathBuf> = None;
         let menu_id = egui::Id::new("add_node_menu_window");
 
         // Menu chrome derives from the active theme so picker, body, and
@@ -198,12 +199,19 @@ impl super::PatchworkApp {
                 let catalog = nodes::catalog();
                 let wire_ctx = self.wire_menu_context;
                 let cat_filter = self.node_menu_category.clone();
-
-                if wire_ctx.is_some() {
+                let library_nodes = match crate::library::list_library_nodes() {
+                Ok(paths) => paths,
+                Err(error) => {
+                crate::system_log::error(format!(
+                 "Failed to list library nodes: {error}"
+                ));
+                Vec::new()
+                }
+            };
+               if wire_ctx.is_some() {
                     ui.label(egui::RichText::new("⚡ Compatible nodes").small().color(dim));
                     ui.add_space(2.0);
                 }
-
                 // Resolve a raw category string to its pill label. Single-
                 // pass lookup via CATEGORY_GROUPS. Returns "Other" only for
                 // orphan categories (e.g. System) which we filter out above.
@@ -251,10 +259,9 @@ impl super::PatchworkApp {
                 // nodes like Sample & Hold appear under both Math and
                 // Utility without duplicating catalog entries.
                 let all_pills: Vec<&'static str> = categories.iter()
-                    .filter(|(label, _)| *label != "All")
-                    .map(|(label, _)| *label)
-                    .collect();
-
+                .filter(|(label, _)| *label != "All" && *label != "Library")
+                .map(|(label, _)| *label)
+                .collect();
                 let mut columns: Vec<(&'static str, Vec<usize>)> = Vec::new();
                 for &pill in &all_pills {
                     // Pill filter: when active, show ONLY that column full-width.
@@ -266,7 +273,9 @@ impl super::PatchworkApp {
                     // Always include every column so the layout stays stable
                     // as the user types. Empty columns render the "—"
                     // placeholder; no reflow.
-                    columns.push((pill, entries));
+                    if query.is_empty() || !entries.is_empty() {
+                        columns.push((pill, entries));
+                    }
                 }
                 // Flatten entries for keyboard nav: walks columns in left-
                 // to-right order, entries within each column in catalog
@@ -339,17 +348,64 @@ impl super::PatchworkApp {
                 if enter && !visible_flat.is_empty() {
                     spawn_idx = Some(visible_flat[self.node_menu_selected]);
                 }
+                
+               if cat_filter.is_empty() || cat_filter == "Library" {
+                    ui.label(
+                    egui::RichText::new(format!(
+                    "Library ({})",
+                    library_nodes.len()
+                ))
+                .small()
+                .strong()
+                .color(egui::Color32::GRAY),
+                );
 
+                ui.separator();
+
+                let mut any_shown = false;
+
+                for path in &library_nodes {
+                let name = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("Unnamed Node");
+
+                if !query.is_empty() && !name.to_lowercase().contains(&query) {
+                    continue;
+                }
+            if ui.button(format!("📦 {}", name)).clicked() {
+                selected_library_path = Some(path.clone());
+            }
+            any_shown = true;
+    }
+
+    if !any_shown {
+        ui.label("No library nodes found");
+    }
+}
                 // ── Column layout ───────────────────────────────────────
-                let total_cols = columns.len();
-                if total_cols == 0 {
-                    // Empty state (e.g. no search matches in any column).
-                    ui.add_space(40.0);
-                    ui.vertical_centered(|ui| {
-                        ui.label(egui::RichText::new("No matches").color(dim).italics());
-                    });
-                    ui.add_space(40.0);
-                } else {
+        if cat_filter != "Library" {
+        let total_cols = columns.len();
+       if total_cols == 0 {
+            let library_has_matches =
+            (cat_filter.is_empty() || cat_filter == "Library")
+            && library_nodes.iter().any(|path| {
+            path.file_stem()
+                .and_then(|s| s.to_str())
+                .is_some_and(|name| name.to_lowercase().contains(&query))
+        });
+        if !library_has_matches {
+            ui.add_space(40.0);
+            ui.vertical_centered(|ui| {
+            ui.label(
+                egui::RichText::new("No matches")
+                    .color(dim)
+                    .italics(),
+            );
+        });
+        ui.add_space(40.0);
+    }
+} else {
                     let col_gap = 6.0;
                     let available_w = ui.available_width();
                     let col_w = ((available_w - col_gap * (total_cols.saturating_sub(1)) as f32)
@@ -466,7 +522,7 @@ impl super::PatchworkApp {
 
                     });
                 }
-
+            }
                 // ── Spawn the selected node ──────────────────────────────
                 if let Some(cat_idx) = spawn_idx {
                     let entry = &catalog[cat_idx];
@@ -492,6 +548,14 @@ impl super::PatchworkApp {
                     keep_open = false;
                 }
             });
+
+// INSERT HERE
+        if let Some(path) = selected_library_path {
+            self.insert_custom_node_from_path(ctx, &path);
+            keep_open = false;
+        }
+
+        // Fold the title-bar X button's state into keep_open.
 
         // Fold the title-bar X button's state into keep_open. egui sets
         // `open_flag = false` the instant the X is clicked; we AND it
@@ -520,10 +584,26 @@ impl super::PatchworkApp {
         ctx.set_style(orig_style);
     }
     /// Insert a saved .pwnode as a reusable node in the active project.
-pub(super) fn insert_custom_node(&mut self, ctx: &egui::Context) {
-    use crate::document::{CustomNodeFile, DocumentKind};
 
-    // Custom nodes can be inserted into projects and other custom nodes.
+
+pub(super) fn insert_custom_node(&mut self, ctx: &egui::Context) {
+    let Some(path) = rfd::FileDialog::new()
+        .add_filter("Patchwork Custom Node", &["pwnode"])
+        .pick_file()
+    else {
+        return;
+    };
+
+    self.insert_custom_node_from_path(ctx, &path);
+}
+/// Insert a custom node from a known file path.
+pub(super) fn insert_custom_node_from_path(
+    &mut self,
+    ctx: &egui::Context,
+    path: &std::path::Path,
+) {
+    use crate::document::{CustomNodeFile, DocumentKind};
+ // Custom nodes can be inserted into projects and other custom nodes.
 // Recursive dependencies are checked before runtime evaluation.
 if !matches!(
     self.documents.active().kind,
@@ -535,12 +615,12 @@ if !matches!(
     return;
 }
 
-    let Some(path) = rfd::FileDialog::new()
-        .add_filter("Patchwork Custom Node", &["pwnode"])
-        .pick_file()
-    else {
-        return;
-    };
+    // let Some(path) = rfd::FileDialog::new()
+    //     .add_filter("Patchwork Custom Node", &["pwnode"])
+    //     .pick_file()
+    // else {
+    //     return;
+    // };
     // Prevent a custom node from directly referencing itself.
 if self.documents.active().kind == DocumentKind::CustomNode {
     if let Some(active_path) = self.documents.active().path.as_ref() {
@@ -611,9 +691,8 @@ if self.documents.active().kind == DocumentKind::CustomNode {
     let instance_count = self.graph.nodes.values()
     .filter(|node| matches!(&node.node_type, NodeType::CustomNodeInstance { .. }))
     .count();
-
     let offset = (instance_count % 8) as f32 * 45.0;
-
+    self.push_undo();
     self.add_node_selected(ctx, instance, [350.0 + offset, 250.0 + offset]);
     self.is_dirty = true;
 }
@@ -630,6 +709,10 @@ if self.documents.active().kind == DocumentKind::CustomNode {
     d.get_temp::<bool>(egui::Id::new("file_action_insert_custom_node"))
         .unwrap_or(false)
 });
+let publish_library = ctx.data_mut(|d| {
+    d.get_temp::<bool>(egui::Id::new("file_action_publish_library"))
+        .unwrap_or(false)
+});
         let save_project = ctx.data_mut(|d| d.get_temp::<bool>(egui::Id::new("file_action_save")).unwrap_or(false));
         let load_recent: Option<String> = ctx.data_mut(|d| {
             d.get_temp::<String>(egui::Id::new("file_action_load_recent"))
@@ -638,6 +721,7 @@ if self.documents.active().kind == DocumentKind::CustomNode {
 
         // Clear flags
         ctx.data_mut(|d| {
+            d.insert_temp(egui::Id::new("file_action_publish_library"), false);
             d.insert_temp(egui::Id::new("file_action_new"), false);
             d.insert_temp(egui::Id::new("file_action_load"), false);
             d.insert_temp(egui::Id::new("file_action_open_custom_node"), false);
@@ -679,6 +763,62 @@ if self.documents.active().kind == DocumentKind::CustomNode {
         if insert_custom_node {
             self.insert_custom_node(ctx);
         }
+        if publish_library {
+    use crate::document::DocumentKind;
+
+    let document = self.documents.active();
+    let has_unsaved_changes =
+    self.is_dirty || document.is_dirty;
+   if document.kind != DocumentKind::CustomNode {
+    crate::system_log::error(
+        "Only custom-node documents can be published.".to_string(),
+    );
+} else if has_unsaved_changes {
+    crate::system_log::error(
+        "Save the custom node before publishing.".to_string(),
+    );
+} else if let Some(path) = document.path.clone() {
+      
+        // Validate the saved file rather than potentially unsaved graph state.
+        match crate::document::CustomNodeFile::load(&path) {
+            Ok(custom_node) => {
+                let has_nested_nodes = custom_node.graph.nodes.values().any(|node| {
+                    matches!(
+                        &node.node_type,
+                        NodeType::CustomNodeInstance { .. }
+                    )
+                });
+
+                if has_nested_nodes {
+                    crate::system_log::error(
+                        "Publishing nested custom nodes is not supported yet."
+                            .to_string(),
+                    );
+                } else {
+                    match crate::library::publish_to_library(&path) {
+                        Ok(destination) => {
+                            println!("Published to Library: {}", destination.display());
+                        }
+                        Err(error) => {
+                            crate::system_log::error(format!(
+                                "Publish to Library failed: {error}"
+                            ));
+                        }
+                    }
+                }
+            }
+            Err(error) => {
+                crate::system_log::error(format!(
+                    "Cannot read custom node: {error}"
+                ));
+            }
+        }
+    } else {
+        crate::system_log::error(
+            "Save the custom node before publishing.".to_string(),
+        );
+    }
+}
         if let Some(path) = load_recent { self.load_project_path(std::path::PathBuf::from(path)); }
         if clear_recent { self.recent_projects.clear(); }
         if save_project {
