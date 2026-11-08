@@ -107,6 +107,8 @@ use crate::graph::*;
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 
+
+#[derive(Clone)]
 pub(super) struct UndoSnapshot {
     pub graph: Graph,
     pub pinned_nodes: HashSet<NodeId>,
@@ -119,6 +121,9 @@ impl UndoSnapshot {
     pub fn new(graph: Graph, pinned_nodes: HashSet<NodeId>) -> Self {
         let hash = Self::content_hash(&graph, &pinned_nodes);
         Self { graph, pinned_nodes, hash }
+    }
+        pub fn has_same_content(&self, other: &Self) -> bool {
+        self.hash != 0 && other.hash != 0 && self.hash == other.hash
     }
 
     fn content_hash(graph: &Graph, pinned: &HashSet<NodeId>) -> u64 {
@@ -140,7 +145,8 @@ impl UndoSnapshot {
     }
 }
 
-pub(super) struct UndoHistory {
+#[derive(Clone)]
+pub(crate) struct UndoHistory {
     undo_stack: Vec<UndoSnapshot>,
     redo_stack: Vec<UndoSnapshot>,
     max: usize,

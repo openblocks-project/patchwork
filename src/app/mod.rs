@@ -1,6 +1,3 @@
-
-
-
 use crate::graph::*;
 use crate::node_trait::NodeBehavior;
 use crate::http::{HttpAction, HttpManager};
@@ -15,12 +12,10 @@ use eframe::egui;
 use eframe::egui_wgpu;
 use std::collections::HashMap;
 use crate::app::undo::UndoSnapshot;
-
 const PORT_RADIUS: f32 = 8.0;    // visual radius of port shapes
 const PORT_INTERACT: f32 = 22.0; // clickable/draggable hit area
 const PORT_BORDER: f32 = 2.5;    // border stroke
 /// Get port fill + border colors based on PortKind.
-
 /// Get port fill + border colors based on PortKind.
 /// Fill is a darker shade for inputs, border is a lighter shade — matching the semantic type.
 fn port_colors_for_kind(kind: PortKind, is_output: bool) -> (egui::Color32, egui::Color32) {
@@ -41,7 +36,6 @@ fn port_colors_for_kind(kind: PortKind, is_output: bool) -> (egui::Color32, egui
     );
     (fill, border)
 }
-
 /// Draw a shaped port based on PortKind:
 /// - Number/Normalized/Audio/Color/Generic: circle
 /// - Text: rounded square
@@ -67,13 +61,12 @@ pub(crate) fn draw_shaped_port(
             painter.rect_filled(rect, 3.0, fill);
             painter.rect_stroke(rect, 3.0, egui::Stroke::new(border_width, border), egui::StrokeKind::Outside);
         }
-        2 => {
-            // Triangle (Trigger) — pointing right
+        2 => {// Triangle (Trigger) — pointing right
             let d = radius * 0.95;
             let points = vec![
-                egui::pos2(center.x - d * 0.7, center.y - d),   // top-left
-                egui::pos2(center.x + d, center.y),              // right point
-                egui::pos2(center.x - d * 0.7, center.y + d),   // bottom-left
+            egui::pos2(center.x - d * 0.7, center.y - d),   // top-left
+            egui::pos2(center.x + d, center.y),              // right point
+            egui::pos2(center.x - d * 0.7, center.y + d),   // bottom-left
             ];
             painter.add(egui::Shape::convex_polygon(points, fill, egui::Stroke::new(border_width, border)));
         }
@@ -99,7 +92,6 @@ pub(crate) fn draw_shaped_port(
             // Circle (Number, Normalized, Audio, Color, Generic)
             painter.circle_filled(center, radius, fill);
             painter.circle_stroke(center, radius, egui::Stroke::new(border_width, border));
-
             // Audio: inner dot
             if kind == PortKind::Audio {
                 painter.circle_filled(center, radius * 0.35, border);
@@ -109,9 +101,7 @@ pub(crate) fn draw_shaped_port(
                 painter.circle_filled(center, radius * 0.35, border);
             }
         }
-    }
-
-    // Draw tiny icon inside when connected
+    }// Draw tiny icon inside when connected
     if is_connected {
         let glyph = kind.icon_glyph();
         if !glyph.is_empty() {
@@ -127,15 +117,13 @@ pub(crate) fn draw_shaped_port(
     }
 }
 
-mod undo;
+pub(crate) mod undo;
 mod canvas;
 mod interaction;
 mod io;
 mod menus;
 mod toast;
-
 use undo::UndoHistory;
-
 /// Identity of a connection — survives array reindexing, node deletion, undo/redo.
 /// Using (from_node, from_port, to_node, to_port) instead of a Vec index
 /// prevents stale-index bugs where the index points to the wrong wire.
@@ -244,6 +232,10 @@ pub struct PatchworkApp {
     
     property_undo_pushed: bool,
     pending_gesture_snapshot: Option<UndoSnapshot>,
+    pending_close_tab: Option<u64>,
+    // P3: Save As dialog state
+    save_as_open: bool,
+    save_as_name: String,
     // Click-to-connect wiring mode (alternative to drag-and-drop)
     click_wiring: bool,
     // Monotonic clock reference for wall-clock timing
@@ -328,6 +320,9 @@ impl PatchworkApp {
             artnet: crate::artnet::ArtNetManager::new(),
             selected_nodes: std::collections::HashSet::new(),
             pending_popup_open: std::collections::HashSet::new(),
+            pending_close_tab: None,
+            save_as_open: false,
+            save_as_name: String::new(),
             selected_connection: None,
             wire_menu_conn: None,
             wire_menu_pos: egui::Pos2::ZERO,
@@ -437,10 +432,15 @@ impl PatchworkApp {
         let _ = crate::hid::global();
 
         // Try restoring previous session; fall back to default nodes
-        if !app.restore_session() {
-            app.spawn_default_nodes();
-        }
-        app
+       // Try restoring previous session; fall back to default nodes
+if !app.restore_session() {
+    app.spawn_default_nodes();
+}
+
+// Synchronize the initial document with the loaded project.
+app.sync_active_document();
+
+app
     }
 
     /// Build audio chains from Speaker nodes backward through effects to sources.
@@ -932,7 +932,12 @@ impl PatchworkApp {
             };
             let is_comment = node.node_type.title() == "Comment";
             let mut win = egui::Window::new(title_rt)
-                .id(egui::Id::new(("node", node_id, zoom_bucket)))
+                .id(egui::Id::new((
+                    "node",
+                    self.documents.active().id,
+                    node_id,
+                     zoom_bucket,
+                )))
                 .current_pos(egui::pos2(egui_x, egui_y))
                 .default_width(node_width)
                 .resizable(is_display)
@@ -978,7 +983,7 @@ impl PatchworkApp {
                                 draw_shaped_port(ui.painter(), rect.center(), port_r, fill, border, PORT_BORDER, kind, is_connected);
                                 port_positions.insert((node_id, i, true), rect.center());
                                 ui.label(format!("{}: {}", pdef.name, val));
-                                if response.drag_started() {
+                                if !self.save_as_open && response.drag_started() {
                                     if let Some(existing) = connections.iter().find(|c| c.to_node == node_id && c.to_port == i) {
                                         let src_node = existing.from_node;
                                         let src_port = existing.from_port;
@@ -989,7 +994,8 @@ impl PatchworkApp {
                                     }
                                 }
                                 // Click-to-connect: click on input port starts or completes wiring
-                                if response.clicked() {
+                                // Click-to-connect: click on input port starts or completes wiring
+                                if !self.save_as_open && response.clicked() {
                                     if let Some((src_node, src_port, is_output)) = dragging_from {
                                         if self.click_wiring && is_output && node_id != src_node {
                                             // Complete: output → this input
@@ -1061,9 +1067,12 @@ impl PatchworkApp {
                                     } else { (type_fill, type_border) };
                                     draw_shaped_port(ui.painter(), rect.center(), port_r, fill, border, PORT_BORDER, kind, is_connected);
                                     port_positions.insert((node_id, i, false), rect.center());
-                                    if response.drag_started() { dragging_from = Some((node_id, i, true)); }
+                                    if !self.save_as_open && response.drag_started() {
+                                        dragging_from = Some((node_id, i, true));
+                                    }
                                     // Click-to-connect: click on output port starts or completes wiring
-                                    if response.clicked() {
+                                    // Click-to-connect: click on output port starts or completes wiring
+                                    if !self.save_as_open && response.clicked() {
                                         if let Some((src_node, src_port, is_output)) = dragging_from {
                                             if self.click_wiring && !is_output && node_id != src_node {
                                                 // Complete: input → this output
@@ -1093,23 +1102,25 @@ impl PatchworkApp {
                 ctx.set_style(_original_style.clone());
             }
 
-            if let Some(r) = &resp {
-                if is_pinned {
-                    // Pinned: drag delta is in logical (screen/zoom), store as screen pixels
-                    if r.response.dragged() {
-                        let delta = r.response.drag_delta();
-                        node.pos[0] += delta.x * zoom;
-                        node.pos[1] += delta.y * zoom;
-                    }
-                } else {
-                    // Normal: convert logical pos back to canvas coords
-                    let offset_egui = offset / zoom;
-                    node.pos = [
-                        r.response.rect.left() - offset_egui.x,
+           if let Some(r) = &resp {
+                if !self.save_as_open {
+                    if is_pinned {
+            // Pinned: drag delta is in logical (screen/zoom), store as screen pixels
+                         if r.response.dragged() {
+                            let delta = r.response.drag_delta();
+                            node.pos[0] += delta.x * zoom;
+                            node.pos[1] += delta.y * zoom;
+                        }
+                    } else {
+            // Normal: convert logical pos back to canvas coords
+                         let offset_egui = offset / zoom;
+                        node.pos = [
+                         r.response.rect.left() - offset_egui.x,
                         r.response.rect.top() - offset_egui.y,
-                    ];
-                }
-                node_rects.insert(node_id, r.response.rect);
+                        ];
+                    }
+            }
+            node_rects.insert(node_id, r.response.rect);
 
                 // Pin badge removed — pinned state is shown via the title bar accent color
 
@@ -1120,7 +1131,10 @@ impl PatchworkApp {
                 } else {
                     r.response.clicked() || r.response.drag_started()
                 };
-                if select_trigger && !ctx.input(|i| i.modifiers.alt) {
+                if !self.save_as_open
+                     && select_trigger
+                     && !ctx.input(|i| i.modifiers.alt)
+                {
                     let shift = ctx.input(|i| i.modifiers.shift);
                     if shift {
                         if self.selected_nodes.contains(&node_id) {
@@ -1143,7 +1157,10 @@ impl PatchworkApp {
                 let secondary_in_rect = !is_custom_render && ctx.input(|i| {
                     i.pointer.button_clicked(egui::PointerButton::Secondary)
                 }) && ctx.pointer_latest_pos().map(|p| r.response.rect.contains(p)).unwrap_or(false);
-                if !is_custom_render && (r.response.secondary_clicked() || secondary_in_rect) {
+                if !self.save_as_open
+                     && !is_custom_render
+                     && (r.response.secondary_clicked() || secondary_in_rect)
+                {
                     if !self.selected_nodes.contains(&node_id) {
                         self.selected_nodes.clear();
                         self.selected_nodes.insert(node_id);
@@ -1351,12 +1368,18 @@ impl PatchworkApp {
 
             self.graph.nodes.insert(node_id, node);
         }
-                if ctx.input(|i| i.pointer.any_released()) {
-            if let Some(base) = self.pending_gesture_snapshot.take() {
-                self.undo_history.push(base);
-                self.is_dirty = true;
-            }
-        }
+    if ctx.input(|i| i.pointer.any_released()) {
+    if let Some(base) = self.pending_gesture_snapshot.take() {
+        let current = UndoSnapshot::new(
+            self.graph.clone(),
+            self.pinned_nodes.clone(),
+        );
+        if !base.has_same_content(&current) {
+           self.undo_history.push(base);
+           self.is_dirty = true;
+         }
+    }
+}
 
         // Apply multi-node drag: move all other selected nodes by the same delta
         if let Some((dragged_id, delta)) = multi_drag {
@@ -1692,7 +1715,6 @@ impl PatchworkApp {
                     (id, 0) // Slider output port 0 = Value
                 }
             };
-
             // Connect the new node to the WGSL uniform port
             if req.source_type == "color" {
                 // Connect R, G, B outputs to 3 consecutive ports
@@ -1705,15 +1727,12 @@ impl PatchworkApp {
 
             crate::system_log::log(format!("Auto-created {} for u.{}", req.source_type, req.uniform_name));
         }
-
         // Handle WGSL Presets "+" button: spawn a paired WGSL Viewer
         // to the right of the picker and auto-wire Shader -> WGSL.
         if let Some(req) = ctx.data_mut(|d| d.get_temp::<crate::nodes::wgsl_presets::WgslPresetsSpawnRequest>(egui::Id::new("wgsl_presets_spawn_request"))) {
             ctx.data_mut(|d| d.remove::<crate::nodes::wgsl_presets::WgslPresetsSpawnRequest>(egui::Id::new("wgsl_presets_spawn_request")));
-
             let src_pos = self.graph.nodes.get(&req.source_node).map(|n| n.pos).unwrap_or([0.0, 0.0]);
             let spawn_pos = [src_pos[0] + 320.0, src_pos[1]];
-
             // Refinement H: if the picker's current preset relies on
             // self-feedback (samples image_a / image_b), pre-set Input A to
             // LastFrame so the paired viewer renders correctly with no extra clicks.
@@ -1736,7 +1755,6 @@ impl PatchworkApp {
             } else {
                 crate::graph::ImageInputMode::Unused
             };
-
             let viewer_id = self.graph.add_node(
                 NodeType::WgslViewer {
                     wgsl_code: String::new(),
@@ -1765,16 +1783,13 @@ impl PatchworkApp {
             self.graph.add_connection(req.source_node, 0, viewer_id, 0);
             crate::system_log::log("Spawned paired WGSL Viewer for Formula Preset Picker".to_string());
         }
-
         // Reverse pairing: an empty Visuals (WGSL) viewer asked for a
         // Visual Presets picker. Spawn one to the LEFT with the default
         // (top-of-list) preset already selected and auto-wire it.
-        if let Some(req) = ctx.data_mut(|d| d.get_temp::<crate::nodes::wgsl_presets::WgslViewerLoadPresetRequest>(egui::Id::new("wgsl_viewer_load_preset_request"))) {
+            if let Some(req) = ctx.data_mut(|d| d.get_temp::<crate::nodes::wgsl_presets::WgslViewerLoadPresetRequest>(egui::Id::new("wgsl_viewer_load_preset_request"))) {
             ctx.data_mut(|d| d.remove::<crate::nodes::wgsl_presets::WgslViewerLoadPresetRequest>(egui::Id::new("wgsl_viewer_load_preset_request")));
-
             let viewer_pos = self.graph.nodes.get(&req.viewer_node).map(|n| n.pos).unwrap_or([0.0, 0.0]);
             let spawn_pos = [viewer_pos[0] - 280.0, viewer_pos[1]];
-
             // Build a fresh Visual Presets node defaulted to "gradient" —
             // the Default impl picks whatever the first priority-ordered
             // preset is, but we force "gradient" explicitly so that key
@@ -1788,7 +1803,6 @@ impl PatchworkApp {
             self.graph.add_connection(picker_id, 0, req.viewer_node, 0);
             crate::system_log::log("Spawned Visual Presets picker for empty Visuals (WGSL) viewer".to_string());
         }
-
         self.midi.process(midi_actions);
         self.serial.process(serial_actions);
         self.osc.process(osc_actions);
@@ -1798,9 +1812,20 @@ impl PatchworkApp {
         self.artnet.process(artnet_actions);
     }
 }
-
 impl eframe::App for PatchworkApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+
+    // Share the active document type with the node palette.
+    let is_custom_node = !self.documents.documents.is_empty()
+        && self.documents.active().kind
+            == crate::document::DocumentKind::CustomNode;
+
+    ctx.data_mut(|data| {
+        data.insert_temp(
+            egui::Id::new("active_is_custom_node"),
+            is_custom_node,
+        );
+    });
         // Drop the previous frame's ScrollArea inner-rect registrations
         // before any node draws this frame and re-pushes its own. The pan
         // handler at the end of update() reads what's in the registry
@@ -1818,7 +1843,6 @@ impl eframe::App for PatchworkApp {
         // down, so the cache LRU doesn't see the previous project's
         // entries.
         self.clear_caches_if_dirty(ctx);
-
         // ── Auto-open click-popups for freshly created Slider / Comment ─────
         // (Other node types in the set are silently ignored — only those
         // listed below get a popup-open hint. Set populated by
@@ -1845,12 +1869,10 @@ impl eframe::App for PatchworkApp {
                 }
             }
         }
-
         // Keep the OS title bar in sync with project + dirty state, and
         // intercept close requests when there are unsaved changes.
         self.update_window_title(ctx);
         self.handle_close_request(ctx);
-
         // ── OS-level menu bar (always visible) ──
         // Snapshot recent_projects to avoid borrowing `self` inside the
         // menu closure (which already mutates ctx.data).
@@ -1864,6 +1886,24 @@ impl eframe::App for PatchworkApp {
                     }
                     if ui.button("\u{1f4c2} Open...").clicked() {
                         ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("file_action_load"), true));
+                        ui.close_menu();
+                    }
+                    if ui.button("Open Custom Node...").clicked() {
+                        ui.ctx().data_mut(|d| {
+                            d.insert_temp(
+                                 egui::Id::new("file_action_open_custom_node"),
+                                true,
+                            );
+                        });
+                        ui.close_menu();
+                    }
+                    if ui.button("Insert Custom Node...").clicked() {
+                        ui.ctx().data_mut(|d| {
+                            d.insert_temp(
+                            egui::Id::new("file_action_insert_custom_node"),
+                            true,
+                            );
+                        });
                         ui.close_menu();
                     }
                     ui.add_enabled_ui(!recent_projects.is_empty(), |ui| {
@@ -1895,6 +1935,11 @@ impl eframe::App for PatchworkApp {
                         ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("file_action_save"), true));
                         ui.close_menu();
                     }
+                    if ui.button("Save As...").clicked() {
+                    self.save_as_name = self.documents.active().title.clone();
+                    self.save_as_open = true;
+                    ui.close_menu();
+                }
                 });
                 ui.menu_button("Edit", |ui| {
                     let can_undo = self.undo_history.can_undo();
@@ -1910,19 +1955,208 @@ impl eframe::App for PatchworkApp {
                 });
             });
         });
+        // P3: Document Tabs
+egui::TopBottomPanel::top("document_tabs").show(ctx, |ui| {
+    ui.horizontal(|ui| {
+        let active_id = self.documents.active().id;
 
+        let tabs: Vec<(u64, String, bool)> = self
+            .documents
+            .documents
+            .iter()
+            .map(|doc| {
+                let dirty = if doc.id == active_id {
+                    self.is_dirty
+                } else {
+                    doc.is_dirty
+                };
+
+                (doc.id, doc.title.clone(), dirty)
+            })
+            .collect();
+
+        for (id, title, dirty) in tabs {
+    let label = if dirty {
+        format!("{} *", title)
+    } else {
+        title
+    };
+    ui.horizontal(|ui| {
+       if ui.selectable_label(id == active_id, label).clicked() {
+        if self.pending_close_tab.is_none() && !self.save_as_open {
+            self.switch_document(id);
+        }
+    }
+    if ui.small_button("×")
+    .on_hover_text("Close Tab")
+    .clicked()
+     && !self.save_as_open
+    {
+    // Do not close the last remaining tab.
+        if self.documents.documents.len() > 1 {
+            let is_dirty = if self.documents.active().id == id {
+                self.is_dirty
+            } else {
+            self.documents
+                .documents
+                .iter()
+                .find(|doc| doc.id == id)
+                .map(|doc| doc.is_dirty)
+                .unwrap_or(false)
+             };
+        if is_dirty {
+            // Ask for confirmation before closing.
+            self.pending_close_tab = Some(id);
+        } else {
+            // Clean tabs can close immediately.
+            self.close_tab(id);
+        }
+    }
+}
+    });
+}
+        if ui.button("+").on_hover_text("New Tab").clicked() {
+            self.create_new_tab();
+        }
+    });
+});
+// P3: Confirm before closing a modified document tab.
+if let Some(document_id) = self.pending_close_tab {
+    let document_title = self
+        .documents
+        .documents
+        .iter()
+        .find(|doc| doc.id == document_id)
+        .map(|doc| doc.title.clone())
+        .unwrap_or_else(|| "Untitled".to_string());
+
+    egui::Window::new("Unsaved Changes")
+    .collapsible(false)
+    .resizable(false)
+    .frame(
+        egui::Frame::window(&ctx.style())
+            .fill(egui::Color32::from_rgb(30, 30, 35))
+            .stroke(egui::Stroke::new(
+                1.0,
+                egui::Color32::from_rgb(90, 90, 100),
+            ))
+    )
+    .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+        .show(ctx, |ui| {
+            ui.label(format!(
+                "Save changes to '{}' before closing?",
+                document_title
+            ));
+        ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                if ui.button("Save").clicked() {
+                    // Save the document being closed, not another active tab.
+                    if self.documents.active().id != document_id {
+                        self.switch_document(document_id);
+                    }
+                if self.save_project_quick() {
+                        self.sync_active_document();
+                        self.pending_close_tab = None;
+                        self.close_tab(document_id);
+                    }
+                }
+                if ui.button("Discard").clicked() {
+                    // Activate the target document so its state is current.
+                    if self.documents.active().id != document_id {
+                        self.switch_document(document_id);
+                    }
+                    // Explicitly discard its unsaved state.
+                    self.is_dirty = false;
+                    self.documents.active_mut().is_dirty = false;
+                    self.pending_close_tab = None;
+                    self.close_tab(document_id);
+                }
+                if ui.button("Cancel").clicked() {
+                    self.pending_close_tab = None;
+                }
+            });
+        });
+}
+        // P3: Save As project naming dialog
+// P3: Save As project naming dialog
+if self.save_as_open {
+    let mut open = self.save_as_open;
+    let mut save_requested = false;
+    // P3: Keyboard shortcuts for Save As modal
+    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+    open = false;
+    }
+
+    if ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
+        save_requested = true;
+    }
+   egui::Modal::new(egui::Id::new("save_as_modal"))
+    .show(ctx, |ui| {
+            ui.label("Project name:");
+            ui.add(
+                egui::TextEdit::singleline(&mut self.save_as_name)
+                    .desired_width(280.0)
+                    .hint_text("My Project"),
+            );
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                if ui.button("Save").clicked() {
+                    save_requested = true;
+                }
+
+                if ui.button("Cancel").clicked() {
+                    open = false;
+                }
+            });
+        });
+    if save_requested {
+        let name = self.save_as_name.trim().to_string();
+        // Reject empty names, special directory names and path separators.
+        let invalid_name = name.is_empty()
+            || name == "."
+            || name == ".."
+            || name.contains(['/', '\\', ':', '*', '?', '"', '<', '>', '|'])
+            || name.ends_with('.')
+            || name.ends_with(' ');
+        if invalid_name {
+            rfd::MessageDialog::new()
+                .set_title("Invalid Project Name")
+                .set_description("Enter a valid project name without special characters.")
+                .set_level(rfd::MessageLevel::Error)
+                .set_buttons(rfd::MessageButtons::Ok)
+                .show();
+        } else if let Some(parent_dir) = rfd::FileDialog::new()
+            .set_title("Choose Where to Save Project")
+            .pick_folder()
+        {
+           // If the selected folder already has the project name,
+// use it directly instead of creating another subfolder.
+let selected_name = parent_dir
+    .file_name()
+    .map(|n| n.to_string_lossy().to_string())
+    .unwrap_or_default();
+let project_dir = if selected_name.eq_ignore_ascii_case(&name) {
+    parent_dir
+} else {
+    parent_dir.join(&name)
+};
+        if self.save_to_dir(project_dir.display().to_string()) {
+                open = false;
+            }
+        }
+    }
+
+    self.save_as_open = open;
+}
         // Floating modal for "save before quit?" — drawn after the menu
         // so it visually layers on top of canvas chrome.
         self.render_quit_dialog(ctx);
-
         // Top-center toast notifications. Drawn last so they overlay the
         // entire UI; auto-dismiss handled inside.
         self.render_toasts(ctx);
-
         // set_zoom_factor scales everything (nodes, text, chrome) via GPU — zero overhead.
         // Pinned nodes compensate with inverse zoom style + zoom-keyed window IDs.
         // ctx.set_zoom_factor(self.canvas_zoom);
-
         self.apply_theme(ctx);
         self.handle_file_drop(ctx);
         self.update_mouse_trackers(ctx);
@@ -1938,7 +2172,6 @@ impl eframe::App for PatchworkApp {
         self.ob.poll_all();
         self.poll_ml_inference(ctx);
         self.poll_tts_synthesis(ctx);
-
         self.frame_count += 1;
         // Receive device lists from background enumeration thread (non-blocking)
         if let Ok(devices) = self.device_refresh_rx.try_recv() {
@@ -1947,15 +2180,12 @@ impl eframe::App for PatchworkApp {
             self.audio.set_device_lists(devices.audio_output, devices.audio_input);
             self.audio.device_channel_counts = devices.audio_output_channels;
         }
-
         let node_count = self.graph.nodes.len();
         let conn_count = self.graph.connections.len();
         self.monitor.tick(node_count, conn_count);
-
         self.gpu_tex_cache.begin_frame(self.wgpu_render_state.as_ref());
         let now_secs = self.app_start_instant.elapsed().as_secs_f64();
         let mut values = self.graph.evaluate(now_secs);
-
         // Inject OB hardware values into the graph (before they're used by downstream nodes)
         // These need a second evaluation pass to propagate through Add/Multiply/etc.
         {
@@ -2287,7 +2517,6 @@ impl eframe::App for PatchworkApp {
                 }
             }
         }
-
         // Make wgpu render state available to image processing nodes via egui temp data
         if let Some(rs) = &self.wgpu_render_state {
             ctx.data_mut(|d| {
@@ -2295,29 +2524,7 @@ impl eframe::App for PatchworkApp {
                 d.insert_temp(egui::Id::new("wgpu_target_format"), rs.target_format);
             });
         }
-
-        // Fast image content hash — samples ~64 pixels spread across the image.
-        // The old version computed `step` for 128 samples but took only 32, so
-        // it never read past the first quarter of the buffer; animation below
-        // that line was invisible and froze every downstream node's param cache.
-        // let img_content_hash = |img: &ImageData| -> u64 {
-        //     let mut h: u64 = (img.width as u64).wrapping_mul(31).wrapping_add(img.height as u64);
-        //     let len = img.pixels.len();
-        //     if len > 0 {
-        //         // `| 1` keeps step odd so consecutive samples land on different
-        //         // RGBA channels — an even step can sample only alpha, which is
-        //         // a constant 255 in every visualizer render path.
-        //         const SAMPLES: usize = 64;
-        //         let step = ((len / SAMPLES).max(1)) | 1;
-        //         for i in (0..len).step_by(step).take(SAMPLES) {
-        //             h = h.wrapping_mul(31).wrapping_add(img.pixels[i] as u64);
-        //         }
-        //         h = h.wrapping_mul(31).wrapping_add(img.pixels[len - 1] as u64);
-        //     }
-        //     h
-        // };
-
-        let img_content_hash = |img: &ImageData| -> u64 {
+            let img_content_hash = |img: &ImageData| -> u64 {
             let mut h: u64 = (img.width as u64).wrapping_mul(31).wrapping_add(img.height as u64);
             let len = img.pixels.len();
             // Read 64 bits at a time and cap the sample count, so cost is
@@ -2374,7 +2581,6 @@ impl eframe::App for PatchworkApp {
                 _ => 0,
             }
         };
-
         // Build a per-frame set of `(producer_node, producer_port)` pairs that
         // have at least one downstream consumer requiring CPU pixel bytes.
         // The image-evaluation loop (and the WGSL Viewer injection below)
@@ -2396,7 +2602,6 @@ impl eframe::App for PatchworkApp {
         let has_cpu_consumer_cached = |nid: NodeId, port: usize| -> bool {
             cpu_consumer_producers.contains(&(nid, port))
         };
-
         // Populate the per-WgslViewer CPU consumer hint thread_local so that
         // `render_offscreen` (which runs later this frame in the egui paint
         // pass) knows whether to skip its readback. Default-true is safe;
@@ -2472,7 +2677,6 @@ impl eframe::App for PatchworkApp {
                 }
             }
         }
-
         // Inject AudioAnalyzer + AudioPlayer values BEFORE image eval loop,
         // so downstream nodes (Map Range → Image Style) see fresh values.
         {
@@ -2624,7 +2828,6 @@ impl eframe::App for PatchworkApp {
                 }
             }
         }
-
         // Re-evaluate Dynamic nodes that depend on freshly injected values
         // (e.g., Map Range reading from Audio Analyzer → feeds into Image Style).
         // Only re-evaluate nodes whose inputs changed since graph.evaluate().
@@ -2657,7 +2860,6 @@ impl eframe::App for PatchworkApp {
                 }
             }
         }
-
         // Evaluate image nodes (with caching — only reprocess when inputs change).
         //
         // Iterate in topological order so a chain of arbitrary depth
@@ -2675,7 +2877,6 @@ impl eframe::App for PatchworkApp {
                 // node implementations look up the upstream texture in `gpu_tex_cache`
                 // and skip the redundant CPU→GPU upload.
                 let input_sources = self.graph.collect_input_sources(id);
-
                 // Trait-based image nodes (Transform, ImageStyle, ColorChannel, Crop, etc.)
                 // need re-evaluation here because image sources weren't populated during graph.evaluate().
                 // Cached: only reprocess when inputs (image content + param state) change.
@@ -2690,7 +2891,6 @@ impl eframe::App for PatchworkApp {
                     },
                     _ => false,
                 }).unwrap_or(false);
-
                 if is_dynamic && !is_async_ml_node && inputs.iter().any(|v| matches!(v,
                     PortValue::Image(_) | PortValue::GpuImage(_)
                     | PortValue::Mesh(_) | PortValue::GpuMesh(_)
@@ -2749,7 +2949,6 @@ impl eframe::App for PatchworkApp {
                     // because the caller readbacks GpuImage→Image for any
                     // node with needs_cpu_image_input() == true (the default).
                     let needs_readback = has_cpu_consumer_cached(id, 0);
-
                     // Build cpu_inputs: readback GpuImage→Image for nodes
                     // that need CPU pixels on each port. GPU-native nodes
                     // (needs_cpu_image_input → false) receive the raw
@@ -2774,7 +2973,6 @@ impl eframe::App for PatchworkApp {
                             other => other.clone(),
                         }).collect()
                     };
-
                     if let Some(mut node_mut) = self.graph.nodes.remove(&id) {
                         if let NodeType::Dynamic { ref mut inner } = node_mut.node_type {
                             // Single evaluate_with_ctx call replaces the old
@@ -2811,7 +3009,6 @@ impl eframe::App for PatchworkApp {
                     }
                     continue;
                 }
-
                 let node = match self.graph.nodes.get(&id) { Some(n) => n, None => continue };
                 match &node.node_type {
                     NodeType::ImageNode { image_data, .. } => {
@@ -3111,9 +3308,7 @@ impl eframe::App for PatchworkApp {
                 }
             }
         } // end image-pass topo iteration
-
         // AudioAnalyzer + AudioPlayer values already injected before the image evaluation loop above.
-
         // Sync OB Hub detected_devices from ObManager + auto-connect saved ports
         {
             let hub_nodes: Vec<(NodeId, String)> = self.graph.nodes.iter()
@@ -3125,18 +3320,15 @@ impl eframe::App for PatchworkApp {
                     }
                 })
                 .collect();
-
             for (hub_id, port_name) in &hub_nodes {
                 // Auto-connect: if port_name is set but hub not connected, try to reconnect
                 if !port_name.is_empty() && self.ob.get_hub(*hub_id).is_none() {
                     let _ = self.ob.connect_hub(*hub_id, port_name);
                 }
-
                 // Sync detected_devices into NodeType
                 let detected: Vec<(String, u8)> = self.ob.get_hub(*hub_id)
                     .map(|h| h.devices.keys().cloned().collect())
                     .unwrap_or_default();
-
                 // Build a label list for a (sorted) device set mirroring
                 // the output-port layout used in Graph::outputs() for ObHub.
                 // We compare old vs new so that when a device drops off
@@ -3188,7 +3380,6 @@ impl eframe::App for PatchworkApp {
                     }
                     labels
                 };
-
                 let mut stale_ports: Vec<usize> = Vec::new();
                 if let Some(node) = self.graph.nodes.get(hub_id) {
                     if let NodeType::ObHub { detected_devices, .. } = &node.node_type {
@@ -3204,7 +3395,6 @@ impl eframe::App for PatchworkApp {
                         }
                     }
                 }
-
                 if let Some(node) = self.graph.nodes.get_mut(hub_id) {
                     if let NodeType::ObHub { detected_devices, .. } = &mut node.node_type {
                         *detected_devices = detected;
@@ -3223,7 +3413,6 @@ impl eframe::App for PatchworkApp {
                 }
             }
         }
-
         // Inject Monitor + Audio node values
         for (&id, node) in &self.graph.nodes {
             match &node.node_type {
@@ -3234,15 +3423,12 @@ impl eframe::App for PatchworkApp {
                 _ => {}
             }
         }
-
         // Process MCP commands (if MCP server is active)
         self.process_mcp_commands(&values);
-
         // Store BG image/shader for canvas drawing (from Theme node's BG Image port 21)
         {
             let mut bg_img: Option<std::sync::Arc<ImageData>> = None;
             let mut bg_wgsl_node: Option<NodeId> = None;
-
             if let Some((&theme_id, _)) = self.graph.nodes.iter().find(|(_, n)| matches!(n.node_type, NodeType::Theme { .. })) {
                 if let Some(conn) = self.graph.connections.iter().find(|c| c.to_node == theme_id && c.to_port == 21) {
                     let source_node = conn.from_node;
@@ -3278,19 +3464,15 @@ impl eframe::App for PatchworkApp {
                 d.insert_temp(egui::Id::new("canvas_bg_wgsl"), bg_wgsl_node);
             });
         }
-
         self.canvas(ctx);
         self.render_connections(ctx, &values);
         self.render_nodes_filtered(ctx, &values, false);
         self.render_nodes_filtered(ctx, &values, true);
-
         // Build audio chains AFTER node rendering — nodes populate s.sources
         // Sync audio engine state with the graph (start/stop, rebuild, param sync)
         self.sync_audio_engine();
-
         self.sync_console_messages();
         self.handle_system_node_actions(ctx);
-
         // Handle OSC In spawn requests (create new OscIn pre-configured for a discovered address)
         {
             let osc_ids: Vec<NodeId> = self.graph.nodes.keys().copied()
@@ -3318,7 +3500,6 @@ impl eframe::App for PatchworkApp {
                 }
             }
         }
-
         // Handle OB Hub spawn requests (create device node auto-connected to hub)
         {
             let hub_ids: Vec<NodeId> = self.graph.nodes.keys().copied()
@@ -3347,15 +3528,140 @@ impl eframe::App for PatchworkApp {
                 }
             }
         }
-        self.node_menu(ctx);
-        self.context_menu(ctx);
-        self.handle_pan_zoom(ctx);
-        self.handle_canvas_interaction(ctx);
-
+        if !self.save_as_open {
+            self.node_menu(ctx);
+            self.context_menu(ctx);
+            self.handle_pan_zoom(ctx);
+            self.handle_canvas_interaction(ctx);
+        }
         ctx.request_repaint();
     }
-
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.save_session();
     }
+}
+impl PatchworkApp {
+   pub(super) fn switch_document(&mut self, document_id: u64) -> bool {
+        // Nothing to do if the requested document is already active.
+        if self.documents.active().id == document_id {
+            return true;
+        }
+        // Check the destination before changing any state.
+        if !self.documents.documents.iter().any(|doc| doc.id == document_id) {
+            return false;
+        }
+        // Save the current document's state.
+        {
+            let current = self.documents.active_mut();
+            current.graph = self.graph.clone();
+            current.selected_nodes = self.selected_nodes.clone();
+            current.pinned_nodes = self.pinned_nodes.clone();
+            current.canvas_offset = self.canvas_offset;
+            current.canvas_zoom = self.canvas_zoom;
+            current.target_zoom = self.target_zoom;
+            current.is_dirty = self.is_dirty;
+            current.undo_history = self.undo_history.clone();
+            current.path = self.project_path.as_ref().map(std::path::PathBuf::from);
+        }
+        // Switch the active document.
+        self.documents.activate(document_id);
+        // Restore the destination document's state.
+        {
+            let next = self.documents.active();
+            self.graph = next.graph.clone();
+            self.selected_nodes = next.selected_nodes.clone();
+            self.pinned_nodes = next.pinned_nodes.clone();
+            self.canvas_offset = next.canvas_offset;
+            self.canvas_zoom = next.canvas_zoom;
+            self.target_zoom = next.target_zoom;
+            self.is_dirty = next.is_dirty;
+            self.undo_history = next.undo_history.clone();
+            self.project_path = next
+            .path
+            .as_ref()
+            .map(|path| path.to_string_lossy().into_owned());
+        }
+        // Clear temporary canvas state.
+        self.port_positions.clear();
+        self.node_rects.clear();
+        self.selected_connection = None;
+        self.dragging_from = None;
+        self.box_select_start = None;
+        self.box_select_end = None;
+        // Clear any pending gesture from the previous tab
+        self.pending_gesture_snapshot = None;
+        self.caches_dirty = true;
+        true
+    }
+        fn sync_active_document(&mut self) {
+        let doc = self.documents.active_mut();
+        // Graph and project information
+        doc.graph = self.graph.clone();
+        doc.path = self
+        .project_path
+        .as_ref()
+        .map(std::path::PathBuf::from);
+        // Editor state
+        doc.selected_nodes = self.selected_nodes.clone();
+        doc.pinned_nodes = self.pinned_nodes.clone();
+        doc.canvas_offset = self.canvas_offset;
+        doc.canvas_zoom = self.canvas_zoom;
+        doc.target_zoom = self.target_zoom;
+        // Undo history and dirty state
+        doc.undo_history = self.undo_history.clone();
+        doc.is_dirty = self.is_dirty;
+        // Update the document title
+        doc.title = doc
+        .path
+        .as_ref()
+        .and_then(|path| path.file_stem())
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "Untitled".to_string());
+}
+fn create_new_tab(&mut self) {
+    let id = self.documents.new_document("Untitled");
+    self.switch_document(id);
+}
+fn close_tab(&mut self, document_id: u64) -> bool {
+// Do not close the last remaining tab.
+    if self.documents.documents.len() <= 1 {
+        return false;
+    }
+// Check whether the tab has unsaved changes.
+let is_active = self.documents.active().id == document_id;
+let Some(document) = self
+        .documents
+        .documents
+        .iter()
+        .find(|doc| doc.id == document_id)
+    else {
+        return false;
+    };
+
+    let is_dirty = if is_active {
+        self.is_dirty
+    } else {
+        document.is_dirty
+    };
+
+    // Never silently discard unsaved work.
+   if is_dirty {
+    return false;
+}
+if is_active {
+        // Find another tab to activate before removing this one.
+        let Some(next_id) = self
+            .documents
+            .documents
+            .iter()
+            .find(|doc| doc.id != document_id)
+            .map(|doc| doc.id)
+        else {
+            return false;
+        };
+// Saves the outgoing document and loads the next document.
+        self.switch_document(next_id);
+    }
+self.documents.close_document(document_id)
+}
 }

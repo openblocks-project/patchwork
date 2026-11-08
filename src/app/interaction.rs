@@ -188,9 +188,16 @@ impl super::PatchworkApp {
                 self.save_project_quick();
             }
             // Cmd+Shift+S → Save As (always shows dialog)
-            if modifiers.shift && ctx.input(|i| i.key_pressed(egui::Key::S)) {
-                self.save_project();
-            }
+            // Cmd+Shift+S → Open Save As naming popup
+        if modifiers.shift && ctx.input(|i| i.key_pressed(egui::Key::S)) {
+             self.save_as_name = self.project_path
+            .as_ref()
+            .and_then(|p| std::path::Path::new(p).file_name())
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_else(|| "my-project".to_string());
+
+            self.save_as_open = true;
+        }
             // // Cmd+Z → Undo
             // if !modifiers.shift && ctx.input(|i| i.key_pressed(egui::Key::Z)) {
             //     self.perform_undo();
@@ -229,8 +236,10 @@ impl super::PatchworkApp {
 
     /// Node interaction — pointer and node_rects are in screen pixel space.
     pub(super) fn handle_canvas_interaction(&mut self, ctx: &egui::Context) {
-        // Double-click to add node
-        if ctx.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary)) {
+    // Double-click to add node only when Save As is closed
+    if !self.save_as_open
+        && ctx.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary))
+    {
             if let Some(pos) = ctx.pointer_latest_pos() {
                 if !self.node_rects.values().any(|r| r.contains(pos)) {
                     self.show_node_menu = true;
@@ -240,7 +249,11 @@ impl super::PatchworkApp {
             }
         }
         // Right-click on empty canvas → canvas context menu
-        if ctx.input(|i| i.pointer.button_clicked(egui::PointerButton::Secondary)) {
+        // Right-click on empty canvas → canvas context menu
+        // Disabled while Save As modal is open
+        if !self.save_as_open
+        && ctx.input(|i| i.pointer.button_clicked(egui::PointerButton::Secondary))
+            {
             if let Some(pos) = ctx.pointer_latest_pos() {
                 if !self.node_rects.values().any(|r| r.contains(pos)) && !self.show_context_menu {
                     self.context_menu_node = None; // No node → canvas menu
@@ -325,7 +338,8 @@ impl super::PatchworkApp {
         // menu just above), when a text field has focus (so typing in a search
         // box / DragValue doesn't pop the picker), and when any menu is already
         // showing (so the menu's own Enter-to-select still works).
-        if !self.show_node_menu
+       if !self.save_as_open
+            && !self.show_node_menu
             && !self.show_context_menu
             && self.dragging_from.is_none()
             && !ctx.wants_keyboard_input()
@@ -371,7 +385,11 @@ impl super::PatchworkApp {
         if cmd && !modifiers.shift && !text_focused && ctx.input(|i| i.key_pressed(egui::Key::Z)) {
             self.perform_undo();
         }
-        if cmd && modifiers.shift && !text_focused && ctx.input(|i| i.key_pressed(egui::Key::Z)) {
+        // Redo: Ctrl+Y or Ctrl+Shift+Z
+        if cmd && !text_focused && (
+            ctx.input(|i| i.key_pressed(egui::Key::Y))
+             || (modifiers.shift && ctx.input(|i| i.key_pressed(egui::Key::Z)))
+        ) {
             self.perform_redo();
         }
 

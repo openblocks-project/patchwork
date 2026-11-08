@@ -75,8 +75,14 @@ pub fn render(
 
     ui.add_space(2.0);
 
+    // let query = search.to_lowercase();
+    // let cat = catalog();
     let query = search.to_lowercase();
-    let cat = catalog();
+let cat = catalog();
+    let is_custom_node: bool = ui.ctx().data(|data| {
+    data.get_temp(egui::Id::new("active_is_custom_node"))
+        .unwrap_or(false)
+});
 
     // Scrollable list with max height
     egui::ScrollArea::vertical().max_height(400.0 * inv).show_pannable(ui, |ui| {
@@ -84,6 +90,11 @@ pub fn render(
         let mut any_shown = false;
 
         for entry in &cat {
+            if (entry.label == "Custom Input" || entry.label == "Custom Output")
+            && !is_custom_node
+        {
+            continue;
+        }
             // Category pill filter
             if !active_cat.is_empty() {
                 let matched = categories.iter().any(|&(label, cats)| {

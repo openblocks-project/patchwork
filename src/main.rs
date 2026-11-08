@@ -36,19 +36,35 @@ fn main() -> eframe::Result {
     let icon = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icons/icon.png"))
         .expect("Failed to decode embedded icon PNG");
 
+    // let options = eframe::NativeOptions {
+    //     viewport: egui::ViewportBuilder::default()
+    //         .with_icon(Arc::new(icon))
+    //         .with_inner_size([1280.0, 800.0])
+    //         .with_title("PatchWork"),
+    //     renderer: eframe::Renderer::Wgpu,
+    //     vsync: false,
+    //     ..Default::default()
+    // };
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_icon(Arc::new(icon))
-            .with_inner_size([1280.0, 800.0])
-            .with_title("PatchWork"),
-        renderer: eframe::Renderer::Wgpu,
-        vsync: false,
-        ..Default::default()
-    };
+    viewport: egui::ViewportBuilder::default()
+        .with_icon(Arc::new(icon))
+        .with_inner_size([1280.0, 800.0])
+        .with_title("PatchWork"),
+    renderer: eframe::Renderer::Wgpu,
+    vsync: false,
+    ..Default::default()
+};
 
     eframe::run_native(
         "PatchWork",
         options,
-        Box::new(|cc| Ok(Box::new(app::PatchworkApp::new(cc)))),
+        // Box::new(|cc| Ok(Box::new(app::PatchworkApp::new(cc)))),
+        Box::new(|cc| {
+    cc.egui_ctx.options_mut(|options| {
+        options.screen_reader = false;
+    });
+
+    Ok(Box::new(app::PatchworkApp::new(cc)))
+}),
     )
 }

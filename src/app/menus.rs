@@ -219,6 +219,15 @@ impl super::PatchworkApp {
                 // compatibility). Pill filter happens per-column below.
                 let all_visible: Vec<usize> = catalog.iter().enumerate().filter_map(|(i, entry)| {
                     if entry.category == "System" { return None; }
+                        // Interface ports belong only inside custom-node definitions.
+                    let is_custom_interface =
+                    entry.label == "Custom Input" || entry.label == "Custom Output";
+
+                if is_custom_interface
+                    && self.documents.active().kind != crate::document::DocumentKind::CustomNode
+                {
+                    return None;
+                }
                     if !query.is_empty()
                         && !entry.label.to_lowercase().contains(&query)
                         && !entry.category.to_lowercase().contains(&query)
@@ -510,11 +519,117 @@ impl super::PatchworkApp {
         }
         ctx.set_style(orig_style);
     }
+    /// Insert a saved .pwnode as a reusable node in the active project.
+pub(super) fn insert_custom_node(&mut self, ctx: &egui::Context) {
+    use crate::document::{CustomNodeFile, DocumentKind};
 
+    // Custom nodes can be inserted into projects and other custom nodes.
+// Recursive dependencies are checked before runtime evaluation.
+if !matches!(
+    self.documents.active().kind,
+    DocumentKind::Project | DocumentKind::CustomNode
+) {
+    crate::system_log::error(
+        "Custom nodes cannot be inserted into this document type.".to_string()
+    );
+    return;
+}
+
+    let Some(path) = rfd::FileDialog::new()
+        .add_filter("Patchwork Custom Node", &["pwnode"])
+        .pick_file()
+    else {
+        return;
+    };
+    // Prevent a custom node from directly referencing itself.
+if self.documents.active().kind == DocumentKind::CustomNode {
+    if let Some(active_path) = self.documents.active().path.as_ref() {
+        let selected = std::fs::canonicalize(&path);
+        let active = std::fs::canonicalize(active_path);
+
+        if let (Ok(selected), Ok(active)) = (selected, active) {
+            if selected == active {
+                crate::system_log::error(
+                    "Cannot insert a custom node into itself: recursive reference."
+                        .to_string()
+                );
+                return;
+            }
+        }
+    }
+}
+// Validate the selected custom node's existing dependencies.
+if let Err(error) = crate::graph::Graph::check_custom_node_dependencies(
+    &path,
+    &mut std::collections::HashSet::new(),
+    0,
+) {
+    crate::system_log::error(format!(
+        "Cannot insert custom node: {error}"
+    ));
+    return;
+}
+
+// Prevent indirect recursion into the active custom node.
+if self.documents.active().kind == DocumentKind::CustomNode {
+    if let Some(active_path) = self.documents.active().path.as_ref() {
+        if let Ok(active) = std::fs::canonicalize(active_path) {
+            let mut visited = std::collections::HashSet::new();
+            visited.insert(active);
+
+            if let Err(error) =
+                crate::graph::Graph::check_custom_node_dependencies(
+                    &path,
+                    &mut visited,
+                    0,
+                )
+            {
+                crate::system_log::error(format!(
+                    "Cannot insert custom node: {error}"
+                ));
+                return;
+            }
+        }
+    }
+}
+    let custom_node = match CustomNodeFile::load(&path) {
+        Ok(node) => node,
+        Err(error) => {
+            crate::system_log::error(format!(
+                "Failed to load custom node: {error}"
+            ));
+            return;
+        }
+    };
+
+    let instance = NodeType::CustomNodeInstance {
+        file: path.to_string_lossy().into_owned(),
+        inputs: custom_node.inputs,
+        outputs: custom_node.outputs,
+    };
+
+    let instance_count = self.graph.nodes.values()
+    .filter(|node| matches!(&node.node_type, NodeType::CustomNodeInstance { .. }))
+    .count();
+
+    let offset = (instance_count % 8) as f32 * 45.0;
+
+    self.add_node_selected(ctx, instance, [350.0 + offset, 250.0 + offset]);
+    self.is_dirty = true;
+}
     /// Check for file/zoom actions from system nodes (communicated via egui temp data).
     pub(super) fn handle_system_node_actions(&mut self, ctx: &egui::Context) {
         let new_project = ctx.data_mut(|d| d.get_temp::<bool>(egui::Id::new("file_action_new")).unwrap_or(false));
         let load_project = ctx.data_mut(|d| d.get_temp::<bool>(egui::Id::new("file_action_load")).unwrap_or(false));
+        let open_custom_node = ctx.data_mut(|d| {
+            d.get_temp::<bool>(egui::Id::new("file_action_open_custom_node"))
+             .unwrap_or(false)
+        });
+
+        let insert_custom_node = ctx.data_mut(|d| {
+    d.get_temp::<bool>(egui::Id::new("file_action_insert_custom_node"))
+        .unwrap_or(false)
+});
         let save_project = ctx.data_mut(|d| d.get_temp::<bool>(egui::Id::new("file_action_save")).unwrap_or(false));
         let load_recent: Option<String> = ctx.data_mut(|d| {
             d.get_temp::<String>(egui::Id::new("file_action_load_recent"))
@@ -525,9 +640,11 @@ impl super::PatchworkApp {
         ctx.data_mut(|d| {
             d.insert_temp(egui::Id::new("file_action_new"), false);
             d.insert_temp(egui::Id::new("file_action_load"), false);
+            d.insert_temp(egui::Id::new("file_action_open_custom_node"), false);
             d.insert_temp(egui::Id::new("file_action_save"), false);
             d.remove::<String>(egui::Id::new("file_action_load_recent"));
             d.insert_temp(egui::Id::new("file_action_clear_recent"), false);
+            d.insert_temp(egui::Id::new("file_action_insert_custom_node"), false);
         });
 
         if new_project {
@@ -542,9 +659,31 @@ impl super::PatchworkApp {
             self.is_dirty = false;
         }
         if load_project { self.load_project(); }
+        if open_custom_node {
+            if let Some(path) = rfd::FileDialog::new()
+            .add_filter("Patchwork Custom Node", &["pwnode"])
+            .pick_file()
+        {
+            match self.documents.open_custom_node(path) {
+                Ok(id) => {
+                    self.switch_document(id);
+                }
+                Err(error) => {
+                    crate::system_log::error(format!(
+                    "Failed to open custom node: {error}"
+                     ));
+                }
+            }
+         }
+        }
+        if insert_custom_node {
+            self.insert_custom_node(ctx);
+        }
         if let Some(path) = load_recent { self.load_project_path(std::path::PathBuf::from(path)); }
         if clear_recent { self.recent_projects.clear(); }
-        if save_project { self.save_project(); }
+        if save_project {
+            self.save_project_quick();
+        }
 
         // Zoom control
         let zoom_action: Option<f32> = ctx.data_mut(|d| d.get_temp(egui::Id::new("zoom_action")));

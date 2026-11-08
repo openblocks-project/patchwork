@@ -413,6 +413,27 @@ impl ScrollAreaExt for egui::ScrollArea {
 
 pub fn catalog() -> Vec<NodeCatalogEntry> {
     vec![
+                // Custom-node interface ports
+        NodeCatalogEntry {
+            wip: false,
+            singleton: false,
+            label: "Custom Input",
+            category: "Custom",
+            factory: || NodeType::CustomInput {
+                name: "input".to_string(),
+                kind: PortKind::Number,
+            },
+        },
+        NodeCatalogEntry {
+            wip: false,
+            singleton: false,
+            label: "Custom Output",
+            category: "Custom",
+            factory: || NodeType::CustomOutput {
+                name: "output".to_string(),
+                kind: PortKind::Number,
+            },
+        },
         // ── Input ────────────────────────────────────────────
         NodeCatalogEntry { wip: false, singleton: false, label: "Slider", category: "Input",
             factory: || NodeType::Slider { value: 0.5, min: 0.0, max: 1.0, step: 0.01, slider_color: [80, 160, 255], label: String::new() } },
@@ -831,6 +852,69 @@ pub fn render_content(
     let dragged_before = ui.ctx().dragged_id().is_some();
 
     match node_type {
+        NodeType::CustomNodeInstance { file, inputs, outputs } => {
+        ui.label(format!(
+            "File: {}",
+            std::path::Path::new(file)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or(file.as_str())
+        ));
+        ui.label(format!("Inputs: {} | Outputs: {}", inputs.len(), outputs.len()));
+    },
+
+
+     NodeType::CustomInput { name, kind } => {
+    ui.horizontal(|ui| {
+        ui.label("Name:");
+        ui.text_edit_singleline(name);
+    });
+
+    egui::ComboBox::from_id_salt(("custom_input_kind", node_id))
+        .selected_text(format!("{:?}", kind))
+        .show_ui(ui, |ui| {
+            for option in [
+                PortKind::Number,
+                PortKind::Normalized,
+                PortKind::Trigger,
+                PortKind::Gate,
+                PortKind::Text,
+                PortKind::Image,
+                PortKind::Audio,
+                PortKind::Color,
+                PortKind::Mesh,
+                PortKind::Generic,
+            ] {
+                ui.selectable_value(kind, option, format!("{:?}", option));
+            }
+        });
+},
+
+NodeType::CustomOutput { name, kind } => {
+    ui.horizontal(|ui| {
+        ui.label("Name:");
+        ui.text_edit_singleline(name);
+    });
+
+    egui::ComboBox::from_id_salt(("custom_output_kind", node_id))
+        .selected_text(format!("{:?}", kind))
+        .show_ui(ui, |ui| {
+            for option in [
+                PortKind::Number,
+                PortKind::Normalized,
+                PortKind::Trigger,
+                PortKind::Gate,
+                PortKind::Text,
+                PortKind::Image,
+                PortKind::Audio,
+                PortKind::Color,
+                PortKind::Mesh,
+                PortKind::Generic,
+            ] {
+                ui.selectable_value(kind, option, format!("{:?}", option));
+            }
+        });
+},
         NodeType::Slider { value, min, max, step, slider_color, label } => slider::render(ui, value, min, max, step, slider_color, label, node_id, values, connections, port_positions, dragging_from, pending_disconnects),
         // Display migrated to trait-based node
         // Add, Multiply migrated to trait-based nodes

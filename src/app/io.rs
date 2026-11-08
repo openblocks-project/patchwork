@@ -106,6 +106,9 @@ fn relativize_paths(graph: &mut Graph, project_dir: &str) {
             NodeType::ClapPlugin { plugin_path, .. } => {
                 *plugin_path = make_relative(plugin_path, project_dir);
             }
+            NodeType::CustomNodeInstance { file, .. } => {
+            *file = make_relative(file, project_dir);
+            }
             NodeType::MlModel { model_path, labels_path, .. } => {
                 *model_path = make_relative(model_path, project_dir);
                 *labels_path = make_relative(labels_path, project_dir);
@@ -132,6 +135,9 @@ fn absolutize_paths(graph: &mut Graph, project_dir: &str) {
             NodeType::ClapPlugin { plugin_path, .. } => {
                 *plugin_path = make_absolute(plugin_path, project_dir);
             }
+            NodeType::CustomNodeInstance { file, .. } => {
+    *file = make_absolute(file, project_dir);
+}
             NodeType::MlModel { model_path, labels_path, .. } => {
                 *model_path = make_absolute(model_path, project_dir);
                 *labels_path = make_absolute(labels_path, project_dir);
@@ -962,44 +968,108 @@ impl super::PatchworkApp {
     }
 
     /// Save to existing project path (Cmd+S). Falls back to Save As if no path set.
-    pub(super) fn save_project_quick(&mut self) {
-        if let Some(ref dir_str) = self.project_path.clone() {
-            self.save_to_dir(dir_str.clone());
-        } else {
-            self.save_project(); // No path yet → show dialog
+    pub(super) fn save_project_quick(&mut self) -> bool {
+           if self.documents.active().kind == crate::document::DocumentKind::CustomNode {
+    let Some(path) = self.documents.active().path.clone() else {
+        crate::system_log::error(
+            "Cannot save custom node: no .pwnode path assigned.".to_string()
+        );
+        return false;
+    };
+
+  let existing = match crate::document::CustomNodeFile::load(&path) {
+    Ok(file) => file,
+    Err(error) => {
+        crate::system_log::error(format!(
+            "Cannot save custom node: {error}"
+        ));
+        return false;
+    }
+};
+
+let mut interface_nodes: Vec<_> = self.graph.nodes.values().collect();
+
+
+// HashMap iteration order is not stable.
+// Sort by node ID for consistent port ordering.
+interface_nodes.sort_by_key(|node| node.id);
+
+let mut inputs = Vec::new();
+let mut outputs = Vec::new();
+
+for node in interface_nodes {
+    match &node.node_type {
+        crate::graph::NodeType::CustomInput { name, kind } => {
+            inputs.push(crate::document::CustomNodePort {
+                name: name.clone(),
+                kind: format!("{:?}", kind),
+            });
+        }
+
+        crate::graph::NodeType::CustomOutput { name, kind } => {
+            outputs.push(crate::document::CustomNodePort {
+                name: name.clone(),
+                kind: format!("{:?}", kind),
+            });
+        }
+
+        _ => {}
+    }
+}
+
+let custom_node = crate::document::CustomNodeFile {
+    version: existing.version,
+    name: existing.name,
+    graph: self.graph.clone(),
+    inputs,
+    outputs,
+};
+    // Reject recursive dependencies before overwriting the .pwnode file.
+if let Err(error) = crate::graph::Graph::validate_custom_node_save(
+    &custom_node.graph,
+    &path,
+) {
+    crate::system_log::error(format!(
+        "Cannot save custom node: {error}"
+    ));
+    return false;
+}
+    match custom_node.save(&path) {
+        Ok(()) => {
+            self.is_dirty = false;
+            self.documents.active_mut().is_dirty = false;
+            return true;
+        }
+        Err(error) => {
+            crate::system_log::error(format!(
+                "Failed to save custom node: {error}"
+            ));
+            return false;
         }
     }
+}
+    if let Some(dir_str) = self.project_path.clone() {
+        self.save_to_dir(dir_str)
+    } else {
+        self.save_project()
+    }
+}
 
     /// Save As — prompt for project name, then pick parent folder.
-    /// Creates a subfolder with the project name inside the chosen folder.
-    pub(super) fn save_project(&mut self) {
-        // Step 1: Ask for project name via native dialog
-        let default_name = self.project_path.as_ref()
-            .and_then(|p| Path::new(p).file_name().map(|f| f.to_string_lossy().to_string()))
-            .unwrap_or_else(|| "my-project".to_string());
+   pub(super) fn save_project(&mut self) -> bool {
+    // Select the exact project folder.
+    let Some(project_dir) = rfd::FileDialog::new()
+        .set_title("Select Patchwork Project Folder")
+        .pick_folder()
+    else {
+        return false;
+    };
 
-        // Use save dialog which lets user type a name and pick location
-        if let Some(path) = rfd::FileDialog::new()
-            .set_title("Save Patchwork Project")
-            .set_file_name(&default_name)
-            .save_file()
-        {
-            // The user picks a path — we treat it as the project folder
-            // (create it if it doesn't exist)
-            let project_dir = if path.extension().is_some() {
-                // User typed "name.json" → use parent as project dir
-                path.parent().map(|p| p.to_path_buf()).unwrap_or(path.clone())
-            } else {
-                // User typed a folder name → use as project dir
-                path
-            };
-            let dir_str = project_dir.display().to_string();
-            if self.save_to_dir(dir_str.clone()) {
-                self.project_path = Some(dir_str);
-            }
-        }
-    }
+    // Do not create another nested my-project folder.
+    let dir_str = project_dir.display().to_string();
 
+    self.save_to_dir(dir_str)
+}
     /// Write project.json to the given directory. API keys are persisted to
     /// the per-user store at `~/.patchwork/keys.json` (see `save_user_keys`) —
     /// they never live in the project folder so they don't ride along when
@@ -1007,8 +1077,75 @@ impl super::PatchworkApp {
     /// migrated and removed.
     /// Asset paths are temporarily converted to relative for portability, then restored.
     /// Returns true on successful write — callers use this to update dirty/recent state.
-    fn save_to_dir(&mut self, dir_str: String) -> bool {
+    pub(super) fn save_to_dir(&mut self, dir_str: String) -> bool {
         let dir = Path::new(&dir_str);
+        // P3: Prevent different tabs from saving to the same project.
+let target_path = std::fs::canonicalize(dir)
+    .unwrap_or_else(|_| dir.to_path_buf());
+
+let active_id = self.documents.active().id;
+
+let already_open_in_another_tab =
+    self.documents.documents.iter().any(|doc| {
+        if doc.id == active_id {
+            return false;
+        }
+
+        let Some(existing_path) = &doc.path else {
+            return false;
+        };
+
+        let existing_path = std::fs::canonicalize(existing_path)
+            .unwrap_or_else(|_| existing_path.clone());
+
+        existing_path == target_path
+    });
+
+if already_open_in_another_tab {
+    let message = "This project is already open in another tab.\n\n\
+        Please select a different folder to save this project.";
+
+    crate::system_log::error(message.to_string());
+
+    rfd::MessageDialog::new()
+        .set_title("Cannot Save Project")
+        .set_description(message)
+        .set_level(rfd::MessageLevel::Error)
+        .set_buttons(rfd::MessageButtons::Ok)
+        .show();
+
+    return false;
+}
+        // P3: Warn before overwriting an existing project on disk.
+let existing_project = dir.join("project.json");
+
+if existing_project.exists() {
+    let active_path = self.project_path
+        .as_ref()
+        .and_then(|p| std::fs::canonicalize(p).ok());
+
+    let target_path = std::fs::canonicalize(dir).ok();
+
+    // Allow normal saving to the active project's own folder.
+    let is_current_project =
+        active_path.is_some() && active_path == target_path;
+
+    if !is_current_project {
+        let confirmed = rfd::MessageDialog::new()
+            .set_title("Project Already Exists")
+            .set_description(
+                "A Patchwork project already exists in this folder.\n\n\
+                 Do you want to overwrite it?"
+            )
+            .set_level(rfd::MessageLevel::Warning)
+            .set_buttons(rfd::MessageButtons::YesNo)
+            .show();
+
+        if confirmed != rfd::MessageDialogResult::Yes {
+            return false;
+        }
+    }
+}
         if let Err(e) = std::fs::create_dir_all(dir) {
             crate::system_log::error(format!("Failed to create project folder: {}", e));
             return false;
@@ -1063,11 +1200,18 @@ impl super::PatchworkApp {
                 );
             }
         }
-        if ok {
-            self.is_dirty = false;
-            self.add_recent(dir_str);
-        }
-        ok
+       if ok {
+    self.is_dirty = false;
+
+    // P3: Associate the saved location with the active document.
+    self.project_path = Some(dir_str.clone());
+
+    // Update the active tab's graph, path, title and dirty state.
+    self.sync_active_document();
+
+    self.add_recent(dir_str);
+}
+ok
     }
 
     pub(super) fn load_project(&mut self) {
@@ -1088,6 +1232,30 @@ impl super::PatchworkApp {
         };
         let dir = json_path.parent().map(|p| p.to_path_buf());
         let dir_str = dir.as_ref().map(|d| d.display().to_string()).unwrap_or_default();
+        // P3: If this project is already open, switch to its existing tab.
+        let requested_path = std::fs::canonicalize(&json_path).ok();
+
+        if let Some(existing_id) = self.documents.documents.iter().find_map(|doc| {
+        let open_path = doc.path.as_ref()?;
+
+        // Document paths currently store the project directory.
+        let open_json = if open_path.is_dir() {
+            open_path.join("project.json")
+        } else {
+         open_path.clone()
+        };
+
+        let existing_path = std::fs::canonicalize(open_json).ok()?;
+
+        if Some(existing_path) == requested_path {
+            Some(doc.id)
+        } else {
+            None
+        }
+    }) {
+        self.switch_document(existing_id);
+        return;
+    }
 
         if !json_path.exists() {
             crate::system_log::error(format!("Project not found: {}", json_path.display()));
@@ -1111,9 +1279,13 @@ impl super::PatchworkApp {
                 return;
             }
         };
-        let mut graph = pf.graph;
+       let mut graph = pf.graph;
         graph.fix_next_id();
         absolutize_paths(&mut graph, &dir_str);
+
+// P3: Create a separate tab for the successfully loaded project.
+// Existing tabs retain their graphs and editor state.
+self.create_new_tab();
         // Always start with DSP, Camera, Mic off for safety —
         // prevents stale "active" state without actual streams running
         for node in graph.nodes.values_mut() {
@@ -1179,8 +1351,12 @@ impl super::PatchworkApp {
         } else {
             self.api_keys = user_keys;
         }
-        self.project_path = Some(dir_str.clone());
+       self.project_path = Some(dir_str.clone());
         self.is_dirty = false;
+
+        // P3: Store the loaded project's state in the active document.
+        self.sync_active_document();
+
         self.add_recent(dir_str);
     }
 
@@ -1216,12 +1392,28 @@ impl super::PatchworkApp {
     /// cancel the close and pop the confirmation modal. Once the user
     /// has chosen Save / Don't Save, `force_quit` lets the next request
     /// through.
-    pub(super) fn handle_close_request(&mut self, ctx: &egui::Context) {
-        if !ctx.input(|i| i.viewport().close_requested()) { return; }
-        if self.force_quit || !self.is_dirty { return; }
-        ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-        self.pending_quit_dialog = true;
+   pub(super) fn handle_close_request(&mut self, ctx: &egui::Context) {
+    if !ctx.input(|i| i.viewport().close_requested()) {
+        return;
     }
+
+    if self.force_quit {
+        return;
+    }
+
+    // P3: Check the active tab and all background tabs.
+    // The active tab's latest dirty state lives in self.is_dirty.
+    let has_unsaved_changes = self.is_dirty
+        || self.documents.documents.iter().any(|doc| doc.is_dirty);
+
+    if !has_unsaved_changes {
+        return;
+    }
+
+    // Prevent quitting while any document has unsaved changes.
+    ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+    self.pending_quit_dialog = true;
+}
 
     /// Render the "Save changes before quitting?" modal when pending.
     /// Save → save_project_quick (may show a dialog), then close on success.
@@ -1242,25 +1434,70 @@ impl super::PatchworkApp {
                     .and_then(|p| Path::new(p).file_name())
                     .map(|f| f.to_string_lossy().to_string())
                     .unwrap_or_else(|| "this project".to_string());
-                ui.label(format!("Save changes to {} before quitting?", name));
+                let unsaved_count = self.documents.documents.iter()
+    .filter(|doc| {
+        if doc.id == self.documents.active().id {
+            self.is_dirty
+        } else {
+            doc.is_dirty
+        }
+    })
+    .count();
+
+if unsaved_count > 1 {
+    ui.label(format!(
+        "{} tabs have unsaved changes.",
+        unsaved_count
+    ));
+    ui.label(format!(
+        "Save changes to {} before quitting?",
+        name
+    ));
+} else {
+    ui.label(format!(
+        "Save changes to {} before quitting?",
+        name
+    ));
+}
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     if ui.button("Save").clicked() { do_save = true; }
-                    if ui.button("Don't Save").clicked() { do_close = true; }
+                  if ui.button("Discard All & Quit")
+                     .on_hover_text("Discard unsaved changes in every open tab")
+                     .clicked()
+{
+    do_close = true;
+}
                     if ui.button("Cancel").clicked() { dismiss = true; }
                 });
             });
-        if do_save {
-            self.save_project_quick();
-            // save_project_quick may have shown a dialog the user
-            // cancelled; only proceed to close if the dirty flag actually
-            // cleared.
-            if !self.is_dirty {
-                self.pending_quit_dialog = false;
-                self.force_quit = true;
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            }
-        } else if do_close {
+if do_save {
+    // Save the active document first.
+    if self.is_dirty && !self.save_project_quick() {
+        return;
+    }
+
+    // Update the active document's saved state.
+    self.sync_active_document();
+
+    // Find the next unsaved document.
+    let next_dirty_id = self.documents.documents.iter()
+        .find(|doc| doc.is_dirty)
+        .map(|doc| doc.id);
+
+    if let Some(document_id) = next_dirty_id {
+        // Move to the next unsaved tab.
+        self.switch_document(document_id);
+
+        // Keep the quit confirmation open.
+        self.pending_quit_dialog = true;
+    } else {
+        // Every document is saved.
+        self.pending_quit_dialog = false;
+        self.force_quit = true;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+    }
+} else if do_close {
             self.pending_quit_dialog = false;
             self.force_quit = true;
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);

@@ -64,9 +64,7 @@ impl ImageInputMode {
         }
     }
 }
-
 // ── ML Model Presets ────────────────────────────────────────────────────────
-
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum MlPreset {
     /// ImageNet-style classification (softmax over classes). Input: 224×224, NCHW, ImageNet norm.
@@ -480,6 +478,28 @@ pub enum MidiMode { Note, CC }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum NodeType {
+        /// Exposes an input port on the parent custom-node instance.
+    CustomInput {
+        name: String,
+        kind: PortKind,
+    },
+
+    /// Exposes an output port on the parent custom-node instance.
+    CustomOutput {
+        name: String,
+        kind: PortKind,
+    },
+    /// A reusable node referencing an external .pwnode file.
+CustomNodeInstance {
+    /// Path to the referenced custom node.
+    file: String,
+
+    /// External input port definitions.
+    inputs: Vec<crate::document::CustomNodePort>,
+
+    /// External output port definitions.
+    outputs: Vec<crate::document::CustomNodePort>,
+},
     Slider {
         value: f32,
         min: f32,
@@ -1575,12 +1595,37 @@ impl NodeBehavior for NodeType {
             NodeType::NetworkSend { .. } => "Net Send",
             NodeType::NetworkReceive { .. } => "Net Receive",
             NodeType::Dynamic { inner } => inner.node.title(),
+            NodeType::CustomInput { .. } => "Custom Input",
+            NodeType::CustomOutput { .. } => "Custom Output",
+            NodeType::CustomNodeInstance { .. } => "Custom Node",
         }
     }
 
     fn inputs(&self) -> Vec<PortDef> {
         use PortKind::*;
         match self {
+            NodeType::CustomNodeInstance { inputs, .. } => {
+    inputs.iter().map(|port| {
+        let kind = match port.kind.as_str() {
+            "Number" => PortKind::Number,
+            "Normalized" => PortKind::Normalized,
+            "Trigger" => PortKind::Trigger,
+            "Gate" => PortKind::Gate,
+            "Text" => PortKind::Text,
+            "Image" => PortKind::Image,
+            "Audio" => PortKind::Audio,
+            "Color" => PortKind::Color,
+            "Mesh" => PortKind::Mesh,
+            _ => PortKind::Generic,
+        };
+        PortDef::dynamic(port.name.clone(), kind)
+    }).collect()
+},
+            NodeType::CustomInput { .. } => vec![],
+
+            NodeType::CustomOutput { name, kind } => {
+            vec![PortDef::dynamic(name.clone(), *kind)]
+            },
             NodeType::Slider { .. } => vec![PortDef::new("In", Number), PortDef::new("Min", Number), PortDef::new("Max", Number)],
             NodeType::FolderBrowser { .. } => vec![],
             NodeType::WgslViewer { uniform_names, uniform_types, .. } => {
@@ -1786,6 +1831,28 @@ impl NodeBehavior for NodeType {
     fn outputs(&self) -> Vec<PortDef> {
         use PortKind::*;
         match self {
+            NodeType::CustomNodeInstance { outputs, .. } => {
+    outputs.iter().map(|port| {
+        let kind = match port.kind.as_str() {
+            "Number" => PortKind::Number,
+            "Normalized" => PortKind::Normalized,
+            "Trigger" => PortKind::Trigger,
+            "Gate" => PortKind::Gate,
+            "Text" => PortKind::Text,
+            "Image" => PortKind::Image,
+            "Audio" => PortKind::Audio,
+            "Color" => PortKind::Color,
+            "Mesh" => PortKind::Mesh,
+            _ => PortKind::Generic,
+        };
+        PortDef::dynamic(port.name.clone(), kind)
+    }).collect()
+},
+            NodeType::CustomInput { name, kind } => {
+        vec![PortDef::dynamic(name.clone(), *kind)]
+    },
+
+            NodeType::CustomOutput { .. } => vec![],
             NodeType::Slider { .. } => vec![PortDef::new("Value", Number)],
             NodeType::FolderBrowser { .. } => vec![PortDef::new("Path", Text), PortDef::new("Name", Text), PortDef::new("Content", Text)],
             NodeType::WgslViewer { .. } => vec![PortDef::new("Image", Image)],
@@ -1974,7 +2041,11 @@ impl NodeBehavior for NodeType {
 
     fn color_hint(&self) -> [u8; 3] {
         match self {
-            NodeType::Slider { .. } => [80, 160, 255],
+        NodeType::CustomNodeInstance { .. } => [150, 110, 220],
+        NodeType::CustomInput { .. } => [70, 190, 150],
+        NodeType::CustomOutput { .. } => [230, 160, 80],
+
+        NodeType::Slider { .. } => [80, 160, 255],
             NodeType::FolderBrowser { .. } => [140, 160, 200],
             NodeType::WgslViewer { .. } => [220, 140, 60],
             NodeType::MidiOut { .. } => [60, 180, 180],
@@ -2140,6 +2211,13 @@ pub struct Graph {
     pub nodes: HashMap<NodeId, Node>,
     pub connections: Vec<Connection>,
     next_id: u64,
+    /// Independent runtime graph for each custom-node instance.
+/// Not included in saved project files.
+    #[serde(skip)]
+    custom_runtimes: HashMap<NodeId, Box<Graph>>,
+    /// Last known modification time for each custom-node source file.
+    #[serde(skip)]
+    custom_runtime_modified: HashMap<NodeId, std::time::SystemTime>,
     /// Last evaluate timestamp for computing real dt (not serialized)
     #[serde(skip)]
     last_eval_time: f64,
@@ -2169,6 +2247,9 @@ impl Graph {
             nodes: HashMap::new(),
             connections: Vec::new(),
             next_id: 1,
+            custom_runtimes: HashMap::new(),
+            custom_runtime_modified: HashMap::new(),
+
             last_eval_time: 0.0,
             topo_order: Vec::new(),
             cyclic_nodes: Vec::new(),
@@ -2215,6 +2296,9 @@ impl Graph {
             }
         }
         self.nodes.remove(&id);
+        // Remove the cached runtime when a custom-node instance is deleted.
+        self.custom_runtimes.remove(&id);
+        self.custom_runtime_modified.remove(&id);
         self.connections.retain(|c| c.from_node != id && c.to_node != id);
         crate::node_errors::remove_for(id);
         self.topo_dirty = true;
@@ -2845,10 +2929,16 @@ impl Graph {
                     _ => {}
                 }
     }
-
     /// Evaluate the graph. `now_secs` is the monotonic wall-clock time in seconds
     /// (from `std::time::Instant` elapsed since app start). Used by Timer for drift-free tempo.
     pub fn evaluate(&mut self, now_secs: f64) -> HashMap<(NodeId, usize), PortValue> {
+    self.evaluate_with_injected_inputs(now_secs, &[])
+}
+pub fn evaluate_with_injected_inputs(
+    &mut self,
+    now_secs: f64,
+    injected_inputs: &[(NodeId, PortValue)],
+) -> HashMap<(NodeId, usize), PortValue> {
         // Compute real frame dt from wall clock (clamped to avoid huge jumps).
         let real_dt = if self.last_eval_time > 0.0 {
             ((now_secs - self.last_eval_time) as f32).clamp(0.0001, 0.25)
@@ -2864,32 +2954,94 @@ impl Graph {
         // Clone ID vecs into locals so we can mutably borrow self.nodes inside the loop.
         let eval_order = self.topo_order.clone();
         let cyclic_ids = self.cyclic_nodes.clone();
-
         let mut values: HashMap<(NodeId, usize), PortValue> = HashMap::new();
-
-        // ── Single topo-ordered pass ─────────────────────────────────────────
-        // All predecessors of any node are evaluated before it, so one pass is
-        // correct and O(n) for any acyclic graph.
-        // for &id in &eval_order {
-        //     let inputs = self.collect_inputs(id, &values);
-        //     if let Some(node) = self.nodes.get_mut(&id) {
-        //         Self::evaluate_node(id, &mut node.node_type, &inputs, &mut values, real_dt, now_secs);
-        //     }
-        // }
-
-        for &id in &eval_order {
+        // Inject values into the output port of each internal CustomInput node.
+        for (node_id, value) in injected_inputs {
+            if matches!(
+                self.nodes.get(node_id).map(|n| &n.node_type),
+                Some(NodeType::CustomInput { .. })
+             ) {
+            values.insert((*node_id, 0), value.clone());
+        }
+}
+for &id in &eval_order {
+        // CustomInput values are supplied by the parent custom-node instance.
+            if matches!(
+                self.nodes.get(&id).map(|n| &n.node_type),
+                Some(NodeType::CustomInput { .. })
+            ) {
+                continue;
+            }
     // Skip bypassed nodes — they emit no outputs, so anything downstream
     // reads `None` on the ports that would have come from here.
     if self.nodes.get(&id).map(|n| n.bypassed).unwrap_or(false) {
         continue;
     }
-    let inputs = self.collect_inputs(id, &values);
-    if let Some(node) = self.nodes.get_mut(&id) {
-        Self::evaluate_node(id, &mut node.node_type, &inputs, &mut values, real_dt, now_secs);
-    }
-}
+   let inputs = self.collect_inputs(id, &values);
 
-        // ── Extra passes for cyclic nodes (feedback loops) ───────────────────
+let custom_file = self.nodes.get(&id).and_then(|node| {
+    if let NodeType::CustomNodeInstance { file, .. } = &node.node_type {
+        Some(file.clone())
+    } else {
+        None
+    }
+});
+
+if let Some(file) = custom_file {
+    match self.ensure_custom_runtime(id, &file) {
+        Ok(()) => {
+            if let Some(runtime) = self.custom_runtimes.get_mut(&id) {
+                let mut input_nodes: Vec<NodeId> = runtime.nodes
+                    .iter()
+                    .filter_map(|(&node_id, node)| {
+                        if matches!(&node.node_type, NodeType::CustomInput { .. }) {
+                            Some(node_id)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+
+                input_nodes.sort();
+
+                let injected: Vec<(NodeId, PortValue)> = input_nodes
+                    .iter()
+                    .enumerate()
+                    .map(|(index, &node_id)| {
+                        (
+                            node_id,
+                            inputs.get(index).cloned().unwrap_or(PortValue::None),
+                        )
+                    })
+                    .collect();
+
+                let internal_values =
+                    runtime.evaluate_with_injected_inputs(now_secs, &injected);
+                let outputs = runtime.collect_custom_outputs(&internal_values);
+                for (port, value) in outputs.into_iter().enumerate() {
+                    values.insert((id, port), value);
+                }
+            }
+        }
+        Err(error) => {
+            crate::node_errors::report_for(
+                id,
+                format!("Custom node load failed: {error}"),
+            );
+        }
+    }
+} else if let Some(node) = self.nodes.get_mut(&id) {
+    Self::evaluate_node(
+        id,
+        &mut node.node_type,
+        &inputs,
+        &mut values,
+        real_dt,
+        now_secs,
+    );
+}
+}
+         // ── Extra passes for cyclic nodes (feedback loops) ───────────────────
         // Kahn's algorithm could not linearize these nodes. Two extra passes let
         // values propagate around short cycles without running the full graph again.
         if !cyclic_ids.is_empty() {
@@ -2901,20 +3053,312 @@ impl Graph {
                 //     }
                 // }
                 for &id in &cyclic_ids {
-    if self.nodes.get(&id).map(|n| n.bypassed).unwrap_or(false) {
-        continue;
+    // Preserve externally injected CustomInput values.
+                    if matches!(
+                    self.nodes.get(&id).map(|n| &n.node_type),
+                    Some(NodeType::CustomInput { .. })
+                    ) {
+                    continue;
+                }
+
+            if self.nodes.get(&id).map(|n| n.bypassed).unwrap_or(false) {
+            continue;
+            }
+                let inputs = self.collect_inputs(id, &values);
+                // Handle custom-node instances separately to avoid mutable borrow conflicts.
+                let custom_file = self.nodes.get(&id).and_then(|node| {
+                if let NodeType::CustomNodeInstance { file, .. } = &node.node_type {
+                     Some(file.clone())
+                } else {
+                    None
+                }
+                });
+if let Some(file) = custom_file {
+    match self.ensure_custom_runtime(id, &file) {
+        Ok(()) => {
+            if let Some(runtime) = self.custom_runtimes.get_mut(&id) {
+                // Match the stable port ordering used when saving .pwnode.
+                let mut input_nodes: Vec<NodeId> = runtime.nodes
+                    .iter()
+                    .filter_map(|(&node_id, node)| {
+                        if matches!(&node.node_type, NodeType::CustomInput { .. }) {
+                            Some(node_id)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                input_nodes.sort();
+                let injected: Vec<(NodeId, PortValue)> = input_nodes
+                    .iter()
+                    .enumerate()
+                    .map(|(index, &node_id)| {
+                        (
+                            node_id,
+                            inputs.get(index).cloned().unwrap_or(PortValue::None),
+                        )
+                    })
+                    .collect();
+                let internal_values =
+                    runtime.evaluate_with_injected_inputs(now_secs, &injected);
+                let outputs = runtime.collect_custom_outputs(&internal_values);
+                for (port, value) in outputs.into_iter().enumerate() {
+                    values.insert((id, port), value);
+                }
+            }
+        }
+        Err(error) => {
+            crate::node_errors::report_for(
+                id,
+                format!("Custom node load failed: {error}"),
+            );
+        }
     }
-    let inputs = self.collect_inputs(id, &values);
-    if let Some(node) = self.nodes.get_mut(&id) {
-        Self::evaluate_node(id, &mut node.node_type, &inputs, &mut values, real_dt, now_secs);
-    }
+} else if let Some(node) = self.nodes.get_mut(&id) {
+    // Existing execution path for normal nodes.
+    Self::evaluate_node(
+        id,
+        &mut node.node_type,
+        &inputs,
+        &mut values,
+        real_dt,
+        now_secs,
+    );
 }
+                }
             }
         }
 
         values
     }
+    // Step 24: Load and cache each custom node's internal graph.
+    fn sync_custom_ports(
+    &mut self,
+    instance_id: NodeId,
+    new_inputs: Vec<crate::document::CustomNodePort>,
+    new_outputs: Vec<crate::document::CustomNodePort>,
+) {
+    let Some(node) = self.nodes.get_mut(&instance_id) else {
+        return;
+    };
 
+    let NodeType::CustomNodeInstance {
+        inputs,
+        outputs,
+        ..
+    } = &mut node.node_type else {
+        return;
+    };
+
+    // Preserve the previous interface for connection remapping.
+    let old_inputs = inputs.clone();
+    let old_outputs = outputs.clone();
+
+    // Map an old port index to its new index by matching name and type.
+    let remap = |
+        old_ports: &[crate::document::CustomNodePort],
+        new_ports: &[crate::document::CustomNodePort],
+        old_index: usize,
+    | -> Option<usize> {
+        let old = old_ports.get(old_index)?;
+
+        // Ambiguous names are not remapped.
+        if old_ports.iter().filter(|p| p.name == old.name).count() != 1 {
+            return None;
+        }
+
+        let mut matches = new_ports.iter().enumerate().filter(|(_, p)| {
+            p.name == old.name && p.kind == old.kind
+        });
+
+        let index = matches.next()?.0;
+
+        if matches.next().is_some() {
+            return None;
+        }
+
+        Some(index)
+    };
+
+    self.connections.retain_mut(|connection| {
+        if connection.to_node == instance_id {
+            let Some(index) =
+                remap(&old_inputs, &new_inputs, connection.to_port)
+            else {
+                return false;
+            };
+
+            connection.to_port = index;
+        }
+
+        if connection.from_node == instance_id {
+            let Some(index) =
+                remap(&old_outputs, &new_outputs, connection.from_port)
+            else {
+                return false;
+            };
+
+            connection.from_port = index;
+        }
+
+        true
+    });
+
+    *inputs = new_inputs;
+    *outputs = new_outputs;
+
+    self.topo_dirty = true;
+    self.audio_topology_dirty = true;
+}
+pub(crate) fn validate_custom_node_save(
+    graph: &Graph,
+    target_path: &std::path::Path,
+) -> Result<(), String> {
+    let target = std::fs::canonicalize(target_path)
+        .map_err(|e| format!("Cannot resolve custom node path: {e}"))?;
+
+    for node in graph.nodes.values() {
+        if let NodeType::CustomNodeInstance { file, .. } = &node.node_type {
+            let child_path = std::path::Path::new(file);
+
+            let resolved = if child_path.is_absolute() {
+                child_path.to_path_buf()
+            } else {
+                target
+                    .parent()
+                    .unwrap_or(std::path::Path::new("."))
+                    .join(child_path)
+            };
+
+            let mut visited = std::collections::HashSet::new();
+
+            // Treat the file being saved as already visited.
+            // Any dependency reaching it creates a cycle.
+            visited.insert(target.clone());
+
+            Self::check_custom_node_dependencies(
+                &resolved,
+                &mut visited,
+                1,
+            )?;
+        }
+    }
+
+    Ok(())
+}
+pub(crate) fn check_custom_node_dependencies(
+    path: &std::path::Path,
+    visited: &mut std::collections::HashSet<std::path::PathBuf>,
+    depth: usize,
+) -> Result<(), String> {
+    const MAX_DEPTH: usize = 8;
+
+    if depth > MAX_DEPTH {
+        return Err(format!(
+            "Custom node nesting exceeds maximum depth of {MAX_DEPTH}"
+        ));
+    }
+
+    let canonical = std::fs::canonicalize(path)
+        .map_err(|e| format!("Cannot resolve custom node {}: {e}", path.display()))?;
+
+    if !visited.insert(canonical.clone()) {
+        return Err(format!(
+            "Recursive custom node reference detected: {}",
+            canonical.display()
+        ));
+    }
+
+    let result = (|| {
+        let custom = crate::document::CustomNodeFile::load(&canonical)?;
+
+        for node in custom.graph.nodes.values() {
+            if let NodeType::CustomNodeInstance { file, .. } = &node.node_type {
+                let child_path = std::path::Path::new(file);
+
+                let resolved = if child_path.is_absolute() {
+                    child_path.to_path_buf()
+                } else {
+                    canonical
+                        .parent()
+                        .unwrap_or(std::path::Path::new("."))
+                        .join(child_path)
+                };
+
+                Self::check_custom_node_dependencies(&resolved, visited, depth + 1)?;
+            }
+        }
+
+        Ok(())
+    })();
+
+    visited.remove(&canonical);
+    result
+}
+fn ensure_custom_runtime(
+    &mut self,
+    instance_id: NodeId,
+    file: &str,
+) -> Result<(), String> {
+    let path = std::path::Path::new(file);
+  let modified = std::fs::metadata(path)
+    .and_then(|metadata| metadata.modified())
+    .map_err(|error| format!(
+        "Cannot read custom node modification time: {error}"
+    ))?;
+if self.custom_runtimes.contains_key(&instance_id)
+    && self.custom_runtime_modified.get(&instance_id) == Some(&modified)
+{
+    return Ok(());
+}
+let custom = crate::document::CustomNodeFile::load(path)?;
+    // Reject direct and indirect recursive custom-node references.
+Self::check_custom_node_dependencies(
+    path,
+    &mut std::collections::HashSet::new(),
+    0,
+)?;
+  // Synchronize the instance's external ports with the source file.
+self.sync_custom_ports(
+    instance_id,
+    custom.inputs,
+    custom.outputs,
+);
+// Replace the cached runtime with the updated internal graph.
+self.custom_runtimes
+    .insert(instance_id, Box::new(custom.graph));
+
+self.custom_runtime_modified.insert(instance_id, modified);
+
+Ok(())
+}
+pub fn collect_custom_outputs(
+    &self,
+    values: &HashMap<(NodeId, usize), PortValue>,
+) -> Vec<PortValue> {
+    // Use stable NodeId ordering, matching the saved .pwnode interface.
+    let mut output_nodes: Vec<NodeId> = self.nodes
+        .iter()
+        .filter_map(|(&id, node)| {
+            if matches!(&node.node_type, NodeType::CustomOutput { .. }) {
+                Some(id)
+            } else {
+                None
+            }
+        })
+        .collect();
+    output_nodes.sort();
+    output_nodes
+        .iter()
+        .map(|&id| {
+            // CustomOutput receives its value through input port 0.
+            self.collect_inputs(id, values)
+                .into_iter()
+                .next()
+                .unwrap_or(PortValue::None)
+        })
+        .collect()
+}
     pub fn collect_inputs(&self, node_id: NodeId, values: &HashMap<(NodeId, usize), PortValue>) -> Vec<PortValue> {
         let num = self.nodes.get(&node_id).map(|n| n.node_type.inputs().len()).unwrap_or(0);
         let mut inputs = vec![PortValue::None; num];
