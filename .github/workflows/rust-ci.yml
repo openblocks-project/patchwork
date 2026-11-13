@@ -94,21 +94,40 @@ jobs:
 
           $bytes = [byte[]]::new(512)
 
-          # UF2 magic numbers
-          [BitConverter]::GetBytes([uint32]0x0A324655).CopyTo($bytes, 0)
-          [BitConverter]::GetBytes([uint32]0x9E5D5157).CopyTo($bytes, 4)
-          [BitConverter]::GetBytes([uint32]0x00002000).CopyTo($bytes, 8)
-          [BitConverter]::GetBytes([uint32]0x10000000).CopyTo($bytes, 12)
-          [BitConverter]::GetBytes([uint32]256).CopyTo($bytes, 16)
-          [BitConverter]::GetBytes([uint32]0).CopyTo($bytes, 20)
-          [BitConverter]::GetBytes([uint32]1).CopyTo($bytes, 24)
-          [BitConverter]::GetBytes([uint32]0xE48BFF56).CopyTo($bytes, 28)
-          [BitConverter]::GetBytes([uint32]0x0AB16F30).CopyTo($bytes, 508)
+          # Write unsigned 32-bit UF2 values
+          function Write-UF2Word {
+            param(
+              [int]$Offset,
+              [string]$HexValue
+            )
+
+            $value = [Convert]::ToUInt32($HexValue, 16)
+            $wordBytes = [BitConverter]::GetBytes($value)
+
+            [Array]::Copy($wordBytes, 0, $bytes, $Offset, 4)
+          }
+
+          # UF2 header
+          Write-UF2Word 0   "0A324655"
+          Write-UF2Word 4   "9E5D5157"
+          Write-UF2Word 8   "00002000"
+          Write-UF2Word 12  "10000000"
+          Write-UF2Word 16  "00000100"
+          Write-UF2Word 20  "00000000"
+          Write-UF2Word 24  "00000001"
+          Write-UF2Word 28  "E48BFF56"
+
+          # UF2 end magic
+          Write-UF2Word 508 "0AB16F30"
 
           [System.IO.File]::WriteAllBytes($firmware, $bytes)
 
           Write-Host "Created Pico UF2 test fixture: $firmware"
           Write-Host "File size: $((Get-Item $firmware).Length) bytes"
+
+          if ((Get-Item $firmware).Length -ne 512) {
+            throw "Invalid UF2 test fixture size"
+          }
 
       - name: Run tests
         run: cargo test --release --locked
