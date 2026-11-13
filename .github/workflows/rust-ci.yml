@@ -23,8 +23,9 @@ jobs:
     env:
       CMAKE_GENERATOR: "Visual Studio 17 2022"
       CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+      CMAKE_MSVC_RUNTIME_LIBRARY: "MultiThreadedDLL"
+      RUSTFLAGS: "-C target-feature=-crt-static"
       RUST_BACKTRACE: "1"
-      CARGO_PROFILE_DEV_BUILD_OVERRIDE_DEBUG: "true"
       CARGO_TERM_COLOR: always
 
     steps:
