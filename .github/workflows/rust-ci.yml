@@ -15,6 +15,10 @@ jobs:
     name: Rust Build and Tests
     runs-on: windows-latest
 
+    env:
+      CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+      RUST_BACKTRACE: "1"
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
