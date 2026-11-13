@@ -1,24 +1,31 @@
-name: Rust CI
+
+name: Patchwork Rust CI
 
 on:
   push:
     branches:
       - main
       - feature/p2-p6-architecture
+
   pull_request:
     branches:
       - main
       - feature/p2-p6-architecture
 
+permissions:
+  contents: read
+
 jobs:
-  check:
+  build-and-test:
     name: Windows Build and Tests
     runs-on: windows-2022
 
     env:
-      CMAKE_POLICY_VERSION_MINIMUM: "3.5"
       CMAKE_GENERATOR: "Visual Studio 17 2022"
+      CMAKE_POLICY_VERSION_MINIMUM: "3.5"
       RUST_BACKTRACE: "1"
+      CARGO_PROFILE_DEV_BUILD_OVERRIDE_DEBUG: "true"
+      CARGO_TERM_COLOR: always
 
     steps:
       - name: Checkout repository
@@ -29,15 +36,42 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
       - name: Configure CMake compatibility
         shell: pwsh
         run: |
-          $cmakeVersion = cmake --version
-          Write-Host $cmakeVersion
+          cmake --version
           "CMAKE_ARGS=-DCMAKE_POLICY_VERSION_MINIMUM=3.5" >> $env:GITHUB_ENV
 
       - name: Check formatting
         run: cargo fmt --all -- --check
+
+      - name: Prepare ONNX Runtime build directory
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "target/debug/build" | Out-Null
+          Write-Host "Prepared ONNX Runtime build directory"
+
+      - name: Inspect native dependencies
+        shell: pwsh
+        run: |
+          Write-Host "Checking native dependency files"
+
+          $files = @(
+            "vendor/windows/DirectML.dll",
+            "vendor/windows/onnxruntime.dll",
+            "vendor/windows/onnxruntime_providers_shared.dll"
+          )
+
+          foreach ($file in $files) {
+            if (Test-Path $file) {
+              Write-Host "FOUND: $file"
+            } else {
+              Write-Host "MISSING: $file"
+            }
+          }
 
       - name: Check compilation
         run: cargo check --locked
