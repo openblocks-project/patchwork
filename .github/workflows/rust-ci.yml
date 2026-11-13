@@ -88,5 +88,21 @@ jobs:
       - name: Check compilation
         run: cargo check --locked
 
+            - name: Prepare Pico UF2 test firmware
+        shell: pwsh
+        run: |
+          $firmware = Join-Path $env:TEMP "patchwork_test_rp2040.uf2"
+
+          $bytes = [byte[]]::new(512)
+
+          # UF2 magic numbers
+          [BitConverter]::GetBytes([uint32]0x0A324655).CopyTo($bytes, 0)
+          [BitConverter]::GetBytes([uint32]0x9E5D5157).CopyTo($bytes, 4)
+          [BitConverter]::GetBytes([uint32]0x0AB16F30).CopyTo($bytes, 508)
+
+          [System.IO.File]::WriteAllBytes($firmware, $bytes)
+
+          Write-Host "Created test UF2: $firmware"
+
       - name: Run tests
         run: cargo test --release --locked
