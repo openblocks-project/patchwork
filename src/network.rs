@@ -1,7 +1,7 @@
 use crate::graph::NodeId;
 use bytes::Bytes;
 use futures_lite::StreamExt;
-use iroh::{Endpoint, PublicKey, SecretKey};
+use iroh::{Endpoint, EndpointAddr, PublicKey, SecretKey};
 use iroh::endpoint::presets;
 use iroh_gossip::api::Event;
 use iroh_gossip::net::{Gossip, GOSSIP_ALPN};
@@ -43,6 +43,54 @@ pub struct PeerInfo {
     pub id: [u8; 32],
 }
 
+// Version 2 adds the full dialable address without changing the version 1
+// postcard layout. A separate wire struct is required for old-link support.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+struct PatchworkLinkV2 {
+    version: u8,
+    topic: [u8; 32],
+    peers: Vec<EndpointAddr>,
+    schema: Vec<PortSchema>,
+    label: String,
+}
+
+fn encode_link_v2(link: &PatchworkLink, peers: Vec<EndpointAddr>) -> String {
+    let v2 = PatchworkLinkV2 {
+        version: 2,
+        topic: link.topic,
+        peers,
+        schema: link.schema.clone(),
+        label: link.label.clone(),
+    };
+    let bytes = postcard::to_stdvec(&v2).expect("valid v2 link");
+    format!("patchwork://{}", data_encoding::BASE32_NOPAD.encode(&bytes))
+}
+
+fn decode_link_with_addresses(s: &str) -> Result<(PatchworkLink, Vec<EndpointAddr>), String> {
+    let data = s.strip_prefix("patchwork://").unwrap_or(s);
+    let bytes = data_encoding::BASE32_NOPAD
+        .decode(data.to_ascii_uppercase().as_bytes())
+        .map_err(|e| format!("Invalid link encoding: {e}"))?;
+    // Version is the first postcard field (u8). Decode by version to avoid
+    // misinterpreting an old PeerInfo as a v2 EndpointAddr.
+    match bytes.first().copied() {
+        Some(2) => {
+            let v2: PatchworkLinkV2 = postcard::from_bytes(&bytes)
+                .map_err(|e| format!("Invalid v2 link data: {e}"))?;
+            let peers = v2.peers.iter().map(|a| PeerInfo { id: *a.id.as_bytes() }).collect();
+            Ok((PatchworkLink {
+                version: 2, topic: v2.topic, peers, schema: v2.schema, label: v2.label,
+            }, v2.peers))
+        }
+        Some(1) => {
+            let old: PatchworkLink = postcard::from_bytes(&bytes)
+                .map_err(|e| format!("Invalid v1 link data: {e}"))?;
+            Ok((old, Vec::new()))
+        }
+        _ => Err("Unsupported Patchwork link version".to_string()),
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct PortSchema {
     pub name: String,
@@ -62,11 +110,8 @@ pub fn encode_link(link: &PatchworkLink) -> String {
 }
 
 pub fn decode_link(s: &str) -> Result<PatchworkLink, String> {
-    let data = s.strip_prefix("patchwork://").unwrap_or(s);
-    let bytes = data_encoding::BASE32_NOPAD
-        .decode(data.to_ascii_uppercase().as_bytes())
-        .map_err(|e| format!("Invalid link encoding: {}", e))?;
-    postcard::from_bytes(&bytes).map_err(|e| format!("Invalid link data: {}", e))
+    let (link, _) = decode_link_with_addresses(s)?;
+    Ok(link)
 }
 
 // ── Actions & Events ─────────────────────────────────────────────────────────
@@ -122,7 +167,7 @@ struct SendState {
 }
 
 struct ReceiveState {
-    _topic: TopicId,
+    task: tokio::task::JoinHandle<()>,
 }
 
 // ── NetworkManager ───────────────────────────────────────────────────────────
@@ -347,13 +392,13 @@ async fn handle_action(
                         id: *my_addr.id.as_bytes(),
                     };
                     let link = PatchworkLink {
-                        version: 1,
+                        version: 2,
                         topic: topic_bytes,
                         peers: vec![peer_info],
                         schema,
                         label,
                     };
-                    let link_str = encode_link(&link);
+                    let link_str = encode_link_v2(&link, vec![my_addr]);
 
                     let secret_hex = secret_key_hex.unwrap_or_default();
 
@@ -403,49 +448,70 @@ async fn handle_action(
         }
 
         NetworkAction::CreateReceive { node_id, link } => {
-            recv_states.remove(&node_id);
-
-            let parsed = match decode_link(&link) {
-                Ok(l) => l,
+            if let Some(old) = recv_states.remove(&node_id) { old.task.abort(); }
+            let (parsed, addresses) = match decode_link_with_addresses(&link) {
+                Ok(value) => value,
                 Err(e) => {
                     let _ = event_tx.try_send(NetworkEvent::Error { node_id, error: e });
                     return;
                 }
             };
-
             if let Err(e) = ensure_iroh(endpoint, gossip, router).await {
                 let _ = event_tx.try_send(NetworkEvent::Error { node_id, error: e });
                 return;
             }
-
-            let gos = gossip.as_ref().unwrap();
+            let ep = endpoint.as_ref().unwrap().clone();
+            let gos = gossip.as_ref().unwrap().clone();
+            let ev_tx = event_tx.clone();
             let topic = TopicId::from_bytes(parsed.topic);
-
             let bootstrap: Vec<PublicKey> = parsed.peers.iter()
                 .filter_map(|p| PublicKey::from_bytes(&p.id).ok())
                 .collect();
-
-            match gos.subscribe_and_join(topic, bootstrap).await {
-                Ok(gossip_topic) => {
-                    let (_sender, receiver) = gossip_topic.split();
-                    recv_states.insert(node_id, ReceiveState { _topic: topic });
-
-                    // Spawn receiver task
-                    let ev_tx = event_tx.clone();
-                    tokio::task::spawn_local(recv_loop(node_id, receiver, ev_tx));
+            // Keep the manager action loop responsive while the peer connects.
+            let task = tokio::task::spawn_local(async move {
+                // Dial the full EndpointAddr, which includes relay and direct
+                // addresses. This also populates iroh's remote address map.
+                for addr in addresses {
+                    match tokio::time::timeout(
+                        std::time::Duration::from_secs(15),
+                        ep.connect(addr, GOSSIP_ALPN),
+                    ).await {
+                        Ok(Ok(_connection)) => {
+                            eprintln!("[patchwork-network] receiver node {node_id}: connected to bootstrap");
+                            break;
+                        }
+                        Ok(Err(e)) => eprintln!("[patchwork-network] bootstrap dial error: {e}"),
+                        Err(_) => eprintln!("[patchwork-network] bootstrap dial timed out"),
+                    }
                 }
-                Err(e) => {
-                    let _ = event_tx.try_send(NetworkEvent::Error {
-                        node_id,
-                        error: format!("Failed to join topic: {}", e),
-                    });
+                eprintln!("[patchwork-network] receiver node {node_id}: joining gossip topic");
+                match tokio::time::timeout(
+                    std::time::Duration::from_secs(20),
+                    gos.subscribe_and_join(topic, bootstrap),
+                ).await {
+                    Ok(Ok(gossip_topic)) => {
+                        eprintln!("[patchwork-network] receiver node {node_id}: joined gossip topic");
+                        let (_sender, receiver) = gossip_topic.split();
+                        recv_loop(node_id, receiver, ev_tx).await;
+                    }
+                    Ok(Err(e)) => {
+                        let _ = ev_tx.try_send(NetworkEvent::Error {
+                            node_id, error: format!("Failed to join topic: {e}"),
+                        });
+                    }
+                    Err(_) => {
+                        let _ = ev_tx.try_send(NetworkEvent::Error {
+                            node_id, error: "Timed out joining gossip topic".to_string(),
+                        });
+                    }
                 }
-            }
+            });
+            recv_states.insert(node_id, ReceiveState { task });
         }
 
         NetworkAction::DestroyNode { node_id } => {
             send_states.remove(&node_id);
-            recv_states.remove(&node_id);
+            if let Some(old) = recv_states.remove(&node_id) { old.task.abort(); }
         }
     }
 }
@@ -460,6 +526,7 @@ async fn peer_tracker(
     while let Some(Ok(event)) = receiver.next().await {
         match event {
             Event::NeighborUp(_) => {
+                eprintln!("[patchwork-network] sender node {node_id}: neighbor connected");
                 peer_count += 1;
                 let _ = event_tx.try_send(NetworkEvent::SendStatus { node_id, peers: peer_count });
             }
@@ -503,10 +570,13 @@ async fn init_iroh() -> Result<(Endpoint, Gossip, iroh::protocol::Router), Box<d
         .spawn();
 
     // Wait for relay connection with a timeout — don't block link generation
-    let _ = tokio::time::timeout(
+    match tokio::time::timeout(
         std::time::Duration::from_secs(10),
         endpoint.online(),
-    ).await;
+    ).await {
+        Ok(()) => eprintln!("[patchwork-network] endpoint online"),
+        Err(_) => eprintln!("[patchwork-network] endpoint online wait timed out; peer connectivity may be unavailable"),
+    }
 
     Ok((endpoint, gossip, router))
 }
@@ -545,6 +615,23 @@ mod tests {
         assert_eq!(decoded.schema[2].name, "img");
         assert_eq!(decoded.schema[2].kind, PortSchemaKind::Image);
         assert_eq!(decoded.label, "test node");
+    }
+
+
+    #[test]
+    fn link_v2_roundtrip_with_addresses() {
+        let secret = SecretKey::from_bytes(&rand::random::<[u8; 32]>());
+        let addr = EndpointAddr::new(secret.public());
+        let link = PatchworkLink {
+            version: 2, topic: [9; 32],
+            peers: vec![PeerInfo { id: *addr.id.as_bytes() }],
+            schema: vec![], label: "v2".into(),
+        };
+        let encoded = encode_link_v2(&link, vec![addr.clone()]);
+        let (decoded, addresses) = decode_link_with_addresses(&encoded).unwrap();
+        assert_eq!(decoded.version, 2);
+        assert_eq!(addresses.len(), 1);
+        assert_eq!(addresses[0].id, addr.id);
     }
 
     #[test]

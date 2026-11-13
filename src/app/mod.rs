@@ -198,6 +198,29 @@ pub struct PatchworkApp {
     api_keys: HashMap<String, String>,
     // OB Hardware
     ob: ObManager,
+        // P5: USB hardware discovery
+   hardware_devices: Vec<crate::hardware::HardwareDevice>,
+   hardware_discovery_error: Option<String>,
+   hardware_scan_requested: bool,
+    // P5: Selected firmware file for flashing
+  hardware_firmware_path: Option<std::path::PathBuf>,
+  hardware_validation_result: Option<Result<(), String>>,
+  hardware_flash_confirmation_open: bool,
+  hardware_flash_result: Option<Result<(), String>>,
+  hardware_flash_in_progress: bool,
+  hardware_flash_receiver:
+    Option<std::sync::mpsc::Receiver<Result<(), String>>>,
+  // P5: Selected hardware target
+hardware_selected_serial_port: Option<String>,
+// P5: ESP32 firmware flashing configuration
+hardware_esp32_chip: String,
+hardware_esp32_flash_address: String,
+
+#[cfg(target_os = "windows")]
+hardware_selected_pico_drive: Option<std::path::PathBuf>,
+// P5: Detected Raspberry Pi Pico BOOTSEL devices
+#[cfg(target_os = "windows")]
+hardware_pico_devices: Vec<crate::hardware::PicoBootloaderDevice>,
     // Audio
     audio: AudioManager,
     // MCP server
@@ -348,6 +371,29 @@ impl PatchworkApp {
             network: NetworkManager::new(),
             api_keys: HashMap::new(),
             ob: ObManager::new(),
+                        // P5: USB hardware discovery
+            hardware_devices: Vec::new(),
+            hardware_discovery_error: None,
+            hardware_scan_requested: false,
+            // P5: No firmware selected initially
+            hardware_firmware_path: None,
+            hardware_validation_result: None,
+            hardware_flash_confirmation_open: false,
+            hardware_flash_result: None,
+            hardware_flash_in_progress: false,
+            hardware_flash_receiver: None,
+            // P5: No hardware target selected initially
+hardware_selected_serial_port: None,
+// P5: Default ESP32 application configuration
+hardware_esp32_chip: "esp32".to_string(),
+hardware_esp32_flash_address: "0x10000".to_string(),
+
+#[cfg(target_os = "windows")]
+hardware_selected_pico_drive: None,
+
+            // P5: Pico BOOTSEL device storage
+            #[cfg(target_os = "windows")]
+            hardware_pico_devices: Vec::new(),
             audio: AudioManager::new(),
             app_start_instant: std::time::Instant::now(),
             mcp_log: crate::mcp::new_log(),
@@ -1813,8 +1859,30 @@ app
     }
 }
 impl eframe::App for PatchworkApp {
+   
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+         if let Some(receiver) = &self.hardware_flash_receiver {
+    match receiver.try_recv() {
+        Ok(result) => {
+            self.hardware_flash_result = Some(result);
+            self.hardware_flash_in_progress = false;
+            self.hardware_flash_receiver = None;
+        }
 
+        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+            self.hardware_flash_result = Some(Err(
+                "Firmware flashing worker disconnected unexpectedly"
+                    .to_string(),
+            ));
+            self.hardware_flash_in_progress = false;
+            self.hardware_flash_receiver = None;
+        }
+
+        Err(std::sync::mpsc::TryRecvError::Empty) => {
+            // Background operation is still running.
+        }
+    }
+}
     // Share the active document type with the node palette.
     let is_custom_node = !self.documents.documents.is_empty()
         && self.documents.active().kind
@@ -1968,6 +2036,20 @@ impl eframe::App for PatchworkApp {
             ui.close_menu();
        }
                 });
+                 ui.menu_button("Hardware", |ui| {
+    if ui.button("Devices...").clicked() {
+        self.hardware_scan_requested = true;
+
+        ui.ctx().data_mut(|d| {
+            d.insert_temp(
+                egui::Id::new("hardware_devices_open"),
+                true,
+            );
+        });
+
+        ui.close_menu();
+    }
+});
                 ui.menu_button("Edit", |ui| {
                     let can_undo = self.undo_history.can_undo();
                     let can_redo = self.undo_history.can_redo();
@@ -2046,6 +2128,779 @@ egui::TopBottomPanel::top("document_tabs").show(ctx, |ui| {
             self.create_new_tab();
         }
     });
+});
+
+// P5: Hardware Devices window
+let hardware_window_id = egui::Id::new("hardware_devices_open");
+
+let mut hardware_open = ctx.data_mut(|d| {
+    d.get_temp::<bool>(hardware_window_id)
+        .unwrap_or(false)
+});
+
+if hardware_open {
+        if self.hardware_scan_requested {
+            // P5: Refreshing hardware requires fresh target validation.
+        self.hardware_validation_result = None;
+        self.hardware_flash_confirmation_open = false;
+        self.hardware_flash_result = None;
+        match crate::hardware::discover_devices() {
+            Ok(devices) => {
+                self.hardware_devices = devices;
+                self.hardware_discovery_error = None;
+            }
+            Err(error) => {
+                self.hardware_devices.clear();
+                self.hardware_discovery_error = Some(error);
+            }
+        }
+        // P5: Discover Raspberry Pi Pico BOOTSEL drives.
+#[cfg(target_os = "windows")]
+{
+    self.hardware_pico_devices =
+        crate::hardware::discover_identified_pico_drives();
+}
+        // P5: Clear USB serial selection if the device disappeared.
+if let Some(selected_port) = &self.hardware_selected_serial_port {
+    let still_connected = self.hardware_devices
+        .iter()
+        .any(|device| &device.port_name == selected_port);
+
+    if !still_connected {
+        self.hardware_selected_serial_port = None;
+    }
+}
+
+// P5: Clear Pico BOOTSEL selection if the drive disappeared.
+#[cfg(target_os = "windows")]
+{
+    if let Some(selected_drive) = &self.hardware_selected_pico_drive {
+        let still_connected = self.hardware_pico_devices
+            .iter()
+            .any(|device| &device.drive_path == selected_drive);
+
+        if !still_connected {
+            self.hardware_selected_pico_drive = None;
+        }
+    }
+}
+        self.hardware_scan_requested = false;
+    }
+    egui::Window::new("Hardware Devices")
+        .open(&mut hardware_open)
+        .default_width(440.0)
+        .resizable(true)
+        .show(ctx, |ui| {
+            ui.label("Connected USB serial devices");
+            ui.separator();
+
+            if ui.button("Refresh").clicked() {
+                self.hardware_scan_requested = true;
+            }
+            // P5: Firmware file selection
+ui.add_space(8.0);
+ui.separator();
+ui.heading("Firmware Flashing");
+ui.add_space(6.0);
+// P5: Display selected hardware target.
+ui.label("Selected hardware target:");
+
+if let Some(port) = &self.hardware_selected_serial_port {
+    ui.label(format!("USB serial port: {port}"));
+} else {
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(drive) = &self.hardware_selected_pico_drive {
+            ui.label(format!("Pico BOOTSEL drive: {}", drive.display()));
+        } else {
+            ui.label("No hardware device selected.");
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        ui.label("No hardware device selected.");
+    }
+}
+// P5: Validate firmware against the selected hardware target.
+if ui.button("Validate Target").clicked() {
+    if let Some(path) = &self.hardware_firmware_path {
+        let target = match path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.to_ascii_lowercase())
+            .as_deref()
+        {
+            Some("bin") => Some(crate::hardware::FirmwareTarget::Esp32),
+            Some("uf2") => {
+                Some(crate::hardware::FirmwareTarget::RaspberryPiPico)
+            }
+            _ => None,
+        };
+
+        if let Some(target) = target {
+            let request = crate::hardware::FlashRequest {
+                target,
+                firmware_path: path.clone(),
+                port_name: self.hardware_selected_serial_port.clone(),
+            };
+
+            #[cfg(target_os = "windows")]
+            let pico_drive = self.hardware_selected_pico_drive.as_deref();
+
+            #[cfg(not(target_os = "windows"))]
+            let pico_drive: Option<&std::path::Path> = None;
+let validation_result =
+    crate::hardware::validate_flash_target(
+        &request,
+        pico_drive,
+    )
+    .and_then(|_| {
+        if matches!(
+            target,
+            crate::hardware::FirmwareTarget::Esp32
+        ) {
+            let address_text =
+                self.hardware_esp32_flash_address.trim();
+
+            let address_hex = address_text
+                .strip_prefix("0x")
+                .or_else(|| address_text.strip_prefix("0X"))
+                .unwrap_or(address_text);
+
+            let flash_address =
+                u32::from_str_radix(address_hex, 16)
+                    .map_err(|_| {
+                        "Invalid ESP32 flash address. Use hexadecimal, e.g. 0x10000."
+                            .to_string()
+                    })?;
+
+            let config = crate::hardware::Esp32FlashConfig {
+                layout: crate::hardware::Esp32FirmwareLayout::Application,
+                flash_address,
+                chip: self.hardware_esp32_chip.clone(),
+            };
+
+          crate::hardware::validate_esp32_flash_config(&config)
+    .and_then(|_| {
+        crate::hardware::validate_esp32_image(
+            &request.firmware_path,
+        )
+    })
+    .and_then(|_| {
+        crate::hardware::validate_esp32_firmware_chip(
+            &request.firmware_path,
+            &config.chip,
+        )
+    })
+        } else {
+            Ok(())
+        }
+    });
+
+self.hardware_validation_result = Some(validation_result);
+        } else {
+            eprintln!("P5: Unsupported firmware file type.");
+        }
+    } else {
+        eprintln!("P5: Select a firmware file first.");
+    }
+}
+
+if self.hardware_flash_confirmation_open {
+    egui::Window::new("Confirm Firmware Flash")
+        .collapsible(false)
+        .resizable(false)
+        .show(ctx, |ui| {
+            ui.heading("Flash firmware to hardware?");
+            ui.label("This operation will overwrite the device firmware.");
+
+            ui.add_space(8.0);
+
+            if let Some(path) = &self.hardware_firmware_path {
+                ui.label(format!("Firmware: {}", path.display()));
+            }
+
+            ui.add_space(12.0);
+
+            ui.horizontal(|ui| {
+                if ui.button("Cancel").clicked() {
+    self.hardware_flash_confirmation_open = false;
+    self.hardware_flash_result = None;
+}
+
+if ui.button("Confirm Flash").clicked() {
+    self.hardware_flash_confirmation_open = false;
+    let is_pico_firmware = self.hardware_firmware_path
+    .as_ref()
+    .and_then(|path| path.extension())
+    .and_then(|ext| ext.to_str())
+    .map(|ext| ext.eq_ignore_ascii_case("uf2"))
+    .unwrap_or(false);
+
+if !is_pico_firmware {
+    let is_esp32_firmware = self.hardware_firmware_path
+        .as_ref()
+        .and_then(|path| path.extension())
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.eq_ignore_ascii_case("bin"))
+        .unwrap_or(false);
+
+    if is_esp32_firmware {
+    let firmware_path = self.hardware_firmware_path.clone();
+    let port_name = self.hardware_selected_serial_port.clone();
+
+    let flash_address = self
+        .hardware_esp32_flash_address
+        .trim()
+        .trim_start_matches("0x");
+
+    let parsed_address = u32::from_str_radix(flash_address, 16);
+
+    let preparation_result = match (
+        firmware_path,
+        port_name,
+        parsed_address,
+    ) {
+        (Some(path), Some(port), Ok(address)) => {
+            let config = crate::hardware::Esp32FlashConfig {
+                layout: crate::hardware::Esp32FirmwareLayout::Application,
+                flash_address: address,
+                chip: self.hardware_esp32_chip.clone(),
+            };
+
+            crate::hardware::validate_esp32_flash_config(&config)
+                .map(|_| (path, port, config))
+        }
+        _ => Err(
+            "ESP32 firmware, serial port, or flash address is invalid."
+                .to_string(),
+        ),
+    };
+
+    match preparation_result {
+    Ok((path, port, config)) => {
+        if self.hardware_flash_in_progress {
+            self.hardware_flash_result = Some(Err(
+                "Flashing is already in progress".to_string(),
+            ));
+        } else {
+            self.hardware_flash_result = None;
+            self.hardware_flash_in_progress = true;
+
+            self.hardware_flash_receiver = Some(
+                crate::hardware::spawn_esp32_flash_worker(
+                    path,
+                    port,
+                    config,
+                ),
+            );
+        }
+    }
+
+    Err(error) => {
+        self.hardware_flash_result = Some(Err(error));
+    }
+}
+} else {
+        self.hardware_flash_result = Some(Err(
+            "Unsupported firmware type. Select a .uf2 or .bin file."
+                .to_string(),
+        ));
+    }
+} else {
+
+#[cfg(target_os = "windows")]
+{
+    if self.hardware_flash_in_progress {
+        self.hardware_flash_result =
+            Some(Err("Flashing is already in progress".to_string()));
+    } else if let (
+        Some(firmware_path),
+        Some(drive_path),
+    ) = (
+        self.hardware_firmware_path.clone(),
+        self.hardware_selected_pico_drive.clone(),
+    ) {
+    let request = crate::hardware::FlashRequest {
+        target: crate::hardware::FirmwareTarget::RaspberryPiPico,
+        firmware_path: firmware_path.clone(),
+        port_name: None,
+    };
+
+    let discovered_drive = crate::hardware::discover_identified_pico_drives()
+    .into_iter()
+    .any(|device| {
+        device.drive_path
+            .canonicalize()
+            .ok()
+            == drive_path.canonicalize().ok()
+            && drive_path.canonicalize().is_ok()
+    });
+
+let validation_result = if discovered_drive {
+    crate::hardware::validate_flash_target(
+        &request,
+        Some(&drive_path),
+    )
+} else {
+    Err("Selected Pico BOOTSEL drive was not found in the latest scan".to_string())
+};
+
+match validation_result {
+        Ok(()) => {
+            self.hardware_flash_result = None;
+            self.hardware_flash_in_progress = true;
+
+            self.hardware_flash_receiver =
+                Some(crate::hardware::spawn_pico_flash_worker(
+                    firmware_path,
+                    drive_path,
+                ));
+        }
+
+        Err(error) => {
+            self.hardware_flash_result = Some(Err(error));
+            self.hardware_flash_in_progress = false;
+        }
+    }
+} else {
+    self.hardware_flash_result = Some(Err(
+        "Select a Pico firmware file and BOOTSEL drive".to_string(),
+    ));
+}
+}
+}
+}
+            });
+        });
+        if let Some(result) = &self.hardware_flash_result {
+    ui.add_space(8.0);
+
+    match result {
+        Ok(()) => {
+            ui.colored_label(
+                egui::Color32::GREEN,
+                "Firmware flashing completed successfully.",
+            );
+        }
+        Err(error) => {
+            ui.colored_label(
+                egui::Color32::RED,
+                format!("Firmware flashing failed: {error}"),
+            );
+        }
+    }
+}
+}
+
+ui.add_space(8.0);
+
+let target_validated = matches!(
+    self.hardware_validation_result,
+    Some(Ok(()))
+);
+
+let firmware_target = self.hardware_firmware_path
+    .as_ref()
+    .and_then(|path| path.extension())
+    .and_then(|ext| ext.to_str())
+    .map(|ext| ext.to_ascii_lowercase());
+
+let device_ready = match firmware_target.as_deref() {
+    Some("uf2") => {
+        self.hardware_selected_pico_drive.is_some()
+            && self.hardware_selected_serial_port.is_none()
+    }
+
+    // ESP32 remains disabled until its flash
+    // configuration and UI are implemented.
+    // ESP32 requires a selected serial port and no Pico drive.
+Some("bin") => {
+    self.hardware_selected_serial_port.is_some()
+        && self.hardware_selected_pico_drive.is_none()
+},
+
+    _ => false,
+};
+
+let can_flash = target_validated
+    && device_ready
+    && !self.hardware_flash_in_progress;
+
+if ui
+    .add_enabled(
+        can_flash,
+        egui::Button::new("Flash Firmware"),
+    )
+    .clicked()
+{
+    self.hardware_flash_confirmation_open = true;
+}
+
+if self.hardware_flash_in_progress {
+    ui.label("Firmware flashing in progress...");
+}
+if let Some(result) = &self.hardware_validation_result {
+    match result {
+        Ok(()) => {
+            ui.colored_label(
+                egui::Color32::GREEN,
+                "Target validation passed.",
+            );
+        }
+        Err(error) => {
+            ui.colored_label(
+                egui::Color32::RED,
+                format!("Target validation failed: {error}"),
+            );
+        }
+    }
+}
+if ui.button("Browse Firmware...").clicked() {
+    if let Some(path) = rfd::FileDialog::new()
+        .set_title("Select ESP32 or Raspberry Pi Pico Firmware")
+        .add_filter("Supported Firmware", &["bin", "uf2"])
+        .add_filter("ESP32 Firmware", &["bin"])
+        .add_filter("Raspberry Pi Pico Firmware", &["uf2"])
+        .pick_file()
+    {
+        self.hardware_firmware_path = Some(path);
+        // P5: A newly selected firmware file requires fresh validation.
+        self.hardware_validation_result = None;
+        self.hardware_flash_confirmation_open = false;
+        self.hardware_flash_result = None;
+    }
+}
+
+if let Some(path) = &self.hardware_firmware_path {
+    ui.label(format!("Selected: {}", path.display()));
+
+    let extension = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+
+    let target = match extension.as_str() {
+        "bin" => Some(crate::hardware::FirmwareTarget::Esp32),
+        "uf2" => Some(crate::hardware::FirmwareTarget::RaspberryPiPico),
+        _ => None,
+    };
+
+    if let Some(target) = target {
+        let target_name = match target {
+            crate::hardware::FirmwareTarget::Esp32 => "ESP32",
+            crate::hardware::FirmwareTarget::RaspberryPiPico => {
+                "Raspberry Pi Pico"
+            }
+        };
+
+        ui.label(format!("Firmware type: {target_name}"));
+        // P5: ESP32 firmware configuration controls
+if matches!(target, crate::hardware::FirmwareTarget::Esp32) {
+    let previous_chip = self.hardware_esp32_chip.clone();
+let previous_address = self.hardware_esp32_flash_address.clone();
+    ui.separator();
+    ui.heading("ESP32 Flash Configuration");
+
+    ui.horizontal(|ui| {
+        ui.label("Chip model:");
+
+        egui::ComboBox::from_id_salt("esp32_chip_selector")
+            .selected_text(&self.hardware_esp32_chip)
+            .show_ui(ui, |ui| {
+                for chip in [
+                    "esp32",
+                    "esp32s2",
+                    "esp32s3",
+                    "esp32c2",
+                    "esp32c3",
+                    "esp32c5",
+                    "esp32c6",
+                    "esp32c61",
+                    "esp32h2",
+                    "esp32h4",
+                    "esp32p4",
+                    "esp32s31",
+                ] {
+                    ui.selectable_value(
+                        &mut self.hardware_esp32_chip,
+                        chip.to_string(),
+                        chip,
+                    );
+                }
+            });
+    });
+
+    ui.horizontal(|ui| {
+        ui.label("Flash address:");
+
+        ui.text_edit_singleline(
+            &mut self.hardware_esp32_flash_address,
+        );
+    });
+    if self.hardware_esp32_chip != previous_chip
+    || self.hardware_esp32_flash_address != previous_address
+{
+    self.hardware_validation_result = None;
+    self.hardware_flash_confirmation_open = false;
+    self.hardware_flash_result = None;
+}
+
+    ui.label("Firmware layout: Application");
+
+    ui.colored_label(
+        egui::Color32::YELLOW,
+        "ESP32 flashing is disabled until configuration and device checks are complete.",
+    );
+
+    ui.separator();
+}
+        // P5: Warn when the firmware type does not match the selected device.
+#[cfg(target_os = "windows")]
+{
+    let pico_selected = self.hardware_selected_pico_drive.is_some();
+    let serial_selected = self.hardware_selected_serial_port.is_some();
+
+    match target {
+        crate::hardware::FirmwareTarget::Esp32 if pico_selected => {
+            ui.colored_label(
+                egui::Color32::RED,
+                "Device mismatch: ESP32 firmware cannot be flashed to a Pico BOOTSEL drive.",
+            );
+        }
+
+        crate::hardware::FirmwareTarget::RaspberryPiPico if serial_selected => {
+            ui.colored_label(
+                egui::Color32::RED,
+                "Device mismatch: Select a Pico BOOTSEL drive for UF2 firmware.",
+            );
+        }
+
+        _ => {}
+    }
+}
+    let request = crate::hardware::FlashRequest {
+            target,
+            firmware_path: path.clone(),
+            port_name: None,
+        };
+
+      match match target {
+    crate::hardware::FirmwareTarget::Esp32 => {
+        crate::hardware::validate_esp32_image(&path)
+            .and_then(|_| {
+                crate::hardware::validate_esp32_firmware_chip(
+                    &path,
+                    &self.hardware_esp32_chip,
+                )
+            })
+    }
+    _ => crate::hardware::validate_firmware(&request),
+} {
+    Ok(()) => {
+        ui.colored_label(
+            egui::Color32::GREEN,
+            "Firmware file validation passed.",
+        );
+
+        // P5: Check Pico firmware against the selected BOOTSEL drive.
+        #[cfg(target_os = "windows")]
+        if matches!(
+            target,
+            crate::hardware::FirmwareTarget::RaspberryPiPico
+        ) {
+            if let Some(drive) = &self.hardware_selected_pico_drive {
+                let info_path = drive.join("INFO_UF2.TXT");
+
+                match crate::hardware::validate_pico_flash_target(
+                    path.as_path(),
+                    info_path.as_path(),
+                ) {
+                    Ok(board) => {
+                        ui.colored_label(
+                            egui::Color32::GREEN,
+                            format!(
+                                "Firmware matches selected Pico: {:?}",
+                                board
+                            ),
+                        );
+                    }
+                    Err(error) => {
+                        ui.colored_label(
+                            egui::Color32::RED,
+                            format!("Pico compatibility failed: {error}"),
+                        );
+                    }
+                }
+            } else {
+                ui.label(
+                    "Select a Pico BOOTSEL device to check compatibility.",
+                );
+            }
+        }
+    }
+    Err(error) => {
+        ui.colored_label(
+            egui::Color32::RED,
+            format!("Firmware validation failed: {error}"),
+        );
+    }
+}
+    } else {
+        ui.colored_label(
+            egui::Color32::RED,
+            "Unsupported firmware format. Select a .bin or .uf2 file.",
+        );
+    }
+} else {
+    ui.label("No firmware selected.");
+}
+            ui.add_space(8.0);
+
+            // match crate::hardware::discover_devices() {
+            //     Ok(devices) if devices.is_empty() => {
+            //         ui.label("No USB serial devices detected.");
+            //     }
+            //     Ok(devices) => {
+            //         for device in devices {
+            //             ui.group(|ui| {
+            //                 ui.heading(&device.port_name);
+            //                 ui.label(&device.board_family);
+
+            //                 ui.label(format!(
+            //                     "VID: {:04X} | PID: {:04X}",
+            //                     device.vid, device.pid
+            //                 ));
+
+            //                 if let Some(product) = &device.product {
+            //                     ui.label(format!("Product: {product}"));
+            //                 }
+
+            //                 if let Some(manufacturer) = &device.manufacturer {
+            //                     ui.label(format!("Manufacturer: {manufacturer}"));
+            //                 }
+            //             });
+
+            //             ui.add_space(5.0);
+            //         }
+            //     }
+            //     Err(error) => {
+            //         ui.colored_label(
+            //             egui::Color32::RED,
+            //             format!("Device discovery failed: {error}"),
+            //         );
+            //     }
+            // }
+
+            if let Some(error) = &self.hardware_discovery_error {
+    ui.colored_label(
+        egui::Color32::RED,
+        format!("Device discovery failed: {error}"),
+    );
+} else if self.hardware_devices.is_empty() {
+    ui.label("No USB serial devices detected.");
+} else {
+    for device in &self.hardware_devices {
+        ui.group(|ui| {
+            ui.heading(&device.port_name);
+            // P5: Select USB serial device for firmware flashing.
+let is_selected = self.hardware_selected_serial_port
+    .as_deref()
+    == Some(device.port_name.as_str());
+if ui.radio(is_selected, "Select for flashing").clicked() {
+    self.hardware_selected_serial_port =
+        Some(device.port_name.clone());
+
+    self.hardware_validation_result = None;
+    self.hardware_flash_confirmation_open = false;
+    self.hardware_flash_result = None;
+
+    // Only one hardware target may be selected.
+    #[cfg(target_os = "windows")]
+    {
+        self.hardware_selected_pico_drive = None;
+    }
+}
+            ui.label(&device.board_family);
+
+            ui.label(format!(
+                "VID: {:04X} | PID: {:04X}",
+                device.vid, device.pid
+            ));
+
+            if let Some(product) = &device.product {
+                ui.label(format!("Product: {product}"));
+            }
+
+            if let Some(manufacturer) = &device.manufacturer {
+                ui.label(format!("Manufacturer: {manufacturer}"));
+            }
+        });
+
+        ui.add_space(5.0);
+    }
+}
+// P5: Raspberry Pi Pico BOOTSEL devices
+#[cfg(target_os = "windows")]
+{
+    ui.add_space(12.0);
+    ui.separator();
+    ui.heading("Raspberry Pi Pico BOOTSEL Devices");
+    ui.add_space(6.0);
+
+    if self.hardware_pico_devices.is_empty() {
+        ui.label("No Pico BOOTSEL devices detected.");
+    } else {
+       for device in &self.hardware_pico_devices {
+    ui.group(|ui| {
+        let selected = self.hardware_selected_pico_drive
+            .as_ref() == Some(&device.drive_path);
+
+        let drive_label = format!(
+            "Pico BOOTSEL — {}",
+            device.drive_path.display()
+        );
+
+        if ui.radio(selected, drive_label).clicked() {
+            if selected {
+                self.hardware_selected_pico_drive = None;
+            } else {
+                self.hardware_selected_pico_drive =
+                    Some(device.drive_path.clone());
+
+                // Only one hardware target may be selected.
+                self.hardware_selected_serial_port = None;
+            }
+            self.hardware_validation_result = None;
+self.hardware_flash_confirmation_open = false;
+self.hardware_flash_result = None;
+        }
+
+        ui.label(format!(
+            "Drive: {}",
+            device.drive_path.display()
+        ));
+
+                let board_name = match device.board {
+                    crate::hardware::PicoBoard::Rp2040 => "RP2040",
+                    crate::hardware::PicoBoard::Rp2350 => "RP2350",
+                };
+
+                ui.label(format!("Board: {board_name}"));
+                ui.label("Status: BOOTSEL mode");
+            });
+
+            ui.add_space(5.0);
+        }
+    }
+}
+        });
+}
+
+ctx.data_mut(|d| {
+    d.insert_temp(hardware_window_id, hardware_open);
 });
 // P3: Confirm before closing a modified document tab.
 if let Some(document_id) = self.pending_close_tab {

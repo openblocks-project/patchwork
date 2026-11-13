@@ -26,6 +26,7 @@ mod serial;
 mod settings;
 mod document;
 mod library;
+mod hardware;
 pub mod system_log;
 pub mod transport;
 

@@ -59,6 +59,8 @@ opus = "0.3.1"
 # source bytes for the `~/.patchwork/trusted_plugins.json` allow-list.
 # Already a transitive dep via iroh/webrtc; this line just makes it direct.
 sha2 = "0.10"
+# Verify ESP-IDF partition-table MD5 checksum entries.
+md-5 = "0.10"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.5"
@@ -110,3 +112,4 @@ info-plist-path = "assets/macos/Info.plist"
 
 [package.metadata.packager.nsis]
 installer-mode = "both"
+
