@@ -17,18 +17,18 @@ use std::sync::Arc;
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
 pub struct GpuMeshHandle {
     pub node_id: NodeId,
-    pub port:    usize,
+    pub port: usize,
     pub vertex_count: u32,
-    pub index_count:  u32,
-    pub frame_stamp:  u64,
+    pub index_count: u32,
+    pub frame_stamp: u64,
 }
 
 pub struct CachedMesh {
     pub vertex_buffer: wgpu::Buffer,
-    pub index_buffer:  wgpu::Buffer,
-    pub vertex_count:  u32,
-    pub index_count:   u32,
-    pub frame:         u64,
+    pub index_buffer: wgpu::Buffer,
+    pub vertex_count: u32,
+    pub index_count: u32,
+    pub frame: u64,
 }
 
 pub struct GpuMeshCache {
@@ -40,7 +40,10 @@ pub struct GpuMeshCache {
 
 impl GpuMeshCache {
     pub fn new() -> Self {
-        Self { entries: HashMap::new(), current_frame: 0 }
+        Self {
+            entries: HashMap::new(),
+            current_frame: 0,
+        }
     }
 
     pub fn begin_frame(&mut self) {
@@ -49,14 +52,12 @@ impl GpuMeshCache {
         self.entries.retain(|_, v| cf - v.frame <= 2);
     }
 
-    pub fn current_frame(&self) -> u64 { self.current_frame }
+    pub fn current_frame(&self) -> u64 {
+        self.current_frame
+    }
 
     /// Upload `mesh` if not already cached for this frame, return the cached entry.
-    pub fn get_or_upload(
-        &mut self,
-        device: &wgpu::Device,
-        mesh: &Arc<MeshData>,
-    ) -> &CachedMesh {
+    pub fn get_or_upload(&mut self, device: &wgpu::Device, mesh: &Arc<MeshData>) -> &CachedMesh {
         let key = Arc::as_ptr(mesh) as usize;
         let cf = self.current_frame;
 
@@ -75,7 +76,7 @@ impl GpuMeshCache {
                 vertex_buffer,
                 index_buffer,
                 vertex_count: mesh.vertices.len() as u32,
-                index_count:  mesh.indices.len() as u32,
+                index_count: mesh.indices.len() as u32,
                 frame: cf,
             };
             self.entries.insert(key, cached);

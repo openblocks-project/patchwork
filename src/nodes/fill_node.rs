@@ -1,8 +1,8 @@
-use eframe::egui::{self, RichText, Sense};
-use crate::nodes::ScrollAreaExt;
-use std::sync::Arc;
 use crate::graph::{ImageData, PortDef, PortKind, PortValue};
 use crate::node_trait::{NodeBehavior, RenderContext};
+use crate::nodes::ScrollAreaExt;
+use eframe::egui::{self, RichText, Sense};
+use std::sync::Arc;
 
 // ── Fill Node ────────────────────────────────────────────────────────────────
 //
@@ -17,12 +17,18 @@ use crate::node_trait::{NodeBehavior, RenderContext};
 //   Out 0: Image  (generated fill)
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-enum FillType { Solid, Linear, Radial, Diamond, Tile }
+enum FillType {
+    Solid,
+    Linear,
+    Radial,
+    Diamond,
+    Tile,
+}
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct GradientStop {
-    position: f32,    // 0.0–1.0
-    color: [u8; 4],   // RGBA
+    position: f32,  // 0.0–1.0
+    color: [u8; 4], // RGBA
 }
 
 #[derive(Debug, Clone)]
@@ -44,8 +50,14 @@ impl Default for FillNode {
             fill_type: FillType::Solid,
             color: [255, 255, 255, 255],
             stops: vec![
-                GradientStop { position: 0.0, color: [217, 217, 217, 255] },
-                GradientStop { position: 1.0, color: [115, 115, 115, 255] },
+                GradientStop {
+                    position: 0.0,
+                    color: [217, 217, 217, 255],
+                },
+                GradientStop {
+                    position: 1.0,
+                    color: [115, 115, 115, 255],
+                },
             ],
             angle: 0.0,
             tile_scale: 1.0,
@@ -60,7 +72,9 @@ impl Default for FillNode {
 // ── Gradient sampling ────────────────────────────────────────────────────────
 
 fn sample_gradient(stops: &[GradientStop], t: f32) -> (u8, u8, u8, u8) {
-    if stops.is_empty() { return (0, 0, 0, 255); }
+    if stops.is_empty() {
+        return (0, 0, 0, 255);
+    }
     if stops.len() == 1 {
         let c = &stops[0].color;
         return (c[0], c[1], c[2], c[3]);
@@ -82,13 +96,17 @@ fn sample_gradient(stops: &[GradientStop], t: f32) -> (u8, u8, u8, u8) {
     let f = ((t - left.position) / span).clamp(0.0, 1.0);
 
     let lerp = |a: u8, b: u8| -> u8 {
-        (a as f32 + (b as f32 - a as f32) * f).round().clamp(0.0, 255.0) as u8
+        (a as f32 + (b as f32 - a as f32) * f)
+            .round()
+            .clamp(0.0, 255.0) as u8
     };
 
-    (lerp(left.color[0], right.color[0]),
-     lerp(left.color[1], right.color[1]),
-     lerp(left.color[2], right.color[2]),
-     lerp(left.color[3], right.color[3]))
+    (
+        lerp(left.color[0], right.color[0]),
+        lerp(left.color[1], right.color[1]),
+        lerp(left.color[2], right.color[2]),
+        lerp(left.color[3], right.color[3]),
+    )
 }
 
 // ── Image generation ─────────────────────────────────────────────────────────
@@ -105,12 +123,16 @@ fn alloc_pixel_buf(w: u32, h: u32) -> Vec<u8> {
     let bytes = (w * h * 4) as usize;
     let mut v: Vec<u8> = Vec::with_capacity(bytes);
     // SAFETY: each generator writes every output u32 below.
-    unsafe { v.set_len(bytes); }
+    unsafe {
+        v.set_len(bytes);
+    }
     v
 }
 
 fn generate_solid(w: u32, h: u32, color: [u8; 4]) -> Arc<ImageData> {
-    Arc::new(ImageData::solid(w, h, color[0], color[1], color[2], color[3]))
+    Arc::new(ImageData::solid(
+        w, h, color[0], color[1], color[2], color[3],
+    ))
 }
 
 fn generate_linear(w: u32, h: u32, stops: &[GradientStop], angle_deg: f32) -> Arc<ImageData> {
@@ -202,16 +224,26 @@ fn generate_tile(w: u32, h: u32, src: &ImageData, scale: f32) -> Arc<ImageData> 
 // ── NodeBehavior ──────────────────────────────────────────────────────────────
 
 impl NodeBehavior for FillNode {
-    fn title(&self)      -> &str   { "Fill" }
-    fn type_tag(&self)   -> &str   { "fill" }
-    fn color_hint(&self) -> [u8;3] { [200, 140, 240] }
-    fn min_width(&self)  -> Option<f32> { Some(220.0) }
-    fn inline_ports(&self) -> bool { true }
+    fn title(&self) -> &str {
+        "Fill"
+    }
+    fn type_tag(&self) -> &str {
+        "fill"
+    }
+    fn color_hint(&self) -> [u8; 3] {
+        [200, 140, 240]
+    }
+    fn min_width(&self) -> Option<f32> {
+        Some(220.0)
+    }
+    fn inline_ports(&self) -> bool {
+        true
+    }
 
     fn inputs(&self) -> Vec<PortDef> {
         vec![
-            PortDef::new("Image",  PortKind::Image),
-            PortDef::new("Width",  PortKind::Number),
+            PortDef::new("Image", PortKind::Image),
+            PortDef::new("Width", PortKind::Number),
             PortDef::new("Height", PortKind::Number),
         ]
     }
@@ -230,53 +262,120 @@ impl NodeBehavior for FillNode {
 
     fn render_with_context(&mut self, ui: &mut egui::Ui, ctx: &mut RenderContext) {
         let node_id = ctx.node_id;
-        let dim  = egui::Color32::from_rgb(110, 110, 120);
+        let dim = egui::Color32::from_rgb(110, 110, 120);
         let blue = egui::Color32::from_rgb(100, 180, 240);
 
         // ── Input ports ──────────────────────────────────────────────────
         // Image input (for Tile source / size matching)
-        let img_connected = ctx.connections.iter().any(|c| c.to_node == node_id && c.to_port == 0);
+        let img_connected = ctx
+            .connections
+            .iter()
+            .any(|c| c.to_node == node_id && c.to_port == 0);
         ui.horizontal(|ui| {
-            crate::nodes::inline_port_circle(ui, node_id, 0, true,
-                ctx.connections, ctx.port_positions,
-                ctx.dragging_from, ctx.pending_disconnects, PortKind::Image);
+            crate::nodes::inline_port_circle(
+                ui,
+                node_id,
+                0,
+                true,
+                ctx.connections,
+                ctx.port_positions,
+                ctx.dragging_from,
+                ctx.pending_disconnects,
+                PortKind::Image,
+            );
             let lbl = if img_connected { "Image ✓" } else { "Image" };
-            ui.label(RichText::new(lbl).small().color(if img_connected { blue } else { dim }));
+            ui.label(
+                RichText::new(lbl)
+                    .small()
+                    .color(if img_connected { blue } else { dim }),
+            );
         });
 
         // Width / Height inputs
-        let w_connected = ctx.connections.iter().any(|c| c.to_node == node_id && c.to_port == 1);
-        let h_connected = ctx.connections.iter().any(|c| c.to_node == node_id && c.to_port == 2);
+        let w_connected = ctx
+            .connections
+            .iter()
+            .any(|c| c.to_node == node_id && c.to_port == 1);
+        let h_connected = ctx
+            .connections
+            .iter()
+            .any(|c| c.to_node == node_id && c.to_port == 2);
         ui.horizontal(|ui| {
-            crate::nodes::inline_port_circle(ui, node_id, 1, true,
-                ctx.connections, ctx.port_positions,
-                ctx.dragging_from, ctx.pending_disconnects, PortKind::Number);
+            crate::nodes::inline_port_circle(
+                ui,
+                node_id,
+                1,
+                true,
+                ctx.connections,
+                ctx.port_positions,
+                ctx.dragging_from,
+                ctx.pending_disconnects,
+                PortKind::Number,
+            );
             ui.label(RichText::new("W").small().color(dim));
             if !w_connected {
                 let mut w = self.default_width as f32;
-                if ui.add(egui::DragValue::new(&mut w).speed(1.0).range(1.0..=4096.0).max_decimals(0)).changed() {
+                if ui
+                    .add(
+                        egui::DragValue::new(&mut w)
+                            .speed(1.0)
+                            .range(1.0..=4096.0)
+                            .max_decimals(0),
+                    )
+                    .changed()
+                {
                     self.default_width = w as u32;
                     self.dirty = true;
                 }
             } else {
-                let v = crate::graph::Graph::static_input_value(ctx.connections, ctx.values, node_id, 1);
-                if let PortValue::Float(f) = v { ui.label(RichText::new(format!("{:.0}", f)).small().monospace()); }
+                let v = crate::graph::Graph::static_input_value(
+                    ctx.connections,
+                    ctx.values,
+                    node_id,
+                    1,
+                );
+                if let PortValue::Float(f) = v {
+                    ui.label(RichText::new(format!("{:.0}", f)).small().monospace());
+                }
             }
 
             ui.add_space(8.0);
-            crate::nodes::inline_port_circle(ui, node_id, 2, true,
-                ctx.connections, ctx.port_positions,
-                ctx.dragging_from, ctx.pending_disconnects, PortKind::Number);
+            crate::nodes::inline_port_circle(
+                ui,
+                node_id,
+                2,
+                true,
+                ctx.connections,
+                ctx.port_positions,
+                ctx.dragging_from,
+                ctx.pending_disconnects,
+                PortKind::Number,
+            );
             ui.label(RichText::new("H").small().color(dim));
             if !h_connected {
                 let mut h = self.default_height as f32;
-                if ui.add(egui::DragValue::new(&mut h).speed(1.0).range(1.0..=4096.0).max_decimals(0)).changed() {
+                if ui
+                    .add(
+                        egui::DragValue::new(&mut h)
+                            .speed(1.0)
+                            .range(1.0..=4096.0)
+                            .max_decimals(0),
+                    )
+                    .changed()
+                {
                     self.default_height = h as u32;
                     self.dirty = true;
                 }
             } else {
-                let v = crate::graph::Graph::static_input_value(ctx.connections, ctx.values, node_id, 2);
-                if let PortValue::Float(f) = v { ui.label(RichText::new(format!("{:.0}", f)).small().monospace()); }
+                let v = crate::graph::Graph::static_input_value(
+                    ctx.connections,
+                    ctx.values,
+                    node_id,
+                    2,
+                );
+                if let PortValue::Float(f) = v {
+                    ui.label(RichText::new(format!("{:.0}", f)).small().monospace());
+                }
             }
         });
 
@@ -287,11 +386,11 @@ impl NodeBehavior for FillNode {
         // ── Fill type selector ───────────────────────────────────────────
         ui.horizontal(|ui| {
             let types = [
-                (FillType::Solid,   "Solid"),
-                (FillType::Linear,  "Linear"),
-                (FillType::Radial,  "Radial"),
+                (FillType::Solid, "Solid"),
+                (FillType::Linear, "Linear"),
+                (FillType::Radial, "Radial"),
                 (FillType::Diamond, "Diamond"),
-                (FillType::Tile,    "Tile"),
+                (FillType::Tile, "Tile"),
             ];
             for (ft, label) in &types {
                 let selected = self.fill_type == *ft;
@@ -310,20 +409,38 @@ impl NodeBehavior for FillNode {
             FillType::Solid => {
                 ui.horizontal(|ui| {
                     let mut c = egui::Color32::from_rgba_unmultiplied(
-                        self.color[0], self.color[1], self.color[2], self.color[3]);
+                        self.color[0],
+                        self.color[1],
+                        self.color[2],
+                        self.color[3],
+                    );
                     if ui.color_edit_button_srgba(&mut c).changed() {
                         let a = c.to_array();
                         self.color = [a[0], a[1], a[2], a[3]];
                         self.dirty = true;
                     }
-                    ui.label(RichText::new(format!("#{:02X}{:02X}{:02X}",
-                        self.color[0], self.color[1], self.color[2])).small().monospace());
+                    ui.label(
+                        RichText::new(format!(
+                            "#{:02X}{:02X}{:02X}",
+                            self.color[0], self.color[1], self.color[2]
+                        ))
+                        .small()
+                        .monospace(),
+                    );
 
                     // Opacity
                     let mut opacity = self.color[3] as f32 / 255.0 * 100.0;
                     ui.label(RichText::new("α").small().color(dim));
-                    if ui.add(egui::DragValue::new(&mut opacity)
-                        .speed(0.5).range(0.0..=100.0).suffix("%").max_decimals(0)).changed() {
+                    if ui
+                        .add(
+                            egui::DragValue::new(&mut opacity)
+                                .speed(0.5)
+                                .range(0.0..=100.0)
+                                .suffix("%")
+                                .max_decimals(0),
+                        )
+                        .changed()
+                    {
                         self.color[3] = (opacity / 100.0 * 255.0).round() as u8;
                         self.dirty = true;
                     }
@@ -334,8 +451,8 @@ impl NodeBehavior for FillNode {
                 // ── Gradient preview bar ──────────────────────────────────
                 let bar_w = ui.available_width().max(100.0);
                 let bar_h = 24.0;
-                let (bar_rect, _bar_resp) = ui.allocate_exact_size(
-                    egui::vec2(bar_w, bar_h), Sense::hover());
+                let (bar_rect, _bar_resp) =
+                    ui.allocate_exact_size(egui::vec2(bar_w, bar_h), Sense::hover());
                 let painter = ui.painter_at(bar_rect);
 
                 // Checkerboard background (for alpha)
@@ -348,22 +465,36 @@ impl NodeBehavior for FillNode {
                     let (r, g, b, a) = sample_gradient(&self.stops, t);
                     let x = bar_rect.left() + px as f32;
                     painter.line_segment(
-                        [egui::pos2(x, bar_rect.top()), egui::pos2(x, bar_rect.bottom())],
-                        egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(r, g, b, a)));
+                        [
+                            egui::pos2(x, bar_rect.top()),
+                            egui::pos2(x, bar_rect.bottom()),
+                        ],
+                        egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(r, g, b, a)),
+                    );
                 }
 
-                painter.rect_stroke(bar_rect, 3.0,
+                painter.rect_stroke(
+                    bar_rect,
+                    3.0,
                     egui::Stroke::new(1.0, egui::Color32::from_rgb(60, 65, 75)),
-                    egui::StrokeKind::Outside);
+                    egui::StrokeKind::Outside,
+                );
 
                 // Stop markers (small triangles below the bar)
                 for stop in &self.stops {
                     let sx = bar_rect.left() + stop.position * bar_rect.width();
                     let sc = egui::Color32::from_rgba_unmultiplied(
-                        stop.color[0], stop.color[1], stop.color[2], stop.color[3]);
+                        stop.color[0],
+                        stop.color[1],
+                        stop.color[2],
+                        stop.color[3],
+                    );
                     painter.circle_filled(egui::pos2(sx, bar_rect.bottom()), 4.0, sc);
-                    painter.circle_stroke(egui::pos2(sx, bar_rect.bottom()), 4.0,
-                        egui::Stroke::new(1.0, egui::Color32::WHITE));
+                    painter.circle_stroke(
+                        egui::pos2(sx, bar_rect.bottom()),
+                        4.0,
+                        egui::Stroke::new(1.0, egui::Color32::WHITE),
+                    );
                 }
 
                 ui.add_space(6.0);
@@ -372,8 +503,16 @@ impl NodeBehavior for FillNode {
                 if self.fill_type == FillType::Linear {
                     ui.horizontal(|ui| {
                         ui.label(RichText::new("Angle").small().color(dim));
-                        if ui.add(egui::DragValue::new(&mut self.angle)
-                            .speed(1.0).range(0.0..=360.0).suffix("°").max_decimals(0)).changed() {
+                        if ui
+                            .add(
+                                egui::DragValue::new(&mut self.angle)
+                                    .speed(1.0)
+                                    .range(0.0..=360.0)
+                                    .suffix("°")
+                                    .max_decimals(0),
+                            )
+                            .changed()
+                        {
                             self.dirty = true;
                         }
                     });
@@ -384,15 +523,29 @@ impl NodeBehavior for FillNode {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("Stops").small().strong().color(dim));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.small_button(RichText::new("+").color(egui::Color32::from_rgb(80, 210, 120))).clicked() {
+                        if ui
+                            .small_button(
+                                RichText::new("+").color(egui::Color32::from_rgb(80, 210, 120)),
+                            )
+                            .clicked()
+                        {
                             // Insert new stop at midpoint
                             let mid = if self.stops.len() >= 2 {
                                 let last = self.stops.len() - 1;
                                 (self.stops[last - 1].position + self.stops[last].position) / 2.0
-                            } else { 0.5 };
+                            } else {
+                                0.5
+                            };
                             let (r, g, b, a) = sample_gradient(&self.stops, mid);
-                            self.stops.push(GradientStop { position: mid, color: [r, g, b, a] });
-                            self.stops.sort_by(|a, b| a.position.partial_cmp(&b.position).unwrap_or(std::cmp::Ordering::Equal));
+                            self.stops.push(GradientStop {
+                                position: mid,
+                                color: [r, g, b, a],
+                            });
+                            self.stops.sort_by(|a, b| {
+                                a.position
+                                    .partial_cmp(&b.position)
+                                    .unwrap_or(std::cmp::Ordering::Equal)
+                            });
                             self.dirty = true;
                         }
                     });
@@ -409,15 +562,26 @@ impl NodeBehavior for FillNode {
                             ui.horizontal(|ui| {
                                 // Position
                                 let mut pct = stop.position * 100.0;
-                                if ui.add(egui::DragValue::new(&mut pct)
-                                    .speed(0.5).range(0.0..=100.0).suffix("%")
-                                    .max_decimals(0)).changed() {
+                                if ui
+                                    .add(
+                                        egui::DragValue::new(&mut pct)
+                                            .speed(0.5)
+                                            .range(0.0..=100.0)
+                                            .suffix("%")
+                                            .max_decimals(0),
+                                    )
+                                    .changed()
+                                {
                                     stop.position = (pct / 100.0).clamp(0.0, 1.0);
                                 }
 
                                 // Color swatch
                                 let mut c = egui::Color32::from_rgba_unmultiplied(
-                                    stop.color[0], stop.color[1], stop.color[2], stop.color[3]);
+                                    stop.color[0],
+                                    stop.color[1],
+                                    stop.color[2],
+                                    stop.color[3],
+                                );
                                 if ui.color_edit_button_srgba(&mut c).changed() {
                                     let arr = c.to_array();
                                     stop.color = [arr[0], arr[1], arr[2], arr[3]];
@@ -425,16 +589,28 @@ impl NodeBehavior for FillNode {
 
                                 // Opacity
                                 let mut op = stop.color[3] as f32 / 255.0 * 100.0;
-                                if ui.add(egui::DragValue::new(&mut op)
-                                    .speed(0.5).range(0.0..=100.0).suffix("%")
-                                    .max_decimals(0)).changed() {
+                                if ui
+                                    .add(
+                                        egui::DragValue::new(&mut op)
+                                            .speed(0.5)
+                                            .range(0.0..=100.0)
+                                            .suffix("%")
+                                            .max_decimals(0),
+                                    )
+                                    .changed()
+                                {
                                     stop.color[3] = (op / 100.0 * 255.0).round() as u8;
                                 }
 
                                 // Remove button (disabled if ≤2 stops)
                                 ui.add_enabled_ui(num_stops > 2, |ui| {
-                                    if ui.small_button(RichText::new("−")
-                                        .color(egui::Color32::from_rgb(220, 80, 80))).clicked() {
+                                    if ui
+                                        .small_button(
+                                            RichText::new("−")
+                                                .color(egui::Color32::from_rgb(220, 80, 80)),
+                                        )
+                                        .clicked()
+                                    {
                                         remove_idx = Some(i);
                                     }
                                 });
@@ -452,7 +628,11 @@ impl NodeBehavior for FillNode {
                 let mut sorted2 = sorted.clone();
                 sorted2.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
                 if sorted != sorted2 {
-                    self.stops.sort_by(|a, b| a.position.partial_cmp(&b.position).unwrap_or(std::cmp::Ordering::Equal));
+                    self.stops.sort_by(|a, b| {
+                        a.position
+                            .partial_cmp(&b.position)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    });
                 }
                 // Always mark dirty after gradient edits (colors might have changed)
                 // The dirty flag is set per-field above; we also catch color changes here
@@ -463,15 +643,30 @@ impl NodeBehavior for FillNode {
 
             FillType::Tile => {
                 if !img_connected {
-                    ui.label(RichText::new("Connect an image input").small().color(dim).italics());
+                    ui.label(
+                        RichText::new("Connect an image input")
+                            .small()
+                            .color(dim)
+                            .italics(),
+                    );
                 } else {
-                    ui.label(RichText::new("Tile source ✓").small()
-                        .color(egui::Color32::from_rgb(80, 200, 120)));
+                    ui.label(
+                        RichText::new("Tile source ✓")
+                            .small()
+                            .color(egui::Color32::from_rgb(80, 200, 120)),
+                    );
                 }
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("Scale").small().color(dim));
-                    if ui.add(egui::DragValue::new(&mut self.tile_scale)
-                        .speed(0.05).range(0.1..=10.0).max_decimals(2)).changed() {
+                    if ui
+                        .add(
+                            egui::DragValue::new(&mut self.tile_scale)
+                                .speed(0.05)
+                                .range(0.1..=10.0)
+                                .max_decimals(2),
+                        )
+                        .changed()
+                    {
                         self.dirty = true;
                     }
                 });
@@ -485,18 +680,39 @@ impl NodeBehavior for FillNode {
         // ── Generate image ───────────────────────────────────────────────
         // Determine output size
         let input_img = if img_connected {
-            let v = crate::graph::Graph::static_input_value(ctx.connections, ctx.values, node_id, 0);
-            if let PortValue::Image(img) = v { Some(img) } else { None }
-        } else { None };
+            let v =
+                crate::graph::Graph::static_input_value(ctx.connections, ctx.values, node_id, 0);
+            if let PortValue::Image(img) = v {
+                Some(img)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
 
         let w_override = if w_connected {
-            let v = crate::graph::Graph::static_input_value(ctx.connections, ctx.values, node_id, 1);
-            if let PortValue::Float(f) = v { Some((f as u32).max(1).min(4096)) } else { None }
-        } else { None };
+            let v =
+                crate::graph::Graph::static_input_value(ctx.connections, ctx.values, node_id, 1);
+            if let PortValue::Float(f) = v {
+                Some((f as u32).max(1).min(4096))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         let h_override = if h_connected {
-            let v = crate::graph::Graph::static_input_value(ctx.connections, ctx.values, node_id, 2);
-            if let PortValue::Float(f) = v { Some((f as u32).max(1).min(4096)) } else { None }
-        } else { None };
+            let v =
+                crate::graph::Graph::static_input_value(ctx.connections, ctx.values, node_id, 2);
+            if let PortValue::Float(f) = v {
+                Some((f as u32).max(1).min(4096))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
 
         let out_w = w_override
             .or_else(|| input_img.as_ref().map(|img| img.width))
@@ -506,17 +722,19 @@ impl NodeBehavior for FillNode {
             .unwrap_or(self.default_height);
 
         // Regenerate if dirty or size changed
-        let size_changed = self.cached_image.as_ref()
+        let size_changed = self
+            .cached_image
+            .as_ref()
             .map(|img| img.width != out_w || img.height != out_h)
             .unwrap_or(true);
 
         if self.dirty || size_changed {
             self.cached_image = Some(match self.fill_type {
-                FillType::Solid   => generate_solid(out_w, out_h, self.color),
-                FillType::Linear  => generate_linear(out_w, out_h, &self.stops, self.angle),
-                FillType::Radial  => generate_radial(out_w, out_h, &self.stops),
+                FillType::Solid => generate_solid(out_w, out_h, self.color),
+                FillType::Linear => generate_linear(out_w, out_h, &self.stops, self.angle),
+                FillType::Radial => generate_radial(out_w, out_h, &self.stops),
                 FillType::Diamond => generate_diamond(out_w, out_h, &self.stops),
-                FillType::Tile    => {
+                FillType::Tile => {
                     if let Some(ref src) = input_img {
                         generate_tile(out_w, out_h, src, self.tile_scale)
                     } else {
@@ -528,13 +746,29 @@ impl NodeBehavior for FillNode {
         }
 
         // Size info
-        ui.label(RichText::new(format!("{}×{}", out_w, out_h)).small().color(dim));
+        ui.label(
+            RichText::new(format!("{}×{}", out_w, out_h))
+                .small()
+                .color(dim),
+        );
 
         // ── Output port ──────────────────────────────────────────────────
-        crate::nodes::output_port_row(ui, "Image",
-            if self.cached_image.is_some() { "✓" } else { "none" }, node_id, 0,
-            ctx.port_positions, ctx.dragging_from, ctx.connections, ctx.pending_disconnects,
-            PortKind::Image);
+        crate::nodes::output_port_row(
+            ui,
+            "Image",
+            if self.cached_image.is_some() {
+                "✓"
+            } else {
+                "none"
+            },
+            node_id,
+            0,
+            ctx.port_positions,
+            ctx.dragging_from,
+            ctx.connections,
+            ctx.pending_disconnects,
+            PortKind::Image,
+        );
     }
 
     fn save_state(&self) -> serde_json::Value {
@@ -561,11 +795,11 @@ impl NodeBehavior for FillNode {
     fn load_state(&mut self, state: &serde_json::Value) {
         if let Some(ft) = state.get("fill_type").and_then(|v| v.as_str()) {
             self.fill_type = match ft {
-                "linear"  => FillType::Linear,
-                "radial"  => FillType::Radial,
+                "linear" => FillType::Linear,
+                "radial" => FillType::Radial,
                 "diamond" => FillType::Diamond,
-                "tile"    => FillType::Tile,
-                _         => FillType::Solid,
+                "tile" => FillType::Tile,
+                _ => FillType::Solid,
             };
         }
         if let Some(c) = state.get("color").and_then(|v| v.as_array()) {
@@ -579,26 +813,39 @@ impl NodeBehavior for FillNode {
             }
         }
         if let Some(stops) = state.get("stops").and_then(|v| v.as_array()) {
-            self.stops = stops.iter().filter_map(|s| {
-                let pos = s.get("position")?.as_f64()? as f32;
-                let c = s.get("color")?.as_array()?;
-                if c.len() >= 4 {
-                    Some(GradientStop {
-                        position: pos,
-                        color: [
-                            c[0].as_u64()? as u8,
-                            c[1].as_u64()? as u8,
-                            c[2].as_u64()? as u8,
-                            c[3].as_u64()? as u8,
-                        ],
-                    })
-                } else { None }
-            }).collect();
+            self.stops = stops
+                .iter()
+                .filter_map(|s| {
+                    let pos = s.get("position")?.as_f64()? as f32;
+                    let c = s.get("color")?.as_array()?;
+                    if c.len() >= 4 {
+                        Some(GradientStop {
+                            position: pos,
+                            color: [
+                                c[0].as_u64()? as u8,
+                                c[1].as_u64()? as u8,
+                                c[2].as_u64()? as u8,
+                                c[3].as_u64()? as u8,
+                            ],
+                        })
+                    } else {
+                        None
+                    }
+                })
+                .collect();
         }
-        if let Some(v) = state.get("angle").and_then(|v| v.as_f64()) { self.angle = v as f32; }
-        if let Some(v) = state.get("tile_scale").and_then(|v| v.as_f64()) { self.tile_scale = v as f32; }
-        if let Some(v) = state.get("default_width").and_then(|v| v.as_u64()) { self.default_width = v as u32; }
-        if let Some(v) = state.get("default_height").and_then(|v| v.as_u64()) { self.default_height = v as u32; }
+        if let Some(v) = state.get("angle").and_then(|v| v.as_f64()) {
+            self.angle = v as f32;
+        }
+        if let Some(v) = state.get("tile_scale").and_then(|v| v.as_f64()) {
+            self.tile_scale = v as f32;
+        }
+        if let Some(v) = state.get("default_width").and_then(|v| v.as_u64()) {
+            self.default_width = v as u32;
+        }
+        if let Some(v) = state.get("default_height").and_then(|v| v.as_u64()) {
+            self.default_height = v as u32;
+        }
         self.dirty = true;
     }
 }

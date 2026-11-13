@@ -111,18 +111,40 @@ pub struct FrameRecorderNode {
 
 // 93.75 Hz = 48000 / SPECTRUM_HOP_SIZE (512). Matches the Spectrum analyzer's
 // new overlap FFT rate so Scroll-mode recording catches every column.
-fn default_base_fps() -> f32 { 93.75 }
-fn default_speed() -> f32 { 1.0 }
-fn default_true() -> bool { true }
-fn default_scroll_w() -> u32 { 512 }
+fn default_base_fps() -> f32 {
+    93.75
+}
+fn default_speed() -> f32 {
+    1.0
+}
+fn default_true() -> bool {
+    true
+}
+fn default_scroll_w() -> u32 {
+    512
+}
 // 256 = SPECTRUM_BINS. One row per bin keeps the round-trip lossless vertically.
-fn default_scroll_h() -> u32 { 256 }
-fn default_stride() -> u32 { 1 }
-fn default_strip_cols() -> u32 { 8 }
-fn default_strip_rows() -> u32 { 6 }
-fn default_cell_w() -> u32 { 128 }
-fn default_cell_h() -> u32 { 72 }
-fn default_max_frames() -> usize { 64 }
+fn default_scroll_h() -> u32 {
+    256
+}
+fn default_stride() -> u32 {
+    1
+}
+fn default_strip_cols() -> u32 {
+    8
+}
+fn default_strip_rows() -> u32 {
+    6
+}
+fn default_cell_w() -> u32 {
+    128
+}
+fn default_cell_h() -> u32 {
+    72
+}
+fn default_max_frames() -> usize {
+    64
+}
 
 impl Default for FrameRecorderNode {
     fn default() -> Self {
@@ -216,10 +238,8 @@ impl FrameRecorderNode {
         for y in 0..ch {
             let row_start = y * row_bytes;
             // Move bytes [stride..cw] → [0..cw-stride]
-            self.scroll_canvas.copy_within(
-                row_start + stride_bytes..row_start + row_bytes,
-                row_start,
-            );
+            self.scroll_canvas
+                .copy_within(row_start + stride_bytes..row_start + row_bytes, row_start);
             // Zero the rightmost `stride` pixels (about to be filled)
             self.scroll_canvas[row_start + keep_bytes..row_start + row_bytes].fill(0);
         }
@@ -429,10 +449,7 @@ impl NodeBehavior for FrameRecorderNode {
         // Port reads. Unconnected inputs arrive as PortValue::None — we use
         // that to decide whether to honour the Rec port or the manual toggle.
         let rec_wired = !matches!(inputs.get(1), Some(PortValue::None) | None);
-        let rec_gate = inputs
-            .get(1)
-            .map(|v| v.as_float())
-            .unwrap_or(0.0);
+        let rec_gate = inputs.get(1).map(|v| v.as_float()).unwrap_or(0.0);
         let speed_override = match inputs.get(2) {
             Some(PortValue::Float(f)) => Some(*f),
             _ => None,
@@ -441,10 +458,7 @@ impl NodeBehavior for FrameRecorderNode {
             Some(PortValue::Float(f)) => Some(f.clamp(0.0, 1.0)),
             _ => None,
         };
-        let clear_in = inputs
-            .get(4)
-            .map(|v| v.as_float())
-            .unwrap_or(0.0);
+        let clear_in = inputs.get(4).map(|v| v.as_float()).unwrap_or(0.0);
 
         // Clear: rising-edge trigger
         if clear_in > 0.5 && self.last_clear_input <= 0.5 {
@@ -473,7 +487,11 @@ impl NodeBehavior for FrameRecorderNode {
         // Cap catch-up
         steps_owed = steps_owed.min(8);
 
-        let is_recording = if rec_wired { rec_gate > 0.5 } else { self.manual_rec };
+        let is_recording = if rec_wired {
+            rec_gate > 0.5
+        } else {
+            self.manual_rec
+        };
 
         // Extract input image (CPU path). Also stash it in `latest_input`
         // so the node UI can show a live preview of the incoming stream
@@ -579,7 +597,11 @@ impl NodeBehavior for FrameRecorderNode {
         let node_id = ctx.node_id;
         let dim = egui::Color32::from_rgb(110, 110, 120);
         let blue = egui::Color32::from_rgb(80, 170, 255);
-        let accent = egui::Color32::from_rgb(self.color_hint()[0], self.color_hint()[1], self.color_hint()[2]);
+        let accent = egui::Color32::from_rgb(
+            self.color_hint()[0],
+            self.color_hint()[1],
+            self.color_hint()[2],
+        );
 
         // ── Mode selector ───────────────────────────────────────────
         let prev_mode = self.mode;
@@ -627,25 +649,45 @@ impl NodeBehavior for FrameRecorderNode {
         // ── Input ports ─────────────────────────────────────────────
         ui.horizontal(|ui| {
             crate::nodes::inline_port_circle(
-                ui, node_id, 0, true, ctx.connections,
-                ctx.port_positions, ctx.dragging_from, ctx.pending_disconnects,
+                ui,
+                node_id,
+                0,
+                true,
+                ctx.connections,
+                ctx.port_positions,
+                ctx.dragging_from,
+                ctx.pending_disconnects,
                 PortKind::Image,
             );
             ui.label(egui::RichText::new("Image").small().color(dim));
         });
 
-        let rec_wired = ctx.connections.iter().any(|c| c.to_node == node_id && c.to_port == 1);
+        let rec_wired = ctx
+            .connections
+            .iter()
+            .any(|c| c.to_node == node_id && c.to_port == 1);
         let rec_val = if rec_wired {
-            crate::graph::Graph::static_input_value(ctx.connections, ctx.values, node_id, 1).as_float()
+            crate::graph::Graph::static_input_value(ctx.connections, ctx.values, node_id, 1)
+                .as_float()
         } else {
             0.0
         };
-        let rec_active = if rec_wired { rec_val > 0.5 } else { self.manual_rec };
+        let rec_active = if rec_wired {
+            rec_val > 0.5
+        } else {
+            self.manual_rec
+        };
         let rec_red = egui::Color32::from_rgb(255, 80, 80);
         ui.horizontal(|ui| {
             crate::nodes::inline_port_circle(
-                ui, node_id, 1, true, ctx.connections,
-                ctx.port_positions, ctx.dragging_from, ctx.pending_disconnects,
+                ui,
+                node_id,
+                1,
+                true,
+                ctx.connections,
+                ctx.port_positions,
+                ctx.dragging_from,
+                ctx.pending_disconnects,
                 PortKind::Gate,
             );
             let label = if rec_active { "● Rec" } else { "Rec" };
@@ -656,28 +698,50 @@ impl NodeBehavior for FrameRecorderNode {
                 // so the user sees the affordance even while the port is wired.
                 ui.add_enabled(
                     false,
-                    egui::Button::new(egui::RichText::new(if rec_active { "■" } else { "●" }).small()),
+                    egui::Button::new(
+                        egui::RichText::new(if rec_active { "■" } else { "●" }).small(),
+                    ),
                 );
             } else if ui
-                .button(egui::RichText::new(if self.manual_rec { "■ Stop" } else { "● Record" })
+                .button(
+                    egui::RichText::new(if self.manual_rec {
+                        "■ Stop"
+                    } else {
+                        "● Record"
+                    })
                     .small()
-                    .color(if self.manual_rec { rec_red } else { accent }))
+                    .color(if self.manual_rec { rec_red } else { accent }),
+                )
                 .clicked()
             {
                 self.manual_rec = !self.manual_rec;
             }
         });
 
-        let speed_wired = ctx.connections.iter().any(|c| c.to_node == node_id && c.to_port == 2);
+        let speed_wired = ctx
+            .connections
+            .iter()
+            .any(|c| c.to_node == node_id && c.to_port == 2);
         ui.horizontal(|ui| {
             crate::nodes::inline_port_circle(
-                ui, node_id, 2, true, ctx.connections,
-                ctx.port_positions, ctx.dragging_from, ctx.pending_disconnects,
+                ui,
+                node_id,
+                2,
+                true,
+                ctx.connections,
+                ctx.port_positions,
+                ctx.dragging_from,
+                ctx.pending_disconnects,
                 PortKind::Number,
             );
             ui.label(egui::RichText::new("Speed").small().color(dim));
             if speed_wired {
-                ui.label(egui::RichText::new(format!("{:.2}", self.speed)).small().monospace().color(blue));
+                ui.label(
+                    egui::RichText::new(format!("{:.2}", self.speed))
+                        .small()
+                        .monospace()
+                        .color(blue),
+                );
             } else {
                 ui.add(
                     egui::DragValue::new(&mut self.speed)
@@ -689,11 +753,20 @@ impl NodeBehavior for FrameRecorderNode {
         });
 
         if matches!(self.mode, RecorderMode::Tape) {
-            let seek_wired = ctx.connections.iter().any(|c| c.to_node == node_id && c.to_port == 3);
+            let seek_wired = ctx
+                .connections
+                .iter()
+                .any(|c| c.to_node == node_id && c.to_port == 3);
             ui.horizontal(|ui| {
                 crate::nodes::inline_port_circle(
-                    ui, node_id, 3, true, ctx.connections,
-                    ctx.port_positions, ctx.dragging_from, ctx.pending_disconnects,
+                    ui,
+                    node_id,
+                    3,
+                    true,
+                    ctx.connections,
+                    ctx.port_positions,
+                    ctx.dragging_from,
+                    ctx.pending_disconnects,
                     PortKind::Normalized,
                 );
                 ui.label(egui::RichText::new("Seek").small().color(dim));
@@ -717,8 +790,14 @@ impl NodeBehavior for FrameRecorderNode {
 
         ui.horizontal(|ui| {
             crate::nodes::inline_port_circle(
-                ui, node_id, 4, true, ctx.connections,
-                ctx.port_positions, ctx.dragging_from, ctx.pending_disconnects,
+                ui,
+                node_id,
+                4,
+                true,
+                ctx.connections,
+                ctx.port_positions,
+                ctx.dragging_from,
+                ctx.pending_disconnects,
                 PortKind::Trigger,
             );
             ui.label(egui::RichText::new("Clear").small().color(dim));
@@ -735,9 +814,17 @@ impl NodeBehavior for FrameRecorderNode {
             RecorderMode::Scroll => {
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new("Size").small().color(dim));
-                    ui.add(egui::DragValue::new(&mut self.scroll_w).range(16..=4096).speed(4.0));
+                    ui.add(
+                        egui::DragValue::new(&mut self.scroll_w)
+                            .range(16..=4096)
+                            .speed(4.0),
+                    );
                     ui.label(egui::RichText::new("×").small().color(dim));
-                    ui.add(egui::DragValue::new(&mut self.scroll_h).range(16..=2048).speed(2.0));
+                    ui.add(
+                        egui::DragValue::new(&mut self.scroll_h)
+                            .range(16..=2048)
+                            .speed(2.0),
+                    );
                 });
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new("Stride").small().color(dim));
@@ -753,16 +840,27 @@ impl NodeBehavior for FrameRecorderNode {
                 });
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new("Cell").small().color(dim));
-                    ui.add(egui::DragValue::new(&mut self.cell_w).range(8..=512).speed(2.0));
+                    ui.add(
+                        egui::DragValue::new(&mut self.cell_w)
+                            .range(8..=512)
+                            .speed(2.0),
+                    );
                     ui.label(egui::RichText::new("×").small().color(dim));
-                    ui.add(egui::DragValue::new(&mut self.cell_h).range(8..=512).speed(2.0));
+                    ui.add(
+                        egui::DragValue::new(&mut self.cell_h)
+                            .range(8..=512)
+                            .speed(2.0),
+                    );
                 });
             }
             RecorderMode::Tape => {
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new("Frames").small().color(dim));
                     let mut mf = self.max_frames as i32;
-                    if ui.add(egui::DragValue::new(&mut mf).range(2..=1024)).changed() {
+                    if ui
+                        .add(egui::DragValue::new(&mut mf).range(2..=1024))
+                        .changed()
+                    {
                         self.max_frames = mf.max(2) as usize;
                         // Drop excess frames if cap was reduced
                         while self.tape.len() > self.max_frames {
@@ -840,7 +938,9 @@ impl NodeBehavior for FrameRecorderNode {
                     [img.width as usize, img.height as usize],
                     &img.pixels,
                 );
-                let mut tex = ui.ctx().data_mut(|d| d.get_temp::<egui::TextureHandle>(tex_id));
+                let mut tex = ui
+                    .ctx()
+                    .data_mut(|d| d.get_temp::<egui::TextureHandle>(tex_id));
                 let handle = match tex.take() {
                     Some(mut existing) => {
                         existing.set(color_image, egui::TextureOptions::LINEAR);
@@ -891,8 +991,10 @@ impl NodeBehavior for FrameRecorderNode {
                 egui::Align2::CENTER_CENTER,
                 match self.mode {
                     RecorderMode::Scroll => "Connect image — Scroll = slit-scan sweep",
-                    RecorderMode::Strip  => "Connect image — Strip = contact-sheet grid",
-                    RecorderMode::Tape   => "Connect image — Tape = full-frame scrub (camera-friendly)",
+                    RecorderMode::Strip => "Connect image — Strip = contact-sheet grid",
+                    RecorderMode::Tape => {
+                        "Connect image — Tape = full-frame scrub (camera-friendly)"
+                    }
                 },
                 egui::FontId::proportional(11.0),
                 dim,
@@ -904,23 +1006,39 @@ impl NodeBehavior for FrameRecorderNode {
 
         // ── Output ports ────────────────────────────────────────────
         crate::nodes::output_port_row(
-            ui, "Image", "",
-            node_id, 0,
-            ctx.port_positions, ctx.dragging_from, ctx.connections, ctx.pending_disconnects,
+            ui,
+            "Image",
+            "",
+            node_id,
+            0,
+            ctx.port_positions,
+            ctx.dragging_from,
+            ctx.connections,
+            ctx.pending_disconnects,
             PortKind::Image,
         );
         crate::nodes::output_port_row(
-            ui, "Progress",
+            ui,
+            "Progress",
             &format!("{:.0}%", self.progress() * 100.0),
-            node_id, 1,
-            ctx.port_positions, ctx.dragging_from, ctx.connections, ctx.pending_disconnects,
+            node_id,
+            1,
+            ctx.port_positions,
+            ctx.dragging_from,
+            ctx.connections,
+            ctx.pending_disconnects,
             PortKind::Normalized,
         );
         crate::nodes::output_port_row(
-            ui, "Frames",
+            ui,
+            "Frames",
             &format!("{}", self.frames_recorded),
-            node_id, 2,
-            ctx.port_positions, ctx.dragging_from, ctx.connections, ctx.pending_disconnects,
+            node_id,
+            2,
+            ctx.port_positions,
+            ctx.dragging_from,
+            ctx.connections,
+            ctx.pending_disconnects,
             PortKind::Number,
         );
 

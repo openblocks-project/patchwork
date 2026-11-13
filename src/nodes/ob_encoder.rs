@@ -13,7 +13,11 @@ pub fn render(
 ) {
     // `label_color` kept on the node for future LED support; UI hidden for now.
     let (device_id, hub_node_id, _label_color) = match node_type {
-        NodeType::ObEncoder { device_id, hub_node_id, label_color } => (device_id, hub_node_id, label_color),
+        NodeType::ObEncoder {
+            device_id,
+            hub_node_id,
+            label_color,
+        } => (device_id, hub_node_id, label_color),
         _ => return,
     };
 
@@ -28,32 +32,46 @@ pub fn render(
     // Lookup order matches app/mod.rs ObEncoder injection:
     //   1. Bound hub → 2. Any serial hub → 3. HID auto-discovery (OB Wheel)
     #[derive(PartialEq)]
-    enum Source { Hub, Hid, None }
+    enum Source {
+        Hub,
+        Hid,
+        None,
+    }
     let (turn, click, position, is_active, source) = {
-        let from_hub = ob_manager.get_hub(hid)
+        let from_hub = ob_manager
+            .get_hub(hid)
             .and_then(|h| h.get_device("encoder", did))
             .or_else(|| ob_manager.find_device("encoder", did).map(|(_, d)| d))
-            .map(|dev| (
-                dev.values.get("turn").copied().unwrap_or(0.0),
-                dev.values.get("click").copied().unwrap_or(0.0),
-                dev.values.get("position").copied().unwrap_or(0.0),
-                dev.is_active,
-                Source::Hub,
-            ));
-        from_hub
-            .or_else(|| crate::hid::global().find_device("encoder", did)
-                .map(|dev| (
+            .map(|dev| {
+                (
                     dev.values.get("turn").copied().unwrap_or(0.0),
                     dev.values.get("click").copied().unwrap_or(0.0),
                     dev.values.get("position").copied().unwrap_or(0.0),
                     dev.is_active,
-                    Source::Hid,
-                )))
+                    Source::Hub,
+                )
+            });
+        from_hub
+            .or_else(|| {
+                crate::hid::global().find_device("encoder", did).map(|dev| {
+                    (
+                        dev.values.get("turn").copied().unwrap_or(0.0),
+                        dev.values.get("click").copied().unwrap_or(0.0),
+                        dev.values.get("position").copied().unwrap_or(0.0),
+                        dev.is_active,
+                        Source::Hid,
+                    )
+                })
+            })
             .unwrap_or((0.0, 0.0, 0.0, false, Source::None))
     };
 
     if is_active {
-        let label = if source == Source::Hid { "● Active (HID)" } else { "● Active" };
+        let label = if source == Source::Hid {
+            "● Active (HID)"
+        } else {
+            "● Active"
+        };
         ui.colored_label(egui::Color32::from_rgb(80, 200, 80), label);
     } else {
         ui.colored_label(egui::Color32::from_rgb(150, 150, 150), "○ Waiting...");
@@ -67,7 +85,11 @@ pub fn render(
     let radius = viz_size * 0.4;
 
     painter.circle_filled(center, radius, egui::Color32::from_rgb(20, 20, 30));
-    painter.circle_stroke(center, radius, egui::Stroke::new(1.5, egui::Color32::from_rgb(60, 60, 80)));
+    painter.circle_stroke(
+        center,
+        radius,
+        egui::Stroke::new(1.5, egui::Color32::from_rgb(60, 60, 80)),
+    );
 
     let angle = -position * 0.3; // negated so CW rotation matches visual CW
     let indicator_end = egui::pos2(
@@ -92,7 +114,11 @@ pub fn render(
 
     // Values
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new(format!("Pos:{:.0}", position)).monospace().small());
+        ui.label(
+            egui::RichText::new(format!("Pos:{:.0}", position))
+                .monospace()
+                .small(),
+        );
         if turn.abs() > 0.5 {
             let dir = if turn > 0.0 { "↺" } else { "↻" };
             ui.colored_label(egui::Color32::from_rgb(200, 200, 80), dir);
@@ -101,5 +127,4 @@ pub fn render(
             ui.colored_label(egui::Color32::from_rgb(255, 100, 100), "●");
         }
     });
-
 }

@@ -1,8 +1,8 @@
 use crate::graph::{PortDef, PortKind, PortValue};
 use crate::node_trait::{NodeBehavior, RenderContext};
-use serde::{Serialize, Deserialize};
-use eframe::egui;
 use crate::nodes::ScrollAreaExt;
+use eframe::egui;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JsonExtractNode {
@@ -11,12 +11,16 @@ pub struct JsonExtractNode {
 
 impl Default for JsonExtractNode {
     fn default() -> Self {
-        Self { path: String::new() }
+        Self {
+            path: String::new(),
+        }
     }
 }
 
 impl NodeBehavior for JsonExtractNode {
-    fn title(&self) -> &str { "JSON Extract" }
+    fn title(&self) -> &str {
+        "JSON Extract"
+    }
 
     fn inputs(&self) -> Vec<PortDef> {
         vec![PortDef::new("JSON", PortKind::Text)]
@@ -26,7 +30,9 @@ impl NodeBehavior for JsonExtractNode {
         vec![PortDef::new("Value", PortKind::Generic)]
     }
 
-    fn color_hint(&self) -> [u8; 3] { [200, 160, 60] }
+    fn color_hint(&self) -> [u8; 3] {
+        [200, 160, 60]
+    }
 
     fn evaluate(&mut self, inputs: &[PortValue]) -> Vec<(usize, PortValue)> {
         let json_text = match inputs.first() {
@@ -60,7 +66,9 @@ impl NodeBehavior for JsonExtractNode {
         vec![(0, PortValue::Text(extracted))]
     }
 
-    fn type_tag(&self) -> &str { "json_extract" }
+    fn type_tag(&self) -> &str {
+        "json_extract"
+    }
 
     fn save_state(&self) -> serde_json::Value {
         serde_json::to_value(self).unwrap_or_default()
@@ -77,20 +85,27 @@ impl NodeBehavior for JsonExtractNode {
             ui.label("Path:");
             ui.text_edit_singleline(&mut self.path);
         });
-        ui.label(egui::RichText::new("(dot-separated, e.g. data.items.0.name)").small()
-            .color(ui.visuals().widgets.noninteractive.fg_stroke.color));
+        ui.label(
+            egui::RichText::new("(dot-separated, e.g. data.items.0.name)")
+                .small()
+                .color(ui.visuals().widgets.noninteractive.fg_stroke.color),
+        );
 
         let output_val = ctx.values.get(&(ctx.node_id, 0));
         ui.separator();
         match output_val {
             Some(PortValue::Text(s)) if !s.is_empty() => {
                 ui.label("Extracted:");
-                egui::ScrollArea::vertical().max_height(80.0).show_pannable(ui, |ui| {
-                    ui.add(egui::TextEdit::multiline(&mut s.clone())
-                        .code_editor()
-                        .desired_width(f32::INFINITY)
-                        .interactive(false));
-                });
+                egui::ScrollArea::vertical()
+                    .max_height(80.0)
+                    .show_pannable(ui, |ui| {
+                        ui.add(
+                            egui::TextEdit::multiline(&mut s.clone())
+                                .code_editor()
+                                .desired_width(f32::INFINITY)
+                                .interactive(false),
+                        );
+                    });
             }
             _ => {
                 let dim = ui.visuals().widgets.noninteractive.fg_stroke.color;

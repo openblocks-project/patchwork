@@ -7,8 +7,8 @@
 
 #![allow(dead_code)]
 use crate::graph::{PortDef, PortValue};
-use std::collections::HashMap;
 use serde_json::Value;
+use std::collections::HashMap;
 
 /// Core trait for node metadata, port definitions, and evaluation.
 ///
@@ -35,33 +35,52 @@ pub trait NodeBehavior: std::any::Any + Send + Sync {
     fn color_hint(&self) -> [u8; 3];
 
     /// Whether ports render inline (inside the node body).
-    fn inline_ports(&self) -> bool { false }
+    fn inline_ports(&self) -> bool {
+        false
+    }
 
     /// Whether the node uses custom rendering (skips standard window).
-    fn custom_render(&self) -> bool { false }
+    fn custom_render(&self) -> bool {
+        false
+    }
 
     /// Render custom background for the node window. Called with the full
     /// node rect BEFORE content rendering. Use the painter to draw anything:
     /// solid fill, gradient, image texture, vector shapes, etc.
     /// Return Some(Frame) to also set the egui window frame (margins, rounding).
     /// Return None to use the default window appearance.
-    fn render_background(&self, _painter: &eframe::egui::Painter, _rect: eframe::egui::Rect) -> Option<eframe::egui::Frame> { None }
+    fn render_background(
+        &self,
+        _painter: &eframe::egui::Painter,
+        _rect: eframe::egui::Rect,
+    ) -> Option<eframe::egui::Frame> {
+        None
+    }
 
     /// Minimum width override for the node window. Return None for default.
-    fn min_width(&self) -> Option<f32> { None }
+    fn min_width(&self) -> Option<f32> {
+        None
+    }
 
     /// Whether to hide the title bar.
-    fn no_title(&self) -> bool { false }
+    fn no_title(&self) -> bool {
+        false
+    }
 
     /// Evaluate this node: given input values, produce output values.
     /// Returns a vec of (port_index, value) pairs.
-    fn evaluate(&mut self, inputs: &[PortValue]) -> Vec<(usize, PortValue)> { let _ = inputs; vec![] }
+    fn evaluate(&mut self, inputs: &[PortValue]) -> Vec<(usize, PortValue)> {
+        let _ = inputs;
+        vec![]
+    }
 
     /// Stable type identifier for serialization (e.g. "add", "synth").
     fn type_tag(&self) -> &str;
 
     /// Serialize node state to JSON (for project save).
-    fn save_state(&self) -> Value { Value::Object(serde_json::Map::new()) }
+    fn save_state(&self) -> Value {
+        Value::Object(serde_json::Map::new())
+    }
 
     /// Restore node state from JSON (for project load).
     fn load_state(&mut self, _state: &Value) {}
@@ -71,11 +90,15 @@ pub trait NodeBehavior: std::any::Any + Send + Sync {
     /// forces upstream readback. GPU-only consumers (image_effects, blend,
     /// color_curves, image_style, visual_output, image_node display path)
     /// override to `false` to opt into the GPU-resident handoff path.
-    fn needs_cpu_image_input(&self, _port: usize) -> bool { true }
+    fn needs_cpu_image_input(&self, _port: usize) -> bool {
+        true
+    }
 
     /// For Blend nodes: returns (mode, mix) so the GPU image eval loop in
     /// app/mod.rs can dispatch without downcasting. Default None (all non-blend nodes).
-    fn blend_params(&self) -> Option<(u8, f32)> { None }
+    fn blend_params(&self) -> Option<(u8, f32)> {
+        None
+    }
 
     /// Render the node's UI content.
     /// Simple nodes can use this (no graph context needed).
@@ -99,7 +122,9 @@ pub trait NodeBehavior: std::any::Any + Send + Sync {
     /// Audio params to sync to the audio engine each frame.
     /// Override this for trait-based nodes that drive audio processors.
     /// Returns an empty slice by default (no audio params).
-    fn audio_params(&self) -> &[f32] { &[] }
+    fn audio_params(&self) -> &[f32] {
+        &[]
+    }
 
     /// Called by `app/io.rs::poll_http_responses` when an `HttpAction`
     /// this node pushed earlier receives its response. `body` is the
@@ -178,9 +203,11 @@ pub struct EvalCtx<'a> {
 /// port values, connections, port position tracking, and the wgpu render state.
 pub struct RenderContext<'a> {
     pub node_id: crate::graph::NodeId,
-    pub values: &'a std::collections::HashMap<(crate::graph::NodeId, usize), crate::graph::PortValue>,
+    pub values:
+        &'a std::collections::HashMap<(crate::graph::NodeId, usize), crate::graph::PortValue>,
     pub connections: &'a [crate::graph::Connection],
-    pub port_positions: &'a mut std::collections::HashMap<(crate::graph::NodeId, usize, bool), eframe::egui::Pos2>,
+    pub port_positions:
+        &'a mut std::collections::HashMap<(crate::graph::NodeId, usize, bool), eframe::egui::Pos2>,
     pub dragging_from: &'a mut Option<(crate::graph::NodeId, usize, bool)>,
     pub pending_disconnects: &'a mut Vec<(crate::graph::NodeId, usize)>,
     /// Available when running on a wgpu backend. Nodes that render GPU previews
@@ -300,13 +327,17 @@ pub struct NodeRegistryInner {
 
 impl NodeRegistryInner {
     fn new() -> Self {
-        Self { factories: HashMap::new() }
+        Self {
+            factories: HashMap::new(),
+        }
     }
 
     pub fn register<F>(&mut self, type_tag: &str, factory: F)
-    where F: Fn(&Value) -> Box<dyn NodeBehavior> + Send + Sync + 'static
+    where
+        F: Fn(&Value) -> Box<dyn NodeBehavior> + Send + Sync + 'static,
     {
-        self.factories.insert(type_tag.to_string(), Box::new(factory));
+        self.factories
+            .insert(type_tag.to_string(), Box::new(factory));
     }
 
     pub fn create(&self, type_tag: &str, state: &Value) -> Option<Box<dyn NodeBehavior>> {

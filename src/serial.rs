@@ -4,9 +4,18 @@ use std::io::{BufRead, BufReader, Write};
 use std::sync::mpsc;
 
 pub enum SerialAction {
-    Connect { node_id: NodeId, port_name: String, baud_rate: u32 },
-    Disconnect { node_id: NodeId },
-    Send { node_id: NodeId, data: String },
+    Connect {
+        node_id: NodeId,
+        port_name: String,
+        baud_rate: u32,
+    },
+    Disconnect {
+        node_id: NodeId,
+    },
+    Send {
+        node_id: NodeId,
+        data: String,
+    },
 }
 
 struct SerialConn {
@@ -50,7 +59,11 @@ impl SerialManager {
     pub fn process(&mut self, actions: Vec<SerialAction>) {
         for action in actions {
             match action {
-                SerialAction::Connect { node_id, port_name, baud_rate } => {
+                SerialAction::Connect {
+                    node_id,
+                    port_name,
+                    baud_rate,
+                } => {
                     self.connect(node_id, &port_name, baud_rate);
                 }
                 SerialAction::Disconnect { node_id } => {
@@ -77,7 +90,9 @@ impl SerialManager {
             return;
         };
 
-        let Ok(reader_port) = port.try_clone() else { return };
+        let Ok(reader_port) = port.try_clone() else {
+            return;
+        };
         let (tx, rx) = mpsc::channel();
 
         let handle = std::thread::spawn(move || {
@@ -99,11 +114,14 @@ impl SerialManager {
             }
         });
 
-        self.connections.insert(node_id, SerialConn {
-            writer: port,
-            rx,
-            _handle: handle,
-        });
+        self.connections.insert(
+            node_id,
+            SerialConn {
+                writer: port,
+                rx,
+                _handle: handle,
+            },
+        );
     }
 
     /// Drain all received lines for a node.

@@ -10,18 +10,24 @@
 //! `evaluate_with_ctx` + `process_gpu_cached`, and a benign CPU fallback
 //! (passthrough) for headless / no-wgpu contexts.
 
-use crate::graph::{PortDef, PortKind, PortValue, ImageData};
+use crate::graph::{ImageData, PortDef, PortKind, PortValue};
 use crate::node_trait::{NodeBehavior, RenderContext};
-use serde::{Serialize, Deserialize};
 use eframe::egui;
 use eframe::egui_wgpu::wgpu;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 // ── Defaults + struct ───────────────────────────────────────────────────────
 
-fn default_segments() -> f32 { 6.0 }
-fn default_zoom()     -> f32 { 1.0 }
-fn default_half()     -> f32 { 0.5 }
+fn default_segments() -> f32 {
+    6.0
+}
+fn default_zoom() -> f32 {
+    1.0
+}
+fn default_half() -> f32 {
+    0.5
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KaleidoscopeNode {
@@ -105,10 +111,10 @@ const TWO_PI: f32 = 6.28318530718;
 "#;
 
 struct KaleidoscopeGpu {
-    pipeline:          wgpu::RenderPipeline,
+    pipeline: wgpu::RenderPipeline,
     bind_group_layout: wgpu::BindGroupLayout,
-    uniform_buffer:    wgpu::Buffer,
-    sampler:           wgpu::Sampler,
+    uniform_buffer: wgpu::Buffer,
+    sampler: wgpu::Sampler,
 }
 
 struct KaleidoscopeStore {
@@ -122,11 +128,15 @@ fn ensure_pipeline(
     let device = &render_state.device;
     let already = {
         let renderer = render_state.renderer.read();
-        renderer.callback_resources.get::<KaleidoscopeStore>()
+        renderer
+            .callback_resources
+            .get::<KaleidoscopeStore>()
             .and_then(|s| s.nodes.get(&node_id))
             .is_some()
     };
-    if already { return true; }
+    if already {
+        return true;
+    }
 
     device.push_error_scope(wgpu::ErrorFilter::Validation);
 
@@ -215,14 +225,21 @@ fn ensure_pipeline(
         ..Default::default()
     });
 
-    let gpu = KaleidoscopeGpu { pipeline, bind_group_layout, uniform_buffer, sampler };
+    let gpu = KaleidoscopeGpu {
+        pipeline,
+        bind_group_layout,
+        uniform_buffer,
+        sampler,
+    };
     let mut renderer = render_state.renderer.write();
     if let Some(store) = renderer.callback_resources.get_mut::<KaleidoscopeStore>() {
         store.nodes.insert(node_id, gpu);
     } else {
         let mut nodes = HashMap::new();
         nodes.insert(node_id, gpu);
-        renderer.callback_resources.insert(KaleidoscopeStore { nodes });
+        renderer
+            .callback_resources
+            .insert(KaleidoscopeStore { nodes });
     }
     true
 }
@@ -244,12 +261,16 @@ impl KaleidoscopeNode {
         needs_readback: bool,
     ) -> Option<crate::graph::PortValue> {
         let device = &render_state.device;
-        let queue  = &render_state.queue;
+        let queue = &render_state.queue;
         let w = img.width;
         let h = img.height;
-        if w == 0 || h == 0 { return None; }
+        if w == 0 || h == 0 {
+            return None;
+        }
 
-        if !ensure_pipeline(node_id, render_state) { return None; }
+        if !ensure_pipeline(node_id, render_state) {
+            return None;
+        }
 
         // Prefer the upstream GPU-resident texture if available; only
         // CPU-upload when we have real pixels and no GPU source.
@@ -260,7 +281,8 @@ impl KaleidoscopeNode {
         {
             Some((view, _, _)) => (view, None),
             None if need_upload => {
-                let tex = crate::gpu_image::upload_texture(device, queue, img, "kaleidoscope_input");
+                let tex =
+                    crate::gpu_image::upload_texture(device, queue, img, "kaleidoscope_input");
                 let v = tex.create_view(&Default::default());
                 (v, Some(tex))
             }
@@ -269,14 +291,18 @@ impl KaleidoscopeNode {
 
         let output_tex = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("kaleidoscope_output"),
-            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba8UnormSrgb,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                 | wgpu::TextureUsages::COPY_SRC
-                 | wgpu::TextureUsages::TEXTURE_BINDING,
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
         let output_view = output_tex.create_view(&Default::default());
@@ -303,9 +329,18 @@ impl KaleidoscopeNode {
             label: None,
             layout: &gpu.bind_group_layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: gpu.uniform_buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&input_view) },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&gpu.sampler) },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: gpu.uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&input_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&gpu.sampler),
+                },
             ],
         });
 
@@ -337,13 +372,15 @@ impl KaleidoscopeNode {
             Some(crate::graph::PortValue::Image(result))
         } else {
             tex_cache.publish(node_id, 0, output_tex, w, h, render_state);
-            Some(crate::graph::PortValue::GpuImage(crate::graph::GpuImageHandle {
-                node_id,
-                port: 0,
-                width: w,
-                height: h,
-                frame_stamp: tex_cache.frame_stamp(node_id, 0),
-            }))
+            Some(crate::graph::PortValue::GpuImage(
+                crate::graph::GpuImageHandle {
+                    node_id,
+                    port: 0,
+                    width: w,
+                    height: h,
+                    frame_stamp: tex_cache.frame_stamp(node_id, 0),
+                },
+            ))
         }
     }
 }
@@ -351,35 +388,59 @@ impl KaleidoscopeNode {
 // ── NodeBehavior ────────────────────────────────────────────────────────────
 
 impl NodeBehavior for KaleidoscopeNode {
-    fn title(&self)       -> &str   { "Kaleidoscope" }
-    fn type_tag(&self)    -> &str   { "kaleidoscope" }
-    fn color_hint(&self)  -> [u8;3] { [220, 140, 220] }
-    fn min_width(&self)   -> Option<f32> { Some(240.0) }
-    fn inline_ports(&self) -> bool  { true }
-    fn needs_cpu_image_input(&self, _port: usize) -> bool { false }
+    fn title(&self) -> &str {
+        "Kaleidoscope"
+    }
+    fn type_tag(&self) -> &str {
+        "kaleidoscope"
+    }
+    fn color_hint(&self) -> [u8; 3] {
+        [220, 140, 220]
+    }
+    fn min_width(&self) -> Option<f32> {
+        Some(240.0)
+    }
+    fn inline_ports(&self) -> bool {
+        true
+    }
+    fn needs_cpu_image_input(&self, _port: usize) -> bool {
+        false
+    }
 
     fn inputs(&self) -> Vec<PortDef> {
         vec![
-            PortDef::new("Image",    PortKind::Image),
+            PortDef::new("Image", PortKind::Image),
             PortDef::new("Segments", PortKind::Number),
             PortDef::new("Rotation", PortKind::Number),
-            PortDef::new("Zoom",     PortKind::Number),
+            PortDef::new("Zoom", PortKind::Number),
             PortDef::new("Center X", PortKind::Normalized),
             PortDef::new("Center Y", PortKind::Normalized),
         ]
     }
 
-    fn outputs(&self) -> Vec<PortDef> { vec![PortDef::new("Image", PortKind::Image)] }
+    fn outputs(&self) -> Vec<PortDef> {
+        vec![PortDef::new("Image", PortKind::Image)]
+    }
 
     fn evaluate(&mut self, inputs: &[PortValue]) -> Vec<(usize, PortValue)> {
         // CPU fallback — we don't CPU-render the kaleidoscope, just
         // passthrough so the node is never a dead end when there's no
         // wgpu context (headless tests etc.).
-        if let Some(PortValue::Float(v)) = inputs.get(1) { self.segments     = v.clamp(2.0, 32.0); }
-        if let Some(PortValue::Float(v)) = inputs.get(2) { self.rotation_deg = v % 360.0; }
-        if let Some(PortValue::Float(v)) = inputs.get(3) { self.zoom         = v.clamp(0.1, 4.0); }
-        if let Some(PortValue::Float(v)) = inputs.get(4) { self.center_x     = v.clamp(0.0, 1.0); }
-        if let Some(PortValue::Float(v)) = inputs.get(5) { self.center_y     = v.clamp(0.0, 1.0); }
+        if let Some(PortValue::Float(v)) = inputs.get(1) {
+            self.segments = v.clamp(2.0, 32.0);
+        }
+        if let Some(PortValue::Float(v)) = inputs.get(2) {
+            self.rotation_deg = v % 360.0;
+        }
+        if let Some(PortValue::Float(v)) = inputs.get(3) {
+            self.zoom = v.clamp(0.1, 4.0);
+        }
+        if let Some(PortValue::Float(v)) = inputs.get(4) {
+            self.center_x = v.clamp(0.0, 1.0);
+        }
+        if let Some(PortValue::Float(v)) = inputs.get(5) {
+            self.center_y = v.clamp(0.0, 1.0);
+        }
         let result = match inputs.first() {
             Some(PortValue::Image(img)) => PortValue::Image(img.clone()),
             _ => PortValue::None,
@@ -393,22 +454,34 @@ impl NodeBehavior for KaleidoscopeNode {
         ctx: &mut crate::node_trait::EvalCtx<'_>,
     ) -> Vec<(usize, PortValue)> {
         // Apply param port overrides.
-        if let Some(PortValue::Float(v)) = inputs.get(1) { self.segments     = v.clamp(2.0, 32.0); }
-        if let Some(PortValue::Float(v)) = inputs.get(2) { self.rotation_deg = v % 360.0; }
-        if let Some(PortValue::Float(v)) = inputs.get(3) { self.zoom         = v.clamp(0.1, 4.0); }
-        if let Some(PortValue::Float(v)) = inputs.get(4) { self.center_x     = v.clamp(0.0, 1.0); }
-        if let Some(PortValue::Float(v)) = inputs.get(5) { self.center_y     = v.clamp(0.0, 1.0); }
+        if let Some(PortValue::Float(v)) = inputs.get(1) {
+            self.segments = v.clamp(2.0, 32.0);
+        }
+        if let Some(PortValue::Float(v)) = inputs.get(2) {
+            self.rotation_deg = v % 360.0;
+        }
+        if let Some(PortValue::Float(v)) = inputs.get(3) {
+            self.zoom = v.clamp(0.1, 4.0);
+        }
+        if let Some(PortValue::Float(v)) = inputs.get(4) {
+            self.center_x = v.clamp(0.0, 1.0);
+        }
+        if let Some(PortValue::Float(v)) = inputs.get(5) {
+            self.center_y = v.clamp(0.0, 1.0);
+        }
 
         // Dimensions can come from either a CPU `Image` or a GPU stub.
         let stub_owned: Option<ImageData> = match inputs.first() {
             Some(PortValue::GpuImage(h)) => Some(ImageData {
-                width: h.width, height: h.height, pixels: Vec::new(),
+                width: h.width,
+                height: h.height,
+                pixels: Vec::new(),
             }),
             _ => None,
         };
         let img_ref: Option<&ImageData> = match inputs.first() {
-            Some(PortValue::Image(img))    => Some(img.as_ref()),
-            Some(PortValue::GpuImage(_))   => stub_owned.as_ref(),
+            Some(PortValue::Image(img)) => Some(img.as_ref()),
+            Some(PortValue::GpuImage(_)) => stub_owned.as_ref(),
             _ => None,
         };
         let img = match img_ref {
@@ -420,8 +493,12 @@ impl NodeBehavior for KaleidoscopeNode {
         if let Some(rs) = ctx.render_state {
             let gpu_src = ctx.input_sources.first().copied().flatten();
             if let Some(val) = self.process_gpu_cached(
-                img, ctx.node_id, rs, ctx.gpu_tex_cache,
-                gpu_src, ctx.needs_readback,
+                img,
+                ctx.node_id,
+                rs,
+                ctx.gpu_tex_cache,
+                gpu_src,
+                ctx.needs_readback,
             ) {
                 return vec![(0, val)];
             }
@@ -431,9 +508,13 @@ impl NodeBehavior for KaleidoscopeNode {
         self.evaluate(inputs)
     }
 
-    fn save_state(&self) -> serde_json::Value { serde_json::to_value(self).unwrap_or_default() }
+    fn save_state(&self) -> serde_json::Value {
+        serde_json::to_value(self).unwrap_or_default()
+    }
     fn load_state(&mut self, state: &serde_json::Value) {
-        if let Ok(l) = serde_json::from_value::<KaleidoscopeNode>(state.clone()) { *self = l; }
+        if let Ok(l) = serde_json::from_value::<KaleidoscopeNode>(state.clone()) {
+            *self = l;
+        }
     }
 
     fn render_with_context(&mut self, ui: &mut egui::Ui, ctx: &mut RenderContext) {
@@ -442,43 +523,129 @@ impl NodeBehavior for KaleidoscopeNode {
 
         // Image input port
         ui.horizontal(|ui| {
-            crate::nodes::inline_port_circle(ui, ctx.node_id, 0, true, ctx.connections,
-                ctx.port_positions, ctx.dragging_from, ctx.pending_disconnects, PortKind::Image);
+            crate::nodes::inline_port_circle(
+                ui,
+                ctx.node_id,
+                0,
+                true,
+                ctx.connections,
+                ctx.port_positions,
+                ctx.dragging_from,
+                ctx.pending_disconnects,
+                PortKind::Image,
+            );
             ui.label(egui::RichText::new("Image").small());
         });
 
         // Helper closure for the parameter rows (port + optional slider).
         let mut param_row = |ui: &mut egui::Ui,
-                             label: &str, port: usize,
+                             label: &str,
+                             port: usize,
                              val: &mut f32,
                              kind: PortKind,
                              range: std::ops::RangeInclusive<f32>,
                              step: f32,
                              suffix: &str| {
-            let wired = ctx.connections.iter().any(|c| c.to_node == ctx.node_id && c.to_port == port);
+            let wired = ctx
+                .connections
+                .iter()
+                .any(|c| c.to_node == ctx.node_id && c.to_port == port);
             ui.horizontal(|ui| {
-                crate::nodes::inline_port_circle(ui, ctx.node_id, port, true, ctx.connections,
-                    ctx.port_positions, ctx.dragging_from, ctx.pending_disconnects, kind);
+                crate::nodes::inline_port_circle(
+                    ui,
+                    ctx.node_id,
+                    port,
+                    true,
+                    ctx.connections,
+                    ctx.port_positions,
+                    ctx.dragging_from,
+                    ctx.pending_disconnects,
+                    kind,
+                );
                 ui.label(egui::RichText::new(label).small());
                 if wired {
-                    ui.label(egui::RichText::new(format!("{:.2}{}", *val, suffix)).small().color(blue));
+                    ui.label(
+                        egui::RichText::new(format!("{:.2}{}", *val, suffix))
+                            .small()
+                            .color(blue),
+                    );
                 } else {
-                    ui.add(egui::Slider::new(val, range).step_by(step as f64).show_value(true).suffix(suffix));
+                    ui.add(
+                        egui::Slider::new(val, range)
+                            .step_by(step as f64)
+                            .show_value(true)
+                            .suffix(suffix),
+                    );
                 }
             });
         };
 
-        param_row(ui, "Segments", 1, &mut self.segments,     PortKind::Number,     2.0..=32.0,  1.0, "");
-        param_row(ui, "Rotation", 2, &mut self.rotation_deg, PortKind::Number,     0.0..=360.0, 1.0, "°");
-        param_row(ui, "Zoom",     3, &mut self.zoom,         PortKind::Number,     0.1..=4.0,   0.01, "");
-        param_row(ui, "Center X", 4, &mut self.center_x,     PortKind::Normalized, 0.0..=1.0,   0.01, "");
-        param_row(ui, "Center Y", 5, &mut self.center_y,     PortKind::Normalized, 0.0..=1.0,   0.01, "");
+        param_row(
+            ui,
+            "Segments",
+            1,
+            &mut self.segments,
+            PortKind::Number,
+            2.0..=32.0,
+            1.0,
+            "",
+        );
+        param_row(
+            ui,
+            "Rotation",
+            2,
+            &mut self.rotation_deg,
+            PortKind::Number,
+            0.0..=360.0,
+            1.0,
+            "°",
+        );
+        param_row(
+            ui,
+            "Zoom",
+            3,
+            &mut self.zoom,
+            PortKind::Number,
+            0.1..=4.0,
+            0.01,
+            "",
+        );
+        param_row(
+            ui,
+            "Center X",
+            4,
+            &mut self.center_x,
+            PortKind::Normalized,
+            0.0..=1.0,
+            0.01,
+            "",
+        );
+        param_row(
+            ui,
+            "Center Y",
+            5,
+            &mut self.center_y,
+            PortKind::Normalized,
+            0.0..=1.0,
+            0.01,
+            "",
+        );
 
         ui.label(egui::RichText::new("⚡ GPU").small().color(dim));
 
         ui.separator();
-        crate::nodes::audio_port_row(ui, "Image", ctx.node_id, 0, false, ctx.port_positions,
-            ctx.dragging_from, ctx.connections, ctx.pending_disconnects, PortKind::Image);
+        crate::nodes::audio_port_row(
+            ui,
+            "Image",
+            ctx.node_id,
+            0,
+            false,
+            ctx.port_positions,
+            ctx.dragging_from,
+            ctx.connections,
+            ctx.pending_disconnects,
+            PortKind::Image,
+        );
     }
 }
 
@@ -486,8 +653,11 @@ impl NodeBehavior for KaleidoscopeNode {
 
 pub fn register(registry: &mut crate::node_trait::NodeRegistryInner) {
     registry.register("kaleidoscope", |state| {
-        if let Ok(n) = serde_json::from_value::<KaleidoscopeNode>(state.clone()) { Box::new(n) }
-        else { Box::new(KaleidoscopeNode::default()) }
+        if let Ok(n) = serde_json::from_value::<KaleidoscopeNode>(state.clone()) {
+            Box::new(n)
+        } else {
+            Box::new(KaleidoscopeNode::default())
+        }
     });
 }
 
@@ -500,9 +670,7 @@ pub(crate) fn cleanup_node(
     }
 }
 
-pub(crate) fn cleanup_all(
-    callback_resources: &mut eframe::egui_wgpu::CallbackResources,
-) {
+pub(crate) fn cleanup_all(callback_resources: &mut eframe::egui_wgpu::CallbackResources) {
     if let Some(store) = callback_resources.get_mut::<KaleidoscopeStore>() {
         store.nodes.clear();
     }

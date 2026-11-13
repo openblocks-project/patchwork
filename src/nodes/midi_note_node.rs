@@ -1,5 +1,5 @@
-use crate::node_trait::*;
 use crate::graph::*;
+use crate::node_trait::*;
 use eframe::egui;
 use serde_json::Value;
 
@@ -30,7 +30,9 @@ impl MidiNoteNode {
 
     /// Note name from MIDI number (for display)
     fn note_name(note: u8) -> String {
-        const NAMES: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+        const NAMES: [&str; 12] = [
+            "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+        ];
         let octave = (note as i32 / 12) - 1;
         let name = NAMES[(note % 12) as usize];
         format!("{}{}", name, octave)
@@ -38,8 +40,12 @@ impl MidiNoteNode {
 }
 
 impl NodeBehavior for MidiNoteNode {
-    fn title(&self) -> &str { "MIDI Note" }
-    fn type_tag(&self) -> &str { "midi_note" }
+    fn title(&self) -> &str {
+        "MIDI Note"
+    }
+    fn type_tag(&self) -> &str {
+        "midi_note"
+    }
 
     fn inputs(&self) -> Vec<PortDef> {
         vec![
@@ -57,14 +63,24 @@ impl NodeBehavior for MidiNoteNode {
         ]
     }
 
-    fn color_hint(&self) -> [u8; 3] { [80, 200, 160] } // same as MIDI In
+    fn color_hint(&self) -> [u8; 3] {
+        [80, 200, 160]
+    } // same as MIDI In
 
     fn evaluate(&mut self, inputs: &[PortValue]) -> Vec<(usize, PortValue)> {
-        let note = inputs.get(0).map(|v| v.as_float()).unwrap_or(self.last_note);
-        let velocity = inputs.get(1).map(|v| v.as_float()).unwrap_or(self.last_velocity);
+        let note = inputs
+            .get(0)
+            .map(|v| v.as_float())
+            .unwrap_or(self.last_note);
+        let velocity = inputs
+            .get(1)
+            .map(|v| v.as_float())
+            .unwrap_or(self.last_velocity);
 
         // Only update when we get actual input
-        if note > 0.0 { self.last_note = note; }
+        if note > 0.0 {
+            self.last_note = note;
+        }
         self.last_velocity = velocity;
 
         let freq = Self::note_to_freq(self.last_note);
@@ -95,16 +111,33 @@ impl NodeBehavior for MidiNoteNode {
 
         ui.horizontal(|ui| {
             // Big note name
-            ui.label(egui::RichText::new(&note_name).size(20.0).strong().color(gate_color));
+            ui.label(
+                egui::RichText::new(&note_name)
+                    .size(20.0)
+                    .strong()
+                    .color(gate_color),
+            );
             ui.vertical(|ui| {
-                ui.label(egui::RichText::new(format!("{:.1} Hz", freq)).small().monospace());
-                ui.label(egui::RichText::new(format!("vel {:.0}", self.last_velocity)).small().monospace().color(egui::Color32::GRAY));
+                ui.label(
+                    egui::RichText::new(format!("{:.1} Hz", freq))
+                        .small()
+                        .monospace(),
+                );
+                ui.label(
+                    egui::RichText::new(format!("vel {:.0}", self.last_velocity))
+                        .small()
+                        .monospace()
+                        .color(egui::Color32::GRAY),
+                );
             });
         });
 
         // Velocity bar
         let bar_h = 6.0;
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width().min(140.0), bar_h), egui::Sense::hover());
+        let (rect, _) = ui.allocate_exact_size(
+            egui::vec2(ui.available_width().min(140.0), bar_h),
+            egui::Sense::hover(),
+        );
         let painter = ui.painter();
         painter.rect_filled(rect, 2.0, egui::Color32::from_rgb(25, 25, 30));
         let fill_w = rect.width() * amp;
@@ -122,8 +155,12 @@ impl NodeBehavior for MidiNoteNode {
     }
 
     fn load_state(&mut self, state: &Value) {
-        if let Some(n) = state.get("last_note").and_then(|v| v.as_f64()) { self.last_note = n as f32; }
-        if let Some(v) = state.get("last_velocity").and_then(|v| v.as_f64()) { self.last_velocity = v as f32; }
+        if let Some(n) = state.get("last_note").and_then(|v| v.as_f64()) {
+            self.last_note = n as f32;
+        }
+        if let Some(v) = state.get("last_velocity").and_then(|v| v.as_f64()) {
+            self.last_velocity = v as f32;
+        }
     }
 }
 

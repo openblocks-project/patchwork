@@ -1,8 +1,8 @@
 #![allow(dead_code)]
 use crate::graph::*;
 use crate::icons;
-use eframe::egui;
 use crate::nodes::ScrollAreaExt;
+use eframe::egui;
 use std::path::Path;
 
 #[derive(Clone)]
@@ -53,7 +53,10 @@ pub fn render(
 
     // Read directory (cached via egui temp data)
     let cache_id = egui::Id::new(("folder_cache", node_id));
-    let dir_hash = dir_path.len() as u64 ^ dir_path.bytes().fold(0u64, |a, b| a.wrapping_mul(31).wrapping_add(b as u64));
+    let dir_hash = dir_path.len() as u64
+        ^ dir_path
+            .bytes()
+            .fold(0u64, |a, b| a.wrapping_mul(31).wrapping_add(b as u64));
 
     let cached: Option<(u64, Vec<DirEntry>)> = ui.ctx().data_mut(|d| d.get_temp(cache_id));
     let entries = if let Some((prev_hash, entries)) = cached {
@@ -61,67 +64,92 @@ pub fn render(
             entries
         } else {
             let entries = read_dir(dir_path);
-            ui.ctx().data_mut(|d| d.insert_temp(cache_id, (dir_hash, entries.clone())));
+            ui.ctx()
+                .data_mut(|d| d.insert_temp(cache_id, (dir_hash, entries.clone())));
             entries
         }
     } else {
         let entries = read_dir(dir_path);
-        ui.ctx().data_mut(|d| d.insert_temp(cache_id, (dir_hash, entries.clone())));
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(cache_id, (dir_hash, entries.clone())));
         entries
     };
 
     // Refresh button
     ui.horizontal(|ui| {
         let count = entries.len();
-        ui.label(egui::RichText::new(format!("{} items", count)).small().color(egui::Color32::GRAY));
+        ui.label(
+            egui::RichText::new(format!("{} items", count))
+                .small()
+                .color(egui::Color32::GRAY),
+        );
         if ui.small_button("↻").on_hover_text("Refresh").clicked() {
             let entries = read_dir(dir_path);
-            ui.ctx().data_mut(|d| d.insert_temp(cache_id, (dir_hash.wrapping_add(1), entries)));
+            ui.ctx()
+                .data_mut(|d| d.insert_temp(cache_id, (dir_hash.wrapping_add(1), entries)));
         }
     });
 
     // File list
-    egui::ScrollArea::vertical().max_height(300.0).show_pannable(ui, |ui| {
-        // Parent directory
-        if let Some(parent) = Path::new(dir_path.as_str()).parent() {
-            let resp = render_file_row(ui, "..", true, "", 0, false);
-            if resp {
-                *dir_path = parent.to_string_lossy().to_string();
-                // Force cache refresh
-                ui.ctx().data_mut(|d| d.remove::<(u64, Vec<DirEntry>)>(cache_id));
-            }
-        }
-
-        let mut any_shown = false;
-        // Directories first, then files
-        for entry in &entries {
-            if !query.is_empty() && !entry.name.to_lowercase().contains(&query) {
-                continue;
-            }
-
-            let is_selected = entry.full_path == *selected_file;
-            let clicked = render_file_row(ui, &entry.name, entry.is_dir, &entry.ext, entry.size, is_selected);
-
-            if clicked {
-                if entry.is_dir {
-                    // Navigate into directory
-                    *dir_path = entry.full_path.clone();
-                    *selected_file = String::new();
-                    ui.ctx().data_mut(|d| d.remove::<(u64, Vec<DirEntry>)>(cache_id));
-                } else {
-                    // Select file
-                    *selected_file = entry.full_path.clone();
-                    // Open the file in the OS default app
-                    let _ = open::that(&entry.full_path);
+    egui::ScrollArea::vertical()
+        .max_height(300.0)
+        .show_pannable(ui, |ui| {
+            // Parent directory
+            if let Some(parent) = Path::new(dir_path.as_str()).parent() {
+                let resp = render_file_row(ui, "..", true, "", 0, false);
+                if resp {
+                    *dir_path = parent.to_string_lossy().to_string();
+                    // Force cache refresh
+                    ui.ctx()
+                        .data_mut(|d| d.remove::<(u64, Vec<DirEntry>)>(cache_id));
                 }
             }
-            any_shown = true;
-        }
 
-        if !any_shown {
-            ui.colored_label(egui::Color32::GRAY, if query.is_empty() { "Empty folder" } else { "No matches" });
-        }
-    });
+            let mut any_shown = false;
+            // Directories first, then files
+            for entry in &entries {
+                if !query.is_empty() && !entry.name.to_lowercase().contains(&query) {
+                    continue;
+                }
+
+                let is_selected = entry.full_path == *selected_file;
+                let clicked = render_file_row(
+                    ui,
+                    &entry.name,
+                    entry.is_dir,
+                    &entry.ext,
+                    entry.size,
+                    is_selected,
+                );
+
+                if clicked {
+                    if entry.is_dir {
+                        // Navigate into directory
+                        *dir_path = entry.full_path.clone();
+                        *selected_file = String::new();
+                        ui.ctx()
+                            .data_mut(|d| d.remove::<(u64, Vec<DirEntry>)>(cache_id));
+                    } else {
+                        // Select file
+                        *selected_file = entry.full_path.clone();
+                        // Open the file in the OS default app
+                        let _ = open::that(&entry.full_path);
+                    }
+                }
+                any_shown = true;
+            }
+
+            if !any_shown {
+                ui.colored_label(
+                    egui::Color32::GRAY,
+                    if query.is_empty() {
+                        "Empty folder"
+                    } else {
+                        "No matches"
+                    },
+                );
+            }
+        });
 
     // Selected file info
     if !selected_file.is_empty() {
@@ -131,13 +159,29 @@ pub fn render(
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default();
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(icons::CHECK).size(12.0).color(egui::Color32::from_rgb(80, 200, 120)));
-            ui.label(egui::RichText::new(&name).small().strong().color(egui::Color32::from_rgb(80, 200, 120)));
+            ui.label(
+                egui::RichText::new(icons::CHECK)
+                    .size(12.0)
+                    .color(egui::Color32::from_rgb(80, 200, 120)),
+            );
+            ui.label(
+                egui::RichText::new(&name)
+                    .small()
+                    .strong()
+                    .color(egui::Color32::from_rgb(80, 200, 120)),
+            );
         });
     }
 }
 
-fn render_file_row(ui: &mut egui::Ui, name: &str, is_dir: bool, ext: &str, size: u64, is_selected: bool) -> bool {
+fn render_file_row(
+    ui: &mut egui::Ui,
+    name: &str,
+    is_dir: bool,
+    ext: &str,
+    size: u64,
+    is_selected: bool,
+) -> bool {
     let row_h = 22.0;
     let (rect, response) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), row_h),
@@ -222,13 +266,19 @@ fn render_file_row(ui: &mut egui::Ui, name: &str, is_dir: bool, ext: &str, size:
 
 fn read_dir(path: &str) -> Vec<DirEntry> {
     let mut entries = Vec::new();
-    let Ok(read_dir) = std::fs::read_dir(path) else { return entries; };
+    let Ok(read_dir) = std::fs::read_dir(path) else {
+        return entries;
+    };
 
     for entry in read_dir.flatten() {
-        let Ok(meta) = entry.metadata() else { continue; };
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
         let name = entry.file_name().to_string_lossy().to_string();
         // Skip hidden files
-        if name.starts_with('.') { continue; }
+        if name.starts_with('.') {
+            continue;
+        }
 
         let ext = Path::new(&name)
             .extension()
@@ -246,15 +296,22 @@ fn read_dir(path: &str) -> Vec<DirEntry> {
 
     // Sort: directories first, then alphabetical
     entries.sort_by(|a, b| {
-        b.is_dir.cmp(&a.is_dir).then(a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        b.is_dir
+            .cmp(&a.is_dir)
+            .then(a.name.to_lowercase().cmp(&b.name.to_lowercase()))
     });
 
     entries
 }
 
 fn format_size(bytes: u64) -> String {
-    if bytes < 1024 { format!("{} B", bytes) }
-    else if bytes < 1024 * 1024 { format!("{:.1} KB", bytes as f64 / 1024.0) }
-    else if bytes < 1024 * 1024 * 1024 { format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0)) }
-    else { format!("{:.1} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0)) }
+    if bytes < 1024 {
+        format!("{} B", bytes)
+    } else if bytes < 1024 * 1024 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else if bytes < 1024 * 1024 * 1024 {
+        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    } else {
+        format!("{:.1} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+    }
 }

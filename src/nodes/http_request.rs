@@ -1,8 +1,8 @@
-use eframe::egui;
-use crate::nodes::ScrollAreaExt;
-use crate::graph::{NodeId, PortValue, Connection, Graph, PortKind};
+use crate::graph::{Connection, Graph, NodeId, PortKind, PortValue};
 use crate::http::HttpAction;
+use crate::nodes::ScrollAreaExt;
 use crate::nodes::{inline_port_circle, output_port_row};
+use eframe::egui;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
@@ -24,11 +24,19 @@ pub fn render(
     dragging_from: &mut Option<(NodeId, usize, bool)>,
     pending_disconnects: &mut Vec<(NodeId, usize)>,
 ) {
-    if method.is_empty() { *method = "POST".into(); }
+    if method.is_empty() {
+        *method = "POST".into();
+    }
 
-    let url_wired = connections.iter().any(|c| c.to_node == node_id && c.to_port == 0);
-    let body_wired = connections.iter().any(|c| c.to_node == node_id && c.to_port == 1);
-    let hdr_wired = connections.iter().any(|c| c.to_node == node_id && c.to_port == 2);
+    let url_wired = connections
+        .iter()
+        .any(|c| c.to_node == node_id && c.to_port == 0);
+    let body_wired = connections
+        .iter()
+        .any(|c| c.to_node == node_id && c.to_port == 1);
+    let hdr_wired = connections
+        .iter()
+        .any(|c| c.to_node == node_id && c.to_port == 2);
 
     // URL override from input
     let url_input = Graph::static_input_value(connections, values, node_id, 0);
@@ -54,15 +62,34 @@ pub fn render(
 
     // Port 0: URL
     ui.horizontal(|ui| {
-        inline_port_circle(ui, node_id, 0, true, connections, port_positions, dragging_from, pending_disconnects, PortKind::Text);
+        inline_port_circle(
+            ui,
+            node_id,
+            0,
+            true,
+            connections,
+            port_positions,
+            dragging_from,
+            pending_disconnects,
+            PortKind::Text,
+        );
         ui.label(egui::RichText::new("URL:").small());
         if url_wired {
             let short = crate::nodes::truncate_chars(&effective_url, 30);
-            ui.label(egui::RichText::new(short).small().monospace().color(egui::Color32::from_rgb(80, 170, 255)));
+            ui.label(
+                egui::RichText::new(short)
+                    .small()
+                    .monospace()
+                    .color(egui::Color32::from_rgb(80, 170, 255)),
+            );
         }
     });
     if !url_wired {
-        ui.add(egui::TextEdit::singleline(url).desired_width(ui.available_width()).hint_text("https://..."));
+        ui.add(
+            egui::TextEdit::singleline(url)
+                .desired_width(ui.available_width())
+                .hint_text("https://..."),
+        );
     }
 
     // Method + Auto
@@ -81,11 +108,26 @@ pub fn render(
 
     // Port 1: Body
     ui.horizontal(|ui| {
-        inline_port_circle(ui, node_id, 1, true, connections, port_positions, dragging_from, pending_disconnects, PortKind::Text);
+        inline_port_circle(
+            ui,
+            node_id,
+            1,
+            true,
+            connections,
+            port_positions,
+            dragging_from,
+            pending_disconnects,
+            PortKind::Text,
+        );
         ui.label(egui::RichText::new("Body:").small());
         if body_wired {
             let short = crate::nodes::truncate_chars(body.as_str(), 25);
-            ui.label(egui::RichText::new(short).small().monospace().color(egui::Color32::from_rgb(80, 170, 255)));
+            ui.label(
+                egui::RichText::new(short)
+                    .small()
+                    .monospace()
+                    .color(egui::Color32::from_rgb(80, 170, 255)),
+            );
         } else {
             ui.label(egui::RichText::new("—").small().color(egui::Color32::GRAY));
         }
@@ -93,10 +135,24 @@ pub fn render(
 
     // Port 2: Headers (collapsible when not wired)
     ui.horizontal(|ui| {
-        inline_port_circle(ui, node_id, 2, true, connections, port_positions, dragging_from, pending_disconnects, PortKind::Text);
+        inline_port_circle(
+            ui,
+            node_id,
+            2,
+            true,
+            connections,
+            port_positions,
+            dragging_from,
+            pending_disconnects,
+            PortKind::Text,
+        );
         ui.label(egui::RichText::new("Headers:").small());
         if hdr_wired {
-            ui.label(egui::RichText::new("connected").small().color(egui::Color32::from_rgb(80, 170, 255)));
+            ui.label(
+                egui::RichText::new("connected")
+                    .small()
+                    .color(egui::Color32::from_rgb(80, 170, 255)),
+            );
         }
     });
     if !hdr_wired {
@@ -108,7 +164,13 @@ pub fn render(
     // Send button + status
     ui.horizontal(|ui| {
         let can_send = !effective_url.is_empty() && !is_pending;
-        if ui.add_enabled(can_send, egui::Button::new(if is_pending { "Sending..." } else { "Send" })).clicked() {
+        if ui
+            .add_enabled(
+                can_send,
+                egui::Button::new(if is_pending { "Sending..." } else { "Send" }),
+            )
+            .clicked()
+        {
             let parsed_headers = parse_headers(&effective_headers);
             actions.push(HttpAction::SendRequest {
                 node_id,
@@ -118,11 +180,19 @@ pub fn render(
                 body: body.clone(),
             });
         }
-        let status_color = if status.starts_with('2') { egui::Color32::from_rgb(80, 200, 80) }
-            else if status == "idle" || status.is_empty() { egui::Color32::GRAY }
-            else if is_pending { egui::Color32::from_rgb(200, 200, 80) }
-            else { egui::Color32::from_rgb(220, 80, 80) };
-        ui.colored_label(status_color, if status.is_empty() { "idle" } else { status });
+        let status_color = if status.starts_with('2') {
+            egui::Color32::from_rgb(80, 200, 80)
+        } else if status == "idle" || status.is_empty() {
+            egui::Color32::GRAY
+        } else if is_pending {
+            egui::Color32::from_rgb(200, 200, 80)
+        } else {
+            egui::Color32::from_rgb(220, 80, 80)
+        };
+        ui.colored_label(
+            status_color,
+            if status.is_empty() { "idle" } else { status },
+        );
     });
 
     // Auto-send
@@ -135,8 +205,11 @@ pub fn render(
         if new_hash != *last_hash && *last_hash != 0 {
             let parsed_headers = parse_headers(&effective_headers);
             actions.push(HttpAction::SendRequest {
-                node_id, url: effective_url, method: method.clone(),
-                headers: parsed_headers, body,
+                node_id,
+                url: effective_url,
+                method: method.clone(),
+                headers: parsed_headers,
+                body,
             });
         }
         *last_hash = new_hash;
@@ -144,24 +217,58 @@ pub fn render(
 
     // Output ports: Response + Status
     ui.separator();
-    let resp_short = if response.is_empty() { "—".into() } else { crate::nodes::truncate_chars(response, 30) };
-    output_port_row(ui, "Response", &resp_short, node_id, 0, port_positions, dragging_from, connections, pending_disconnects, PortKind::Text);
+    let resp_short = if response.is_empty() {
+        "—".into()
+    } else {
+        crate::nodes::truncate_chars(response, 30)
+    };
+    output_port_row(
+        ui,
+        "Response",
+        &resp_short,
+        node_id,
+        0,
+        port_positions,
+        dragging_from,
+        connections,
+        pending_disconnects,
+        PortKind::Text,
+    );
     let status_val = if status.is_empty() { "—" } else { status };
-    output_port_row(ui, "Status", status_val, node_id, 1, port_positions, dragging_from, connections, pending_disconnects, PortKind::Text);
+    output_port_row(
+        ui,
+        "Status",
+        status_val,
+        node_id,
+        1,
+        port_positions,
+        dragging_from,
+        connections,
+        pending_disconnects,
+        PortKind::Text,
+    );
 
     // Response preview (collapsible)
     if !response.is_empty() {
         ui.collapsing("Response Body", |ui| {
-            egui::ScrollArea::vertical().max_height(100.0).show_pannable(ui, |ui| {
-                ui.add(egui::TextEdit::multiline(&mut response.to_string())
-                    .code_editor().desired_width(ui.available_width()));
-            });
+            egui::ScrollArea::vertical()
+                .max_height(100.0)
+                .show_pannable(ui, |ui| {
+                    ui.add(
+                        egui::TextEdit::multiline(&mut response.to_string())
+                            .code_editor()
+                            .desired_width(ui.available_width()),
+                    );
+                });
         });
     }
 }
 
 fn parse_headers(raw: &str) -> Vec<(String, String)> {
     raw.lines()
-        .filter_map(|line| line.split_once(':').map(|(k, v)| (k.trim().to_string(), v.trim().to_string())))
+        .filter_map(|line| {
+            line.split_once(':')
+                .map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))
+        })
         .collect()
 }

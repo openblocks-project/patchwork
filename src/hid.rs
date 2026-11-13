@@ -39,7 +39,9 @@ pub const OB_WHEEL_PID: u16 = 0x8154;
 /// Classify a (VID, PID) pair as an OB device type.
 /// Returns `None` for non-OB HIDs so we skip keyboards, mice, etc.
 fn classify(vid: u16, pid: u16) -> Option<&'static str> {
-    if vid != OB_VID { return None; }
+    if vid != OB_VID {
+        return None;
+    }
     match pid {
         OB_KNOB_PID => Some("knob"),
         OB_DISTANCE_PID => Some("distance"),
@@ -164,7 +166,7 @@ fn hid_enumeration_thread(devices: HidDeviceMap) {
             // fallback path too. Log the tuple either way so we can
             // diagnose future composite-device surprises.
             let up = info.usage_page();
-            let u  = info.usage();
+            let u = info.usage();
             let is_gamepad = up == 0x01 && u == 0x05;
             let is_unknown = up == 0 && u == 0;
             if !is_gamepad && !is_unknown {
@@ -174,19 +176,25 @@ fn hid_enumeration_thread(devices: HidDeviceMap) {
                 if !opened_paths.contains_key(&path_key) {
                     crate::system_log::log(format!(
                         "HID: skipping {} pid={:04x} interface up={:04x} u={:04x} (not gamepad)",
-                        device_type, info.product_id(), up, u
+                        device_type,
+                        info.product_id(),
+                        up,
+                        u
                     ));
                     opened_paths.insert(path_key, (device_type.to_string(), 0));
                 }
                 continue;
             }
             let path = info.path().to_string_lossy().into_owned();
-            if opened_paths.contains_key(&path) { continue; }
+            if opened_paths.contains_key(&path) {
+                continue;
+            }
 
             // Device ID from USB iSerialNumber — firmware should set this
             // (e.g., `USB.serialNumber("1")` before `USB.begin()`).
             // Falls back to 1 if the string is absent or unparseable.
-            let device_id: u8 = info.serial_number()
+            let device_id: u8 = info
+                .serial_number()
                 .and_then(|s| s.trim().parse::<u8>().ok())
                 .unwrap_or(1);
 
@@ -216,8 +224,10 @@ fn hid_enumeration_thread(devices: HidDeviceMap) {
 
             crate::system_log::log(format!(
                 "HID: opened {} #{} (vid={:04x} pid={:04x} serial={:?})",
-                device_type, device_id,
-                info.vendor_id(), info.product_id(),
+                device_type,
+                device_id,
+                info.vendor_id(),
+                info.product_id(),
                 info.serial_number().unwrap_or("(none)")
             ));
 
@@ -225,7 +235,8 @@ fn hid_enumeration_thread(devices: HidDeviceMap) {
             // "Waiting..." immediately — even before the first report arrives.
             {
                 let mut map = devices.lock().unwrap();
-                let entry = map.entry((device_type.to_string(), device_id))
+                let entry = map
+                    .entry((device_type.to_string(), device_id))
                     .or_insert_with(|| ObDevice::new(device_type, device_id));
                 entry.is_active = true;
                 entry.last_seen = Instant::now();
@@ -304,7 +315,10 @@ fn hid_reader_thread(
                     let hex: String = report.iter().map(|b| format!("{:02x} ", b)).collect();
                     crate::system_log::log(format!(
                         "HID: {} #{} report[{}]: {}",
-                        device_type, device_id, n, hex.trim_end()
+                        device_type,
+                        device_id,
+                        n,
+                        hex.trim_end()
                     ));
                     reports_logged += 1;
                 }
@@ -326,7 +340,8 @@ fn hid_reader_thread(
                 };
                 if let Some(values) = parsed {
                     let mut map = devices.lock().unwrap();
-                    let entry = map.entry((device_type.clone(), device_id))
+                    let entry = map
+                        .entry((device_type.clone(), device_id))
                         .or_insert_with(|| ObDevice::new(&device_type, device_id));
                     for (k, v) in values {
                         entry.values.insert(k.to_string(), v);
@@ -378,7 +393,9 @@ fn hid_reader_thread(
 /// back to the `0.0..1.0` normalized range the firmware started with.
 fn parse_knob_report(report: &[u8]) -> Option<Vec<(&'static str, f32)>> {
     // Bytes 0..7 need to exist to reach the Rx offset.
-    if report.len() < 6 { return None; }
+    if report.len() < 6 {
+        return None;
+    }
 
     // Assume report ID is present (common case for TinyUSB gamepad). Rx at [5].
     // If your device sends reports without an ID, change this to [4].
@@ -436,19 +453,17 @@ fn parse_knob_report(report: &[u8]) -> Option<Vec<(&'static str, f32)>> {
 ///                before the next report overwrites it.
 ///   "click"    → button state 0.0 / 1.0
 ///   "position" → accumulated ticks since firmware boot (or reset)
-fn parse_encoder_report(
-    report: &[u8],
-    devices: &HidDeviceMap,
-    device_type: &str,
-    device_id: u8,
-) {
-    if report.len() < 9 { return; }
+fn parse_encoder_report(report: &[u8], devices: &HidDeviceMap, device_type: &str, device_id: u8) {
+    if report.len() < 9 {
+        return;
+    }
 
     let delta = report[1] as i8 as f32; // firmware sends -1 / 0 / +1
     let click = if (report[8] & 0x01) != 0 { 1.0 } else { 0.0 };
 
     let mut map = devices.lock().unwrap();
-    let entry = map.entry((device_type.to_string(), device_id))
+    let entry = map
+        .entry((device_type.to_string(), device_id))
         .or_insert_with(|| ObDevice::new(device_type, device_id));
 
     entry.values.insert("turn".into(), delta);
@@ -471,7 +486,9 @@ fn parse_encoder_report(
 ///
 /// Output keys: "val" (normalized), "mm" (raw), "status" (0/1/2 as f32).
 fn parse_distance_report(report: &[u8]) -> Option<Vec<(&'static str, f32)>> {
-    if report.len() < 6 { return None; }
+    if report.len() < 6 {
+        return None;
+    }
 
     let rx_signed = report[5] as i8;
     let norm = ((rx_signed as f32 + 127.0) / 254.0).clamp(0.0, 1.0);

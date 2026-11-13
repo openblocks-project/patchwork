@@ -45,15 +45,23 @@ pub fn render(
         ui.add(egui::TextEdit::singleline(dest_host).desired_width(110.0));
         ui.label(":");
         let mut port_str = dest_port.to_string();
-        if ui.add(egui::TextEdit::singleline(&mut port_str).desired_width(50.0)).changed() {
-            if let Ok(p) = port_str.parse::<u16>() { *dest_port = p; }
+        if ui
+            .add(egui::TextEdit::singleline(&mut port_str).desired_width(50.0))
+            .changed()
+        {
+            if let Ok(p) = port_str.parse::<u16>() {
+                *dest_port = p;
+            }
         }
     });
     // Universe (15-bit, displayed as 0–32767)
     ui.horizontal(|ui| {
         ui.label("Univ:");
         let mut u32v = *universe as u32;
-        if ui.add(egui::DragValue::new(&mut u32v).range(0..=32767)).changed() {
+        if ui
+            .add(egui::DragValue::new(&mut u32v).range(0..=32767))
+            .changed()
+        {
             *universe = u32v.min(32767) as u16;
         }
         ui.checkbox(sequence_enabled, "Seq");
@@ -73,7 +81,10 @@ pub fn render(
         }
         ui.label("from");
         let mut s = *start_at as u32;
-        if ui.add(egui::DragValue::new(&mut s).range(1..=512)).changed() {
+        if ui
+            .add(egui::DragValue::new(&mut s).range(1..=512))
+            .changed()
+        {
             *start_at = s.clamp(1, 512) as u16;
         }
     });
@@ -83,8 +94,15 @@ pub fn render(
     for i in 0..*channel_count {
         ui.horizontal(|ui| {
             super::inline_port_circle(
-                ui, node_id, i, true, connections,
-                port_positions, dragging_from, pending_disconnects, PortKind::Normalized,
+                ui,
+                node_id,
+                i,
+                true,
+                connections,
+                port_positions,
+                dragging_from,
+                pending_disconnects,
+                PortKind::Normalized,
             );
             let ch = (*start_at as usize) + i;
             let v = Graph::static_input_value(connections, values, node_id, i).as_float();
@@ -97,14 +115,20 @@ pub fn render(
     ui.separator();
     ui.horizontal(|ui| {
         if *active {
-            if ui.button("\u{23F9} Stop").clicked() { *active = false; }
+            if ui.button("\u{23F9} Stop").clicked() {
+                *active = false;
+            }
         } else {
-            if ui.button("\u{25B6} Start").clicked() { *active = true; }
+            if ui.button("\u{25B6} Start").clicked() {
+                *active = true;
+            }
         }
     });
 
     // ── Push action when active ────────────────────────────────
-    if !*active { return; }
+    if !*active {
+        return;
+    }
 
     let dest = match format!("{}:{}", dest_host, dest_port).parse::<std::net::SocketAddr>() {
         Ok(a) => a,
@@ -120,7 +144,9 @@ pub fn render(
         let v = Graph::static_input_value(connections, values, node_id, i).as_float();
         data[start_idx + i] = (v.clamp(0.0, 1.0) * 255.0) as u8;
     }
-    if data.len() % 2 == 1 { data.push(0); }
+    if data.len() % 2 == 1 {
+        data.push(0);
+    }
 
     artnet_actions.push(ArtNetAction::Send {
         node_id,

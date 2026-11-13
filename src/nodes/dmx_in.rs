@@ -38,7 +38,11 @@ pub fn render(
     ui.horizontal(|ui| {
         ui.label("Port:");
         egui::ComboBox::from_id_salt(egui::Id::new(("dmx_in_port", node_id)))
-            .selected_text(if port_name.is_empty() { "<select>".to_string() } else { port_name.clone() })
+            .selected_text(if port_name.is_empty() {
+                "<select>".to_string()
+            } else {
+                port_name.clone()
+            })
             .width(150.0)
             .show_ui(ui, |ui| {
                 for p in serial_ports {
@@ -49,7 +53,8 @@ pub fn render(
             });
     });
     ui.label(
-        egui::RichText::new("Requires Enttec USB Pro").small()
+        egui::RichText::new("Requires Enttec USB Pro")
+            .small()
             .color(egui::Color32::from_rgb(150, 150, 160)),
     );
 
@@ -65,7 +70,10 @@ pub fn render(
         }
         ui.label("from");
         let mut s = *start_at as u32;
-        if ui.add(egui::DragValue::new(&mut s).range(1..=512)).changed() {
+        if ui
+            .add(egui::DragValue::new(&mut s).range(1..=512))
+            .changed()
+        {
             *start_at = s.clamp(1, 512) as u16;
         }
     });
@@ -75,8 +83,15 @@ pub fn render(
     for i in 0..*channel_count {
         ui.horizontal(|ui| {
             super::inline_port_circle(
-                ui, node_id, i, false, connections,
-                port_positions, dragging_from, pending_disconnects, PortKind::Normalized,
+                ui,
+                node_id,
+                i,
+                false,
+                connections,
+                port_positions,
+                dragging_from,
+                pending_disconnects,
+                PortKind::Normalized,
             );
             let ch = (*start_at as usize) + i;
             let byte = last_values.get(i).copied().unwrap_or(0);
@@ -94,7 +109,10 @@ pub fn render(
             }
         } else {
             let enable = !port_name.is_empty();
-            if ui.add_enabled(enable, egui::Button::new("\u{25B6} Start")).clicked() {
+            if ui
+                .add_enabled(enable, egui::Button::new("\u{25B6} Start"))
+                .clicked()
+            {
                 *listening = true;
                 dmx_actions.push(DmxAction::StartListening {
                     node_id,

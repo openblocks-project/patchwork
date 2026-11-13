@@ -12,16 +12,24 @@ const UNIFORM_BUF_SIZE: u64 = (MAX_UNIFORM_FLOATS * 4) as u64; // 256 bytes
 /// Request to auto-create a source node and connect it to a WGSL uniform port.
 #[derive(Clone, Debug)]
 pub struct WgslSpawnRequest {
-    pub source_type: String,  // "time", "slider", "color"
+    pub source_type: String, // "time", "slider", "color"
     pub target_node: crate::graph::NodeId,
     pub target_port: usize,
     pub uniform_name: String,
 }
 
 /// Determine what source node to create and with what defaults based on uniform name.
-fn uniform_spawn_request(name: &str, target_node: crate::graph::NodeId, target_port: usize) -> WgslSpawnRequest {
+fn uniform_spawn_request(
+    name: &str,
+    target_node: crate::graph::NodeId,
+    target_port: usize,
+) -> WgslSpawnRequest {
     let lower = name.to_lowercase();
-    let source_type = if lower == "time" || lower == "t" { "time" } else { "slider" };
+    let source_type = if lower == "time" || lower == "t" {
+        "time"
+    } else {
+        "slider"
+    };
     WgslSpawnRequest {
         source_type: source_type.to_string(),
         target_node,
@@ -34,9 +42,9 @@ fn uniform_spawn_request(name: &str, target_node: crate::graph::NodeId, target_p
 pub fn slider_defaults_for_uniform(name: &str) -> (f32, f32, f32, f32) {
     let lower = name.to_lowercase();
     if lower.contains("particle") {
-        (0.0, 2000.0, 10.0, 400.0)  // particle swarms — 1000s range
+        (0.0, 2000.0, 10.0, 400.0) // particle swarms — 1000s range
     } else if lower.contains("count") || lower.contains("num") || lower == "n" || lower == "i" {
-        (0.0, 20.0, 1.0, 5.0)       // integers
+        (0.0, 20.0, 1.0, 5.0) // integers
     } else if lower.contains("speed") || lower.contains("rate") {
         (0.0, 10.0, 0.1, 1.0)
     } else if lower.contains("fade") || lower.contains("decay") || lower.contains("persist") {
@@ -48,13 +56,13 @@ pub fn slider_defaults_for_uniform(name: &str) -> (f32, f32, f32, f32) {
     } else if lower.contains("segment") {
         (2.0, 32.0, 1.0, 6.0)
     } else if lower.contains("zoom_rate") || lower.contains("zoom_speed") {
-        (-1.0, 1.0, 0.01, 0.1)              // signed, for zoom in/out animation
+        (-1.0, 1.0, 0.01, 0.1) // signed, for zoom in/out animation
     } else if lower.contains("zoom") {
         (0.1, 4.0, 0.01, 1.0)
     } else if lower.contains("iter") {
-        (32.0, 512.0, 1.0, 128.0)           // fractal iteration count
+        (32.0, 512.0, 1.0, 128.0) // fractal iteration count
     } else if lower.contains("hue") {
-        (0.0, 6.28318, 0.01, 0.5)           // palette rotation in radians
+        (0.0, 6.28318, 0.01, 0.5) // palette rotation in radians
     } else if lower.contains("thick") || lower.contains("width") {
         (0.001, 0.05, 0.0005, 0.008)
     } else if lower.contains("size") || lower.contains("scale") || lower.contains("radius") {
@@ -62,11 +70,15 @@ pub fn slider_defaults_for_uniform(name: &str) -> (f32, f32, f32, f32) {
     } else if lower.contains("freq") {
         (20.0, 2000.0, 1.0, 440.0)
     } else if lower.contains("angle") || lower.contains("rotation") || lower.contains("rot") {
-        (0.0, 6.2832, 0.01, 0.0)    // 0–2π
-    } else if lower.contains("mix") || lower.contains("blend") || lower.contains("amount") || lower.contains("alpha") {
+        (0.0, 6.2832, 0.01, 0.0) // 0–2π
+    } else if lower.contains("mix")
+        || lower.contains("blend")
+        || lower.contains("amount")
+        || lower.contains("alpha")
+    {
         (0.0, 1.0, 0.01, 0.5)
     } else {
-        (0.0, 1.0, 0.01, 0.5)       // safe default
+        (0.0, 1.0, 0.01, 0.5) // safe default
     }
 }
 
@@ -125,9 +137,15 @@ fn hsl_to_rgb(h: f32, s: f32, l: f32) -> [f32; 3] {
 // time is NOT a builtin — it's a normal uniform port that users connect a Time node to.
 // This lets them control speed, sync with audio, or use Timer phase.
 const BUILTINS: &[&str] = &[
-    "resolution", "mouse",
-    "resolution_x", "resolution_y", "mouse_x", "mouse_y",
-    "_p0", "_p1", "_p2",
+    "resolution",
+    "mouse",
+    "resolution_x",
+    "resolution_y",
+    "mouse_x",
+    "mouse_y",
+    "_p0",
+    "_p1",
+    "_p2",
 ];
 
 /// Auto-injected image-input bindings for the WGSL Viewer feedback feature.
@@ -200,7 +218,11 @@ fn create_dummy_black_texture(
 ) -> (wgpu::Texture, wgpu::TextureView) {
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("wgsl_viewer_dummy_black_1x1"),
-        size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+        size: wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
@@ -221,7 +243,11 @@ fn create_dummy_black_texture(
             bytes_per_row: Some(4),
             rows_per_image: Some(1),
         },
-        wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+        wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
     );
     let view = texture.create_view(&Default::default());
     (texture, view)
@@ -343,7 +369,9 @@ fn build_uniform_block(names: &[String], types: &[String]) -> String {
     s += "    _p0: f32,\n";
     // user uniforms (skip "time" — it's already in the header)
     for (i, name) in names.iter().enumerate() {
-        if name == "time" { continue; }
+        if name == "time" {
+            continue;
+        }
         let t = types.get(i).map(|s| s.as_str()).unwrap_or("float");
         match t {
             "color" => {
@@ -492,10 +520,9 @@ impl egui_wgpu::CallbackTrait for WgslPaintCallback {
             resources.get::<WgslUniformStore>(),
             resources.get::<WgslGpuStore>(),
         ) {
-            if let (Some(data), Some(node_gpu)) = (
-                unis.data.get(&self.node_id),
-                gpus.nodes.get(&self.node_id),
-            ) {
+            if let (Some(data), Some(node_gpu)) =
+                (unis.data.get(&self.node_id), gpus.nodes.get(&self.node_id))
+            {
                 let bytes: &[u8] = bytemuck::cast_slice(data);
                 queue.write_buffer(&node_gpu.uniform_buffer, 0, bytes);
             }
@@ -524,8 +551,10 @@ impl egui_wgpu::CallbackTrait for WgslPaintCallback {
             (fb, ext)
         };
 
-        let needs_rebuild = feedback_flags[0] || feedback_flags[1]
-            || ext_views[0].is_some() || ext_views[1].is_some();
+        let needs_rebuild = feedback_flags[0]
+            || feedback_flags[1]
+            || ext_views[0].is_some()
+            || ext_views[1].is_some();
 
         if needs_rebuild {
             // Previous-frame ping-pong view (only needed for LastFrame slots).
@@ -543,7 +572,9 @@ impl egui_wgpu::CallbackTrait for WgslPaintCallback {
                 if let Some(node_gpu) = gpu_store.nodes.get_mut(&self.node_id) {
                     let pick = |slot: usize| -> wgpu::TextureView {
                         if feedback_flags[slot] {
-                            prev_view.clone().unwrap_or_else(|| node_gpu.dummy_black_view.clone())
+                            prev_view
+                                .clone()
+                                .unwrap_or_else(|| node_gpu.dummy_black_view.clone())
                         } else if let Some(v) = &ext_views[slot] {
                             v.clone()
                         } else {
@@ -556,10 +587,22 @@ impl egui_wgpu::CallbackTrait for WgslPaintCallback {
                         label: Some("wgsl_onscreen_bg_per_frame"),
                         layout: &node_gpu.bind_group_layout,
                         entries: &[
-                            wgpu::BindGroupEntry { binding: 0, resource: node_gpu.uniform_buffer.as_entire_binding() },
-                            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&node_gpu.sampler) },
-                            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&view_a) },
-                            wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&view_b) },
+                            wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: node_gpu.uniform_buffer.as_entire_binding(),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 1,
+                                resource: wgpu::BindingResource::Sampler(&node_gpu.sampler),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 2,
+                                resource: wgpu::BindingResource::TextureView(&view_a),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 3,
+                                resource: wgpu::BindingResource::TextureView(&view_b),
+                            },
                         ],
                     });
                     node_gpu.bind_group = new_bg;
@@ -605,7 +648,9 @@ impl egui_wgpu::CallbackTrait for WgslBgCallback {
         let uni_store = resources.get::<WgslUniformStore>();
         let gpu_store = resources.get::<WgslGpuStore>();
         if let (Some(unis), Some(gpus)) = (uni_store, gpu_store) {
-            if let (Some(data), Some(node_gpu)) = (unis.data.get(&self.node_id), gpus.nodes.get(&self.node_id)) {
+            if let (Some(data), Some(node_gpu)) =
+                (unis.data.get(&self.node_id), gpus.nodes.get(&self.node_id))
+            {
                 let bytes: &[u8] = bytemuck::cast_slice(data);
                 queue.write_buffer(&node_gpu.uniform_buffer, 0, bytes);
             }
@@ -660,12 +705,28 @@ pub fn render(
 ) {
     // ── Port 0: WGSL code input (inline) ────────────────────────────
     {
-        let is_wired = connections.iter().any(|c| c.to_node == node_id && c.to_port == 0);
+        let is_wired = connections
+            .iter()
+            .any(|c| c.to_node == node_id && c.to_port == 0);
         ui.horizontal(|ui| {
-            super::inline_port_circle(ui, node_id, 0, true, connections, port_positions, dragging_from, pending_disconnects, PortKind::Text);
+            super::inline_port_circle(
+                ui,
+                node_id,
+                0,
+                true,
+                connections,
+                port_positions,
+                dragging_from,
+                pending_disconnects,
+                PortKind::Text,
+            );
             ui.label(egui::RichText::new("WGSL").small());
             if is_wired {
-                ui.label(egui::RichText::new("⟵ connected").small().color(egui::Color32::from_rgb(80, 170, 255)));
+                ui.label(
+                    egui::RichText::new("⟵ connected")
+                        .small()
+                        .color(egui::Color32::from_rgb(80, 170, 255)),
+                );
             } else {
                 ui.colored_label(egui::Color32::GRAY, "—");
             }
@@ -746,10 +807,14 @@ pub fn render(
     // `slider_defaults_for_uniform` so the shader looks right immediately
     // — without this, every new uniform starts at 0.0 and presets like
     // Smear render as a frozen single dot until the user touches every slider.
-    let total_floats: usize = uniform_names.iter().enumerate().map(|(i, _)| {
-        let t = uniform_types.get(i).map(|s| s.as_str()).unwrap_or("float");
-        if t == "color" { 3 } else { 1 }
-    }).sum();
+    let total_floats: usize = uniform_names
+        .iter()
+        .enumerate()
+        .map(|(i, _)| {
+            let t = uniform_types.get(i).map(|s| s.as_str()).unwrap_or("float");
+            if t == "color" { 3 } else { 1 }
+        })
+        .sum();
     if uniform_values.len() < total_floats {
         // Walk uniforms in declared order and append defaults for the
         // newly-introduced trailing entries.
@@ -757,13 +822,22 @@ pub fn render(
         for (i, name) in uniform_names.iter().enumerate() {
             let t = uniform_types.get(i).map(|s| s.as_str()).unwrap_or("float");
             let comps = if t == "color" { 3 } else { 1 };
-            let rgb = if t == "color" { Some(default_color_rgb(name)) } else { None };
+            let rgb = if t == "color" {
+                Some(default_color_rgb(name))
+            } else {
+                None
+            };
             for c in 0..comps {
                 if idx >= uniform_values.len() {
                     let default = if let Some([r, g, b]) = rgb {
                         // Per-name deterministic hue so every color uniform
                         // starts visually distinct instead of mid-gray.
-                        match c { 0 => r, 1 => g, 2 => b, _ => 0.5 }
+                        match c {
+                            0 => r,
+                            1 => g,
+                            2 => b,
+                            _ => 0.5,
+                        }
                     } else {
                         slider_defaults_for_uniform(name).3
                     };
@@ -783,28 +857,44 @@ pub fn render(
         let t = uniform_types.get(i).map(|s| s.as_str()).unwrap_or("float");
         if t == "color" {
             for c in 0..3 {
-                let port_connected = connections.iter().any(|cn| cn.to_node == node_id && cn.to_port == port_idx);
+                let port_connected = connections
+                    .iter()
+                    .any(|cn| cn.to_node == node_id && cn.to_port == port_idx);
                 if port_connected {
                     let v = Graph::static_input_value(connections, values, node_id, port_idx);
                     let fv = v.as_float() / 255.0;
                     user_values.push(fv);
-                    if value_idx + c < uniform_values.len() { uniform_values[value_idx + c] = fv; }
+                    if value_idx + c < uniform_values.len() {
+                        uniform_values[value_idx + c] = fv;
+                    }
                 } else {
-                    let fv = if value_idx + c < uniform_values.len() { uniform_values[value_idx + c] } else { 0.0 };
+                    let fv = if value_idx + c < uniform_values.len() {
+                        uniform_values[value_idx + c]
+                    } else {
+                        0.0
+                    };
                     user_values.push(fv);
                 }
                 port_idx += 1;
             }
             value_idx += 3;
         } else {
-            let port_connected = connections.iter().any(|cn| cn.to_node == node_id && cn.to_port == port_idx);
+            let port_connected = connections
+                .iter()
+                .any(|cn| cn.to_node == node_id && cn.to_port == port_idx);
             if port_connected {
                 let v = Graph::static_input_value(connections, values, node_id, port_idx);
                 let fv = v.as_float();
                 user_values.push(fv);
-                if value_idx < uniform_values.len() { uniform_values[value_idx] = fv; }
+                if value_idx < uniform_values.len() {
+                    uniform_values[value_idx] = fv;
+                }
             } else {
-                let fv = if value_idx < uniform_values.len() { uniform_values[value_idx] } else { 0.0 };
+                let fv = if value_idx < uniform_values.len() {
+                    uniform_values[value_idx]
+                } else {
+                    0.0
+                };
                 user_values.push(fv);
             }
             port_idx += 1;
@@ -826,7 +916,11 @@ pub fn render(
     // Auto-inject the image-input bindings unless the user already declared
     // them. We look for the exact `image_a` token to avoid double-defining.
     let has_image_inputs = code.contains("image_a") && code.contains("@binding(2)");
-    let image_block = if has_image_inputs { "" } else { IMAGE_INPUT_BLOCK };
+    let image_block = if has_image_inputs {
+        ""
+    } else {
+        IMAGE_INPUT_BLOCK
+    };
 
     let final_code = if has_vs {
         format!("{}{}{}", uniform_block, image_block, code)
@@ -843,14 +937,33 @@ pub fn render(
     // Canvas size controls
     ui.horizontal(|ui| {
         ui.label("Size:");
-        ui.add(egui::DragValue::new(canvas_w).speed(1.0).range(100.0..=1920.0).prefix("W:"));
-        ui.add(egui::DragValue::new(canvas_h).speed(1.0).range(100.0..=1080.0).prefix("H:"));
+        ui.add(
+            egui::DragValue::new(canvas_w)
+                .speed(1.0)
+                .range(100.0..=1920.0)
+                .prefix("W:"),
+        );
+        ui.add(
+            egui::DragValue::new(canvas_h)
+                .speed(1.0)
+                .range(100.0..=1080.0)
+                .prefix("H:"),
+        );
     });
 
     // Pop-out button
     let popout_id = egui::Id::new(("wgsl_popout", node_id));
-    let mut popout_open = ui.ctx().data_mut(|d| d.get_temp::<bool>(popout_id).unwrap_or(false));
-    if ui.button(if popout_open { "Close Window" } else { "Pop Out" }).clicked() {
+    let mut popout_open = ui
+        .ctx()
+        .data_mut(|d| d.get_temp::<bool>(popout_id).unwrap_or(false));
+    if ui
+        .button(if popout_open {
+            "Close Window"
+        } else {
+            "Pop Out"
+        })
+        .clicked()
+    {
         popout_open = !popout_open;
         ui.ctx().data_mut(|d| d.insert_temp(popout_id, popout_open));
     }
@@ -869,32 +982,62 @@ pub fn render(
             let t = types_clone.get(i).map(|s| s.as_str()).unwrap_or("float");
             if t == "color" {
                 // Color group: label + optional "+" button
-                let any_wired = (0..3).any(|c| connections.iter().any(|cn| cn.to_node == node_id && cn.to_port == pi + c));
+                let any_wired = (0..3).any(|c| {
+                    connections
+                        .iter()
+                        .any(|cn| cn.to_node == node_id && cn.to_port == pi + c)
+                });
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new(format!("u.{}", name)).small());
                     if !any_wired {
-                        if ui.small_button("+").on_hover_text("Create Color node").clicked() {
+                        if ui
+                            .small_button("+")
+                            .on_hover_text("Create Color node")
+                            .clicked()
+                        {
                             let spawn = WgslSpawnRequest {
                                 source_type: "color".to_string(),
                                 target_node: node_id,
                                 target_port: pi,
                                 uniform_name: name.clone(),
                             };
-                            ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("wgsl_spawn_request"), spawn));
+                            ui.ctx().data_mut(|d| {
+                                d.insert_temp(egui::Id::new("wgsl_spawn_request"), spawn)
+                            });
                         }
                     }
                 });
                 ui.horizontal(|ui| {
                     for c in 0..3 {
                         let port = pi;
-                        let is_wired = connections.iter().any(|cn| cn.to_node == node_id && cn.to_port == port);
-                        super::inline_port_circle(ui, node_id, port, true, connections, port_positions, dragging_from, pending_disconnects, PortKind::Color);
+                        let is_wired = connections
+                            .iter()
+                            .any(|cn| cn.to_node == node_id && cn.to_port == port);
+                        super::inline_port_circle(
+                            ui,
+                            node_id,
+                            port,
+                            true,
+                            connections,
+                            port_positions,
+                            dragging_from,
+                            pending_disconnects,
+                            PortKind::Color,
+                        );
                         ui.label(egui::RichText::new(ch_labels[c]).small());
                         if is_wired {
-                            let v = if vi + c < uniform_values.len() { uniform_values[vi + c] } else { 0.0 };
+                            let v = if vi + c < uniform_values.len() {
+                                uniform_values[vi + c]
+                            } else {
+                                0.0
+                            };
                             ui.label(egui::RichText::new(format!("{:.2}", v)).small().monospace());
                         } else if vi + c < uniform_values.len() {
-                            ui.add(egui::DragValue::new(&mut uniform_values[vi + c]).speed(0.01).range(0.0..=1.0));
+                            ui.add(
+                                egui::DragValue::new(&mut uniform_values[vi + c])
+                                    .speed(0.01)
+                                    .range(0.0..=1.0),
+                            );
                         }
                         pi += 1;
                     }
@@ -903,22 +1046,52 @@ pub fn render(
             } else {
                 // Float: ● label [DragValue] [+]
                 let port = pi;
-                let is_wired = connections.iter().any(|cn| cn.to_node == node_id && cn.to_port == port);
+                let is_wired = connections
+                    .iter()
+                    .any(|cn| cn.to_node == node_id && cn.to_port == port);
                 ui.horizontal(|ui| {
-                    super::inline_port_circle(ui, node_id, port, true, connections, port_positions, dragging_from, pending_disconnects, PortKind::Number);
+                    super::inline_port_circle(
+                        ui,
+                        node_id,
+                        port,
+                        true,
+                        connections,
+                        port_positions,
+                        dragging_from,
+                        pending_disconnects,
+                        PortKind::Number,
+                    );
                     ui.label(egui::RichText::new(format!("u.{}", name)).small());
                     if is_wired {
-                        let v = if vi < uniform_values.len() { uniform_values[vi] } else { 0.0 };
-                        ui.label(egui::RichText::new(format!("{:.3}", v)).strong().monospace());
-                        ui.label(egui::RichText::new("⟵").small().color(egui::Color32::from_rgb(80, 170, 255)));
+                        let v = if vi < uniform_values.len() {
+                            uniform_values[vi]
+                        } else {
+                            0.0
+                        };
+                        ui.label(
+                            egui::RichText::new(format!("{:.3}", v))
+                                .strong()
+                                .monospace(),
+                        );
+                        ui.label(
+                            egui::RichText::new("⟵")
+                                .small()
+                                .color(egui::Color32::from_rgb(80, 170, 255)),
+                        );
                     } else {
                         if vi < uniform_values.len() {
                             ui.add(egui::DragValue::new(&mut uniform_values[vi]).speed(0.01));
                         }
                         // "+" button: auto-create the right source node
-                        if ui.small_button("+").on_hover_text("Create source node").clicked() {
+                        if ui
+                            .small_button("+")
+                            .on_hover_text("Create source node")
+                            .clicked()
+                        {
                             let spawn = uniform_spawn_request(name, node_id, port);
-                            ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("wgsl_spawn_request"), spawn));
+                            ui.ctx().data_mut(|d| {
+                                d.insert_temp(egui::Id::new("wgsl_spawn_request"), spawn)
+                            });
                         }
                     }
                 });
@@ -930,7 +1103,8 @@ pub fn render(
 
     // ── Image input slots UI (Phase 4) ────────────────────────────────────
     // Compute Input A / Input B port indices (must match graph.rs port order).
-    let uniform_port_count_ui: usize = uniform_types.iter()
+    let uniform_port_count_ui: usize = uniform_types
+        .iter()
         .map(|t| if t == "color" { 3 } else { 1 })
         .sum();
     let ui_input_a_port = 1 + uniform_port_count_ui;
@@ -939,8 +1113,8 @@ pub fn render(
     let (uses_image_a, uses_image_b) = detect_image_samples(&code);
 
     let now_ms = (ui.ctx().input(|i| i.time) * 1000.0) as u64;
-    let reset_flash_active = *last_auto_reset_ms != 0
-        && now_ms.saturating_sub(*last_auto_reset_ms) < 300;
+    let reset_flash_active =
+        *last_auto_reset_ms != 0 && now_ms.saturating_sub(*last_auto_reset_ms) < 300;
 
     ui.separator();
     ui.label(egui::RichText::new("Image inputs").small().strong());
@@ -960,10 +1134,28 @@ pub fn render(
     ) -> bool {
         let mut just_set_lastframe = false;
         ui.horizontal(|ui| {
-            super::inline_port_circle(ui, node_id, port, true, connections, port_positions, dragging_from, pending_disconnects, PortKind::Image);
+            super::inline_port_circle(
+                ui,
+                node_id,
+                port,
+                true,
+                connections,
+                port_positions,
+                dragging_from,
+                pending_disconnects,
+                PortKind::Image,
+            );
             // Loop glyph when LastFrame mode is active (refinement D, light version).
-            let glyph = if *mode == crate::graph::ImageInputMode::LastFrame { "↻" } else { " " };
-            ui.label(egui::RichText::new(glyph).small().color(egui::Color32::from_rgb(120, 200, 255)));
+            let glyph = if *mode == crate::graph::ImageInputMode::LastFrame {
+                "↻"
+            } else {
+                " "
+            };
+            ui.label(
+                egui::RichText::new(glyph)
+                    .small()
+                    .color(egui::Color32::from_rgb(120, 200, 255)),
+            );
             ui.label(egui::RichText::new(label).small());
 
             let prev = *mode;
@@ -973,12 +1165,16 @@ pub fn render(
                 .show_ui(ui, |ui| {
                     ui.selectable_value(mode, crate::graph::ImageInputMode::Unused, "Unused");
                     ui.selectable_value(mode, crate::graph::ImageInputMode::External, "External");
-                    ui.selectable_value(mode, crate::graph::ImageInputMode::LastFrame, "Last frame")
-                        .on_hover_text(
-                            "Sample this viewer's previous frame as feedback.\n\
+                    ui.selectable_value(
+                        mode,
+                        crate::graph::ImageInputMode::LastFrame,
+                        "Last frame",
+                    )
+                    .on_hover_text(
+                        "Sample this viewer's previous frame as feedback.\n\
                              WGSL Viewer is single-pass — for multi-buffer\n\
-                             simulations (two-buffer fluid sims), chain two viewers."
-                        );
+                             simulations (two-buffer fluid sims), chain two viewers.",
+                    );
                 })
                 .response
                 .on_hover_text("How to bind this image input slot.");
@@ -989,10 +1185,28 @@ pub fn render(
         just_set_lastframe
     }
 
-    let just_set_a = input_row(ui, node_id, ui_input_a_port, "Input A",
-        image_a_mode, connections, port_positions, dragging_from, pending_disconnects);
-    let just_set_b = input_row(ui, node_id, ui_input_b_port, "Input B",
-        image_b_mode, connections, port_positions, dragging_from, pending_disconnects);
+    let just_set_a = input_row(
+        ui,
+        node_id,
+        ui_input_a_port,
+        "Input A",
+        image_a_mode,
+        connections,
+        port_positions,
+        dragging_from,
+        pending_disconnects,
+    );
+    let just_set_b = input_row(
+        ui,
+        node_id,
+        ui_input_b_port,
+        "Input B",
+        image_b_mode,
+        connections,
+        port_positions,
+        dragging_from,
+        pending_disconnects,
+    );
 
     // ── Refinement J: warn when shader samples a slot that's Unused ──
     if uses_image_a && *image_a_mode == crate::graph::ImageInputMode::Unused {
@@ -1009,18 +1223,27 @@ pub fn render(
     }
 
     // ── Refinement M: first-use inline hint when newly switching to LastFrame ──
-    if just_set_a { *image_a_hint_shown = false; }
-    if just_set_b { *image_b_hint_shown = false; }
+    if just_set_a {
+        *image_a_hint_shown = false;
+    }
+    if just_set_b {
+        *image_b_hint_shown = false;
+    }
     let hint_for = |ui: &mut egui::Ui, slot: &str, shown: &mut bool| {
         if !*shown {
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(format!(
-                    "// In your shader: textureSample({}, img_sampler, in.uv)", slot
-                )).small().monospace().color(egui::Color32::from_rgb(150, 200, 150)));
+                ui.label(
+                    egui::RichText::new(format!(
+                        "// In your shader: textureSample({}, img_sampler, in.uv)",
+                        slot
+                    ))
+                    .small()
+                    .monospace()
+                    .color(egui::Color32::from_rgb(150, 200, 150)),
+                );
                 if ui.small_button("copy").clicked() {
-                    ui.ctx().copy_text(format!(
-                        "textureSample({}, img_sampler, in.uv)", slot
-                    ));
+                    ui.ctx()
+                        .copy_text(format!("textureSample({}, img_sampler, in.uv)", slot));
                 }
                 if ui.small_button("✕").on_hover_text("dismiss").clicked() {
                     *shown = true;
@@ -1036,17 +1259,19 @@ pub fn render(
     }
 
     // ── Reset feedback button (with auto-reset flash, refinement K) ──
-    let any_feedback_active =
-        *image_a_mode == crate::graph::ImageInputMode::LastFrame ||
-        *image_b_mode == crate::graph::ImageInputMode::LastFrame;
+    let any_feedback_active = *image_a_mode == crate::graph::ImageInputMode::LastFrame
+        || *image_b_mode == crate::graph::ImageInputMode::LastFrame;
     if any_feedback_active {
         let reset_btn = if reset_flash_active {
-            egui::Button::new("Reset feedback ⟳")
-                .fill(egui::Color32::from_rgb(80, 130, 200))
+            egui::Button::new("Reset feedback ⟳").fill(egui::Color32::from_rgb(80, 130, 200))
         } else {
             egui::Button::new("Reset feedback")
         };
-        if ui.add(reset_btn).on_hover_text("Clear feedback ping-pong textures to black.").clicked() {
+        if ui
+            .add(reset_btn)
+            .on_hover_text("Clear feedback ping-pong textures to black.")
+            .clicked()
+        {
             *feedback_reset_pending = true;
         }
         if reset_flash_active {
@@ -1088,9 +1313,14 @@ pub fn render(
     *last_compile_ok = validation_result.is_ok();
     match validation_result {
         Err(e) => {
-            ui.colored_label(egui::Color32::from_rgb(255, 100, 100), format!("Error: {}", e));
-            let (rect, _) = ui.allocate_exact_size(egui::vec2(*canvas_w, *canvas_h), egui::Sense::hover());
-            ui.painter().rect_filled(rect, 4.0, egui::Color32::from_rgb(40, 15, 15));
+            ui.colored_label(
+                egui::Color32::from_rgb(255, 100, 100),
+                format!("Error: {}", e),
+            );
+            let (rect, _) =
+                ui.allocate_exact_size(egui::vec2(*canvas_w, *canvas_h), egui::Sense::hover());
+            ui.painter()
+                .rect_filled(rect, 4.0, egui::Color32::from_rgb(40, 15, 15));
             // Log to system console (deduplicated — only when error text changes)
             let err_id = egui::Id::new(("wgsl_last_err", node_id));
             let prev: Option<String> = ui.ctx().data_mut(|d| d.get_temp(err_id));
@@ -1113,7 +1343,9 @@ pub fn render(
                     if let Some(idx) = time_uniform_idx {
                         // Check if this uniform's port is connected (port 0 = WGSL code, so time port = 1 + idx)
                         let time_port = 1 + idx;
-                        let connected = connections.iter().any(|c| c.to_node == node_id && c.to_port == time_port);
+                        let connected = connections
+                            .iter()
+                            .any(|c| c.to_node == node_id && c.to_port == time_port);
                         if connected {
                             user_values.get(idx).copied().unwrap_or(0.0)
                         } else {
@@ -1147,21 +1379,32 @@ pub fn render(
                     }
                     out
                 };
-                let packed = pack_uniforms(
-                    time, *canvas_w, *canvas_h,
-                    0.0, 0.0,
-                    &gpu_values,
-                );
+                let packed = pack_uniforms(time, *canvas_w, *canvas_h, 0.0, 0.0, &gpu_values);
 
                 render_with_wgpu(
-                    ui, &final_code, render_state, vertex_count,
-                    node_id, packed, *canvas_w, *canvas_h,
+                    ui,
+                    &final_code,
+                    render_state,
+                    vertex_count,
+                    node_id,
+                    packed,
+                    *canvas_w,
+                    *canvas_h,
                 );
 
                 // Pop-out window rendering
                 if popout_open {
                     let packed2 = pack_uniforms(time, *canvas_w, *canvas_h, 0.0, 0.0, &gpu_values);
-                    render_popout_window(ui.ctx(), &final_code, render_state, vertex_count, node_id, packed2, canvas_w, canvas_h);
+                    render_popout_window(
+                        ui.ctx(),
+                        &final_code,
+                        render_state,
+                        vertex_count,
+                        node_id,
+                        packed2,
+                        canvas_w,
+                        canvas_h,
+                    );
                 }
             } else {
                 ui.colored_label(egui::Color32::YELLOW, "No WGPU render state");
@@ -1170,19 +1413,35 @@ pub fn render(
     }
 
     // Image output port (right-aligned)
-    super::audio_port_row(ui, "Image", node_id, 0, false, port_positions, dragging_from, connections, pending_disconnects, PortKind::Image);
+    super::audio_port_row(
+        ui,
+        "Image",
+        node_id,
+        0,
+        false,
+        port_positions,
+        dragging_from,
+        connections,
+        pending_disconnects,
+        PortKind::Image,
+    );
 
     // ── Compute the Input A / Input B port indices ──
     // Layout: [0=WGSL, 1..uniform_port_count=uniforms, then Input A, then Input B]
-    let uniform_port_count: usize = uniform_types.iter()
+    let uniform_port_count: usize = uniform_types
+        .iter()
         .map(|t| if t == "color" { 3 } else { 1 })
         .sum();
     let input_a_port = 1 + uniform_port_count;
     let input_b_port = 2 + uniform_port_count;
 
     // ── Auto-promote Unused → External when a wire arrives (refinement I) ──
-    let input_a_wired = connections.iter().any(|c| c.to_node == node_id && c.to_port == input_a_port);
-    let input_b_wired = connections.iter().any(|c| c.to_node == node_id && c.to_port == input_b_port);
+    let input_a_wired = connections
+        .iter()
+        .any(|c| c.to_node == node_id && c.to_port == input_a_port);
+    let input_b_wired = connections
+        .iter()
+        .any(|c| c.to_node == node_id && c.to_port == input_b_port);
     if input_a_wired && *image_a_mode == crate::graph::ImageInputMode::Unused {
         *image_a_mode = crate::graph::ImageInputMode::External;
     }
@@ -1193,7 +1452,9 @@ pub fn render(
     // GPU readback: render to offscreen texture and produce PortValue::Image
     // Run when the Image output is connected OR when LastFrame feedback is
     // active for either slot (so the inline canvas can sample the ping-pong).
-    let output_connected = connections.iter().any(|c| c.from_node == node_id && c.from_port == 0);
+    let output_connected = connections
+        .iter()
+        .any(|c| c.from_node == node_id && c.from_port == 0);
     let feedback_active = *image_a_mode == crate::graph::ImageInputMode::LastFrame
         || *image_b_mode == crate::graph::ImageInputMode::LastFrame;
 
@@ -1203,15 +1464,17 @@ pub fn render(
     // the user wired (camera, image, last frame, etc).
     if let Some(render_state) = wgpu_render_state {
         // Resolve External wires to texture views OUTSIDE the renderer lock.
-        let resolve_ext = |port_idx: usize, mode: crate::graph::ImageInputMode|
-            -> Option<wgpu::TextureView>
-        {
-            if mode != crate::graph::ImageInputMode::External { return None; }
-            let src = connections.iter()
-                .find(|c| c.to_node == node_id && c.to_port == port_idx)
-                .map(|c| (c.from_node, c.from_port))?;
-            crate::gpu_image::frame_snapshot_get_view(src.0, src.1).map(|(v, _, _)| v)
-        };
+        let resolve_ext =
+            |port_idx: usize, mode: crate::graph::ImageInputMode| -> Option<wgpu::TextureView> {
+                if mode != crate::graph::ImageInputMode::External {
+                    return None;
+                }
+                let src = connections
+                    .iter()
+                    .find(|c| c.to_node == node_id && c.to_port == port_idx)
+                    .map(|c| (c.from_node, c.from_port))?;
+                crate::gpu_image::frame_snapshot_get_view(src.0, src.1).map(|(v, _, _)| v)
+            };
         let ext_a_view = resolve_ext(input_a_port, *image_a_mode);
         let ext_b_view = resolve_ext(input_b_port, *image_b_mode);
 
@@ -1219,8 +1482,13 @@ pub fn render(
         let store = match renderer.callback_resources.get_mut::<WgslFeedbackHints>() {
             Some(s) => s,
             None => {
-                renderer.callback_resources.insert(WgslFeedbackHints::default());
-                renderer.callback_resources.get_mut::<WgslFeedbackHints>().unwrap()
+                renderer
+                    .callback_resources
+                    .insert(WgslFeedbackHints::default());
+                renderer
+                    .callback_resources
+                    .get_mut::<WgslFeedbackHints>()
+                    .unwrap()
             }
         };
         store.nodes.insert(
@@ -1230,7 +1498,9 @@ pub fn render(
                 *image_b_mode == crate::graph::ImageInputMode::LastFrame,
             ],
         );
-        store.external_views.insert(node_id, [ext_a_view, ext_b_view]);
+        store
+            .external_views
+            .insert(node_id, [ext_a_view, ext_b_view]);
     }
     if (output_connected || feedback_active) && !final_code.is_empty() {
         if let Some(render_state) = wgpu_render_state {
@@ -1241,10 +1511,17 @@ pub fn render(
                 let time_idx = uniform_names.iter().position(|n| n == "time");
                 if let Some(idx) = time_idx {
                     let time_port = 1 + idx;
-                    let connected = connections.iter().any(|c| c.to_node == node_id && c.to_port == time_port);
-                    if connected { user_values.get(idx).copied().unwrap_or(0.0) }
-                    else { ui.ctx().input(|i| i.time) as f32 }
-                } else { ui.ctx().input(|i| i.time) as f32 }
+                    let connected = connections
+                        .iter()
+                        .any(|c| c.to_node == node_id && c.to_port == time_port);
+                    if connected {
+                        user_values.get(idx).copied().unwrap_or(0.0)
+                    } else {
+                        ui.ctx().input(|i| i.time) as f32
+                    }
+                } else {
+                    ui.ctx().input(|i| i.time) as f32
+                }
             };
             let rb_gpu_values: Vec<f32> = {
                 let mut out = Vec::with_capacity(user_values.len());
@@ -1263,7 +1540,14 @@ pub fn render(
                 }
                 out
             };
-            let packed = pack_uniforms(rb_time, readback_w as f32, readback_h as f32, 0.0, 0.0, &rb_gpu_values);
+            let packed = pack_uniforms(
+                rb_time,
+                readback_w as f32,
+                readback_h as f32,
+                0.0,
+                0.0,
+                &rb_gpu_values,
+            );
 
             // ── Resolve image_a / image_b sources ──
             // External slots look up the upstream wire and snapshot the producer's
@@ -1271,7 +1555,8 @@ pub fn render(
             // the ping-pong texture (resolved inside render_offscreen). Unused
             // slots and unwired-External slots fall back to dummy black.
             let resolve_external = |port_idx: usize| -> Option<(NodeId, usize)> {
-                connections.iter()
+                connections
+                    .iter()
                     .find(|c| c.to_node == node_id && c.to_port == port_idx)
                     .map(|c| (c.from_node, c.from_port))
             };
@@ -1285,9 +1570,16 @@ pub fn render(
             };
 
             if let Some(img) = render_offscreen(
-                render_state, &final_code, node_id, packed, readback_w, readback_h,
-                *image_a_mode, *image_b_mode,
-                image_a_source, image_b_source,
+                render_state,
+                &final_code,
+                node_id,
+                packed,
+                readback_w,
+                readback_h,
+                *image_a_mode,
+                *image_b_mode,
+                image_a_source,
+                image_b_source,
                 feedback_reset_pending,
             ) {
                 ui.ctx().data_mut(|d| {
@@ -1338,7 +1630,9 @@ pub fn render_offscreen_pass(
     values: &HashMap<(NodeId, usize), PortValue>,
     wgpu_render_state: &Option<egui_wgpu::RenderState>,
 ) {
-    if wgsl_code.is_empty() { return; }
+    if wgsl_code.is_empty() {
+        return;
+    }
 
     // ── Rebuild final_code (same logic as in render()) ──
     let has_vs = wgsl_code.contains("@vertex");
@@ -1349,38 +1643,54 @@ pub fn render_offscreen_pass(
         build_uniform_block(uniform_names, uniform_types)
     };
     let has_image_inputs = wgsl_code.contains("image_a") && wgsl_code.contains("@binding(2)");
-    let image_block = if has_image_inputs { "" } else { IMAGE_INPUT_BLOCK };
+    let image_block = if has_image_inputs {
+        ""
+    } else {
+        IMAGE_INPUT_BLOCK
+    };
     let final_code = if has_vs {
         format!("{}{}{}", uniform_block, image_block, wgsl_code)
     } else {
-        format!("{}{}{}\n{}", uniform_block, image_block, BUILTIN_VS, wgsl_code)
+        format!(
+            "{}{}{}\n{}",
+            uniform_block, image_block, BUILTIN_VS, wgsl_code
+        )
     };
-    if final_code.is_empty() { return; }
+    if final_code.is_empty() {
+        return;
+    }
 
     // ── Port indices ──
-    let uniform_port_count: usize = uniform_types.iter()
+    let uniform_port_count: usize = uniform_types
+        .iter()
         .map(|t| if t == "color" { 3 } else { 1 })
         .sum();
     let input_a_port = 1 + uniform_port_count;
     let input_b_port = 2 + uniform_port_count;
 
     // ── Check whether the offscreen pass is actually needed ──
-    let output_connected = connections.iter().any(|c| c.from_node == node_id && c.from_port == 0);
+    let output_connected = connections
+        .iter()
+        .any(|c| c.from_node == node_id && c.from_port == 0);
     let feedback_active = image_a_mode == crate::graph::ImageInputMode::LastFrame
         || image_b_mode == crate::graph::ImageInputMode::LastFrame;
-    if !output_connected && !feedback_active { return; }
+    if !output_connected && !feedback_active {
+        return;
+    }
 
     // ── Update WgslFeedbackHints store (external texture views) ──
     if let Some(render_state) = wgpu_render_state {
-        let resolve_ext = |port_idx: usize, mode: crate::graph::ImageInputMode|
-            -> Option<wgpu::TextureView>
-        {
-            if mode != crate::graph::ImageInputMode::External { return None; }
-            let src = connections.iter()
-                .find(|c| c.to_node == node_id && c.to_port == port_idx)
-                .map(|c| (c.from_node, c.from_port))?;
-            crate::gpu_image::frame_snapshot_get_view(src.0, src.1).map(|(v, _, _)| v)
-        };
+        let resolve_ext =
+            |port_idx: usize, mode: crate::graph::ImageInputMode| -> Option<wgpu::TextureView> {
+                if mode != crate::graph::ImageInputMode::External {
+                    return None;
+                }
+                let src = connections
+                    .iter()
+                    .find(|c| c.to_node == node_id && c.to_port == port_idx)
+                    .map(|c| (c.from_node, c.from_port))?;
+                crate::gpu_image::frame_snapshot_get_view(src.0, src.1).map(|(v, _, _)| v)
+            };
         let ext_a_view = resolve_ext(input_a_port, image_a_mode);
         let ext_b_view = resolve_ext(input_b_port, image_b_mode);
 
@@ -1388,15 +1698,25 @@ pub fn render_offscreen_pass(
         let store = match renderer.callback_resources.get_mut::<WgslFeedbackHints>() {
             Some(s) => s,
             None => {
-                renderer.callback_resources.insert(WgslFeedbackHints::default());
-                renderer.callback_resources.get_mut::<WgslFeedbackHints>().unwrap()
+                renderer
+                    .callback_resources
+                    .insert(WgslFeedbackHints::default());
+                renderer
+                    .callback_resources
+                    .get_mut::<WgslFeedbackHints>()
+                    .unwrap()
             }
         };
-        store.nodes.insert(node_id, [
-            image_a_mode == crate::graph::ImageInputMode::LastFrame,
-            image_b_mode == crate::graph::ImageInputMode::LastFrame,
-        ]);
-        store.external_views.insert(node_id, [ext_a_view, ext_b_view]);
+        store.nodes.insert(
+            node_id,
+            [
+                image_a_mode == crate::graph::ImageInputMode::LastFrame,
+                image_b_mode == crate::graph::ImageInputMode::LastFrame,
+            ],
+        );
+        store
+            .external_views
+            .insert(node_id, [ext_a_view, ext_b_view]);
     } else {
         return;
     }
@@ -1414,24 +1734,36 @@ pub fn render_offscreen_pass(
             let t = uniform_types.get(i).map(|s| s.as_str()).unwrap_or("float");
             if t == "color" {
                 for c in 0..3 {
-                    let port_connected = connections.iter().any(|cn| cn.to_node == node_id && cn.to_port == port_idx);
+                    let port_connected = connections
+                        .iter()
+                        .any(|cn| cn.to_node == node_id && cn.to_port == port_idx);
                     let fv = if port_connected {
                         let v = Graph::static_input_value(connections, values, node_id, port_idx);
                         v.as_float() / 255.0
                     } else {
-                        if value_idx + c < uniform_values.len() { uniform_values[value_idx + c] } else { 0.0 }
+                        if value_idx + c < uniform_values.len() {
+                            uniform_values[value_idx + c]
+                        } else {
+                            0.0
+                        }
                     };
                     user_values.push(fv);
                     port_idx += 1;
                 }
                 value_idx += 3;
             } else {
-                let port_connected = connections.iter().any(|cn| cn.to_node == node_id && cn.to_port == port_idx);
+                let port_connected = connections
+                    .iter()
+                    .any(|cn| cn.to_node == node_id && cn.to_port == port_idx);
                 let fv = if port_connected {
                     let v = Graph::static_input_value(connections, values, node_id, port_idx);
                     v.as_float()
                 } else {
-                    if value_idx < uniform_values.len() { uniform_values[value_idx] } else { 0.0 }
+                    if value_idx < uniform_values.len() {
+                        uniform_values[value_idx]
+                    } else {
+                        0.0
+                    }
                 };
                 user_values.push(fv);
                 port_idx += 1;
@@ -1445,10 +1777,17 @@ pub fn render_offscreen_pass(
         let time_idx = uniform_names.iter().position(|n| n == "time");
         if let Some(idx) = time_idx {
             let time_port = 1 + idx;
-            let connected = connections.iter().any(|c| c.to_node == node_id && c.to_port == time_port);
-            if connected { user_values.get(idx).copied().unwrap_or(0.0) }
-            else { ctx.input(|i| i.time) as f32 }
-        } else { ctx.input(|i| i.time) as f32 }
+            let connected = connections
+                .iter()
+                .any(|c| c.to_node == node_id && c.to_port == time_port);
+            if connected {
+                user_values.get(idx).copied().unwrap_or(0.0)
+            } else {
+                ctx.input(|i| i.time) as f32
+            }
+        } else {
+            ctx.input(|i| i.time) as f32
+        }
     };
 
     // ── GPU values (skip time, expand colors) ──
@@ -1460,18 +1799,28 @@ pub fn render_offscreen_pass(
             let comps = if t == "color" { 3 } else { 1 };
             if name != "time" {
                 for c in 0..comps {
-                    if vi + c < user_values.len() { out.push(user_values[vi + c]); }
+                    if vi + c < user_values.len() {
+                        out.push(user_values[vi + c]);
+                    }
                 }
             }
             vi += comps;
         }
         out
     };
-    let packed = pack_uniforms(rb_time, readback_w as f32, readback_h as f32, 0.0, 0.0, &rb_gpu_values);
+    let packed = pack_uniforms(
+        rb_time,
+        readback_w as f32,
+        readback_h as f32,
+        0.0,
+        0.0,
+        &rb_gpu_values,
+    );
 
     // ── Resolve image sources ──
     let resolve_external = |port_idx: usize| -> Option<(NodeId, usize)> {
-        connections.iter()
+        connections
+            .iter()
             .find(|c| c.to_node == node_id && c.to_port == port_idx)
             .map(|c| (c.from_node, c.from_port))
     };
@@ -1485,9 +1834,16 @@ pub fn render_offscreen_pass(
     };
 
     if let Some(img) = render_offscreen(
-        render_state, &final_code, node_id, packed, readback_w, readback_h,
-        image_a_mode, image_b_mode,
-        image_a_source, image_b_source,
+        render_state,
+        &final_code,
+        node_id,
+        packed,
+        readback_w,
+        readback_h,
+        image_a_mode,
+        image_b_mode,
+        image_a_source,
+        image_b_source,
         feedback_reset_pending,
     ) {
         ctx.data_mut(|d| {
@@ -1534,7 +1890,9 @@ fn render_offscreen(
     // Check cache for existing offscreen pipeline
     let has_pipeline = {
         let renderer = render_state.renderer.read();
-        renderer.callback_resources.get::<WgslOffscreenStore>()
+        renderer
+            .callback_resources
+            .get::<WgslOffscreenStore>()
             .and_then(|s| s.nodes.get(&node_id))
             .map(|g| g.shader_hash == shader_hash)
             .unwrap_or(false)
@@ -1584,7 +1942,9 @@ fn render_offscreen(
         });
 
         let error = pollster::block_on(device.pop_error_scope());
-        if error.is_some() { return None; }
+        if error.is_some() {
+            return None;
+        }
 
         let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("wgsl_offscreen_ub"),
@@ -1604,10 +1964,22 @@ fn render_offscreen(
             label: Some("wgsl_offscreen_bg_initial"),
             layout: &bind_group_layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: uniform_buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&dummy_black_view) },
-                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&dummy_black_view) },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&dummy_black_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&dummy_black_view),
+                },
             ],
         });
 
@@ -1632,7 +2004,9 @@ fn render_offscreen(
         } else {
             let mut nodes = HashMap::new();
             nodes.insert(node_id, node_gpu);
-            renderer.callback_resources.insert(WgslOffscreenStore { nodes });
+            renderer
+                .callback_resources
+                .insert(WgslOffscreenStore { nodes });
         }
     }
 
@@ -1659,7 +2033,9 @@ fn render_offscreen(
     // enough to encode the render pass.
     let (write_texture, write_view, read_view, swap_after) = {
         let mut renderer = render_state.renderer.write();
-        let store = renderer.callback_resources.get_mut::<WgslOffscreenStore>()?;
+        let store = renderer
+            .callback_resources
+            .get_mut::<WgslOffscreenStore>()?;
         let gpu = store.nodes.get_mut(&node_id)?;
 
         // (Re)allocate ping-pong textures if size changed, missing, or a
@@ -1676,7 +2052,11 @@ fn render_offscreen(
             for i in 0..2 {
                 let tex = device.create_texture(&wgpu::TextureDescriptor {
                     label: Some("wgsl_offscreen_pingpong"),
-                    size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+                    size: wgpu::Extent3d {
+                        width,
+                        height,
+                        depth_or_array_layers: 1,
+                    },
                     mip_level_count: 1,
                     sample_count: 1,
                     dimension: wgpu::TextureDimension::D2,
@@ -1728,10 +2108,22 @@ fn render_offscreen(
             label: Some("wgsl_offscreen_bg_per_frame"),
             layout: &gpu.bind_group_layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: gpu.uniform_buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&gpu.sampler) },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&bind_a_view) },
-                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&bind_b_view) },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: gpu.uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&gpu.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&bind_a_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&bind_b_view),
+                },
             ],
         });
 
@@ -1795,7 +2187,13 @@ fn render_offscreen(
     // changed), we readback once and recover next frame.
     let needs_readback = crate::gpu_image::cpu_consumer_hint(node_id).unwrap_or(true);
     if needs_readback {
-        Some(crate::gpu_image::readback_texture(device, queue, &write_texture, width, height))
+        Some(crate::gpu_image::readback_texture(
+            device,
+            queue,
+            &write_texture,
+            width,
+            height,
+        ))
     } else {
         // Return a zero-pixel stub so the existing eval-loop injection path
         // keeps working without the readback stall.
@@ -1923,9 +2321,14 @@ fn render_with_wgpu(
 
         let error = pollster::block_on(device.pop_error_scope());
         if let Some(err) = error {
-            ui.colored_label(egui::Color32::from_rgb(255, 100, 100), format!("❌ GPU: {}", err));
-            let (rect, _) = ui.allocate_exact_size(egui::vec2(canvas_w, canvas_h), egui::Sense::hover());
-            ui.painter().rect_filled(rect, 4.0, egui::Color32::from_rgb(40, 15, 15));
+            ui.colored_label(
+                egui::Color32::from_rgb(255, 100, 100),
+                format!("❌ GPU: {}", err),
+            );
+            let (rect, _) =
+                ui.allocate_exact_size(egui::vec2(canvas_w, canvas_h), egui::Sense::hover());
+            ui.painter()
+                .rect_filled(rect, 4.0, egui::Color32::from_rgb(40, 15, 15));
             return;
         }
 
@@ -1940,16 +2343,29 @@ fn render_with_wgpu(
         // bindings. The on-screen path always binds dummy black for image_a/b
         // — feedback only flows through the offscreen path in v1.
         let sampler = create_default_image_sampler(device);
-        let (dummy_black_texture, dummy_black_view) = create_dummy_black_texture(device, &render_state.queue);
+        let (dummy_black_texture, dummy_black_view) =
+            create_dummy_black_texture(device, &render_state.queue);
 
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("wgsl_uniform_bind_group"),
             layout: &bind_group_layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: uniform_buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&dummy_black_view) },
-                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&dummy_black_view) },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&dummy_black_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&dummy_black_view),
+                },
             ],
         });
 
@@ -2008,7 +2424,9 @@ fn render_with_wgpu(
         } else {
             let mut data = HashMap::new();
             data.insert(node_id, packed_uniforms);
-            renderer.callback_resources.insert(WgslUniformStore { data });
+            renderer
+                .callback_resources
+                .insert(WgslUniformStore { data });
         }
     }
 
@@ -2055,7 +2473,8 @@ fn render_popout_window(
                     let w = avail.x.max(100.0);
                     let h = avail.y.max(100.0);
 
-                    let (rect, response) = ui.allocate_exact_size(egui::vec2(w, h), egui::Sense::hover());
+                    let (rect, response) =
+                        ui.allocate_exact_size(egui::vec2(w, h), egui::Sense::hover());
 
                     let mut packed = uniforms.clone();
                     // Update mouse
@@ -2074,12 +2493,16 @@ fn render_popout_window(
                     // (The popout shares the same pipeline as the inline render)
                     {
                         let mut renderer = render_state.renderer.write();
-                        if let Some(store) = renderer.callback_resources.get_mut::<WgslUniformStore>() {
+                        if let Some(store) =
+                            renderer.callback_resources.get_mut::<WgslUniformStore>()
+                        {
                             store.data.insert(node_id, packed);
                         } else {
                             let mut data = HashMap::new();
                             data.insert(node_id, packed);
-                            renderer.callback_resources.insert(WgslUniformStore { data });
+                            renderer
+                                .callback_resources
+                                .insert(WgslUniformStore { data });
                         }
                     }
 
@@ -2095,13 +2518,14 @@ fn render_popout_window(
 }
 
 fn validate_wgsl_naga(code: &str) -> Result<(), String> {
-    let module = naga::front::wgsl::parse_str(code)
-        .map_err(|e| format!("Parse: {}", e))?;
+    let module = naga::front::wgsl::parse_str(code).map_err(|e| format!("Parse: {}", e))?;
     let mut validator = naga::valid::Validator::new(
         naga::valid::ValidationFlags::all(),
         naga::valid::Capabilities::all(),
     );
-    validator.validate(&module).map_err(|e| format!("Validation: {}", e))?;
+    validator
+        .validate(&module)
+        .map_err(|e| format!("Validation: {}", e))?;
     Ok(())
 }
 
@@ -2126,9 +2550,7 @@ pub(crate) fn cleanup_node(
 
 /// Wipe every WGSL Viewer GPU pipeline + offscreen target +
 /// uniform buffer. See `GpuTextureCache::clear_all`.
-pub(crate) fn cleanup_all(
-    callback_resources: &mut eframe::egui_wgpu::CallbackResources,
-) {
+pub(crate) fn cleanup_all(callback_resources: &mut eframe::egui_wgpu::CallbackResources) {
     if let Some(store) = callback_resources.get_mut::<WgslGpuStore>() {
         store.nodes.clear();
     }

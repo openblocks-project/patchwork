@@ -1,10 +1,8 @@
-
 use std::path::PathBuf;
 
 /// Returns the shared Patchwork custom-node library directory.
 pub fn library_dir() -> Result<PathBuf, String> {
-    let appdata = std::env::var_os("APPDATA")
-        .ok_or("APPDATA environment variable not found")?;
+    let appdata = std::env::var_os("APPDATA").ok_or("APPDATA environment variable not found")?;
 
     let path = PathBuf::from(appdata)
         .join("Patchwork")
@@ -17,7 +15,6 @@ pub fn library_dir() -> Result<PathBuf, String> {
     Ok(path)
 }
 
-
 /// Returns all .pwnode files directly inside the shared library directory.
 pub fn list_library_nodes() -> Result<Vec<PathBuf>, String> {
     let directory = library_dir()?;
@@ -27,14 +24,11 @@ pub fn list_library_nodes() -> Result<Vec<PathBuf>, String> {
         .map_err(|e| format!("Failed to read library directory: {e}"))?;
 
     for entry in entries {
-        let entry = entry
-            .map_err(|e| format!("Failed to read library entry: {e}"))?;
+        let entry = entry.map_err(|e| format!("Failed to read library entry: {e}"))?;
 
         let path = entry.path();
 
-        if path.is_file()
-            && path.extension().and_then(|ext| ext.to_str()) == Some("pwnode")
-        {
+        if path.is_file() && path.extension().and_then(|ext| ext.to_str()) == Some("pwnode") {
             nodes.push(path);
         }
     }
@@ -45,9 +39,7 @@ pub fn list_library_nodes() -> Result<Vec<PathBuf>, String> {
 }
 /// Publish a standalone custom node to the shared Library.
 /// Refuses to overwrite an existing library node.
-pub fn publish_to_library(
-    source: &std::path::Path,
-) -> Result<PathBuf, String> {
+pub fn publish_to_library(source: &std::path::Path) -> Result<PathBuf, String> {
     if !source.is_file() {
         return Err("Custom node file does not exist.".to_string());
     }
@@ -56,9 +48,7 @@ pub fn publish_to_library(
         return Err("Only .pwnode files can be published.".to_string());
     }
 
-    let file_name = source
-        .file_name()
-        .ok_or("Invalid custom node filename.")?;
+    let file_name = source.file_name().ok_or("Invalid custom node filename.")?;
 
     let destination = library_dir()?.join(file_name);
 
@@ -77,8 +67,8 @@ pub fn publish_to_library(
         .map_err(|e| format!("Failed to create Library node: {e}"))?;
 
     let result = (|| -> Result<(), String> {
-        let mut input = std::fs::File::open(source)
-            .map_err(|e| format!("Failed to read custom node: {e}"))?;
+        let mut input =
+            std::fs::File::open(source).map_err(|e| format!("Failed to read custom node: {e}"))?;
 
         std::io::copy(&mut input, &mut output)
             .map_err(|e| format!("Failed to copy custom node: {e}"))?;

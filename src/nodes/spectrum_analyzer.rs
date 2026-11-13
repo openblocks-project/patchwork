@@ -29,24 +29,38 @@ pub fn render(
     // ── Audio input port (left side) ─────────────────────────────────
     ui.horizontal(|ui| {
         crate::nodes::inline_port_circle(
-            ui, node_id, 0, true, connections,
-            port_positions, dragging_from, pending_disconnects, PortKind::Audio,
+            ui,
+            node_id,
+            0,
+            true,
+            connections,
+            port_positions,
+            dragging_from,
+            pending_disconnects,
+            PortKind::Audio,
         );
-        let source_name: String = ui.ctx().data_mut(|d|
-            d.get_temp(egui::Id::new(("spectrum_source", node_id))).unwrap_or_default());
+        let source_name: String = ui.ctx().data_mut(|d| {
+            d.get_temp(egui::Id::new(("spectrum_source", node_id)))
+                .unwrap_or_default()
+        });
         if source_name.is_empty() {
             ui.label(egui::RichText::new("Audio").small().color(dim));
         } else {
-            ui.label(egui::RichText::new(format!("← {}", source_name)).small()
-                .color(egui::Color32::from_rgb(80, 200, 120)));
+            ui.label(
+                egui::RichText::new(format!("← {}", source_name))
+                    .small()
+                    .color(egui::Color32::from_rgb(80, 200, 120)),
+            );
         }
     });
 
     // Read bins stashed by app/mod.rs
     let (bins, peak_hz, centroid_hz, energy) = ui.ctx().data_mut(|d| {
-        let bins: Vec<f32> = d.get_temp(egui::Id::new(("spectrum_bins", node_id)))
+        let bins: Vec<f32> = d
+            .get_temp(egui::Id::new(("spectrum_bins", node_id)))
             .unwrap_or_else(|| vec![0.0f32; SPECTRUM_BINS]);
-        let scalars: [f32; 3] = d.get_temp(egui::Id::new(("spectrum_scalars", node_id)))
+        let scalars: [f32; 3] = d
+            .get_temp(egui::Id::new(("spectrum_scalars", node_id)))
             .unwrap_or([0.0; 3]);
         (bins, scalars[0], scalars[1], scalars[2])
     });
@@ -79,14 +93,54 @@ pub fn render(
     ui.add_space(2.0);
 
     // ── Output ports (right side) ───────────────────────────────────
-    crate::nodes::output_port_row(ui, "Image", "256×96", node_id, 0,
-        port_positions, dragging_from, connections, pending_disconnects, PortKind::Image);
-    crate::nodes::output_port_row(ui, "Peak", &format!("{:.0} Hz", peak_hz), node_id, 1,
-        port_positions, dragging_from, connections, pending_disconnects, PortKind::Number);
-    crate::nodes::output_port_row(ui, "Centroid", &format!("{:.0} Hz", centroid_hz), node_id, 2,
-        port_positions, dragging_from, connections, pending_disconnects, PortKind::Number);
-    crate::nodes::output_port_row(ui, "Energy", &format!("{:.0}%", energy * 100.0), node_id, 3,
-        port_positions, dragging_from, connections, pending_disconnects, PortKind::Normalized);
+    crate::nodes::output_port_row(
+        ui,
+        "Image",
+        "256×96",
+        node_id,
+        0,
+        port_positions,
+        dragging_from,
+        connections,
+        pending_disconnects,
+        PortKind::Image,
+    );
+    crate::nodes::output_port_row(
+        ui,
+        "Peak",
+        &format!("{:.0} Hz", peak_hz),
+        node_id,
+        1,
+        port_positions,
+        dragging_from,
+        connections,
+        pending_disconnects,
+        PortKind::Number,
+    );
+    crate::nodes::output_port_row(
+        ui,
+        "Centroid",
+        &format!("{:.0} Hz", centroid_hz),
+        node_id,
+        2,
+        port_positions,
+        dragging_from,
+        connections,
+        pending_disconnects,
+        PortKind::Number,
+    );
+    crate::nodes::output_port_row(
+        ui,
+        "Energy",
+        &format!("{:.0}%", energy * 100.0),
+        node_id,
+        3,
+        port_positions,
+        dragging_from,
+        connections,
+        pending_disconnects,
+        PortKind::Normalized,
+    );
 
     if energy > 0.001 {
         ui.ctx().request_repaint();

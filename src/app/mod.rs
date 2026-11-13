@@ -1,20 +1,20 @@
+use crate::app::undo::UndoSnapshot;
+use crate::audio::AudioManager;
 use crate::graph::*;
-use crate::node_trait::NodeBehavior;
 use crate::http::{HttpAction, HttpManager};
 use crate::midi::{MidiAction, MidiManager};
-use crate::serial::{SerialAction, SerialManager};
-use crate::osc::{OscAction, OscManager};
 use crate::network::{NetworkAction, NetworkManager};
-use crate::ob::ObManager;
-use crate::audio::AudioManager;
+use crate::node_trait::NodeBehavior;
 use crate::nodes;
+use crate::ob::ObManager;
+use crate::osc::{OscAction, OscManager};
+use crate::serial::{SerialAction, SerialManager};
 use eframe::egui;
 use eframe::egui_wgpu;
 use std::collections::HashMap;
-use crate::app::undo::UndoSnapshot;
-const PORT_RADIUS: f32 = 8.0;    // visual radius of port shapes
+const PORT_RADIUS: f32 = 8.0; // visual radius of port shapes
 const PORT_INTERACT: f32 = 22.0; // clickable/draggable hit area
-const PORT_BORDER: f32 = 2.5;    // border stroke
+const PORT_BORDER: f32 = 2.5; // border stroke
 /// Get port fill + border colors based on PortKind.
 /// Get port fill + border colors based on PortKind.
 /// Fill is a darker shade for inputs, border is a lighter shade — matching the semantic type.
@@ -59,16 +59,26 @@ pub(crate) fn draw_shaped_port(
             let half = radius * 0.85;
             let rect = egui::Rect::from_center_size(center, egui::vec2(half * 2.0, half * 2.0));
             painter.rect_filled(rect, 3.0, fill);
-            painter.rect_stroke(rect, 3.0, egui::Stroke::new(border_width, border), egui::StrokeKind::Outside);
+            painter.rect_stroke(
+                rect,
+                3.0,
+                egui::Stroke::new(border_width, border),
+                egui::StrokeKind::Outside,
+            );
         }
-        2 => {// Triangle (Trigger) — pointing right
+        2 => {
+            // Triangle (Trigger) — pointing right
             let d = radius * 0.95;
             let points = vec![
-            egui::pos2(center.x - d * 0.7, center.y - d),   // top-left
-            egui::pos2(center.x + d, center.y),              // right point
-            egui::pos2(center.x - d * 0.7, center.y + d),   // bottom-left
+                egui::pos2(center.x - d * 0.7, center.y - d), // top-left
+                egui::pos2(center.x + d, center.y),           // right point
+                egui::pos2(center.x - d * 0.7, center.y + d), // bottom-left
             ];
-            painter.add(egui::Shape::convex_polygon(points, fill, egui::Stroke::new(border_width, border)));
+            painter.add(egui::Shape::convex_polygon(
+                points,
+                fill,
+                egui::Stroke::new(border_width, border),
+            ));
         }
         3 => {
             // Diamond (Image)
@@ -79,14 +89,23 @@ pub(crate) fn draw_shaped_port(
                 egui::pos2(center.x, center.y + d),
                 egui::pos2(center.x - d, center.y),
             ];
-            painter.add(egui::Shape::convex_polygon(points, fill, egui::Stroke::new(border_width, border)));
+            painter.add(egui::Shape::convex_polygon(
+                points,
+                fill,
+                egui::Stroke::new(border_width, border),
+            ));
         }
         5 => {
             // Square (Gate)
             let half = radius * 0.8;
             let rect = egui::Rect::from_center_size(center, egui::vec2(half * 2.0, half * 2.0));
             painter.rect_filled(rect, 0.0, fill);
-            painter.rect_stroke(rect, 0.0, egui::Stroke::new(border_width, border), egui::StrokeKind::Outside);
+            painter.rect_stroke(
+                rect,
+                0.0,
+                egui::Stroke::new(border_width, border),
+                egui::StrokeKind::Outside,
+            );
         }
         _ => {
             // Circle (Number, Normalized, Audio, Color, Generic)
@@ -101,7 +120,7 @@ pub(crate) fn draw_shaped_port(
                 painter.circle_filled(center, radius * 0.35, border);
             }
         }
-    }// Draw tiny icon inside when connected
+    } // Draw tiny icon inside when connected
     if is_connected {
         let glyph = kind.icon_glyph();
         if !glyph.is_empty() {
@@ -117,12 +136,12 @@ pub(crate) fn draw_shaped_port(
     }
 }
 
-pub(crate) mod undo;
 mod canvas;
 mod interaction;
 mod io;
 mod menus;
 mod toast;
+pub(crate) mod undo;
 use undo::UndoHistory;
 /// Identity of a connection — survives array reindexing, node deletion, undo/redo.
 /// Using (from_node, from_port, to_node, to_port) instead of a Vec index
@@ -164,7 +183,7 @@ pub struct PatchworkApp {
     /// requiring an extra click after the user drops them from the palette.
     pending_popup_open: std::collections::HashSet<NodeId>,
     selected_connection: Option<ConnectionId>,
-    wire_menu_conn: Option<ConnectionId>,  // connection identity for wire context menu
+    wire_menu_conn: Option<ConnectionId>, // connection identity for wire context menu
     wire_menu_pos: egui::Pos2,
     /// Insert-on-wire picker visible state. When true, the wire menu shows a
     /// filtered node-picker (only nodes whose first input AND first output
@@ -198,29 +217,28 @@ pub struct PatchworkApp {
     api_keys: HashMap<String, String>,
     // OB Hardware
     ob: ObManager,
-        // P5: USB hardware discovery
-   hardware_devices: Vec<crate::hardware::HardwareDevice>,
-   hardware_discovery_error: Option<String>,
-   hardware_scan_requested: bool,
+    // P5: USB hardware discovery
+    hardware_devices: Vec<crate::hardware::HardwareDevice>,
+    hardware_discovery_error: Option<String>,
+    hardware_scan_requested: bool,
     // P5: Selected firmware file for flashing
-  hardware_firmware_path: Option<std::path::PathBuf>,
-  hardware_validation_result: Option<Result<(), String>>,
-  hardware_flash_confirmation_open: bool,
-  hardware_flash_result: Option<Result<(), String>>,
-  hardware_flash_in_progress: bool,
-  hardware_flash_receiver:
-    Option<std::sync::mpsc::Receiver<Result<(), String>>>,
-  // P5: Selected hardware target
-hardware_selected_serial_port: Option<String>,
-// P5: ESP32 firmware flashing configuration
-hardware_esp32_chip: String,
-hardware_esp32_flash_address: String,
+    hardware_firmware_path: Option<std::path::PathBuf>,
+    hardware_validation_result: Option<Result<(), String>>,
+    hardware_flash_confirmation_open: bool,
+    hardware_flash_result: Option<Result<(), String>>,
+    hardware_flash_in_progress: bool,
+    hardware_flash_receiver: Option<std::sync::mpsc::Receiver<Result<(), String>>>,
+    // P5: Selected hardware target
+    hardware_selected_serial_port: Option<String>,
+    // P5: ESP32 firmware flashing configuration
+    hardware_esp32_chip: String,
+    hardware_esp32_flash_address: String,
 
-#[cfg(target_os = "windows")]
-hardware_selected_pico_drive: Option<std::path::PathBuf>,
-// P5: Detected Raspberry Pi Pico BOOTSEL devices
-#[cfg(target_os = "windows")]
-hardware_pico_devices: Vec<crate::hardware::PicoBootloaderDevice>,
+    #[cfg(target_os = "windows")]
+    hardware_selected_pico_drive: Option<std::path::PathBuf>,
+    // P5: Detected Raspberry Pi Pico BOOTSEL devices
+    #[cfg(target_os = "windows")]
+    hardware_pico_devices: Vec<crate::hardware::PicoBootloaderDevice>,
     // Audio
     audio: AudioManager,
     // MCP server
@@ -252,7 +270,6 @@ hardware_pico_devices: Vec<crate::hardware::PicoBootloaderDevice>,
     drag_undo_pushed: bool,
     /// Coalescing flag for property edits (slider drags, DragValue, text fields, etc.).
     /// Set true when a property-editing widget interaction starts, reset when interaction ends.
-    
     property_undo_pushed: bool,
     pending_gesture_snapshot: Option<UndoSnapshot>,
     pending_close_tab: Option<u64>,
@@ -320,7 +337,7 @@ impl PatchworkApp {
         let wgpu_render_state = cc.wgpu_render_state.clone();
         let (ml_tx, ml_rx) = std::sync::mpsc::channel();
         let (tts_tx, tts_rx) = std::sync::mpsc::channel();
-       let mut app = Self {
+        let mut app = Self {
             documents: crate::document::DocumentManager::new(),
             graph: Graph::new(),
             port_positions: HashMap::new(),
@@ -371,7 +388,7 @@ impl PatchworkApp {
             network: NetworkManager::new(),
             api_keys: HashMap::new(),
             ob: ObManager::new(),
-                        // P5: USB hardware discovery
+            // P5: USB hardware discovery
             hardware_devices: Vec::new(),
             hardware_discovery_error: None,
             hardware_scan_requested: false,
@@ -383,13 +400,13 @@ impl PatchworkApp {
             hardware_flash_in_progress: false,
             hardware_flash_receiver: None,
             // P5: No hardware target selected initially
-hardware_selected_serial_port: None,
-// P5: Default ESP32 application configuration
-hardware_esp32_chip: "esp32".to_string(),
-hardware_esp32_flash_address: "0x10000".to_string(),
+            hardware_selected_serial_port: None,
+            // P5: Default ESP32 application configuration
+            hardware_esp32_chip: "esp32".to_string(),
+            hardware_esp32_flash_address: "0x10000".to_string(),
 
-#[cfg(target_os = "windows")]
-hardware_selected_pico_drive: None,
+            #[cfg(target_os = "windows")]
+            hardware_selected_pico_drive: None,
 
             // P5: Pico BOOTSEL device storage
             #[cfg(target_os = "windows")]
@@ -409,15 +426,28 @@ hardware_selected_pico_drive: None,
                 std::thread::spawn(move || {
                     loop {
                         let midi_in = midir::MidiInput::new("patchwork-scan")
-                            .map(|m| m.ports().iter().filter_map(|p| m.port_name(p).ok()).collect())
+                            .map(|m| {
+                                m.ports()
+                                    .iter()
+                                    .filter_map(|p| m.port_name(p).ok())
+                                    .collect()
+                            })
                             .unwrap_or_default();
                         let midi_out = midir::MidiOutput::new("patchwork-scan")
-                            .map(|m| m.ports().iter().filter_map(|p| m.port_name(p).ok()).collect())
+                            .map(|m| {
+                                m.ports()
+                                    .iter()
+                                    .filter_map(|p| m.port_name(p).ok())
+                                    .collect()
+                            })
                             .unwrap_or_default();
                         let serial = serialport::available_ports()
-                            .unwrap_or_default().into_iter().map(|p| p.port_name).collect();
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(|p| p.port_name)
+                            .collect();
                         let (audio_output, audio_input, audio_output_channels) = {
-                            use cpal::traits::{HostTrait, DeviceTrait};
+                            use cpal::traits::{DeviceTrait, HostTrait};
                             let host = cpal::default_host();
                             let mut out_names = Vec::new();
                             let mut out_channels = std::collections::HashMap::new();
@@ -425,17 +455,27 @@ hardware_selected_pico_drive: None,
                                 for d in devs {
                                     if let Ok(name) = d.name() {
                                         if let Ok(cfg) = d.default_output_config() {
-                                            out_channels.insert(name.clone(), cfg.channels() as usize);
+                                            out_channels
+                                                .insert(name.clone(), cfg.channels() as usize);
                                         }
                                         out_names.push(name);
                                     }
                                 }
                             }
-                            let inp = host.input_devices().map(|devs|
-                                devs.filter_map(|d| d.name().ok()).collect()).unwrap_or_default();
+                            let inp = host
+                                .input_devices()
+                                .map(|devs| devs.filter_map(|d| d.name().ok()).collect())
+                                .unwrap_or_default();
                             (out_names, inp, out_channels)
                         };
-                        let _ = tx.send(DeviceRefreshResult { midi_in, midi_out, serial, audio_output, audio_input, audio_output_channels });
+                        let _ = tx.send(DeviceRefreshResult {
+                            midi_in,
+                            midi_out,
+                            serial,
+                            audio_output,
+                            audio_input,
+                            audio_output_channels,
+                        });
                         std::thread::sleep(std::time::Duration::from_secs(5));
                     }
                 });
@@ -446,7 +486,7 @@ hardware_selected_pico_drive: None,
             caches_dirty: false,
             undo_history: UndoHistory::new(50),
             drag_undo_pushed: false,
-           
+
             property_undo_pushed: false,
             pending_gesture_snapshot: None,
             click_wiring: false,
@@ -478,15 +518,15 @@ hardware_selected_pico_drive: None,
         let _ = crate::hid::global();
 
         // Try restoring previous session; fall back to default nodes
-       // Try restoring previous session; fall back to default nodes
-if !app.restore_session() {
-    app.spawn_default_nodes();
-}
+        // Try restoring previous session; fall back to default nodes
+        if !app.restore_session() {
+            app.spawn_default_nodes();
+        }
 
-// Synchronize the initial document with the loaded project.
-app.sync_active_document();
+        // Synchronize the initial document with the loaded project.
+        app.sync_active_document();
 
-app
+        app
     }
 
     /// Build audio chains from Speaker nodes backward through effects to sources.
@@ -500,8 +540,14 @@ app
     /// 4. Auto-register new audio nodes that don't have processors yet
     fn sync_audio_engine(&mut self) {
         // ── Check for audio device error (disconnect, hardware failure) ──
-        if self.audio.audio_error.load(std::sync::atomic::Ordering::Relaxed) {
-            self.audio.audio_error.store(false, std::sync::atomic::Ordering::Relaxed);
+        if self
+            .audio
+            .audio_error
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            self.audio
+                .audio_error
+                .store(false, std::sync::atomic::Ordering::Relaxed);
             self.audio.stop_output();
             // Set DSP to off in the AudioDevice node so UI reflects the error
             for node in self.graph.nodes.values_mut() {
@@ -514,9 +560,11 @@ app
         }
 
         // ── Gate: require an enabled AudioDevice node for any audio to flow ──
-        let mut dsp_enabled = self.graph.nodes.values().any(|n| {
-            matches!(n.node_type, NodeType::AudioDevice { enabled: true, .. })
-        });
+        let mut dsp_enabled = self
+            .graph
+            .nodes
+            .values()
+            .any(|n| matches!(n.node_type, NodeType::AudioDevice { enabled: true, .. }));
 
         // Auto-enable DSP **on the rising edge** of "user wants sound":
         //   • pressed Play on any Audio Player (file_playing == true)
@@ -530,15 +578,17 @@ app
         //   - drop MP3 + press Play with DSP off → DSP flips on once   ✓
         //   - DSP on, audio playing, click DSP off → stays off          ✓
         //   - then press Play again (after a stop)  → DSP flips on      ✓
-        let has_audio_device = self.graph.nodes.values()
+        let has_audio_device = self
+            .graph
+            .nodes
+            .values()
             .any(|n| matches!(n.node_type, NodeType::AudioDevice { .. }));
-        let play_intent = has_audio_device && (
-            self.audio.file_playing.values().any(|p| *p)
-            || self.graph.nodes.values().any(|n| matches!(
-                &n.node_type,
-                NodeType::AudioInput { active: true, .. }
-            ))
-        );
+        let play_intent =
+            has_audio_device
+                && (self.audio.file_playing.values().any(|p| *p)
+                    || self.graph.nodes.values().any(|n| {
+                        matches!(&n.node_type, NodeType::AudioInput { active: true, .. })
+                    }));
         let intent_rising_edge = play_intent && !self.prev_play_intent;
         self.prev_play_intent = play_intent;
 
@@ -563,12 +613,22 @@ app
         // (happens when AudioDevice node calls start_output directly during render,
         // before build_audio_chains has a chance to call rebuild_engine_from_graph).
         if !self.audio.is_running() {
-            let device_name: Option<String> = self.graph.nodes.values()
-                .find_map(|n| {
-                    if let NodeType::AudioDevice { selected_output, enabled: true, .. } = &n.node_type {
-                        if selected_output.is_empty() { None } else { Some(selected_output.clone()) }
-                    } else { None }
-                });
+            let device_name: Option<String> = self.graph.nodes.values().find_map(|n| {
+                if let NodeType::AudioDevice {
+                    selected_output,
+                    enabled: true,
+                    ..
+                } = &n.node_type
+                {
+                    if selected_output.is_empty() {
+                        None
+                    } else {
+                        Some(selected_output.clone())
+                    }
+                } else {
+                    None
+                }
+            });
             if let Err(e) = self.audio.start_output(device_name.as_deref()) {
                 crate::system_log::error(format!("Audio start failed: {}", e));
             } else {
@@ -587,7 +647,9 @@ app
         // This covers effect nodes (delay, reverb, etc.) that don't have direct
         // access to AudioManager in their render functions.
         for (&nid, node) in &self.graph.nodes {
-            if !self.audio.has_processor(nid) { continue; }
+            if !self.audio.has_processor(nid) {
+                continue;
+            }
             match &node.node_type {
                 // Synth and Speaker write their own params in render — skip
                 NodeType::Synth { .. } | NodeType::Speaker { .. } => {}
@@ -602,7 +664,11 @@ app
                 NodeType::AudioPitchShift { semitones } => {
                     self.audio.engine_write_param(nid, 0, *semitones);
                 }
-                NodeType::AudioReverb { room_size, damping, mix } => {
+                NodeType::AudioReverb {
+                    room_size,
+                    damping,
+                    mix,
+                } => {
                     self.audio.engine_write_param(nid, 0, *room_size);
                     self.audio.engine_write_param(nid, 1, *damping);
                     self.audio.engine_write_param(nid, 2, *mix);
@@ -656,7 +722,9 @@ app
         // still running the bands from the moment the processor was created.
         let mut eq_updates: Vec<(NodeId, Vec<[f32; 2]>)> = Vec::new();
         for (&nid, node) in &self.graph.nodes {
-            if !self.audio.has_processor(nid) { continue; }
+            if !self.audio.has_processor(nid) {
+                continue;
+            }
             if let NodeType::AudioEq { points } = &node.node_type {
                 let new_hash = crate::audio::eq_curve_hash(points);
                 let prev = self.eq_curve_hashes.get(&nid).copied();
@@ -671,7 +739,8 @@ app
         }
         // Drop hash entries for nodes that no longer exist (prevents stale
         // entries leaking forever as the user creates/deletes EQ nodes).
-        self.eq_curve_hashes.retain(|nid, _| self.graph.nodes.contains_key(nid));
+        self.eq_curve_hashes
+            .retain(|nid, _| self.graph.nodes.contains_key(nid));
 
         // Auto-register new audio nodes that don't have processors yet
         // (e.g., nodes added via palette after engine was started)
@@ -689,7 +758,9 @@ app
                 }
             }
             for (&nid, _node) in &self.graph.nodes {
-                if self.audio.has_processor(nid) { continue; }
+                if self.audio.has_processor(nid) {
+                    continue;
+                }
                 // Rebuild just this node
                 let graph_snapshot = &self.graph;
                 if let Some(node) = graph_snapshot.nodes.get(&nid) {
@@ -699,9 +770,12 @@ app
                         new_nodes.push(nid);
                         // Set speaker state
                         if let NodeType::Speaker { active, .. } = &node.node_type {
-                            self.audio.send_command(crate::audio::engine::AudioCommand::SetSpeaker {
-                                node_id: nid, active: *active,
-                            });
+                            self.audio.send_command(
+                                crate::audio::engine::AudioCommand::SetSpeaker {
+                                    node_id: nid,
+                                    active: *active,
+                                },
+                            );
                         }
                     }
                 }
@@ -713,19 +787,27 @@ app
             // returned false when the wire was created.
             if !new_nodes.is_empty() {
                 for conn in &self.graph.connections {
-                    let involves_new = new_nodes.contains(&conn.from_node) || new_nodes.contains(&conn.to_node);
-                    if !involves_new { continue; }
+                    let involves_new =
+                        new_nodes.contains(&conn.from_node) || new_nodes.contains(&conn.to_node);
+                    if !involves_new {
+                        continue;
+                    }
                     let from_audio = self.audio.node_params.contains_key(&conn.from_node);
                     let to_audio = self.audio.node_params.contains_key(&conn.to_node);
-                    if !from_audio || !to_audio { continue; }
+                    if !from_audio || !to_audio {
+                        continue;
+                    }
                     // Skip mixer gain ports
                     let is_mixer_gain_port = matches!(
                         self.graph.nodes.get(&conn.to_node).map(|n| &n.node_type),
                         Some(NodeType::AudioMixer { .. })
                     ) && conn.to_port % 2 != 0;
-                    if is_mixer_gain_port { continue; }
+                    if is_mixer_gain_port {
+                        continue;
+                    }
                     let engine_port = self.mixer_engine_port(conn.to_node, conn.to_port);
-                    self.audio.connect_audio(conn.from_node, conn.to_node, engine_port);
+                    self.audio
+                        .connect_audio(conn.from_node, conn.to_node, engine_port);
                 }
             }
         }
@@ -745,7 +827,10 @@ app
     /// For mixer nodes, audio ports are at even indices (0, 2, 4) → engine (0, 1, 2).
     /// For all other nodes, port index passes through unchanged.
     fn mixer_engine_port(&self, node_id: NodeId, graph_port: usize) -> usize {
-        if matches!(self.graph.nodes.get(&node_id).map(|n| &n.node_type), Some(NodeType::AudioMixer { .. })) {
+        if matches!(
+            self.graph.nodes.get(&node_id).map(|n| &n.node_type),
+            Some(NodeType::AudioMixer { .. })
+        ) {
             graph_port / 2
         } else {
             graph_port
@@ -762,7 +847,12 @@ app
     /// click actions. Programmatic creations (WGSL aux nodes, MCP, undo
     /// internals) should keep using `self.graph.add_node` to avoid hijacking
     /// the user's current selection.
-    pub(super) fn add_node_selected(&mut self, ctx: &egui::Context, mut nt: NodeType, pos: [f32; 2]) -> NodeId {
+    pub(super) fn add_node_selected(
+        &mut self,
+        ctx: &egui::Context,
+        mut nt: NodeType,
+        pos: [f32; 2],
+    ) -> NodeId {
         Self::apply_theme_defaults_to_new(ctx, &mut nt);
         let id = self.graph.add_node(nt, pos);
         self.selected_nodes.clear();
@@ -817,7 +907,12 @@ app
 
     /// Render nodes. If `pinned_only` is true, only render pinned nodes (at zoom 1.0).
     /// If false, only render non-pinned nodes (at canvas zoom).
-    fn render_nodes_filtered(&mut self, ctx: &egui::Context, values: &HashMap<(NodeId, usize), PortValue>, pinned_only: bool) {
+    fn render_nodes_filtered(
+        &mut self,
+        ctx: &egui::Context,
+        values: &HashMap<(NodeId, usize), PortValue>,
+        pinned_only: bool,
+    ) {
         let node_ids: Vec<NodeId> = self.graph.nodes.keys().copied().collect();
         let connections = self.graph.connections.clone();
         let midi_out_ports = self.midi.cached_output_ports.clone();
@@ -863,9 +958,10 @@ app
         // undo step on release. push()'s hash dedup drops no-op gestures.
         if ctx.input(|i| i.pointer.any_pressed()) && self.pending_gesture_snapshot.is_none() {
             self.pending_gesture_snapshot = Some(UndoSnapshot::new(
-                self.graph.clone(), self.pinned_nodes.clone()));
+                self.graph.clone(),
+                self.pinned_nodes.clone(),
+            ));
         }
-
 
         for node_id in node_ids {
             let is_pinned = self.pinned_nodes.contains(&node_id);
@@ -873,7 +969,10 @@ app
             if pinned_only != is_pinned {
                 continue;
             }
-            let mut node = match self.graph.nodes.remove(&node_id) { Some(n) => n, None => continue };
+            let mut node = match self.graph.nodes.remove(&node_id) {
+                Some(n) => n,
+                None => continue,
+            };
             let input_defs = node.node_type.inputs();
             let output_defs = node.node_type.outputs();
             let n_inputs = input_defs.len();
@@ -915,17 +1014,39 @@ app
             };
             let is_display = node.node_type.title() == "Display";
             let is_monitor = node.node_type.title() == "Monitor";
-            let is_audio_player = matches!(node.node_type, NodeType::AudioPlayer { .. } | NodeType::AudioPlaylist { .. });
+            let is_audio_player = matches!(
+                node.node_type,
+                NodeType::AudioPlayer { .. } | NodeType::AudioPlaylist { .. }
+            );
             let is_speaker = matches!(node.node_type, NodeType::Speaker { .. });
-            let no_title = node.node_type.no_title() || is_display || is_monitor || is_audio_player || is_speaker;
-            let port_sz = if is_pinned { PORT_INTERACT * inv } else { PORT_INTERACT };
-            let port_r = if is_pinned { PORT_RADIUS * inv } else { PORT_RADIUS };
+            let no_title = node.node_type.no_title()
+                || is_display
+                || is_monitor
+                || is_audio_player
+                || is_speaker;
+            let port_sz = if is_pinned {
+                PORT_INTERACT * inv
+            } else {
+                PORT_INTERACT
+            };
+            let port_r = if is_pinned {
+                PORT_RADIUS * inv
+            } else {
+                PORT_RADIUS
+            };
             let title_size = if is_pinned { 14.0 * inv } else { 14.0 };
             let node_icon = crate::icons::node_icon(node.node_type.title());
             let title_with_icon = format!("{} {}", node_icon, title);
-            let title_rt = egui::RichText::new(&title_with_icon).color(accent).strong().size(title_size);
+            let title_rt = egui::RichText::new(&title_with_icon)
+                .color(accent)
+                .strong()
+                .size(title_size);
             // Pinned windows use zoom-bucketed ID to reset egui's cached window size on zoom change
-            let zoom_bucket = if is_pinned { (zoom * 10.0).round() as i32 } else { 0 };
+            let zoom_bucket = if is_pinned {
+                (zoom * 10.0).round() as i32
+            } else {
+                0
+            };
             // Apply inverse-zoom style for pinned nodes
             // Inverse-zoom style for pinned nodes: cancel out set_zoom_factor so they
             // appear at native screen size regardless of canvas zoom level.
@@ -953,13 +1074,21 @@ app
                     r.sw = (r.sw as f32 * inv).round().max(1.0) as u8;
                     r.se = (r.se as f32 * inv).round().max(1.0) as u8;
                 };
-                let scale_stroke = |s: &mut egui::Stroke| { s.width *= inv; };
+                let scale_stroke = |s: &mut egui::Stroke| {
+                    s.width *= inv;
+                };
                 scale_cr(&mut style.visuals.window_corner_radius);
                 scale_stroke(&mut style.visuals.window_stroke);
-                style.visuals.window_shadow.blur = (style.visuals.window_shadow.blur as f32 * inv).round() as u8;
-                style.visuals.window_shadow.spread = (style.visuals.window_shadow.spread as f32 * inv).round() as u8;
-                for ws in [&mut style.visuals.widgets.noninteractive, &mut style.visuals.widgets.inactive,
-                           &mut style.visuals.widgets.hovered, &mut style.visuals.widgets.active] {
+                style.visuals.window_shadow.blur =
+                    (style.visuals.window_shadow.blur as f32 * inv).round() as u8;
+                style.visuals.window_shadow.spread =
+                    (style.visuals.window_shadow.spread as f32 * inv).round() as u8;
+                for ws in [
+                    &mut style.visuals.widgets.noninteractive,
+                    &mut style.visuals.widgets.inactive,
+                    &mut style.visuals.widgets.hovered,
+                    &mut style.visuals.widgets.active,
+                ] {
                     scale_cr(&mut ws.corner_radius);
                     scale_stroke(&mut ws.bg_stroke);
                     scale_stroke(&mut ws.fg_stroke);
@@ -969,20 +1098,27 @@ app
             }
             let is_custom_render = node.node_type.custom_render();
             // Custom frame — render_background for trait nodes, legacy match for enum nodes
-            let bg_painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Background, egui::Id::new(("node_bg", node_id))));
-            let approx_rect = egui::Rect::from_min_size(egui::pos2(egui_x, egui_y), egui::vec2(node_width, 100.0));
-            let custom_frame = if let Some(frame) = node.node_type.render_background(&bg_painter, approx_rect) {
-                Some(frame)
-            } else {
-                None
-            };
+            let bg_painter = ctx.layer_painter(egui::LayerId::new(
+                egui::Order::Background,
+                egui::Id::new(("node_bg", node_id)),
+            ));
+            let approx_rect = egui::Rect::from_min_size(
+                egui::pos2(egui_x, egui_y),
+                egui::vec2(node_width, 100.0),
+            );
+            let custom_frame =
+                if let Some(frame) = node.node_type.render_background(&bg_painter, approx_rect) {
+                    Some(frame)
+                } else {
+                    None
+                };
             let is_comment = node.node_type.title() == "Comment";
             let mut win = egui::Window::new(title_rt)
                 .id(egui::Id::new((
                     "node",
                     self.documents.active().id,
                     node_id,
-                     zoom_bucket,
+                    zoom_bucket,
                 )))
                 .current_pos(egui::pos2(egui_x, egui_y))
                 .default_width(node_width)
@@ -1000,118 +1136,201 @@ app
                 win = win.frame(frame);
             }
             let resp = win.show(ctx, |ui| {
-                    // Constrain width to prevent expanding nodes — but Comment
-                    // sizes itself tightly to its text (see comment_node.rs
-                    // body_w computation), so the 180-floor here was leaving
-                    // empty padding to the right of short notes. Skip the
-                    // clamp for Comment so its window fits the visible card.
-                    if !is_comment {
-                        ui.set_max_width(node_width.max(180.0));
-                    }
+                // Constrain width to prevent expanding nodes — but Comment
+                // sizes itself tightly to its text (see comment_node.rs
+                // body_w computation), so the 180-floor here was leaving
+                // empty padding to the right of short notes. Skip the
+                // clamp for Comment so its window fits the visible card.
+                if !is_comment {
+                    ui.set_max_width(node_width.max(180.0));
+                }
 
-                    // Top input ports (skip for inline-port nodes)
-                    if !inline {
-                        for (i, pdef) in input_defs.iter().enumerate() {
-                            ui.horizontal(|ui| {
-                                let (rect, response) = ui.allocate_exact_size(egui::vec2(port_sz, port_sz), egui::Sense::click_and_drag());
-                                let val = Graph::static_input_value(&connections, values, node_id, i);
-                                let kind = pdef.kind; // Use semantic kind from port definition
-                                let is_connected = connections.iter().any(|c| c.to_node == node_id && c.to_port == i);
-                                let (type_fill, type_border) = port_colors_for_kind(kind, false);
-                                let (fill, border) = if response.hovered() || response.dragged() {
-                                    (egui::Color32::YELLOW, egui::Color32::WHITE)
-                                } else { (type_fill, type_border) };
-                                // Highlight port if click-wiring and hovering a compatible target
-                                let click_wiring_hover = self.click_wiring && dragging_from.is_some() && response.hovered();
-                                let (fill, border) = if click_wiring_hover {
-                                    (egui::Color32::from_rgb(100, 255, 100), egui::Color32::WHITE)
-                                } else { (fill, border) };
-                                draw_shaped_port(ui.painter(), rect.center(), port_r, fill, border, PORT_BORDER, kind, is_connected);
-                                port_positions.insert((node_id, i, true), rect.center());
-                                ui.label(format!("{}: {}", pdef.name, val));
-                                if !self.save_as_open && response.drag_started() {
-                                    if let Some(existing) = connections.iter().find(|c| c.to_node == node_id && c.to_port == i) {
-                                        let src_node = existing.from_node;
-                                        let src_port = existing.from_port;
-                                        dragging_from = Some((src_node, src_port, true));
+                // Top input ports (skip for inline-port nodes)
+                if !inline {
+                    for (i, pdef) in input_defs.iter().enumerate() {
+                        ui.horizontal(|ui| {
+                            let (rect, response) = ui.allocate_exact_size(
+                                egui::vec2(port_sz, port_sz),
+                                egui::Sense::click_and_drag(),
+                            );
+                            let val = Graph::static_input_value(&connections, values, node_id, i);
+                            let kind = pdef.kind; // Use semantic kind from port definition
+                            let is_connected = connections
+                                .iter()
+                                .any(|c| c.to_node == node_id && c.to_port == i);
+                            let (type_fill, type_border) = port_colors_for_kind(kind, false);
+                            let (fill, border) = if response.hovered() || response.dragged() {
+                                (egui::Color32::YELLOW, egui::Color32::WHITE)
+                            } else {
+                                (type_fill, type_border)
+                            };
+                            // Highlight port if click-wiring and hovering a compatible target
+                            let click_wiring_hover =
+                                self.click_wiring && dragging_from.is_some() && response.hovered();
+                            let (fill, border) = if click_wiring_hover {
+                                (egui::Color32::from_rgb(100, 255, 100), egui::Color32::WHITE)
+                            } else {
+                                (fill, border)
+                            };
+                            draw_shaped_port(
+                                ui.painter(),
+                                rect.center(),
+                                port_r,
+                                fill,
+                                border,
+                                PORT_BORDER,
+                                kind,
+                                is_connected,
+                            );
+                            port_positions.insert((node_id, i, true), rect.center());
+                            ui.label(format!("{}: {}", pdef.name, val));
+                            if !self.save_as_open && response.drag_started() {
+                                if let Some(existing) = connections
+                                    .iter()
+                                    .find(|c| c.to_node == node_id && c.to_port == i)
+                                {
+                                    let src_node = existing.from_node;
+                                    let src_port = existing.from_port;
+                                    dragging_from = Some((src_node, src_port, true));
+                                    pending_disconnects.push((node_id, i));
+                                } else {
+                                    dragging_from = Some((node_id, i, false));
+                                }
+                            }
+                            // Click-to-connect: click on input port starts or completes wiring
+                            // Click-to-connect: click on input port starts or completes wiring
+                            if !self.save_as_open && response.clicked() {
+                                if let Some((src_node, src_port, is_output)) = dragging_from {
+                                    if self.click_wiring && is_output && node_id != src_node {
+                                        // Complete: output → this input
+                                        pending_connections.push((src_node, src_port, node_id, i));
+                                        dragging_from = None;
+                                        self.click_wiring = false;
+                                    } else if self.click_wiring && !is_output && node_id != src_node
+                                    {
+                                        // Complete: this input ← input (reverse)
+                                        pending_connections.push((node_id, i, src_node, src_port));
+                                        dragging_from = None;
+                                        self.click_wiring = false;
+                                    }
+                                } else {
+                                    // Start click-wiring from input port
+                                    if let Some(existing) = connections
+                                        .iter()
+                                        .find(|c| c.to_node == node_id && c.to_port == i)
+                                    {
+                                        dragging_from =
+                                            Some((existing.from_node, existing.from_port, true));
                                         pending_disconnects.push((node_id, i));
                                     } else {
                                         dragging_from = Some((node_id, i, false));
                                     }
+                                    self.click_wiring = true;
                                 }
-                                // Click-to-connect: click on input port starts or completes wiring
-                                // Click-to-connect: click on input port starts or completes wiring
-                                if !self.save_as_open && response.clicked() {
-                                    if let Some((src_node, src_port, is_output)) = dragging_from {
-                                        if self.click_wiring && is_output && node_id != src_node {
-                                            // Complete: output → this input
-                                            pending_connections.push((src_node, src_port, node_id, i));
-                                            dragging_from = None;
-                                            self.click_wiring = false;
-                                        } else if self.click_wiring && !is_output && node_id != src_node {
-                                            // Complete: this input ← input (reverse)
-                                            pending_connections.push((node_id, i, src_node, src_port));
-                                            dragging_from = None;
-                                            self.click_wiring = false;
-                                        }
-                                    } else {
-                                        // Start click-wiring from input port
-                                        if let Some(existing) = connections.iter().find(|c| c.to_node == node_id && c.to_port == i) {
-                                            dragging_from = Some((existing.from_node, existing.from_port, true));
-                                            pending_disconnects.push((node_id, i));
-                                        } else {
-                                            dragging_from = Some((node_id, i, false));
-                                        }
-                                        self.click_wiring = true;
-                                    }
-                                }
-                            });
-                        }
-                        if !input_defs.is_empty() { ui.separator(); }
+                            }
+                        });
                     }
-
-                    let project_dir_path = self.project_path.as_deref().map(std::path::Path::new);
-                    nodes::render_content(ui, &mut node.node_type, node_id, values, &connections,
-                        &midi_out_ports, &midi_in_ports, midi_conn_out, midi_conn_in, &mut midi_actions,
-                        &serial_ports, serial_conn, &mut serial_actions, &monitor_state,
-                        osc_listening, &mut osc_actions, &mut network_actions, &mut port_positions, &mut dragging_from,
-                        &mut http_actions, http_pending, &api_keys, &wgpu_render_state,
-                        &mut pending_disconnects, &mut ob_manager, &mut audio_manager,
-                        &self.mcp_log, self.mcp_rx.is_some(),
-                        &mut dmx_actions, &mut artnet_actions,
-                        dmx_output_open, dmx_listening, artnet_listening,
-                        project_dir_path);
-
-                    // Check if a Palette node wants to spawn new nodes
-                    if matches!(node.node_type, NodeType::Palette { .. }) {
-                        for spawn_nt in nodes::palette_actions(ui) {
-                            palette_spawns.push((node.pos, spawn_nt));
-                        }
+                    if !input_defs.is_empty() {
+                        ui.separator();
                     }
+                }
 
-                    // Bottom output ports (skip for inline-port nodes)
-                    if !inline {
-                        if !output_defs.is_empty() { ui.separator(); }
-                        for (i, pdef) in output_defs.iter().enumerate() {
-                            let val = values.get(&(node_id, i)).cloned().unwrap_or(PortValue::None);
-                            let label_text = format!("{}: {}", pdef.name, val);
-                            let kind = pdef.kind; // Use semantic kind from port definition
-                            let is_connected = connections.iter().any(|c| c.from_node == node_id && c.from_port == i);
-                            let (type_fill, type_border) = port_colors_for_kind(kind, true);
+                let project_dir_path = self.project_path.as_deref().map(std::path::Path::new);
+                nodes::render_content(
+                    ui,
+                    &mut node.node_type,
+                    node_id,
+                    values,
+                    &connections,
+                    &midi_out_ports,
+                    &midi_in_ports,
+                    midi_conn_out,
+                    midi_conn_in,
+                    &mut midi_actions,
+                    &serial_ports,
+                    serial_conn,
+                    &mut serial_actions,
+                    &monitor_state,
+                    osc_listening,
+                    &mut osc_actions,
+                    &mut network_actions,
+                    &mut port_positions,
+                    &mut dragging_from,
+                    &mut http_actions,
+                    http_pending,
+                    &api_keys,
+                    &wgpu_render_state,
+                    &mut pending_disconnects,
+                    &mut ob_manager,
+                    &mut audio_manager,
+                    &self.mcp_log,
+                    self.mcp_rx.is_some(),
+                    &mut dmx_actions,
+                    &mut artnet_actions,
+                    dmx_output_open,
+                    dmx_listening,
+                    artnet_listening,
+                    project_dir_path,
+                );
 
-                            // Use columns: label left, port circle right
-                            ui.horizontal(|ui| {
-                                ui.label(&label_text);
-                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    let (rect, response) = ui.allocate_exact_size(egui::vec2(port_sz, port_sz), egui::Sense::click_and_drag());
+                // Check if a Palette node wants to spawn new nodes
+                if matches!(node.node_type, NodeType::Palette { .. }) {
+                    for spawn_nt in nodes::palette_actions(ui) {
+                        palette_spawns.push((node.pos, spawn_nt));
+                    }
+                }
+
+                // Bottom output ports (skip for inline-port nodes)
+                if !inline {
+                    if !output_defs.is_empty() {
+                        ui.separator();
+                    }
+                    for (i, pdef) in output_defs.iter().enumerate() {
+                        let val = values
+                            .get(&(node_id, i))
+                            .cloned()
+                            .unwrap_or(PortValue::None);
+                        let label_text = format!("{}: {}", pdef.name, val);
+                        let kind = pdef.kind; // Use semantic kind from port definition
+                        let is_connected = connections
+                            .iter()
+                            .any(|c| c.from_node == node_id && c.from_port == i);
+                        let (type_fill, type_border) = port_colors_for_kind(kind, true);
+
+                        // Use columns: label left, port circle right
+                        ui.horizontal(|ui| {
+                            ui.label(&label_text);
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    let (rect, response) = ui.allocate_exact_size(
+                                        egui::vec2(port_sz, port_sz),
+                                        egui::Sense::click_and_drag(),
+                                    );
                                     // Highlight port if click-wiring and hovering a compatible target
-                                    let click_wiring_hover = self.click_wiring && dragging_from.is_some() && response.hovered();
+                                    let click_wiring_hover = self.click_wiring
+                                        && dragging_from.is_some()
+                                        && response.hovered();
                                     let (fill, border) = if click_wiring_hover {
-                                        (egui::Color32::from_rgb(100, 255, 100), egui::Color32::WHITE)
+                                        (
+                                            egui::Color32::from_rgb(100, 255, 100),
+                                            egui::Color32::WHITE,
+                                        )
                                     } else if response.hovered() || response.dragged() {
                                         (egui::Color32::YELLOW, egui::Color32::WHITE)
-                                    } else { (type_fill, type_border) };
-                                    draw_shaped_port(ui.painter(), rect.center(), port_r, fill, border, PORT_BORDER, kind, is_connected);
+                                    } else {
+                                        (type_fill, type_border)
+                                    };
+                                    draw_shaped_port(
+                                        ui.painter(),
+                                        rect.center(),
+                                        port_r,
+                                        fill,
+                                        border,
+                                        PORT_BORDER,
+                                        kind,
+                                        is_connected,
+                                    );
                                     port_positions.insert((node_id, i, false), rect.center());
                                     if !self.save_as_open && response.drag_started() {
                                         dragging_from = Some((node_id, i, true));
@@ -1119,15 +1338,24 @@ app
                                     // Click-to-connect: click on output port starts or completes wiring
                                     // Click-to-connect: click on output port starts or completes wiring
                                     if !self.save_as_open && response.clicked() {
-                                        if let Some((src_node, src_port, is_output)) = dragging_from {
-                                            if self.click_wiring && !is_output && node_id != src_node {
+                                        if let Some((src_node, src_port, is_output)) = dragging_from
+                                        {
+                                            if self.click_wiring
+                                                && !is_output
+                                                && node_id != src_node
+                                            {
                                                 // Complete: input → this output
-                                                pending_connections.push((node_id, i, src_node, src_port));
+                                                pending_connections
+                                                    .push((node_id, i, src_node, src_port));
                                                 dragging_from = None;
                                                 self.click_wiring = false;
-                                            } else if self.click_wiring && is_output && node_id != src_node {
+                                            } else if self.click_wiring
+                                                && is_output
+                                                && node_id != src_node
+                                            {
                                                 // Complete: output → output (swap direction)
-                                                pending_connections.push((src_node, src_port, node_id, i));
+                                                pending_connections
+                                                    .push((src_node, src_port, node_id, i));
                                                 dragging_from = None;
                                                 self.click_wiring = false;
                                             }
@@ -1137,36 +1365,37 @@ app
                                             self.click_wiring = true;
                                         }
                                     }
-                                });
-                            });
-                        }
+                                },
+                            );
+                        });
                     }
-                });
+                }
+            });
 
             // Restore original style after pinned window's inverse-zoom
             if is_pinned {
                 ctx.set_style(_original_style.clone());
             }
 
-           if let Some(r) = &resp {
+            if let Some(r) = &resp {
                 if !self.save_as_open {
                     if is_pinned {
-            // Pinned: drag delta is in logical (screen/zoom), store as screen pixels
-                         if r.response.dragged() {
+                        // Pinned: drag delta is in logical (screen/zoom), store as screen pixels
+                        if r.response.dragged() {
                             let delta = r.response.drag_delta();
                             node.pos[0] += delta.x * zoom;
                             node.pos[1] += delta.y * zoom;
                         }
                     } else {
-            // Normal: convert logical pos back to canvas coords
-                         let offset_egui = offset / zoom;
+                        // Normal: convert logical pos back to canvas coords
+                        let offset_egui = offset / zoom;
                         node.pos = [
-                         r.response.rect.left() - offset_egui.x,
-                        r.response.rect.top() - offset_egui.y,
+                            r.response.rect.left() - offset_egui.x,
+                            r.response.rect.top() - offset_egui.y,
                         ];
                     }
-            }
-            node_rects.insert(node_id, r.response.rect);
+                }
+                node_rects.insert(node_id, r.response.rect);
 
                 // Pin badge removed — pinned state is shown via the title bar accent color
 
@@ -1177,10 +1406,7 @@ app
                 } else {
                     r.response.clicked() || r.response.drag_started()
                 };
-                if !self.save_as_open
-                     && select_trigger
-                     && !ctx.input(|i| i.modifiers.alt)
-                {
+                if !self.save_as_open && select_trigger && !ctx.input(|i| i.modifiers.alt) {
                     let shift = ctx.input(|i| i.modifiers.shift);
                     if shift {
                         if self.selected_nodes.contains(&node_id) {
@@ -1194,18 +1420,23 @@ app
                     }
                     self.selected_connection = None;
                     crate::system_log::log(&format!(
-    "select block: node {:?} alt={} selected_nodes now = {:?}",
-    node_id, ctx.input(|i| i.modifiers.alt), self.selected_nodes
-));
+                        "select block: node {:?} alt={} selected_nodes now = {:?}",
+                        node_id,
+                        ctx.input(|i| i.modifiers.alt),
+                        self.selected_nodes
+                    ));
                 }
 
                 // Right-click context menu — skip for custom_render nodes (they handle their own UI)
-                let secondary_in_rect = !is_custom_render && ctx.input(|i| {
-                    i.pointer.button_clicked(egui::PointerButton::Secondary)
-                }) && ctx.pointer_latest_pos().map(|p| r.response.rect.contains(p)).unwrap_or(false);
+                let secondary_in_rect = !is_custom_render
+                    && ctx.input(|i| i.pointer.button_clicked(egui::PointerButton::Secondary))
+                    && ctx
+                        .pointer_latest_pos()
+                        .map(|p| r.response.rect.contains(p))
+                        .unwrap_or(false);
                 if !self.save_as_open
-                     && !is_custom_render
-                     && (r.response.secondary_clicked() || secondary_in_rect)
+                    && !is_custom_render
+                    && (r.response.secondary_clicked() || secondary_in_rect)
                 {
                     if !self.selected_nodes.contains(&node_id) {
                         self.selected_nodes.clear();
@@ -1213,7 +1444,8 @@ app
                     }
                     self.context_menu_node = Some(node_id);
                     self.show_context_menu = true;
-                    self.context_menu_pos = ctx.pointer_latest_pos().unwrap_or(r.response.rect.center());
+                    self.context_menu_pos =
+                        ctx.pointer_latest_pos().unwrap_or(r.response.rect.center());
                     self.context_menu_opened_at = ctx.input(|i| i.time);
                 }
 
@@ -1223,18 +1455,30 @@ app
                 if self.selected_nodes.contains(&node_id) {
                     // let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("selection")));
                     let painter = ctx.layer_painter(r.response.layer_id);
-                    let sel_accent = ctx.data_mut(|d| d.get_temp::<[u8; 3]>(egui::Id::new("theme_accent")))
+                    let sel_accent = ctx
+                        .data_mut(|d| d.get_temp::<[u8; 3]>(egui::Id::new("theme_accent")))
                         .unwrap_or([80, 160, 255]);
-                    painter.rect_stroke(r.response.rect.expand(2.0), 4.0, egui::Stroke::new(2.0, egui::Color32::from_rgb(sel_accent[0], sel_accent[1], sel_accent[2])), egui::StrokeKind::Outside);
+                    painter.rect_stroke(
+                        r.response.rect.expand(2.0),
+                        4.0,
+                        egui::Stroke::new(
+                            2.0,
+                            egui::Color32::from_rgb(sel_accent[0], sel_accent[1], sel_accent[2]),
+                        ),
+                        egui::StrokeKind::Outside,
+                    );
                 }
                 // Pin indicator — solid accent circle with white pin icon
                 if is_pinned {
                     // let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("pins")));
                     let painter = ctx.layer_painter(r.response.layer_id);
-                    let badge_center = egui::pos2(r.response.rect.left() + 12.0, r.response.rect.top() - 4.0);
-                    let theme_accent = ctx.data_mut(|d| d.get_temp::<[u8; 3]>(egui::Id::new("theme_accent")))
+                    let badge_center =
+                        egui::pos2(r.response.rect.left() + 12.0, r.response.rect.top() - 4.0);
+                    let theme_accent = ctx
+                        .data_mut(|d| d.get_temp::<[u8; 3]>(egui::Id::new("theme_accent")))
                         .unwrap_or([80, 160, 255]);
-                    let accent_color = egui::Color32::from_rgb(theme_accent[0], theme_accent[1], theme_accent[2]);
+                    let accent_color =
+                        egui::Color32::from_rgb(theme_accent[0], theme_accent[1], theme_accent[2]);
                     // Solid accent background circle (24x24 = radius 12)
                     painter.circle_filled(badge_center, 12.0, accent_color);
                     // White pin icon on top
@@ -1261,9 +1505,14 @@ app
                         egui::StrokeKind::Outside,
                     );
                     // Warning badge at the top-right corner
-                    let badge_center = egui::pos2(r.response.rect.right() - 12.0, r.response.rect.top() - 4.0);
+                    let badge_center =
+                        egui::pos2(r.response.rect.right() - 12.0, r.response.rect.top() - 4.0);
                     painter.circle_filled(badge_center, 10.0, err_red);
-                    painter.circle_stroke(badge_center, 10.0, egui::Stroke::new(1.0, egui::Color32::WHITE));
+                    painter.circle_stroke(
+                        badge_center,
+                        10.0,
+                        egui::Stroke::new(1.0, egui::Color32::WHITE),
+                    );
                     painter.text(
                         badge_center,
                         egui::Align2::CENTER_CENTER,
@@ -1273,13 +1522,17 @@ app
                     );
                     // Hover tooltip with the full error message — shown when
                     // the pointer is over the node window or its badge.
-                    let pointer_over = ctx.pointer_latest_pos()
+                    let pointer_over = ctx
+                        .pointer_latest_pos()
                         .map(|p| r.response.rect.expand(4.0).contains(p))
                         .unwrap_or(false);
                     if pointer_over {
                         egui::show_tooltip_at_pointer(
                             ctx,
-                            egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("node_err_tip_layer")),
+                            egui::LayerId::new(
+                                egui::Order::Tooltip,
+                                egui::Id::new("node_err_tip_layer"),
+                            ),
                             egui::Id::new(("node_err_tip", node_id)),
                             |ui| {
                                 ui.colored_label(err_red, "⚠ Node error");
@@ -1295,23 +1548,37 @@ app
                     let rect = r.response.rect;
                     let n_in = n_inputs;
                     let n_out = n_outputs;
-                    let fg = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("collapsed_ports")));
+                    let fg = ctx.layer_painter(egui::LayerId::new(
+                        egui::Order::Foreground,
+                        egui::Id::new("collapsed_ports"),
+                    ));
                     // Input dots: dim version of theme text color (subtle hint).
                     // Output dots: theme accent so they read as the node's
                     // outgoing identity, matching the selected-wire highlight.
                     let theme_text = crate::nodes::theme::current_text_arr(ctx);
                     let in_dot = egui::Color32::from_rgba_unmultiplied(
-                        theme_text[0], theme_text[1], theme_text[2], 90,
+                        theme_text[0],
+                        theme_text[1],
+                        theme_text[2],
+                        90,
                     );
                     let out_dot = crate::nodes::theme::current_accent(ctx);
                     for i in 0..n_in {
-                        let y_off = if n_in > 1 { (i as f32 - (n_in - 1) as f32 / 2.0) * 4.0 } else { 0.0 };
+                        let y_off = if n_in > 1 {
+                            (i as f32 - (n_in - 1) as f32 / 2.0) * 4.0
+                        } else {
+                            0.0
+                        };
                         let pos = egui::pos2(rect.left() - PORT_RADIUS, rect.center().y + y_off);
                         port_positions.insert((node_id, i, true), pos);
                         fg.circle_filled(pos, 3.0, in_dot);
                     }
                     for i in 0..n_out {
-                        let y_off = if n_out > 1 { (i as f32 - (n_out - 1) as f32 / 2.0) * 4.0 } else { 0.0 };
+                        let y_off = if n_out > 1 {
+                            (i as f32 - (n_out - 1) as f32 / 2.0) * 4.0
+                        } else {
+                            0.0
+                        };
                         let pos = egui::pos2(rect.right() + PORT_RADIUS, rect.center().y + y_off);
                         port_positions.insert((node_id, i, false), pos);
                         fg.circle_filled(pos, 3.0, out_dot);
@@ -1330,24 +1597,32 @@ app
                         image_b_mode,
                         feedback_reset_pending,
                         ..
-                    } = &mut node.node_type {
+                    } = &mut node.node_type
+                    {
                         crate::nodes::wgsl_viewer::render_offscreen_pass(
-                            ctx, node_id,
+                            ctx,
+                            node_id,
                             wgsl_code,
                             uniform_names,
                             uniform_types,
                             uniform_values,
-                            *canvas_w, *canvas_h,
-                            *image_a_mode, *image_b_mode,
+                            *canvas_w,
+                            *canvas_h,
+                            *image_a_mode,
+                            *image_b_mode,
                             feedback_reset_pending,
-                            &connections, values,
+                            &connections,
+                            values,
                             &wgpu_render_state,
                         );
                     }
                 }
 
                 // Undo snapshot on drag start (coalesced — one per gesture)
-                if r.response.drag_started() && !ctx.input(|i| i.modifiers.alt) && !self.drag_undo_pushed {
+                if r.response.drag_started()
+                    && !ctx.input(|i| i.modifiers.alt)
+                    && !self.drag_undo_pushed
+                {
                     self.push_undo();
                     self.drag_undo_pushed = true;
                 }
@@ -1368,7 +1643,10 @@ app
                 }
 
                 // Track drag delta for multi-node movement
-                if r.response.dragged() && self.selected_nodes.contains(&node_id) && self.selected_nodes.len() > 1 {
+                if r.response.dragged()
+                    && self.selected_nodes.contains(&node_id)
+                    && self.selected_nodes.len() > 1
+                {
                     multi_drag = Some((node_id, r.response.drag_delta()));
                 }
 
@@ -1382,8 +1660,11 @@ app
             let pin_id = egui::Id::new(("slider_pin_action", node_id));
             let display_pin_id = egui::Id::new(("display_pin_action", node_id));
             let has_pin = ctx.data_mut(|d| d.get_temp::<bool>(pin_id).unwrap_or(false))
-                       || ctx.data_mut(|d| d.get_temp::<bool>(display_pin_id).unwrap_or(false));
-            ctx.data_mut(|d| { d.remove::<bool>(pin_id); d.remove::<bool>(display_pin_id); });
+                || ctx.data_mut(|d| d.get_temp::<bool>(display_pin_id).unwrap_or(false));
+            ctx.data_mut(|d| {
+                d.remove::<bool>(pin_id);
+                d.remove::<bool>(display_pin_id);
+            });
             if has_pin {
                 self.push_undo();
                 if self.pinned_nodes.contains(&node_id) {
@@ -1403,7 +1684,12 @@ app
                 }
             }
             // Handle delete actions from custom node popups (Slider, Comment, etc.)
-            for prefix in &["slider_delete_action", "comment_delete_action", "display_delete_action", "button_delete_action"] {
+            for prefix in &[
+                "slider_delete_action",
+                "comment_delete_action",
+                "display_delete_action",
+                "button_delete_action",
+            ] {
                 let del_id = egui::Id::new((*prefix, node_id));
                 if ctx.data_mut(|d| d.get_temp::<bool>(del_id).unwrap_or(false)) {
                     ctx.data_mut(|d| d.remove::<bool>(del_id));
@@ -1414,18 +1700,15 @@ app
 
             self.graph.nodes.insert(node_id, node);
         }
-    if ctx.input(|i| i.pointer.any_released()) {
-    if let Some(base) = self.pending_gesture_snapshot.take() {
-        let current = UndoSnapshot::new(
-            self.graph.clone(),
-            self.pinned_nodes.clone(),
-        );
-        if !base.has_same_content(&current) {
-           self.undo_history.push(base);
-           self.is_dirty = true;
-         }
-    }
-}
+        if ctx.input(|i| i.pointer.any_released()) {
+            if let Some(base) = self.pending_gesture_snapshot.take() {
+                let current = UndoSnapshot::new(self.graph.clone(), self.pinned_nodes.clone());
+                if !base.has_same_content(&current) {
+                    self.undo_history.push(base);
+                    self.is_dirty = true;
+                }
+            }
+        }
 
         // Apply multi-node drag: move all other selected nodes by the same delta
         if let Some((dragged_id, delta)) = multi_drag {
@@ -1469,30 +1752,46 @@ app
                         let hit_radius = PORT_INTERACT * 2.0;
                         let mut best: Option<(f32, NodeId, usize, bool)> = None;
                         let mut best_incompat: Option<(f32, PortKind, PortKind)> = None;
-                       
-                         crate::system_log::log(&format!(
+
+                        crate::system_log::log(&format!(
                             "drop: src=({},{}) is_output={} ptr=({:.0},{:.0}) radius={:.0} ports={}",
-                            src_node, src_port, is_output, pointer.x, pointer.y, hit_radius, port_positions.len()));
+                            src_node,
+                            src_port,
+                            is_output,
+                            pointer.x,
+                            pointer.y,
+                            hit_radius,
+                            port_positions.len()
+                        ));
 
                         for (&(n, p, i), &q) in &port_positions {
                             crate::system_log::log(&format!(
-                                "    reg nid={} pidx={} is_input={} at=({:.0},{:.0})", n, p, i, q.x, q.y));
+                                "    reg nid={} pidx={} is_input={} at=({:.0},{:.0})",
+                                n, p, i, q.x, q.y
+                            ));
                         }
-                       
+
                         for (&(nid, pidx, is_input), &pos) in &port_positions {
                             let dist = pos.distance(pointer);
-                              
+
                             if dist < 120.0 {
                                 crate::system_log::log(&format!(
                                     "  cand nid={} pidx={} is_input={} dist={:.0} same_node={}",
-                                    nid, pidx, is_input, dist, nid == src_node));
+                                    nid,
+                                    pidx,
+                                    is_input,
+                                    dist,
+                                    nid == src_node
+                                ));
                             }
                             if dist < hit_radius && nid != src_node {
                                 // Must be opposite direction (output→input or input→output)
-                                let valid_dir = (is_output && is_input) || (!is_output && !is_input);
+                                let valid_dir =
+                                    (is_output && is_input) || (!is_output && !is_input);
                                 if valid_dir {
                                     // Check port type compatibility
-                                    let src_kind = self.graph.port_kind(src_node, src_port, is_output);
+                                    let src_kind =
+                                        self.graph.port_kind(src_node, src_port, is_output);
                                     let tgt_kind = self.graph.port_kind(nid, pidx, !is_input);
                                     let compatible = match (src_kind, tgt_kind) {
                                         (Some(s), Some(t)) => PortKind::compatible(s, t),
@@ -1503,7 +1802,11 @@ app
                                             best = Some((dist, nid, pidx, is_input));
                                         }
                                     } else if let (Some(s), Some(t)) = (src_kind, tgt_kind) {
-                                        if best_incompat.as_ref().map(|b| dist < b.0).unwrap_or(true) {
+                                        if best_incompat
+                                            .as_ref()
+                                            .map(|b| dist < b.0)
+                                            .unwrap_or(true)
+                                        {
                                             best_incompat = Some((dist, s, t));
                                         }
                                     }
@@ -1524,9 +1827,7 @@ app
                             } else {
                                 (tgt_kind, src_kind)
                             };
-                            self.toast_warn(format!(
-                                "Can't connect {:?} → {:?}", from_k, to_k
-                            ));
+                            self.toast_warn(format!("Can't connect {:?} → {:?}", from_k, to_k));
                         }
                     }
                     dragging_from = None;
@@ -1537,8 +1838,12 @@ app
         // Sync click_wiring state with egui temp data (for inline port nodes)
         ctx.data_mut(|d| d.insert_temp(egui::Id::new("click_wiring_active"), self.click_wiring));
         // Pick up click-wire completions from inline ports
-        if let Some((fn_, fp, tn, tp)) = ctx.data_mut(|d| d.get_temp::<(NodeId, usize, NodeId, usize)>(egui::Id::new("click_wire_complete"))) {
-            ctx.data_mut(|d| d.remove::<(NodeId, usize, NodeId, usize)>(egui::Id::new("click_wire_complete")));
+        if let Some((fn_, fp, tn, tp)) = ctx.data_mut(|d| {
+            d.get_temp::<(NodeId, usize, NodeId, usize)>(egui::Id::new("click_wire_complete"))
+        }) {
+            ctx.data_mut(|d| {
+                d.remove::<(NodeId, usize, NodeId, usize)>(egui::Id::new("click_wire_complete"))
+            });
             pending_connections.push((fn_, fp, tn, tp));
             dragging_from = None;
             self.click_wiring = false;
@@ -1562,22 +1867,33 @@ app
 
         // Push undo snapshot if any graph mutations are pending
         // (palette_spawns push their own per-node undo snapshots below)
-        if !nodes_to_delete.is_empty() || !pending_disconnects.is_empty()
-            || !pending_connections.is_empty() {
+        if !nodes_to_delete.is_empty()
+            || !pending_disconnects.is_empty()
+            || !pending_connections.is_empty()
+        {
             self.push_undo();
         }
         let any_deleted = !nodes_to_delete.is_empty();
         for id in nodes_to_delete {
             // Clear opt-drag state if the source or duplicated node is being deleted
-            if self.opt_drag_source == Some(id) { self.opt_drag_source = None; }
-            if self.opt_drag_created == Some(id) { self.opt_drag_created = None; }
+            if self.opt_drag_source == Some(id) {
+                self.opt_drag_source = None;
+            }
+            if self.opt_drag_created == Some(id) {
+                self.opt_drag_created = None;
+            }
             self.audio.remove_processor(id); // Remove from engine before graph
-            self.midi.cleanup_node(id); self.serial.cleanup_node(id); self.osc.cleanup_node(id);
+            self.midi.cleanup_node(id);
+            self.serial.cleanup_node(id);
+            self.osc.cleanup_node(id);
             self.network.cleanup_node(id);
-            self.ob.cleanup_node(id); self.audio.cleanup_node(id); crate::nodes::video_player::cleanup_node(id);
+            self.ob.cleanup_node(id);
+            self.audio.cleanup_node(id);
+            crate::nodes::video_player::cleanup_node(id);
             // Drop GPU textures owned by this node immediately so VRAM
             // doesn't balloon when users rapidly spawn/delete image nodes.
-            self.gpu_tex_cache.invalidate_node(id, self.wgpu_render_state.as_ref());
+            self.gpu_tex_cache
+                .invalidate_node(id, self.wgpu_render_state.as_ref());
             self.graph.remove_node(id);
             // Clean up UI state for deleted node
             self.node_rects.remove(&id);
@@ -1612,12 +1928,20 @@ app
         // to-port-based pending_disconnects mechanism can't handle) and any
         // edge cases from load/rename shuffles.
         {
-            let script_info: Vec<(NodeId, usize, usize, bool)> = self.graph.nodes.iter()
+            let script_info: Vec<(NodeId, usize, usize, bool)> = self
+                .graph
+                .nodes
+                .iter()
                 .filter_map(|(id, n)| match &n.node_type {
-                    NodeType::Script { input_names, output_names, continuous, .. } =>
-                        Some((*id, input_names.len(), output_names.len(), *continuous)),
+                    NodeType::Script {
+                        input_names,
+                        output_names,
+                        continuous,
+                        ..
+                    } => Some((*id, input_names.len(), output_names.len(), *continuous)),
                     _ => None,
-                }).collect();
+                })
+                .collect();
             if !script_info.is_empty() {
                 let before = self.graph.connections.len();
                 for (sid, n_in, n_out, cont) in &script_info {
@@ -1625,10 +1949,14 @@ app
                     let max_in = input_base + n_in;
                     self.graph.connections.retain(|c| {
                         // Prune bad from-side (output port out of range)
-                        if c.from_node == *sid && c.from_port >= *n_out { return false; }
+                        if c.from_node == *sid && c.from_port >= *n_out {
+                            return false;
+                        }
                         // Prune bad to-side (input port: either control port [0..input_base]
                         // is always valid, or input_base..max_in is valid; anything beyond is stale)
-                        if c.to_node == *sid && c.to_port >= max_in { return false; }
+                        if c.to_node == *sid && c.to_port >= max_in {
+                            return false;
+                        }
                         true
                     });
                 }
@@ -1642,37 +1970,52 @@ app
         // and input-side connections beyond the Switch's valid input count.
         // Mirrors the Script sweep above.
         {
-            let route_info: Vec<(NodeId, usize, &'static str)> = self.graph.nodes.iter()
+            let route_info: Vec<(NodeId, usize, &'static str)> = self
+                .graph
+                .nodes
+                .iter()
                 .filter_map(|(id, n)| match &n.node_type {
                     NodeType::Dynamic { inner } => {
                         let tag = inner.node.type_tag();
                         if tag == "route" || tag == "switch" {
                             let n_out = inner.node.outputs().len();
                             Some((*id, n_out, if tag == "route" { "route" } else { "switch" }))
-                        } else { None }
+                        } else {
+                            None
+                        }
                     }
                     _ => None,
-                }).collect();
+                })
+                .collect();
 
             // Rebuild with in-count for switch (inputs().len() includes selector port)
-            let switch_in_info: Vec<(NodeId, usize)> = self.graph.nodes.iter()
+            let switch_in_info: Vec<(NodeId, usize)> = self
+                .graph
+                .nodes
+                .iter()
                 .filter_map(|(id, n)| match &n.node_type {
-                    NodeType::Dynamic { inner } if inner.node.type_tag() == "switch" =>
-                        Some((*id, inner.node.inputs().len())),
+                    NodeType::Dynamic { inner } if inner.node.type_tag() == "switch" => {
+                        Some((*id, inner.node.inputs().len()))
+                    }
                     _ => None,
-                }).collect();
+                })
+                .collect();
 
             if !route_info.is_empty() {
                 let before = self.graph.connections.len();
                 for (rid, n_out, _) in &route_info {
                     self.graph.connections.retain(|c| {
-                        if c.from_node == *rid && c.from_port >= *n_out { return false; }
+                        if c.from_node == *rid && c.from_port >= *n_out {
+                            return false;
+                        }
                         true
                     });
                 }
                 for (sid, max_in) in &switch_in_info {
                     self.graph.connections.retain(|c| {
-                        if c.to_node == *sid && c.to_port >= *max_in { return false; }
+                        if c.to_node == *sid && c.to_port >= *max_in {
+                            return false;
+                        }
                         true
                     });
                 }
@@ -1683,16 +2026,33 @@ app
         }
 
         for &(fn_, fp, tn, tp) in &pending_connections {
-            let from_name = self.graph.nodes.get(&fn_).map(|n| n.node_type.title()).unwrap_or("?");
-            let from_port = self.graph.nodes.get(&fn_)
+            let from_name = self
+                .graph
+                .nodes
+                .get(&fn_)
+                .map(|n| n.node_type.title())
+                .unwrap_or("?");
+            let from_port = self
+                .graph
+                .nodes
+                .get(&fn_)
                 .and_then(|n| n.node_type.outputs().get(fp).map(|p| p.name.clone()))
                 .unwrap_or_else(|| fp.to_string().into());
-            let to_name = self.graph.nodes.get(&tn).map(|n| n.node_type.title()).unwrap_or("?");
-            let to_port = self.graph.nodes.get(&tn)
+            let to_name = self
+                .graph
+                .nodes
+                .get(&tn)
+                .map(|n| n.node_type.title())
+                .unwrap_or("?");
+            let to_port = self
+                .graph
+                .nodes
+                .get(&tn)
                 .and_then(|n| n.node_type.inputs().get(tp).map(|p| p.name.clone()))
                 .unwrap_or_else(|| tp.to_string().into());
             crate::system_log::log(format!(
-                "Connected {}.{} → {}.{}", from_name, from_port, to_name, to_port
+                "Connected {}.{} → {}.{}",
+                from_name, from_port, to_name, to_port
             ));
             self.graph.add_connection(fn_, fp, tn, tp);
             // Only send engine connect/disconnect for audio ports
@@ -1701,7 +2061,8 @@ app
                 self.graph.nodes.get(&tn).map(|n| &n.node_type),
                 Some(NodeType::AudioMixer { .. })
             ) && tp % 2 != 0;
-            if !is_mixer_gain_port && self.audio.has_processor(fn_) && self.audio.has_processor(tn) {
+            if !is_mixer_gain_port && self.audio.has_processor(fn_) && self.audio.has_processor(tn)
+            {
                 let engine_port = self.mixer_engine_port(tn, tp);
                 // Disconnect old, connect new
                 self.audio.disconnect_audio(tn, engine_port);
@@ -1730,32 +2091,64 @@ app
             }
         }
         // Handle WGSL "+" button spawn requests
-        if let Some(req) = ctx.data_mut(|d| d.get_temp::<crate::nodes::wgsl_viewer::WgslSpawnRequest>(egui::Id::new("wgsl_spawn_request"))) {
-            ctx.data_mut(|d| d.remove::<crate::nodes::wgsl_viewer::WgslSpawnRequest>(egui::Id::new("wgsl_spawn_request")));
+        if let Some(req) = ctx.data_mut(|d| {
+            d.get_temp::<crate::nodes::wgsl_viewer::WgslSpawnRequest>(egui::Id::new(
+                "wgsl_spawn_request",
+            ))
+        }) {
+            ctx.data_mut(|d| {
+                d.remove::<crate::nodes::wgsl_viewer::WgslSpawnRequest>(egui::Id::new(
+                    "wgsl_spawn_request",
+                ))
+            });
 
             // Position the new node to the left of the WGSL node
-            let wgsl_pos = self.graph.nodes.get(&req.target_node).map(|n| n.pos).unwrap_or([0.0, 0.0]);
-            let spawn_pos = [wgsl_pos[0] - 200.0, wgsl_pos[1] + (req.target_port as f32 * 30.0)];
+            let wgsl_pos = self
+                .graph
+                .nodes
+                .get(&req.target_node)
+                .map(|n| n.pos)
+                .unwrap_or([0.0, 0.0]);
+            let spawn_pos = [
+                wgsl_pos[0] - 200.0,
+                wgsl_pos[1] + (req.target_port as f32 * 30.0),
+            ];
 
             let (new_id, from_port) = match req.source_type.as_str() {
                 "time" => {
                     let id = self.graph.add_node(
-                        NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(crate::nodes::time_node::TimeNode::default()) } },
+                        NodeType::Dynamic {
+                            inner: crate::graph::DynNode {
+                                node: Box::new(crate::nodes::time_node::TimeNode::default()),
+                            },
+                        },
                         spawn_pos,
                     );
                     (id, 0) // Time node output port 0 = Seconds
                 }
                 "color" => {
                     let id = self.graph.add_node(
-                        NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(crate::nodes::color_node::ColorNode::default()) } },
+                        NodeType::Dynamic {
+                            inner: crate::graph::DynNode {
+                                node: Box::new(crate::nodes::color_node::ColorNode::default()),
+                            },
+                        },
                         spawn_pos,
                     );
                     (id, 0) // Color node output port 0 = R (will connect R, G, B separately)
                 }
                 _ => {
                     // Slider with smart defaults
-                    let (min, max, step, value) = crate::nodes::wgsl_viewer::slider_defaults_for_uniform(&req.uniform_name);
-                    let mut nt = NodeType::Slider { value, min, max, step, slider_color: [80, 160, 255], label: req.uniform_name.clone() };
+                    let (min, max, step, value) =
+                        crate::nodes::wgsl_viewer::slider_defaults_for_uniform(&req.uniform_name);
+                    let mut nt = NodeType::Slider {
+                        value,
+                        min,
+                        max,
+                        step,
+                        slider_color: [80, 160, 255],
+                        label: req.uniform_name.clone(),
+                    };
                     Self::apply_theme_defaults_to_new(ctx, &mut nt);
                     let id = self.graph.add_node(nt, spawn_pos);
                     (id, 0) // Slider output port 0 = Value
@@ -1764,20 +2157,40 @@ app
             // Connect the new node to the WGSL uniform port
             if req.source_type == "color" {
                 // Connect R, G, B outputs to 3 consecutive ports
-                self.graph.add_connection(new_id, 0, req.target_node, req.target_port);     // R
-                self.graph.add_connection(new_id, 1, req.target_node, req.target_port + 1); // G
-                self.graph.add_connection(new_id, 2, req.target_node, req.target_port + 2); // B
+                self.graph
+                    .add_connection(new_id, 0, req.target_node, req.target_port); // R
+                self.graph
+                    .add_connection(new_id, 1, req.target_node, req.target_port + 1); // G
+                self.graph
+                    .add_connection(new_id, 2, req.target_node, req.target_port + 2); // B
             } else {
-                self.graph.add_connection(new_id, from_port, req.target_node, req.target_port);
+                self.graph
+                    .add_connection(new_id, from_port, req.target_node, req.target_port);
             }
 
-            crate::system_log::log(format!("Auto-created {} for u.{}", req.source_type, req.uniform_name));
+            crate::system_log::log(format!(
+                "Auto-created {} for u.{}",
+                req.source_type, req.uniform_name
+            ));
         }
         // Handle WGSL Presets "+" button: spawn a paired WGSL Viewer
         // to the right of the picker and auto-wire Shader -> WGSL.
-        if let Some(req) = ctx.data_mut(|d| d.get_temp::<crate::nodes::wgsl_presets::WgslPresetsSpawnRequest>(egui::Id::new("wgsl_presets_spawn_request"))) {
-            ctx.data_mut(|d| d.remove::<crate::nodes::wgsl_presets::WgslPresetsSpawnRequest>(egui::Id::new("wgsl_presets_spawn_request")));
-            let src_pos = self.graph.nodes.get(&req.source_node).map(|n| n.pos).unwrap_or([0.0, 0.0]);
+        if let Some(req) = ctx.data_mut(|d| {
+            d.get_temp::<crate::nodes::wgsl_presets::WgslPresetsSpawnRequest>(egui::Id::new(
+                "wgsl_presets_spawn_request",
+            ))
+        }) {
+            ctx.data_mut(|d| {
+                d.remove::<crate::nodes::wgsl_presets::WgslPresetsSpawnRequest>(egui::Id::new(
+                    "wgsl_presets_spawn_request",
+                ))
+            });
+            let src_pos = self
+                .graph
+                .nodes
+                .get(&req.source_node)
+                .map(|n| n.pos)
+                .unwrap_or([0.0, 0.0]);
             let spawn_pos = [src_pos[0] + 320.0, src_pos[1]];
             // Refinement H: if the picker's current preset relies on
             // self-feedback (samples image_a / image_b), pre-set Input A to
@@ -1827,14 +2240,29 @@ app
             );
             // Auto-connect picker port 0 (Shader) -> viewer port 0 (WGSL)
             self.graph.add_connection(req.source_node, 0, viewer_id, 0);
-            crate::system_log::log("Spawned paired WGSL Viewer for Formula Preset Picker".to_string());
+            crate::system_log::log(
+                "Spawned paired WGSL Viewer for Formula Preset Picker".to_string(),
+            );
         }
         // Reverse pairing: an empty Visuals (WGSL) viewer asked for a
         // Visual Presets picker. Spawn one to the LEFT with the default
         // (top-of-list) preset already selected and auto-wire it.
-            if let Some(req) = ctx.data_mut(|d| d.get_temp::<crate::nodes::wgsl_presets::WgslViewerLoadPresetRequest>(egui::Id::new("wgsl_viewer_load_preset_request"))) {
-            ctx.data_mut(|d| d.remove::<crate::nodes::wgsl_presets::WgslViewerLoadPresetRequest>(egui::Id::new("wgsl_viewer_load_preset_request")));
-            let viewer_pos = self.graph.nodes.get(&req.viewer_node).map(|n| n.pos).unwrap_or([0.0, 0.0]);
+        if let Some(req) = ctx.data_mut(|d| {
+            d.get_temp::<crate::nodes::wgsl_presets::WgslViewerLoadPresetRequest>(egui::Id::new(
+                "wgsl_viewer_load_preset_request",
+            ))
+        }) {
+            ctx.data_mut(|d| {
+                d.remove::<crate::nodes::wgsl_presets::WgslViewerLoadPresetRequest>(egui::Id::new(
+                    "wgsl_viewer_load_preset_request",
+                ))
+            });
+            let viewer_pos = self
+                .graph
+                .nodes
+                .get(&req.viewer_node)
+                .map(|n| n.pos)
+                .unwrap_or([0.0, 0.0]);
             let spawn_pos = [viewer_pos[0] - 280.0, viewer_pos[1]];
             // Build a fresh Visual Presets node defaulted to "gradient" —
             // the Default impl picks whatever the first priority-ordered
@@ -1843,11 +2271,17 @@ app
             let mut picker = crate::nodes::wgsl_presets::WgslPresetsNode::default();
             picker.preset_key = "gradient".to_string();
             let picker_id = self.graph.add_node(
-                NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(picker) } },
+                NodeType::Dynamic {
+                    inner: crate::graph::DynNode {
+                        node: Box::new(picker),
+                    },
+                },
                 spawn_pos,
             );
             self.graph.add_connection(picker_id, 0, req.viewer_node, 0);
-            crate::system_log::log("Spawned Visual Presets picker for empty Visuals (WGSL) viewer".to_string());
+            crate::system_log::log(
+                "Spawned Visual Presets picker for empty Visuals (WGSL) viewer".to_string(),
+            );
         }
         self.midi.process(midi_actions);
         self.serial.process(serial_actions);
@@ -1859,41 +2293,35 @@ app
     }
 }
 impl eframe::App for PatchworkApp {
-   
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-         if let Some(receiver) = &self.hardware_flash_receiver {
-    match receiver.try_recv() {
-        Ok(result) => {
-            self.hardware_flash_result = Some(result);
-            self.hardware_flash_in_progress = false;
-            self.hardware_flash_receiver = None;
-        }
+        if let Some(receiver) = &self.hardware_flash_receiver {
+            match receiver.try_recv() {
+                Ok(result) => {
+                    self.hardware_flash_result = Some(result);
+                    self.hardware_flash_in_progress = false;
+                    self.hardware_flash_receiver = None;
+                }
 
-        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-            self.hardware_flash_result = Some(Err(
-                "Firmware flashing worker disconnected unexpectedly"
-                    .to_string(),
-            ));
-            self.hardware_flash_in_progress = false;
-            self.hardware_flash_receiver = None;
-        }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.hardware_flash_result = Some(Err(
+                        "Firmware flashing worker disconnected unexpectedly".to_string(),
+                    ));
+                    self.hardware_flash_in_progress = false;
+                    self.hardware_flash_receiver = None;
+                }
 
-        Err(std::sync::mpsc::TryRecvError::Empty) => {
-            // Background operation is still running.
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    // Background operation is still running.
+                }
+            }
         }
-    }
-}
-    // Share the active document type with the node palette.
-    let is_custom_node = !self.documents.documents.is_empty()
-        && self.documents.active().kind
-            == crate::document::DocumentKind::CustomNode;
+        // Share the active document type with the node palette.
+        let is_custom_node = !self.documents.documents.is_empty()
+            && self.documents.active().kind == crate::document::DocumentKind::CustomNode;
 
-    ctx.data_mut(|data| {
-        data.insert_temp(
-            egui::Id::new("active_is_custom_node"),
-            is_custom_node,
-        );
-    });
+        ctx.data_mut(|data| {
+            data.insert_temp(egui::Id::new("active_is_custom_node"), is_custom_node);
+        });
         // Drop the previous frame's ScrollArea inner-rect registrations
         // before any node draws this frame and re-pushes its own. The pan
         // handler at the end of update() reads what's in the registry
@@ -1919,7 +2347,9 @@ impl eframe::App for PatchworkApp {
             let now = ctx.input(|i| i.time);
             let ids: Vec<NodeId> = self.pending_popup_open.drain().collect();
             for id in ids {
-                let Some(node) = self.graph.nodes.get(&id) else { continue };
+                let Some(node) = self.graph.nodes.get(&id) else {
+                    continue;
+                };
                 match &node.node_type {
                     NodeType::Slider { .. } => {
                         ctx.data_mut(|d| {
@@ -1949,28 +2379,24 @@ impl eframe::App for PatchworkApp {
             egui::menu::bar(ui, |ui| {
                 ui.menu_button("File", |ui| {
                     if ui.button("\u{2795} New Project").clicked() {
-                        ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("file_action_new"), true));
+                        ui.ctx()
+                            .data_mut(|d| d.insert_temp(egui::Id::new("file_action_new"), true));
                         ui.close_menu();
                     }
                     if ui.button("\u{1f4c2} Open...").clicked() {
-                        ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("file_action_load"), true));
+                        ui.ctx()
+                            .data_mut(|d| d.insert_temp(egui::Id::new("file_action_load"), true));
                         ui.close_menu();
                     }
                     if ui.button("Open Custom Node...").clicked() {
                         ui.ctx().data_mut(|d| {
-                            d.insert_temp(
-                                 egui::Id::new("file_action_open_custom_node"),
-                                true,
-                            );
+                            d.insert_temp(egui::Id::new("file_action_open_custom_node"), true);
                         });
                         ui.close_menu();
                     }
                     if ui.button("Insert Custom Node...").clicked() {
                         ui.ctx().data_mut(|d| {
-                            d.insert_temp(
-                            egui::Id::new("file_action_insert_custom_node"),
-                            true,
-                            );
+                            d.insert_temp(egui::Id::new("file_action_insert_custom_node"), true);
                         });
                         ui.close_menu();
                     }
@@ -1983,7 +2409,10 @@ impl eframe::App for PatchworkApp {
                                     .unwrap_or_else(|| path.clone());
                                 if ui.button(label).on_hover_text(path).clicked() {
                                     ui.ctx().data_mut(|d| {
-                                        d.insert_temp(egui::Id::new("file_action_load_recent"), path.clone());
+                                        d.insert_temp(
+                                            egui::Id::new("file_action_load_recent"),
+                                            path.clone(),
+                                        );
                                     });
                                     ui.close_menu();
                                 }
@@ -1992,7 +2421,10 @@ impl eframe::App for PatchworkApp {
                                 ui.separator();
                                 if ui.button("Clear Recent").clicked() {
                                     ui.ctx().data_mut(|d| {
-                                        d.insert_temp(egui::Id::new("file_action_clear_recent"), true);
+                                        d.insert_temp(
+                                            egui::Id::new("file_action_clear_recent"),
+                                            true,
+                                        );
                                     });
                                     ui.close_menu();
                                 }
@@ -2000,64 +2432,61 @@ impl eframe::App for PatchworkApp {
                         });
                     });
                     if ui.button("\u{1f4be} Save").clicked() {
-                        ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("file_action_save"), true));
+                        ui.ctx()
+                            .data_mut(|d| d.insert_temp(egui::Id::new("file_action_save"), true));
                         ui.close_menu();
                     }
                     if ui.button("Save As...").clicked() {
-                    self.save_as_name = self.documents.active().title.clone();
-                    self.save_as_open = true;
-                    ui.close_menu();
-                }
-                ui.separator();
-                   
-         let can_publish =
-    self.documents.active().kind
-        == crate::document::DocumentKind::CustomNode
-    && self.documents.active().path.is_some()
-    && !self.is_dirty
-    && !self.documents.active().is_dirty;
+                        self.save_as_name = self.documents.active().title.clone();
+                        self.save_as_open = true;
+                        ui.close_menu();
+                    }
+                    ui.separator();
 
-            if ui
-                .add_enabled(
-                can_publish,
-                egui::Button::new("Publish to Library"),
-                )
-                .on_hover_text(
-    "Save the custom node before publishing it to the shared Library"
-)
-                .clicked()
-            {
-                ui.ctx().data_mut(|d| {
-                d.insert_temp(
-                egui::Id::new("file_action_publish_library"),
-                true,
-            );
-         });
-            ui.close_menu();
-       }
+                    let can_publish = self.documents.active().kind
+                        == crate::document::DocumentKind::CustomNode
+                        && self.documents.active().path.is_some()
+                        && !self.is_dirty
+                        && !self.documents.active().is_dirty;
+
+                    if ui
+                        .add_enabled(can_publish, egui::Button::new("Publish to Library"))
+                        .on_hover_text(
+                            "Save the custom node before publishing it to the shared Library",
+                        )
+                        .clicked()
+                    {
+                        ui.ctx().data_mut(|d| {
+                            d.insert_temp(egui::Id::new("file_action_publish_library"), true);
+                        });
+                        ui.close_menu();
+                    }
                 });
-                 ui.menu_button("Hardware", |ui| {
-    if ui.button("Devices...").clicked() {
-        self.hardware_scan_requested = true;
+                ui.menu_button("Hardware", |ui| {
+                    if ui.button("Devices...").clicked() {
+                        self.hardware_scan_requested = true;
 
-        ui.ctx().data_mut(|d| {
-            d.insert_temp(
-                egui::Id::new("hardware_devices_open"),
-                true,
-            );
-        });
+                        ui.ctx().data_mut(|d| {
+                            d.insert_temp(egui::Id::new("hardware_devices_open"), true);
+                        });
 
-        ui.close_menu();
-    }
-});
+                        ui.close_menu();
+                    }
+                });
                 ui.menu_button("Edit", |ui| {
                     let can_undo = self.undo_history.can_undo();
                     let can_redo = self.undo_history.can_redo();
-                    if ui.add_enabled(can_undo, egui::Button::new("\u{21a9} Undo")).clicked() {
+                    if ui
+                        .add_enabled(can_undo, egui::Button::new("\u{21a9} Undo"))
+                        .clicked()
+                    {
                         self.perform_undo();
                         ui.close_menu();
                     }
-                    if ui.add_enabled(can_redo, egui::Button::new("\u{21aa} Redo")).clicked() {
+                    if ui
+                        .add_enabled(can_redo, egui::Button::new("\u{21aa} Redo"))
+                        .clicked()
+                    {
                         self.perform_redo();
                         ui.close_menu();
                     }
@@ -2065,265 +2494,259 @@ impl eframe::App for PatchworkApp {
             });
         });
         // P3: Document Tabs
-egui::TopBottomPanel::top("document_tabs").show(ctx, |ui| {
-    ui.horizontal(|ui| {
-        let active_id = self.documents.active().id;
+        egui::TopBottomPanel::top("document_tabs").show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                let active_id = self.documents.active().id;
 
-        let tabs: Vec<(u64, String, bool)> = self
-            .documents
-            .documents
-            .iter()
-            .map(|doc| {
-                let dirty = if doc.id == active_id {
-                    self.is_dirty
-                } else {
-                    doc.is_dirty
-                };
+                let tabs: Vec<(u64, String, bool)> = self
+                    .documents
+                    .documents
+                    .iter()
+                    .map(|doc| {
+                        let dirty = if doc.id == active_id {
+                            self.is_dirty
+                        } else {
+                            doc.is_dirty
+                        };
 
-                (doc.id, doc.title.clone(), dirty)
-            })
-            .collect();
+                        (doc.id, doc.title.clone(), dirty)
+                    })
+                    .collect();
 
-        for (id, title, dirty) in tabs {
-    let label = if dirty {
-        format!("{} *", title)
-    } else {
-        title
-    };
-    ui.horizontal(|ui| {
-       if ui.selectable_label(id == active_id, label).clicked() {
-        if self.pending_close_tab.is_none() && !self.save_as_open {
-            self.switch_document(id);
-        }
-    }
-    if ui.small_button("×")
-    .on_hover_text("Close Tab")
-    .clicked()
-     && !self.save_as_open
-    {
-    // Do not close the last remaining tab.
-        if self.documents.documents.len() > 1 {
-            let is_dirty = if self.documents.active().id == id {
-                self.is_dirty
-            } else {
-            self.documents
-                .documents
-                .iter()
-                .find(|doc| doc.id == id)
-                .map(|doc| doc.is_dirty)
-                .unwrap_or(false)
-             };
-        if is_dirty {
-            // Ask for confirmation before closing.
-            self.pending_close_tab = Some(id);
-        } else {
-            // Clean tabs can close immediately.
-            self.close_tab(id);
-        }
-    }
-}
-    });
-}
-        if ui.button("+").on_hover_text("New Tab").clicked() {
-            self.create_new_tab();
-        }
-    });
-});
+                for (id, title, dirty) in tabs {
+                    let label = if dirty { format!("{} *", title) } else { title };
+                    ui.horizontal(|ui| {
+                        if ui.selectable_label(id == active_id, label).clicked() {
+                            if self.pending_close_tab.is_none() && !self.save_as_open {
+                                self.switch_document(id);
+                            }
+                        }
+                        if ui.small_button("×").on_hover_text("Close Tab").clicked()
+                            && !self.save_as_open
+                        {
+                            // Do not close the last remaining tab.
+                            if self.documents.documents.len() > 1 {
+                                let is_dirty = if self.documents.active().id == id {
+                                    self.is_dirty
+                                } else {
+                                    self.documents
+                                        .documents
+                                        .iter()
+                                        .find(|doc| doc.id == id)
+                                        .map(|doc| doc.is_dirty)
+                                        .unwrap_or(false)
+                                };
+                                if is_dirty {
+                                    // Ask for confirmation before closing.
+                                    self.pending_close_tab = Some(id);
+                                } else {
+                                    // Clean tabs can close immediately.
+                                    self.close_tab(id);
+                                }
+                            }
+                        }
+                    });
+                }
+                if ui.button("+").on_hover_text("New Tab").clicked() {
+                    self.create_new_tab();
+                }
+            });
+        });
 
-// P5: Hardware Devices window
-let hardware_window_id = egui::Id::new("hardware_devices_open");
+        // P5: Hardware Devices window
+        let hardware_window_id = egui::Id::new("hardware_devices_open");
 
-let mut hardware_open = ctx.data_mut(|d| {
-    d.get_temp::<bool>(hardware_window_id)
-        .unwrap_or(false)
-});
+        let mut hardware_open =
+            ctx.data_mut(|d| d.get_temp::<bool>(hardware_window_id).unwrap_or(false));
 
-if hardware_open {
-        if self.hardware_scan_requested {
-            // P5: Refreshing hardware requires fresh target validation.
-        self.hardware_validation_result = None;
-        self.hardware_flash_confirmation_open = false;
-        self.hardware_flash_result = None;
-        match crate::hardware::discover_devices() {
-            Ok(devices) => {
-                self.hardware_devices = devices;
-                self.hardware_discovery_error = None;
+        if hardware_open {
+            if self.hardware_scan_requested {
+                // P5: Refreshing hardware requires fresh target validation.
+                self.hardware_validation_result = None;
+                self.hardware_flash_confirmation_open = false;
+                self.hardware_flash_result = None;
+                match crate::hardware::discover_devices() {
+                    Ok(devices) => {
+                        self.hardware_devices = devices;
+                        self.hardware_discovery_error = None;
+                    }
+                    Err(error) => {
+                        self.hardware_devices.clear();
+                        self.hardware_discovery_error = Some(error);
+                    }
+                }
+                // P5: Discover Raspberry Pi Pico BOOTSEL drives.
+                #[cfg(target_os = "windows")]
+                {
+                    self.hardware_pico_devices = crate::hardware::discover_identified_pico_drives();
+                }
+                // P5: Clear USB serial selection if the device disappeared.
+                if let Some(selected_port) = &self.hardware_selected_serial_port {
+                    let still_connected = self
+                        .hardware_devices
+                        .iter()
+                        .any(|device| &device.port_name == selected_port);
+
+                    if !still_connected {
+                        self.hardware_selected_serial_port = None;
+                    }
+                }
+
+                // P5: Clear Pico BOOTSEL selection if the drive disappeared.
+                #[cfg(target_os = "windows")]
+                {
+                    if let Some(selected_drive) = &self.hardware_selected_pico_drive {
+                        let still_connected = self
+                            .hardware_pico_devices
+                            .iter()
+                            .any(|device| &device.drive_path == selected_drive);
+
+                        if !still_connected {
+                            self.hardware_selected_pico_drive = None;
+                        }
+                    }
+                }
+                self.hardware_scan_requested = false;
             }
-            Err(error) => {
-                self.hardware_devices.clear();
-                self.hardware_discovery_error = Some(error);
-            }
-        }
-        // P5: Discover Raspberry Pi Pico BOOTSEL drives.
-#[cfg(target_os = "windows")]
-{
-    self.hardware_pico_devices =
-        crate::hardware::discover_identified_pico_drives();
-}
-        // P5: Clear USB serial selection if the device disappeared.
-if let Some(selected_port) = &self.hardware_selected_serial_port {
-    let still_connected = self.hardware_devices
-        .iter()
-        .any(|device| &device.port_name == selected_port);
+            egui::Window::new("Hardware Devices")
+                .open(&mut hardware_open)
+                .default_width(440.0)
+                .resizable(true)
+                .show(ctx, |ui| {
+                    ui.label("Connected USB serial devices");
+                    ui.separator();
 
-    if !still_connected {
-        self.hardware_selected_serial_port = None;
-    }
-}
+                    if ui.button("Refresh").clicked() {
+                        self.hardware_scan_requested = true;
+                    }
+                    // P5: Firmware file selection
+                    ui.add_space(8.0);
+                    ui.separator();
+                    ui.heading("Firmware Flashing");
+                    ui.add_space(6.0);
+                    // P5: Display selected hardware target.
+                    ui.label("Selected hardware target:");
 
-// P5: Clear Pico BOOTSEL selection if the drive disappeared.
-#[cfg(target_os = "windows")]
-{
-    if let Some(selected_drive) = &self.hardware_selected_pico_drive {
-        let still_connected = self.hardware_pico_devices
-            .iter()
-            .any(|device| &device.drive_path == selected_drive);
+                    if let Some(port) = &self.hardware_selected_serial_port {
+                        ui.label(format!("USB serial port: {port}"));
+                    } else {
+                        #[cfg(target_os = "windows")]
+                        {
+                            if let Some(drive) = &self.hardware_selected_pico_drive {
+                                ui.label(format!("Pico BOOTSEL drive: {}", drive.display()));
+                            } else {
+                                ui.label("No hardware device selected.");
+                            }
+                        }
 
-        if !still_connected {
-            self.hardware_selected_pico_drive = None;
-        }
-    }
-}
-        self.hardware_scan_requested = false;
-    }
-    egui::Window::new("Hardware Devices")
-        .open(&mut hardware_open)
-        .default_width(440.0)
-        .resizable(true)
-        .show(ctx, |ui| {
-            ui.label("Connected USB serial devices");
-            ui.separator();
+                        #[cfg(not(target_os = "windows"))]
+                        {
+                            ui.label("No hardware device selected.");
+                        }
+                    }
+                    // P5: Validate firmware against the selected hardware target.
+                    if ui.button("Validate Target").clicked() {
+                        if let Some(path) = &self.hardware_firmware_path {
+                            let target = match path
+                                .extension()
+                                .and_then(|ext| ext.to_str())
+                                .map(|ext| ext.to_ascii_lowercase())
+                                .as_deref()
+                            {
+                                Some("bin") => Some(crate::hardware::FirmwareTarget::Esp32),
+                                Some("uf2") => {
+                                    Some(crate::hardware::FirmwareTarget::RaspberryPiPico)
+                                }
+                                _ => None,
+                            };
 
-            if ui.button("Refresh").clicked() {
-                self.hardware_scan_requested = true;
-            }
-            // P5: Firmware file selection
-ui.add_space(8.0);
-ui.separator();
-ui.heading("Firmware Flashing");
-ui.add_space(6.0);
-// P5: Display selected hardware target.
-ui.label("Selected hardware target:");
+                            if let Some(target) = target {
+                                let request = crate::hardware::FlashRequest {
+                                    target,
+                                    firmware_path: path.clone(),
+                                    port_name: self.hardware_selected_serial_port.clone(),
+                                };
 
-if let Some(port) = &self.hardware_selected_serial_port {
-    ui.label(format!("USB serial port: {port}"));
-} else {
-    #[cfg(target_os = "windows")]
-    {
-        if let Some(drive) = &self.hardware_selected_pico_drive {
-            ui.label(format!("Pico BOOTSEL drive: {}", drive.display()));
-        } else {
-            ui.label("No hardware device selected.");
-        }
-    }
+                                #[cfg(target_os = "windows")]
+                                let pico_drive = self.hardware_selected_pico_drive.as_deref();
 
-    #[cfg(not(target_os = "windows"))]
-    {
-        ui.label("No hardware device selected.");
-    }
-}
-// P5: Validate firmware against the selected hardware target.
-if ui.button("Validate Target").clicked() {
-    if let Some(path) = &self.hardware_firmware_path {
-        let target = match path
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .map(|ext| ext.to_ascii_lowercase())
-            .as_deref()
-        {
-            Some("bin") => Some(crate::hardware::FirmwareTarget::Esp32),
-            Some("uf2") => {
-                Some(crate::hardware::FirmwareTarget::RaspberryPiPico)
-            }
-            _ => None,
-        };
+                                #[cfg(not(target_os = "windows"))]
+                                let pico_drive: Option<
+                                    &std::path::Path,
+                                > = None;
+                                let validation_result =
+                                    crate::hardware::validate_flash_target(&request, pico_drive)
+                                        .and_then(|_| {
+                                            if matches!(
+                                                target,
+                                                crate::hardware::FirmwareTarget::Esp32
+                                            ) {
+                                                let address_text =
+                                                    self.hardware_esp32_flash_address.trim();
 
-        if let Some(target) = target {
-            let request = crate::hardware::FlashRequest {
-                target,
-                firmware_path: path.clone(),
-                port_name: self.hardware_selected_serial_port.clone(),
-            };
+                                                let address_hex = address_text
+                                                    .strip_prefix("0x")
+                                                    .or_else(|| address_text.strip_prefix("0X"))
+                                                    .unwrap_or(address_text);
 
-            #[cfg(target_os = "windows")]
-            let pico_drive = self.hardware_selected_pico_drive.as_deref();
-
-            #[cfg(not(target_os = "windows"))]
-            let pico_drive: Option<&std::path::Path> = None;
-let validation_result =
-    crate::hardware::validate_flash_target(
-        &request,
-        pico_drive,
-    )
-    .and_then(|_| {
-        if matches!(
-            target,
-            crate::hardware::FirmwareTarget::Esp32
-        ) {
-            let address_text =
-                self.hardware_esp32_flash_address.trim();
-
-            let address_hex = address_text
-                .strip_prefix("0x")
-                .or_else(|| address_text.strip_prefix("0X"))
-                .unwrap_or(address_text);
-
-            let flash_address =
+                                                let flash_address =
                 u32::from_str_radix(address_hex, 16)
                     .map_err(|_| {
                         "Invalid ESP32 flash address. Use hexadecimal, e.g. 0x10000."
                             .to_string()
                     })?;
 
-            let config = crate::hardware::Esp32FlashConfig {
+                                                let config = crate::hardware::Esp32FlashConfig {
                 layout: crate::hardware::Esp32FirmwareLayout::Application,
                 flash_address,
                 chip: self.hardware_esp32_chip.clone(),
             };
 
-          crate::hardware::validate_esp32_flash_config(&config)
-    .and_then(|_| {
-        crate::hardware::validate_esp32_image(
-            &request.firmware_path,
-        )
-    })
-    .and_then(|_| {
-        crate::hardware::validate_esp32_firmware_chip(
-            &request.firmware_path,
-            &config.chip,
-        )
-    })
-        } else {
-            Ok(())
-        }
-    });
+                                                crate::hardware::validate_esp32_flash_config(
+                                                    &config,
+                                                )
+                                                .and_then(|_| {
+                                                    crate::hardware::validate_esp32_image(
+                                                        &request.firmware_path,
+                                                    )
+                                                })
+                                                .and_then(|_| {
+                                                    crate::hardware::validate_esp32_firmware_chip(
+                                                        &request.firmware_path,
+                                                        &config.chip,
+                                                    )
+                                                })
+                                            } else {
+                                                Ok(())
+                                            }
+                                        });
 
-self.hardware_validation_result = Some(validation_result);
-        } else {
-            eprintln!("P5: Unsupported firmware file type.");
-        }
-    } else {
-        eprintln!("P5: Select a firmware file first.");
-    }
-}
+                                self.hardware_validation_result = Some(validation_result);
+                            } else {
+                                eprintln!("P5: Unsupported firmware file type.");
+                            }
+                        } else {
+                            eprintln!("P5: Select a firmware file first.");
+                        }
+                    }
 
-if self.hardware_flash_confirmation_open {
-    egui::Window::new("Confirm Firmware Flash")
-        .collapsible(false)
-        .resizable(false)
-        .show(ctx, |ui| {
-            ui.heading("Flash firmware to hardware?");
-            ui.label("This operation will overwrite the device firmware.");
+                    if self.hardware_flash_confirmation_open {
+                        egui::Window::new("Confirm Firmware Flash")
+                            .collapsible(false)
+                            .resizable(false)
+                            .show(ctx, |ui| {
+                                ui.heading("Flash firmware to hardware?");
+                                ui.label("This operation will overwrite the device firmware.");
 
-            ui.add_space(8.0);
+                                ui.add_space(8.0);
 
-            if let Some(path) = &self.hardware_firmware_path {
-                ui.label(format!("Firmware: {}", path.display()));
-            }
+                                if let Some(path) = &self.hardware_firmware_path {
+                                    ui.label(format!("Firmware: {}", path.display()));
+                                }
 
-            ui.add_space(12.0);
+                                ui.add_space(12.0);
 
-            ui.horizontal(|ui| {
+                                ui.horizontal(|ui| {
                 if ui.button("Cancel").clicked() {
     self.hardware_flash_confirmation_open = false;
     self.hardware_flash_result = None;
@@ -2473,563 +2896,536 @@ match validation_result {
 }
 }
             });
-        });
-        if let Some(result) = &self.hardware_flash_result {
-    ui.add_space(8.0);
+                            });
+                        if let Some(result) = &self.hardware_flash_result {
+                            ui.add_space(8.0);
 
-    match result {
-        Ok(()) => {
-            ui.colored_label(
-                egui::Color32::GREEN,
-                "Firmware flashing completed successfully.",
-            );
-        }
-        Err(error) => {
-            ui.colored_label(
-                egui::Color32::RED,
-                format!("Firmware flashing failed: {error}"),
-            );
-        }
-    }
-}
-}
+                            match result {
+                                Ok(()) => {
+                                    ui.colored_label(
+                                        egui::Color32::GREEN,
+                                        "Firmware flashing completed successfully.",
+                                    );
+                                }
+                                Err(error) => {
+                                    ui.colored_label(
+                                        egui::Color32::RED,
+                                        format!("Firmware flashing failed: {error}"),
+                                    );
+                                }
+                            }
+                        }
+                    }
 
-ui.add_space(8.0);
+                    ui.add_space(8.0);
 
-let target_validated = matches!(
-    self.hardware_validation_result,
-    Some(Ok(()))
-);
+                    let target_validated = matches!(self.hardware_validation_result, Some(Ok(())));
 
-let firmware_target = self.hardware_firmware_path
-    .as_ref()
-    .and_then(|path| path.extension())
-    .and_then(|ext| ext.to_str())
-    .map(|ext| ext.to_ascii_lowercase());
+                    let firmware_target = self
+                        .hardware_firmware_path
+                        .as_ref()
+                        .and_then(|path| path.extension())
+                        .and_then(|ext| ext.to_str())
+                        .map(|ext| ext.to_ascii_lowercase());
 
-let device_ready = match firmware_target.as_deref() {
-    Some("uf2") => {
-        self.hardware_selected_pico_drive.is_some()
-            && self.hardware_selected_serial_port.is_none()
-    }
+                    let device_ready = match firmware_target.as_deref() {
+                        Some("uf2") => {
+                            self.hardware_selected_pico_drive.is_some()
+                                && self.hardware_selected_serial_port.is_none()
+                        }
 
-    // ESP32 remains disabled until its flash
-    // configuration and UI are implemented.
-    // ESP32 requires a selected serial port and no Pico drive.
-Some("bin") => {
-    self.hardware_selected_serial_port.is_some()
-        && self.hardware_selected_pico_drive.is_none()
-},
+                        // ESP32 remains disabled until its flash
+                        // configuration and UI are implemented.
+                        // ESP32 requires a selected serial port and no Pico drive.
+                        Some("bin") => {
+                            self.hardware_selected_serial_port.is_some()
+                                && self.hardware_selected_pico_drive.is_none()
+                        }
 
-    _ => false,
-};
+                        _ => false,
+                    };
 
-let can_flash = target_validated
-    && device_ready
-    && !self.hardware_flash_in_progress;
+                    let can_flash =
+                        target_validated && device_ready && !self.hardware_flash_in_progress;
 
-if ui
-    .add_enabled(
-        can_flash,
-        egui::Button::new("Flash Firmware"),
-    )
-    .clicked()
-{
-    self.hardware_flash_confirmation_open = true;
-}
+                    if ui
+                        .add_enabled(can_flash, egui::Button::new("Flash Firmware"))
+                        .clicked()
+                    {
+                        self.hardware_flash_confirmation_open = true;
+                    }
 
-if self.hardware_flash_in_progress {
-    ui.label("Firmware flashing in progress...");
-}
-if let Some(result) = &self.hardware_validation_result {
-    match result {
-        Ok(()) => {
-            ui.colored_label(
-                egui::Color32::GREEN,
-                "Target validation passed.",
-            );
-        }
-        Err(error) => {
-            ui.colored_label(
-                egui::Color32::RED,
-                format!("Target validation failed: {error}"),
-            );
-        }
-    }
-}
-if ui.button("Browse Firmware...").clicked() {
-    if let Some(path) = rfd::FileDialog::new()
-        .set_title("Select ESP32 or Raspberry Pi Pico Firmware")
-        .add_filter("Supported Firmware", &["bin", "uf2"])
-        .add_filter("ESP32 Firmware", &["bin"])
-        .add_filter("Raspberry Pi Pico Firmware", &["uf2"])
-        .pick_file()
-    {
-        self.hardware_firmware_path = Some(path);
-        // P5: A newly selected firmware file requires fresh validation.
-        self.hardware_validation_result = None;
-        self.hardware_flash_confirmation_open = false;
-        self.hardware_flash_result = None;
-    }
-}
+                    if self.hardware_flash_in_progress {
+                        ui.label("Firmware flashing in progress...");
+                    }
+                    if let Some(result) = &self.hardware_validation_result {
+                        match result {
+                            Ok(()) => {
+                                ui.colored_label(egui::Color32::GREEN, "Target validation passed.");
+                            }
+                            Err(error) => {
+                                ui.colored_label(
+                                    egui::Color32::RED,
+                                    format!("Target validation failed: {error}"),
+                                );
+                            }
+                        }
+                    }
+                    if ui.button("Browse Firmware...").clicked() {
+                        if let Some(path) = rfd::FileDialog::new()
+                            .set_title("Select ESP32 or Raspberry Pi Pico Firmware")
+                            .add_filter("Supported Firmware", &["bin", "uf2"])
+                            .add_filter("ESP32 Firmware", &["bin"])
+                            .add_filter("Raspberry Pi Pico Firmware", &["uf2"])
+                            .pick_file()
+                        {
+                            self.hardware_firmware_path = Some(path);
+                            // P5: A newly selected firmware file requires fresh validation.
+                            self.hardware_validation_result = None;
+                            self.hardware_flash_confirmation_open = false;
+                            self.hardware_flash_result = None;
+                        }
+                    }
 
-if let Some(path) = &self.hardware_firmware_path {
-    ui.label(format!("Selected: {}", path.display()));
+                    if let Some(path) = &self.hardware_firmware_path {
+                        ui.label(format!("Selected: {}", path.display()));
 
-    let extension = path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
+                        let extension = path
+                            .extension()
+                            .and_then(|ext| ext.to_str())
+                            .unwrap_or("")
+                            .to_ascii_lowercase();
 
-    let target = match extension.as_str() {
-        "bin" => Some(crate::hardware::FirmwareTarget::Esp32),
-        "uf2" => Some(crate::hardware::FirmwareTarget::RaspberryPiPico),
-        _ => None,
-    };
+                        let target = match extension.as_str() {
+                            "bin" => Some(crate::hardware::FirmwareTarget::Esp32),
+                            "uf2" => Some(crate::hardware::FirmwareTarget::RaspberryPiPico),
+                            _ => None,
+                        };
 
-    if let Some(target) = target {
-        let target_name = match target {
-            crate::hardware::FirmwareTarget::Esp32 => "ESP32",
-            crate::hardware::FirmwareTarget::RaspberryPiPico => {
-                "Raspberry Pi Pico"
-            }
-        };
+                        if let Some(target) = target {
+                            let target_name = match target {
+                                crate::hardware::FirmwareTarget::Esp32 => "ESP32",
+                                crate::hardware::FirmwareTarget::RaspberryPiPico => {
+                                    "Raspberry Pi Pico"
+                                }
+                            };
 
-        ui.label(format!("Firmware type: {target_name}"));
-        // P5: ESP32 firmware configuration controls
-if matches!(target, crate::hardware::FirmwareTarget::Esp32) {
-    let previous_chip = self.hardware_esp32_chip.clone();
-let previous_address = self.hardware_esp32_flash_address.clone();
-    ui.separator();
-    ui.heading("ESP32 Flash Configuration");
+                            ui.label(format!("Firmware type: {target_name}"));
+                            // P5: ESP32 firmware configuration controls
+                            if matches!(target, crate::hardware::FirmwareTarget::Esp32) {
+                                let previous_chip = self.hardware_esp32_chip.clone();
+                                let previous_address = self.hardware_esp32_flash_address.clone();
+                                ui.separator();
+                                ui.heading("ESP32 Flash Configuration");
 
-    ui.horizontal(|ui| {
-        ui.label("Chip model:");
+                                ui.horizontal(|ui| {
+                                    ui.label("Chip model:");
 
-        egui::ComboBox::from_id_salt("esp32_chip_selector")
-            .selected_text(&self.hardware_esp32_chip)
-            .show_ui(ui, |ui| {
-                for chip in [
-                    "esp32",
-                    "esp32s2",
-                    "esp32s3",
-                    "esp32c2",
-                    "esp32c3",
-                    "esp32c5",
-                    "esp32c6",
-                    "esp32c61",
-                    "esp32h2",
-                    "esp32h4",
-                    "esp32p4",
-                    "esp32s31",
-                ] {
-                    ui.selectable_value(
-                        &mut self.hardware_esp32_chip,
-                        chip.to_string(),
-                        chip,
-                    );
-                }
-            });
-    });
+                                    egui::ComboBox::from_id_salt("esp32_chip_selector")
+                                        .selected_text(&self.hardware_esp32_chip)
+                                        .show_ui(ui, |ui| {
+                                            for chip in [
+                                                "esp32", "esp32s2", "esp32s3", "esp32c2",
+                                                "esp32c3", "esp32c5", "esp32c6", "esp32c61",
+                                                "esp32h2", "esp32h4", "esp32p4", "esp32s31",
+                                            ] {
+                                                ui.selectable_value(
+                                                    &mut self.hardware_esp32_chip,
+                                                    chip.to_string(),
+                                                    chip,
+                                                );
+                                            }
+                                        });
+                                });
 
-    ui.horizontal(|ui| {
-        ui.label("Flash address:");
+                                ui.horizontal(|ui| {
+                                    ui.label("Flash address:");
 
-        ui.text_edit_singleline(
-            &mut self.hardware_esp32_flash_address,
-        );
-    });
-    if self.hardware_esp32_chip != previous_chip
-    || self.hardware_esp32_flash_address != previous_address
-{
-    self.hardware_validation_result = None;
-    self.hardware_flash_confirmation_open = false;
-    self.hardware_flash_result = None;
-}
+                                    ui.text_edit_singleline(&mut self.hardware_esp32_flash_address);
+                                });
+                                if self.hardware_esp32_chip != previous_chip
+                                    || self.hardware_esp32_flash_address != previous_address
+                                {
+                                    self.hardware_validation_result = None;
+                                    self.hardware_flash_confirmation_open = false;
+                                    self.hardware_flash_result = None;
+                                }
 
-    ui.label("Firmware layout: Application");
+                                ui.label("Firmware layout: Application");
 
-    ui.colored_label(
+                                ui.colored_label(
         egui::Color32::YELLOW,
         "ESP32 flashing is disabled until configuration and device checks are complete.",
     );
 
-    ui.separator();
-}
-        // P5: Warn when the firmware type does not match the selected device.
-#[cfg(target_os = "windows")]
-{
-    let pico_selected = self.hardware_selected_pico_drive.is_some();
-    let serial_selected = self.hardware_selected_serial_port.is_some();
+                                ui.separator();
+                            }
+                            // P5: Warn when the firmware type does not match the selected device.
+                            #[cfg(target_os = "windows")]
+                            {
+                                let pico_selected = self.hardware_selected_pico_drive.is_some();
+                                let serial_selected = self.hardware_selected_serial_port.is_some();
 
-    match target {
-        crate::hardware::FirmwareTarget::Esp32 if pico_selected => {
-            ui.colored_label(
+                                match target {
+                                    crate::hardware::FirmwareTarget::Esp32 if pico_selected => {
+                                        ui.colored_label(
                 egui::Color32::RED,
                 "Device mismatch: ESP32 firmware cannot be flashed to a Pico BOOTSEL drive.",
             );
-        }
+                                    }
 
-        crate::hardware::FirmwareTarget::RaspberryPiPico if serial_selected => {
-            ui.colored_label(
+                                    crate::hardware::FirmwareTarget::RaspberryPiPico
+                                        if serial_selected =>
+                                    {
+                                        ui.colored_label(
                 egui::Color32::RED,
                 "Device mismatch: Select a Pico BOOTSEL drive for UF2 firmware.",
             );
-        }
+                                    }
 
-        _ => {}
-    }
-}
-    let request = crate::hardware::FlashRequest {
-            target,
-            firmware_path: path.clone(),
-            port_name: None,
-        };
+                                    _ => {}
+                                }
+                            }
+                            let request = crate::hardware::FlashRequest {
+                                target,
+                                firmware_path: path.clone(),
+                                port_name: None,
+                            };
 
-      match match target {
-    crate::hardware::FirmwareTarget::Esp32 => {
-        crate::hardware::validate_esp32_image(&path)
-            .and_then(|_| {
-                crate::hardware::validate_esp32_firmware_chip(
-                    &path,
-                    &self.hardware_esp32_chip,
-                )
-            })
-    }
-    _ => crate::hardware::validate_firmware(&request),
-} {
-    Ok(()) => {
-        ui.colored_label(
-            egui::Color32::GREEN,
-            "Firmware file validation passed.",
-        );
+                            match match target {
+                                crate::hardware::FirmwareTarget::Esp32 => {
+                                    crate::hardware::validate_esp32_image(&path).and_then(|_| {
+                                        crate::hardware::validate_esp32_firmware_chip(
+                                            &path,
+                                            &self.hardware_esp32_chip,
+                                        )
+                                    })
+                                }
+                                _ => crate::hardware::validate_firmware(&request),
+                            } {
+                                Ok(()) => {
+                                    ui.colored_label(
+                                        egui::Color32::GREEN,
+                                        "Firmware file validation passed.",
+                                    );
 
-        // P5: Check Pico firmware against the selected BOOTSEL drive.
-        #[cfg(target_os = "windows")]
-        if matches!(
-            target,
-            crate::hardware::FirmwareTarget::RaspberryPiPico
-        ) {
-            if let Some(drive) = &self.hardware_selected_pico_drive {
-                let info_path = drive.join("INFO_UF2.TXT");
+                                    // P5: Check Pico firmware against the selected BOOTSEL drive.
+                                    #[cfg(target_os = "windows")]
+                                    if matches!(
+                                        target,
+                                        crate::hardware::FirmwareTarget::RaspberryPiPico
+                                    ) {
+                                        if let Some(drive) = &self.hardware_selected_pico_drive {
+                                            let info_path = drive.join("INFO_UF2.TXT");
 
-                match crate::hardware::validate_pico_flash_target(
-                    path.as_path(),
-                    info_path.as_path(),
-                ) {
-                    Ok(board) => {
-                        ui.colored_label(
-                            egui::Color32::GREEN,
-                            format!(
-                                "Firmware matches selected Pico: {:?}",
-                                board
-                            ),
-                        );
-                    }
-                    Err(error) => {
-                        ui.colored_label(
-                            egui::Color32::RED,
-                            format!("Pico compatibility failed: {error}"),
-                        );
-                    }
-                }
-            } else {
-                ui.label(
+                                            match crate::hardware::validate_pico_flash_target(
+                                                path.as_path(),
+                                                info_path.as_path(),
+                                            ) {
+                                                Ok(board) => {
+                                                    ui.colored_label(
+                                                        egui::Color32::GREEN,
+                                                        format!(
+                                                            "Firmware matches selected Pico: {:?}",
+                                                            board
+                                                        ),
+                                                    );
+                                                }
+                                                Err(error) => {
+                                                    ui.colored_label(
+                                                        egui::Color32::RED,
+                                                        format!(
+                                                            "Pico compatibility failed: {error}"
+                                                        ),
+                                                    );
+                                                }
+                                            }
+                                        } else {
+                                            ui.label(
                     "Select a Pico BOOTSEL device to check compatibility.",
                 );
-            }
-        }
-    }
-    Err(error) => {
-        ui.colored_label(
-            egui::Color32::RED,
-            format!("Firmware validation failed: {error}"),
-        );
-    }
-}
-    } else {
-        ui.colored_label(
-            egui::Color32::RED,
-            "Unsupported firmware format. Select a .bin or .uf2 file.",
-        );
-    }
-} else {
-    ui.label("No firmware selected.");
-}
-            ui.add_space(8.0);
-
-            // match crate::hardware::discover_devices() {
-            //     Ok(devices) if devices.is_empty() => {
-            //         ui.label("No USB serial devices detected.");
-            //     }
-            //     Ok(devices) => {
-            //         for device in devices {
-            //             ui.group(|ui| {
-            //                 ui.heading(&device.port_name);
-            //                 ui.label(&device.board_family);
-
-            //                 ui.label(format!(
-            //                     "VID: {:04X} | PID: {:04X}",
-            //                     device.vid, device.pid
-            //                 ));
-
-            //                 if let Some(product) = &device.product {
-            //                     ui.label(format!("Product: {product}"));
-            //                 }
-
-            //                 if let Some(manufacturer) = &device.manufacturer {
-            //                     ui.label(format!("Manufacturer: {manufacturer}"));
-            //                 }
-            //             });
-
-            //             ui.add_space(5.0);
-            //         }
-            //     }
-            //     Err(error) => {
-            //         ui.colored_label(
-            //             egui::Color32::RED,
-            //             format!("Device discovery failed: {error}"),
-            //         );
-            //     }
-            // }
-
-            if let Some(error) = &self.hardware_discovery_error {
-    ui.colored_label(
-        egui::Color32::RED,
-        format!("Device discovery failed: {error}"),
-    );
-} else if self.hardware_devices.is_empty() {
-    ui.label("No USB serial devices detected.");
-} else {
-    for device in &self.hardware_devices {
-        ui.group(|ui| {
-            ui.heading(&device.port_name);
-            // P5: Select USB serial device for firmware flashing.
-let is_selected = self.hardware_selected_serial_port
-    .as_deref()
-    == Some(device.port_name.as_str());
-if ui.radio(is_selected, "Select for flashing").clicked() {
-    self.hardware_selected_serial_port =
-        Some(device.port_name.clone());
-
-    self.hardware_validation_result = None;
-    self.hardware_flash_confirmation_open = false;
-    self.hardware_flash_result = None;
-
-    // Only one hardware target may be selected.
-    #[cfg(target_os = "windows")]
-    {
-        self.hardware_selected_pico_drive = None;
-    }
-}
-            ui.label(&device.board_family);
-
-            ui.label(format!(
-                "VID: {:04X} | PID: {:04X}",
-                device.vid, device.pid
-            ));
-
-            if let Some(product) = &device.product {
-                ui.label(format!("Product: {product}"));
-            }
-
-            if let Some(manufacturer) = &device.manufacturer {
-                ui.label(format!("Manufacturer: {manufacturer}"));
-            }
-        });
-
-        ui.add_space(5.0);
-    }
-}
-// P5: Raspberry Pi Pico BOOTSEL devices
-#[cfg(target_os = "windows")]
-{
-    ui.add_space(12.0);
-    ui.separator();
-    ui.heading("Raspberry Pi Pico BOOTSEL Devices");
-    ui.add_space(6.0);
-
-    if self.hardware_pico_devices.is_empty() {
-        ui.label("No Pico BOOTSEL devices detected.");
-    } else {
-       for device in &self.hardware_pico_devices {
-    ui.group(|ui| {
-        let selected = self.hardware_selected_pico_drive
-            .as_ref() == Some(&device.drive_path);
-
-        let drive_label = format!(
-            "Pico BOOTSEL — {}",
-            device.drive_path.display()
-        );
-
-        if ui.radio(selected, drive_label).clicked() {
-            if selected {
-                self.hardware_selected_pico_drive = None;
-            } else {
-                self.hardware_selected_pico_drive =
-                    Some(device.drive_path.clone());
-
-                // Only one hardware target may be selected.
-                self.hardware_selected_serial_port = None;
-            }
-            self.hardware_validation_result = None;
-self.hardware_flash_confirmation_open = false;
-self.hardware_flash_result = None;
-        }
-
-        ui.label(format!(
-            "Drive: {}",
-            device.drive_path.display()
-        ));
-
-                let board_name = match device.board {
-                    crate::hardware::PicoBoard::Rp2040 => "RP2040",
-                    crate::hardware::PicoBoard::Rp2350 => "RP2350",
-                };
-
-                ui.label(format!("Board: {board_name}"));
-                ui.label("Status: BOOTSEL mode");
-            });
-
-            ui.add_space(5.0);
-        }
-    }
-}
-        });
-}
-
-ctx.data_mut(|d| {
-    d.insert_temp(hardware_window_id, hardware_open);
-});
-// P3: Confirm before closing a modified document tab.
-if let Some(document_id) = self.pending_close_tab {
-    let document_title = self
-        .documents
-        .documents
-        .iter()
-        .find(|doc| doc.id == document_id)
-        .map(|doc| doc.title.clone())
-        .unwrap_or_else(|| "Untitled".to_string());
-
-    egui::Window::new("Unsaved Changes")
-    .collapsible(false)
-    .resizable(false)
-    .frame(
-        egui::Frame::window(&ctx.style())
-            .fill(egui::Color32::from_rgb(30, 30, 35))
-            .stroke(egui::Stroke::new(
-                1.0,
-                egui::Color32::from_rgb(90, 90, 100),
-            ))
-    )
-    .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-        .show(ctx, |ui| {
-            ui.label(format!(
-                "Save changes to '{}' before closing?",
-                document_title
-            ));
-        ui.add_space(12.0);
-            ui.horizontal(|ui| {
-                if ui.button("Save").clicked() {
-                    // Save the document being closed, not another active tab.
-                    if self.documents.active().id != document_id {
-                        self.switch_document(document_id);
+                                        }
+                                    }
+                                }
+                                Err(error) => {
+                                    ui.colored_label(
+                                        egui::Color32::RED,
+                                        format!("Firmware validation failed: {error}"),
+                                    );
+                                }
+                            }
+                        } else {
+                            ui.colored_label(
+                                egui::Color32::RED,
+                                "Unsupported firmware format. Select a .bin or .uf2 file.",
+                            );
+                        }
+                    } else {
+                        ui.label("No firmware selected.");
                     }
-                if self.save_project_quick() {
-                        self.sync_active_document();
-                        self.pending_close_tab = None;
-                        self.close_tab(document_id);
+                    ui.add_space(8.0);
+
+                    // match crate::hardware::discover_devices() {
+                    //     Ok(devices) if devices.is_empty() => {
+                    //         ui.label("No USB serial devices detected.");
+                    //     }
+                    //     Ok(devices) => {
+                    //         for device in devices {
+                    //             ui.group(|ui| {
+                    //                 ui.heading(&device.port_name);
+                    //                 ui.label(&device.board_family);
+
+                    //                 ui.label(format!(
+                    //                     "VID: {:04X} | PID: {:04X}",
+                    //                     device.vid, device.pid
+                    //                 ));
+
+                    //                 if let Some(product) = &device.product {
+                    //                     ui.label(format!("Product: {product}"));
+                    //                 }
+
+                    //                 if let Some(manufacturer) = &device.manufacturer {
+                    //                     ui.label(format!("Manufacturer: {manufacturer}"));
+                    //                 }
+                    //             });
+
+                    //             ui.add_space(5.0);
+                    //         }
+                    //     }
+                    //     Err(error) => {
+                    //         ui.colored_label(
+                    //             egui::Color32::RED,
+                    //             format!("Device discovery failed: {error}"),
+                    //         );
+                    //     }
+                    // }
+
+                    if let Some(error) = &self.hardware_discovery_error {
+                        ui.colored_label(
+                            egui::Color32::RED,
+                            format!("Device discovery failed: {error}"),
+                        );
+                    } else if self.hardware_devices.is_empty() {
+                        ui.label("No USB serial devices detected.");
+                    } else {
+                        for device in &self.hardware_devices {
+                            ui.group(|ui| {
+                                ui.heading(&device.port_name);
+                                // P5: Select USB serial device for firmware flashing.
+                                let is_selected = self.hardware_selected_serial_port.as_deref()
+                                    == Some(device.port_name.as_str());
+                                if ui.radio(is_selected, "Select for flashing").clicked() {
+                                    self.hardware_selected_serial_port =
+                                        Some(device.port_name.clone());
+
+                                    self.hardware_validation_result = None;
+                                    self.hardware_flash_confirmation_open = false;
+                                    self.hardware_flash_result = None;
+
+                                    // Only one hardware target may be selected.
+                                    #[cfg(target_os = "windows")]
+                                    {
+                                        self.hardware_selected_pico_drive = None;
+                                    }
+                                }
+                                ui.label(&device.board_family);
+
+                                ui.label(format!(
+                                    "VID: {:04X} | PID: {:04X}",
+                                    device.vid, device.pid
+                                ));
+
+                                if let Some(product) = &device.product {
+                                    ui.label(format!("Product: {product}"));
+                                }
+
+                                if let Some(manufacturer) = &device.manufacturer {
+                                    ui.label(format!("Manufacturer: {manufacturer}"));
+                                }
+                            });
+
+                            ui.add_space(5.0);
+                        }
                     }
-                }
-                if ui.button("Discard").clicked() {
-                    // Activate the target document so its state is current.
-                    if self.documents.active().id != document_id {
-                        self.switch_document(document_id);
+                    // P5: Raspberry Pi Pico BOOTSEL devices
+                    #[cfg(target_os = "windows")]
+                    {
+                        ui.add_space(12.0);
+                        ui.separator();
+                        ui.heading("Raspberry Pi Pico BOOTSEL Devices");
+                        ui.add_space(6.0);
+
+                        if self.hardware_pico_devices.is_empty() {
+                            ui.label("No Pico BOOTSEL devices detected.");
+                        } else {
+                            for device in &self.hardware_pico_devices {
+                                ui.group(|ui| {
+                                    let selected = self.hardware_selected_pico_drive.as_ref()
+                                        == Some(&device.drive_path);
+
+                                    let drive_label =
+                                        format!("Pico BOOTSEL — {}", device.drive_path.display());
+
+                                    if ui.radio(selected, drive_label).clicked() {
+                                        if selected {
+                                            self.hardware_selected_pico_drive = None;
+                                        } else {
+                                            self.hardware_selected_pico_drive =
+                                                Some(device.drive_path.clone());
+
+                                            // Only one hardware target may be selected.
+                                            self.hardware_selected_serial_port = None;
+                                        }
+                                        self.hardware_validation_result = None;
+                                        self.hardware_flash_confirmation_open = false;
+                                        self.hardware_flash_result = None;
+                                    }
+
+                                    ui.label(format!("Drive: {}", device.drive_path.display()));
+
+                                    let board_name = match device.board {
+                                        crate::hardware::PicoBoard::Rp2040 => "RP2040",
+                                        crate::hardware::PicoBoard::Rp2350 => "RP2350",
+                                    };
+
+                                    ui.label(format!("Board: {board_name}"));
+                                    ui.label("Status: BOOTSEL mode");
+                                });
+
+                                ui.add_space(5.0);
+                            }
+                        }
                     }
-                    // Explicitly discard its unsaved state.
-                    self.is_dirty = false;
-                    self.documents.active_mut().is_dirty = false;
-                    self.pending_close_tab = None;
-                    self.close_tab(document_id);
-                }
-                if ui.button("Cancel").clicked() {
-                    self.pending_close_tab = None;
-                }
-            });
+                });
+        }
+
+        ctx.data_mut(|d| {
+            d.insert_temp(hardware_window_id, hardware_open);
         });
-}
+        // P3: Confirm before closing a modified document tab.
+        if let Some(document_id) = self.pending_close_tab {
+            let document_title = self
+                .documents
+                .documents
+                .iter()
+                .find(|doc| doc.id == document_id)
+                .map(|doc| doc.title.clone())
+                .unwrap_or_else(|| "Untitled".to_string());
+
+            egui::Window::new("Unsaved Changes")
+                .collapsible(false)
+                .resizable(false)
+                .frame(
+                    egui::Frame::window(&ctx.style())
+                        .fill(egui::Color32::from_rgb(30, 30, 35))
+                        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(90, 90, 100))),
+                )
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .show(ctx, |ui| {
+                    ui.label(format!(
+                        "Save changes to '{}' before closing?",
+                        document_title
+                    ));
+                    ui.add_space(12.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Save").clicked() {
+                            // Save the document being closed, not another active tab.
+                            if self.documents.active().id != document_id {
+                                self.switch_document(document_id);
+                            }
+                            if self.save_project_quick() {
+                                self.sync_active_document();
+                                self.pending_close_tab = None;
+                                self.close_tab(document_id);
+                            }
+                        }
+                        if ui.button("Discard").clicked() {
+                            // Activate the target document so its state is current.
+                            if self.documents.active().id != document_id {
+                                self.switch_document(document_id);
+                            }
+                            // Explicitly discard its unsaved state.
+                            self.is_dirty = false;
+                            self.documents.active_mut().is_dirty = false;
+                            self.pending_close_tab = None;
+                            self.close_tab(document_id);
+                        }
+                        if ui.button("Cancel").clicked() {
+                            self.pending_close_tab = None;
+                        }
+                    });
+                });
+        }
         // P3: Save As project naming dialog
-// P3: Save As project naming dialog
-if self.save_as_open {
-    let mut open = self.save_as_open;
-    let mut save_requested = false;
-    // P3: Keyboard shortcuts for Save As modal
-    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-    open = false;
-    }
-
-    if ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
-        save_requested = true;
-    }
-   egui::Modal::new(egui::Id::new("save_as_modal"))
-    .show(ctx, |ui| {
-            ui.label("Project name:");
-            ui.add(
-                egui::TextEdit::singleline(&mut self.save_as_name)
-                    .desired_width(280.0)
-                    .hint_text("My Project"),
-            );
-            ui.add_space(12.0);
-            ui.horizontal(|ui| {
-                if ui.button("Save").clicked() {
-                    save_requested = true;
-                }
-
-                if ui.button("Cancel").clicked() {
-                    open = false;
-                }
-            });
-        });
-    if save_requested {
-        let name = self.save_as_name.trim().to_string();
-        // Reject empty names, special directory names and path separators.
-        let invalid_name = name.is_empty()
-            || name == "."
-            || name == ".."
-            || name.contains(['/', '\\', ':', '*', '?', '"', '<', '>', '|'])
-            || name.ends_with('.')
-            || name.ends_with(' ');
-        if invalid_name {
-            rfd::MessageDialog::new()
-                .set_title("Invalid Project Name")
-                .set_description("Enter a valid project name without special characters.")
-                .set_level(rfd::MessageLevel::Error)
-                .set_buttons(rfd::MessageButtons::Ok)
-                .show();
-        } else if let Some(parent_dir) = rfd::FileDialog::new()
-            .set_title("Choose Where to Save Project")
-            .pick_folder()
-        {
-           // If the selected folder already has the project name,
-// use it directly instead of creating another subfolder.
-let selected_name = parent_dir
-    .file_name()
-    .map(|n| n.to_string_lossy().to_string())
-    .unwrap_or_default();
-let project_dir = if selected_name.eq_ignore_ascii_case(&name) {
-    parent_dir
-} else {
-    parent_dir.join(&name)
-};
-        if self.save_to_dir(project_dir.display().to_string()) {
+        // P3: Save As project naming dialog
+        if self.save_as_open {
+            let mut open = self.save_as_open;
+            let mut save_requested = false;
+            // P3: Keyboard shortcuts for Save As modal
+            if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
                 open = false;
             }
-        }
-    }
 
-    self.save_as_open = open;
-}
+            if ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
+                save_requested = true;
+            }
+            egui::Modal::new(egui::Id::new("save_as_modal")).show(ctx, |ui| {
+                ui.label("Project name:");
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.save_as_name)
+                        .desired_width(280.0)
+                        .hint_text("My Project"),
+                );
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Save").clicked() {
+                        save_requested = true;
+                    }
+
+                    if ui.button("Cancel").clicked() {
+                        open = false;
+                    }
+                });
+            });
+            if save_requested {
+                let name = self.save_as_name.trim().to_string();
+                // Reject empty names, special directory names and path separators.
+                let invalid_name = name.is_empty()
+                    || name == "."
+                    || name == ".."
+                    || name.contains(['/', '\\', ':', '*', '?', '"', '<', '>', '|'])
+                    || name.ends_with('.')
+                    || name.ends_with(' ');
+                if invalid_name {
+                    rfd::MessageDialog::new()
+                        .set_title("Invalid Project Name")
+                        .set_description("Enter a valid project name without special characters.")
+                        .set_level(rfd::MessageLevel::Error)
+                        .set_buttons(rfd::MessageButtons::Ok)
+                        .show();
+                } else if let Some(parent_dir) = rfd::FileDialog::new()
+                    .set_title("Choose Where to Save Project")
+                    .pick_folder()
+                {
+                    // If the selected folder already has the project name,
+                    // use it directly instead of creating another subfolder.
+                    let selected_name = parent_dir
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    let project_dir = if selected_name.eq_ignore_ascii_case(&name) {
+                        parent_dir
+                    } else {
+                        parent_dir.join(&name)
+                    };
+                    if self.save_to_dir(project_dir.display().to_string()) {
+                        open = false;
+                    }
+                }
+            }
+
+            self.save_as_open = open;
+        }
         // Floating modal for "save before quit?" — drawn after the menu
         // so it visually layers on top of canvas chrome.
         self.render_quit_dialog(ctx);
@@ -3059,13 +3455,15 @@ let project_dir = if selected_name.eq_ignore_ascii_case(&name) {
         if let Ok(devices) = self.device_refresh_rx.try_recv() {
             self.midi.set_port_lists(devices.midi_in, devices.midi_out);
             self.serial.set_port_list(devices.serial);
-            self.audio.set_device_lists(devices.audio_output, devices.audio_input);
+            self.audio
+                .set_device_lists(devices.audio_output, devices.audio_input);
             self.audio.device_channel_counts = devices.audio_output_channels;
         }
         let node_count = self.graph.nodes.len();
         let conn_count = self.graph.connections.len();
         self.monitor.tick(node_count, conn_count);
-        self.gpu_tex_cache.begin_frame(self.wgpu_render_state.as_ref());
+        self.gpu_tex_cache
+            .begin_frame(self.wgpu_render_state.as_ref());
         let now_secs = self.app_start_instant.elapsed().as_secs_f64();
         let mut values = self.graph.evaluate(now_secs);
         // Inject OB hardware values into the graph (before they're used by downstream nodes)
@@ -3074,7 +3472,9 @@ let project_dir = if selected_name.eq_ignore_ascii_case(&name) {
             let mut ob_injected = false;
             for (&id, node) in &self.graph.nodes {
                 match &node.node_type {
-                    NodeType::ObHub { detected_devices, .. } => {
+                    NodeType::ObHub {
+                        detected_devices, ..
+                    } => {
                         let mut port_idx = 0usize;
                         let mut sorted = detected_devices.clone();
                         sorted.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
@@ -3082,63 +3482,151 @@ let project_dir = if selected_name.eq_ignore_ascii_case(&name) {
                             if let Some(hub) = self.ob.get_hub(id) {
                                 match dtype.as_str() {
                                     "joystick" => {
-                                        values.insert((id, port_idx), PortValue::Float(hub.get_value("joystick", *did, "x")));
-                                        values.insert((id, port_idx + 1), PortValue::Float(hub.get_value("joystick", *did, "y")));
-                                        values.insert((id, port_idx + 2), PortValue::Float(hub.get_value("joystick", *did, "btn")));
+                                        values.insert(
+                                            (id, port_idx),
+                                            PortValue::Float(hub.get_value("joystick", *did, "x")),
+                                        );
+                                        values.insert(
+                                            (id, port_idx + 1),
+                                            PortValue::Float(hub.get_value("joystick", *did, "y")),
+                                        );
+                                        values.insert(
+                                            (id, port_idx + 2),
+                                            PortValue::Float(
+                                                hub.get_value("joystick", *did, "btn"),
+                                            ),
+                                        );
                                         port_idx += 3;
                                     }
                                     "encoder" => {
-                                        values.insert((id, port_idx), PortValue::Float(hub.get_value("encoder", *did, "turn")));
-                                        values.insert((id, port_idx + 1), PortValue::Float(hub.get_value("encoder", *did, "click")));
-                                        values.insert((id, port_idx + 2), PortValue::Float(hub.get_value("encoder", *did, "position")));
+                                        values.insert(
+                                            (id, port_idx),
+                                            PortValue::Float(
+                                                hub.get_value("encoder", *did, "turn"),
+                                            ),
+                                        );
+                                        values.insert(
+                                            (id, port_idx + 1),
+                                            PortValue::Float(
+                                                hub.get_value("encoder", *did, "click"),
+                                            ),
+                                        );
+                                        values.insert(
+                                            (id, port_idx + 2),
+                                            PortValue::Float(
+                                                hub.get_value("encoder", *did, "position"),
+                                            ),
+                                        );
                                         port_idx += 3;
                                     }
                                     "move" => {
-                                        values.insert((id, port_idx), PortValue::Float(hub.get_value("move", *did, "ax")));
-                                        values.insert((id, port_idx + 1), PortValue::Float(hub.get_value("move", *did, "ay")));
-                                        values.insert((id, port_idx + 2), PortValue::Float(hub.get_value("move", *did, "az")));
-                                        values.insert((id, port_idx + 3), PortValue::Float(hub.get_value("move", *did, "gx")));
-                                        values.insert((id, port_idx + 4), PortValue::Float(hub.get_value("move", *did, "gy")));
-                                        values.insert((id, port_idx + 5), PortValue::Float(hub.get_value("move", *did, "gz")));
+                                        values.insert(
+                                            (id, port_idx),
+                                            PortValue::Float(hub.get_value("move", *did, "ax")),
+                                        );
+                                        values.insert(
+                                            (id, port_idx + 1),
+                                            PortValue::Float(hub.get_value("move", *did, "ay")),
+                                        );
+                                        values.insert(
+                                            (id, port_idx + 2),
+                                            PortValue::Float(hub.get_value("move", *did, "az")),
+                                        );
+                                        values.insert(
+                                            (id, port_idx + 3),
+                                            PortValue::Float(hub.get_value("move", *did, "gx")),
+                                        );
+                                        values.insert(
+                                            (id, port_idx + 4),
+                                            PortValue::Float(hub.get_value("move", *did, "gy")),
+                                        );
+                                        values.insert(
+                                            (id, port_idx + 5),
+                                            PortValue::Float(hub.get_value("move", *did, "gz")),
+                                        );
                                         port_idx += 6;
                                     }
                                     "bend" => {
-                                        values.insert((id, port_idx), PortValue::Float(hub.get_value("bend", *did, "val")));
+                                        values.insert(
+                                            (id, port_idx),
+                                            PortValue::Float(hub.get_value("bend", *did, "val")),
+                                        );
                                         port_idx += 1;
                                     }
                                     "pressure" => {
-                                        values.insert((id, port_idx), PortValue::Float(hub.get_value("pressure", *did, "val")));
+                                        values.insert(
+                                            (id, port_idx),
+                                            PortValue::Float(
+                                                hub.get_value("pressure", *did, "val"),
+                                            ),
+                                        );
                                         port_idx += 1;
                                     }
                                     "distance" => {
-                                        values.insert((id, port_idx), PortValue::Float(hub.get_value("distance", *did, "val")));
+                                        values.insert(
+                                            (id, port_idx),
+                                            PortValue::Float(
+                                                hub.get_value("distance", *did, "val"),
+                                            ),
+                                        );
                                         port_idx += 1;
                                     }
                                     "knob" => {
                                         // Knob stores its reading under "value", not "val"
                                         // (see ob.rs apply_data arm for ("knob", "value")).
-                                        values.insert((id, port_idx), PortValue::Float(hub.get_value("knob", *did, "value")));
+                                        values.insert(
+                                            (id, port_idx),
+                                            PortValue::Float(hub.get_value("knob", *did, "value")),
+                                        );
                                         port_idx += 1;
                                     }
                                     "orb" => {
-                                        values.insert((id, port_idx), PortValue::Float(hub.get_value("orb", *did, "ax")));
-                                        values.insert((id, port_idx + 1), PortValue::Float(hub.get_value("orb", *did, "ay")));
-                                        values.insert((id, port_idx + 2), PortValue::Float(hub.get_value("orb", *did, "az")));
-                                        values.insert((id, port_idx + 3), PortValue::Float(hub.get_value("orb", *did, "gx")));
-                                        values.insert((id, port_idx + 4), PortValue::Float(hub.get_value("orb", *did, "gy")));
-                                        values.insert((id, port_idx + 5), PortValue::Float(hub.get_value("orb", *did, "gz")));
+                                        values.insert(
+                                            (id, port_idx),
+                                            PortValue::Float(hub.get_value("orb", *did, "ax")),
+                                        );
+                                        values.insert(
+                                            (id, port_idx + 1),
+                                            PortValue::Float(hub.get_value("orb", *did, "ay")),
+                                        );
+                                        values.insert(
+                                            (id, port_idx + 2),
+                                            PortValue::Float(hub.get_value("orb", *did, "az")),
+                                        );
+                                        values.insert(
+                                            (id, port_idx + 3),
+                                            PortValue::Float(hub.get_value("orb", *did, "gx")),
+                                        );
+                                        values.insert(
+                                            (id, port_idx + 4),
+                                            PortValue::Float(hub.get_value("orb", *did, "gy")),
+                                        );
+                                        values.insert(
+                                            (id, port_idx + 5),
+                                            PortValue::Float(hub.get_value("orb", *did, "gz")),
+                                        );
                                         port_idx += 6;
                                     }
-                                    _ => { port_idx += 1; }
+                                    _ => {
+                                        port_idx += 1;
+                                    }
                                 }
                             }
                         }
                         ob_injected = true;
                     }
-                    NodeType::ObJoystick { device_id, hub_node_id, .. } => {
-                        let find = self.ob.get_hub(*hub_node_id)
+                    NodeType::ObJoystick {
+                        device_id,
+                        hub_node_id,
+                        ..
+                    } => {
+                        let find = self
+                            .ob
+                            .get_hub(*hub_node_id)
                             .and_then(|h| h.get_device("joystick", *device_id))
-                            .or_else(|| self.ob.find_device("joystick", *device_id).map(|(_, d)| d));
+                            .or_else(|| {
+                                self.ob.find_device("joystick", *device_id).map(|(_, d)| d)
+                            });
                         if let Some(dev) = find {
                             let x = dev.values.get("x").copied().unwrap_or(0.0);
                             let y = dev.values.get("y").copied().unwrap_or(0.0);
@@ -3150,13 +3638,24 @@ let project_dir = if selected_name.eq_ignore_ascii_case(&name) {
                             let prev_key = egui::Id::new(("ob_prev", id));
                             let prev: Option<[f32; 3]> = ctx.data_mut(|d| d.get_temp(prev_key));
                             let curr = [x, y, btn];
-                            let changed = prev.map(|p| (p[0]-curr[0]).abs() > 0.001 || (p[1]-curr[1]).abs() > 0.001 || (p[2]-curr[2]).abs() > 0.5).unwrap_or(false);
-                            values.insert((id, 3), PortValue::Float(if changed { 1.0 } else { 0.0 }));
+                            let changed = prev
+                                .map(|p| {
+                                    (p[0] - curr[0]).abs() > 0.001
+                                        || (p[1] - curr[1]).abs() > 0.001
+                                        || (p[2] - curr[2]).abs() > 0.5
+                                })
+                                .unwrap_or(false);
+                            values
+                                .insert((id, 3), PortValue::Float(if changed { 1.0 } else { 0.0 }));
                             ctx.data_mut(|d| d.insert_temp(prev_key, curr));
                         }
                         ob_injected = true;
                     }
-                    NodeType::ObEncoder { device_id, hub_node_id, .. } => {
+                    NodeType::ObEncoder {
+                        device_id,
+                        hub_node_id,
+                        ..
+                    } => {
                         // Three lookup paths, same priority as other OB nodes:
                         //   1. Bound hub → 2. Any serial hub → 3. HID auto-discovery
                         //
@@ -3170,23 +3669,32 @@ let project_dir = if selected_name.eq_ignore_ascii_case(&name) {
                         // clear it to 0 here AFTER reading so a single tick
                         // produces a single frame of non-zero Turn output,
                         // which matches the serial-hub behavior.
-                        let hub_lookup = self.ob.get_hub(*hub_node_id)
+                        let hub_lookup = self
+                            .ob
+                            .get_hub(*hub_node_id)
                             .and_then(|h| h.get_device("encoder", *device_id))
                             .or_else(|| self.ob.find_device("encoder", *device_id).map(|(_, d)| d))
-                            .map(|d| (
-                                d.values.get("turn").copied().unwrap_or(0.0),
-                                d.values.get("click").copied().unwrap_or(0.0),
-                                d.values.get("position").copied().unwrap_or(0.0),
-                                true, // was_hub
-                            ));
-                        let (turn, click, pos, was_hub) = hub_lookup
-                            .or_else(|| crate::hid::global().find_device("encoder", *device_id)
-                                .map(|d| (
+                            .map(|d| {
+                                (
                                     d.values.get("turn").copied().unwrap_or(0.0),
                                     d.values.get("click").copied().unwrap_or(0.0),
                                     d.values.get("position").copied().unwrap_or(0.0),
-                                    false,
-                                )))
+                                    true, // was_hub
+                                )
+                            });
+                        let (turn, click, pos, was_hub) = hub_lookup
+                            .or_else(|| {
+                                crate::hid::global()
+                                    .find_device("encoder", *device_id)
+                                    .map(|d| {
+                                        (
+                                            d.values.get("turn").copied().unwrap_or(0.0),
+                                            d.values.get("click").copied().unwrap_or(0.0),
+                                            d.values.get("position").copied().unwrap_or(0.0),
+                                            false,
+                                        )
+                                    })
+                            })
                             .unwrap_or((0.0, 0.0, 0.0, false));
 
                         // Clear the one-shot "turn" field so a single detent
@@ -3203,13 +3711,24 @@ let project_dir = if selected_name.eq_ignore_ascii_case(&name) {
                         let prev_key = egui::Id::new(("ob_prev", id));
                         let prev: Option<[f32; 3]> = ctx.data_mut(|d| d.get_temp(prev_key));
                         let curr = [turn, click, pos];
-                        let changed = prev.map(|p| (p[0]-curr[0]).abs() > 0.001 || (p[1]-curr[1]).abs() > 0.5 || (p[2]-curr[2]).abs() > 0.001).unwrap_or(false);
+                        let changed = prev
+                            .map(|p| {
+                                (p[0] - curr[0]).abs() > 0.001
+                                    || (p[1] - curr[1]).abs() > 0.5
+                                    || (p[2] - curr[2]).abs() > 0.001
+                            })
+                            .unwrap_or(false);
                         values.insert((id, 3), PortValue::Float(if changed { 1.0 } else { 0.0 }));
                         ctx.data_mut(|d| d.insert_temp(prev_key, curr));
                         ob_injected = true;
                     }
-                    NodeType::ObMove { device_id, hub_node_id } => {
-                        let find = self.ob.get_hub(*hub_node_id)
+                    NodeType::ObMove {
+                        device_id,
+                        hub_node_id,
+                    } => {
+                        let find = self
+                            .ob
+                            .get_hub(*hub_node_id)
                             .and_then(|h| h.get_device("move", *device_id))
                             .or_else(|| self.ob.find_device("move", *device_id).map(|(_, d)| d));
                         if let Some(dev) = find {
@@ -3221,17 +3740,28 @@ let project_dir = if selected_name.eq_ignore_ascii_case(&name) {
                                 dev.values.get("gy").copied().unwrap_or(0.0),
                                 dev.values.get("gz").copied().unwrap_or(0.0),
                             ];
-                            for i in 0..6 { values.insert((id, i), PortValue::Float(vals[i])); }
+                            for i in 0..6 {
+                                values.insert((id, i), PortValue::Float(vals[i]));
+                            }
                             let prev_key = egui::Id::new(("ob_prev", id));
                             let prev: Option<[f32; 6]> = ctx.data_mut(|d| d.get_temp(prev_key));
-                            let changed = prev.map(|p| (0..6).any(|i| (p[i]-vals[i]).abs() > 0.001)).unwrap_or(false);
-                            values.insert((id, 6), PortValue::Float(if changed { 1.0 } else { 0.0 }));
+                            let changed = prev
+                                .map(|p| (0..6).any(|i| (p[i] - vals[i]).abs() > 0.001))
+                                .unwrap_or(false);
+                            values
+                                .insert((id, 6), PortValue::Float(if changed { 1.0 } else { 0.0 }));
                             ctx.data_mut(|d| d.insert_temp(prev_key, vals));
                         }
                         ob_injected = true;
                     }
-                    NodeType::ObBend { device_id, hub_node_id, .. } => {
-                        let find = self.ob.get_hub(*hub_node_id)
+                    NodeType::ObBend {
+                        device_id,
+                        hub_node_id,
+                        ..
+                    } => {
+                        let find = self
+                            .ob
+                            .get_hub(*hub_node_id)
                             .and_then(|h| h.get_device("bend", *device_id))
                             .or_else(|| self.ob.find_device("bend", *device_id).map(|(_, d)| d));
                         if let Some(dev) = find {
@@ -3240,23 +3770,35 @@ let project_dir = if selected_name.eq_ignore_ascii_case(&name) {
                             let prev_key = egui::Id::new(("ob_prev", id));
                             let prev: Option<f32> = ctx.data_mut(|d| d.get_temp(prev_key));
                             let changed = prev.map(|p| (p - val).abs() > 0.001).unwrap_or(false);
-                            values.insert((id, 1), PortValue::Float(if changed { 1.0 } else { 0.0 }));
+                            values
+                                .insert((id, 1), PortValue::Float(if changed { 1.0 } else { 0.0 }));
                             ctx.data_mut(|d| d.insert_temp(prev_key, val));
                         }
                         ob_injected = true;
                     }
-                    NodeType::ObPressure { device_id, hub_node_id, .. } => {
+                    NodeType::ObPressure {
+                        device_id,
+                        hub_node_id,
+                        ..
+                    } => {
                         // Three lookup paths, same priority as ObKnob/ObDistance:
                         //   1. Bound hub → 2. Any serial hub → 3. HID auto-discovery
                         // HID path uses parse_knob_report, which writes both
                         // "val" (legacy key, used here) and "value" (knob key).
-                        let hub_lookup = self.ob.get_hub(*hub_node_id)
+                        let hub_lookup = self
+                            .ob
+                            .get_hub(*hub_node_id)
                             .and_then(|h| h.get_device("pressure", *device_id))
                             .or_else(|| self.ob.find_device("pressure", *device_id).map(|(_, d)| d))
                             .map(|d| (d.values.get("val").copied().unwrap_or(0.0), d.is_active));
                         let (val, _is_active) = hub_lookup
-                            .or_else(|| crate::hid::global().find_device("pressure", *device_id)
-                                .map(|d| (d.values.get("val").copied().unwrap_or(0.0), d.is_active)))
+                            .or_else(|| {
+                                crate::hid::global()
+                                    .find_device("pressure", *device_id)
+                                    .map(|d| {
+                                        (d.values.get("val").copied().unwrap_or(0.0), d.is_active)
+                                    })
+                            })
                             .unwrap_or((0.0, false));
 
                         values.insert((id, 0), PortValue::Float(val));
@@ -3267,7 +3809,11 @@ let project_dir = if selected_name.eq_ignore_ascii_case(&name) {
                         ctx.data_mut(|d| d.insert_temp(prev_key, val));
                         ob_injected = true;
                     }
-                    NodeType::ObDistance { device_id, hub_node_id, .. } => {
+                    NodeType::ObDistance {
+                        device_id,
+                        hub_node_id,
+                        ..
+                    } => {
                         // Three lookup paths, same priority as ObKnob:
                         //   1. Bound hub → 2. Any serial hub → 3. HID auto-discovery
                         // Ports: 0 = Value (0..1 normalized), 1 = Distance (mm),
@@ -3278,21 +3824,30 @@ let project_dir = if selected_name.eq_ignore_ascii_case(&name) {
                         // Serial-hub devices predate the `mm` key, so we fall back
                         // to 0 on that path — downstream can use Value if absolute
                         // mm isn't critical.
-                        let hub_lookup = self.ob.get_hub(*hub_node_id)
+                        let hub_lookup = self
+                            .ob
+                            .get_hub(*hub_node_id)
                             .and_then(|h| h.get_device("distance", *device_id))
                             .or_else(|| self.ob.find_device("distance", *device_id).map(|(_, d)| d))
-                            .map(|d| (
-                                d.values.get("val").copied().unwrap_or(0.0),
-                                d.values.get("mm").copied().unwrap_or(0.0),
-                                d.is_active,
-                            ));
-                        let (val, mm, _is_active) = hub_lookup
-                            .or_else(|| crate::hid::global().find_device("distance", *device_id)
-                                .map(|d| (
+                            .map(|d| {
+                                (
                                     d.values.get("val").copied().unwrap_or(0.0),
                                     d.values.get("mm").copied().unwrap_or(0.0),
                                     d.is_active,
-                                )))
+                                )
+                            });
+                        let (val, mm, _is_active) = hub_lookup
+                            .or_else(|| {
+                                crate::hid::global()
+                                    .find_device("distance", *device_id)
+                                    .map(|d| {
+                                        (
+                                            d.values.get("val").copied().unwrap_or(0.0),
+                                            d.values.get("mm").copied().unwrap_or(0.0),
+                                            d.is_active,
+                                        )
+                                    })
+                            })
                             .unwrap_or((0.0, 0.0, false));
 
                         values.insert((id, 0), PortValue::Float(val));
@@ -3305,7 +3860,11 @@ let project_dir = if selected_name.eq_ignore_ascii_case(&name) {
 
                         ob_injected = true;
                     }
-                    NodeType::ObKnob { device_id, hub_node_id, .. } => {
+                    NodeType::ObKnob {
+                        device_id,
+                        hub_node_id,
+                        ..
+                    } => {
                         // Knob reading is stored under "value" (see ob.rs apply_data
                         // for ("knob", "value"), and hid.rs parse_knob_report).
                         // Three lookup sources tried in order:
@@ -3314,13 +3873,20 @@ let project_dir = if selected_name.eq_ignore_ascii_case(&name) {
                         //   3. HID auto-discovery (no hub required) — via the
                         //      process-wide singleton in `crate::hid::global()`.
                         // HID is the expected path for USB-direct knobs.
-                        let hub_lookup = self.ob.get_hub(*hub_node_id)
+                        let hub_lookup = self
+                            .ob
+                            .get_hub(*hub_node_id)
                             .and_then(|h| h.get_device("knob", *device_id))
                             .or_else(|| self.ob.find_device("knob", *device_id).map(|(_, d)| d))
                             .map(|d| (d.values.get("value").copied().unwrap_or(0.0), d.is_active));
                         let (val, _is_active) = hub_lookup
-                            .or_else(|| crate::hid::global().find_device("knob", *device_id)
-                                .map(|d| (d.values.get("value").copied().unwrap_or(0.0), d.is_active)))
+                            .or_else(|| {
+                                crate::hid::global()
+                                    .find_device("knob", *device_id)
+                                    .map(|d| {
+                                        (d.values.get("value").copied().unwrap_or(0.0), d.is_active)
+                                    })
+                            })
                             .unwrap_or((0.0, false));
 
                         values.insert((id, 0), PortValue::Float(val));
@@ -3331,8 +3897,14 @@ let project_dir = if selected_name.eq_ignore_ascii_case(&name) {
                         ctx.data_mut(|d| d.insert_temp(prev_key, val));
                         ob_injected = true;
                     }
-                    NodeType::ObOrb { device_id, hub_node_id, .. } => {
-                        let find = self.ob.get_hub(*hub_node_id)
+                    NodeType::ObOrb {
+                        device_id,
+                        hub_node_id,
+                        ..
+                    } => {
+                        let find = self
+                            .ob
+                            .get_hub(*hub_node_id)
                             .and_then(|h| h.get_device("orb", *device_id))
                             .or_else(|| self.ob.find_device("orb", *device_id).map(|(_, d)| d));
                         if let Some(dev) = find {
@@ -3344,30 +3916,47 @@ let project_dir = if selected_name.eq_ignore_ascii_case(&name) {
                                 dev.values.get("gy").copied().unwrap_or(0.0),
                                 dev.values.get("gz").copied().unwrap_or(0.0),
                             ];
-                            for i in 0..6 { values.insert((id, i), PortValue::Float(vals[i])); }
+                            for i in 0..6 {
+                                values.insert((id, i), PortValue::Float(vals[i]));
+                            }
                             let prev_key = egui::Id::new(("ob_prev", id));
                             let prev: Option<[f32; 6]> = ctx.data_mut(|d| d.get_temp(prev_key));
-                            let changed = prev.map(|p| (0..6).any(|i| (p[i]-vals[i]).abs() > 0.001)).unwrap_or(false);
-                            values.insert((id, 6), PortValue::Float(if changed { 1.0 } else { 0.0 }));
+                            let changed = prev
+                                .map(|p| (0..6).any(|i| (p[i] - vals[i]).abs() > 0.001))
+                                .unwrap_or(false);
+                            values
+                                .insert((id, 6), PortValue::Float(if changed { 1.0 } else { 0.0 }));
                             ctx.data_mut(|d| d.insert_temp(prev_key, vals));
                         }
                         ob_injected = true;
                     }
-                    NodeType::ObMotor { device_id, hub_node_id, .. } => {
+                    NodeType::ObMotor {
+                        device_id,
+                        hub_node_id,
+                        ..
+                    } => {
                         // DAT carries (moving, position_deg, target_deg).
                         // Done port pulses on a moving→idle transition.
-                        let find = self.ob.get_hub(*hub_node_id)
+                        let find = self
+                            .ob
+                            .get_hub(*hub_node_id)
                             .and_then(|h| h.get_device("motor", *device_id))
                             .or_else(|| self.ob.find_device("motor", *device_id).map(|(_, d)| d));
                         if let Some(dev) = find {
                             let pos = dev.values.get("position").copied().unwrap_or(0.0);
                             let mov = dev.values.get("moving").copied().unwrap_or(0.0);
                             values.insert((id, 0), PortValue::Float(pos));
-                            values.insert((id, 1), PortValue::Float(if mov > 0.5 { 1.0 } else { 0.0 }));
+                            values.insert(
+                                (id, 1),
+                                PortValue::Float(if mov > 0.5 { 1.0 } else { 0.0 }),
+                            );
                             let prev_key = egui::Id::new(("ob_prev", id));
                             let prev: Option<f32> = ctx.data_mut(|d| d.get_temp(prev_key));
                             let done_pulse = prev.map(|p| p > 0.5 && mov <= 0.5).unwrap_or(false);
-                            values.insert((id, 2), PortValue::Float(if done_pulse { 1.0 } else { 0.0 }));
+                            values.insert(
+                                (id, 2),
+                                PortValue::Float(if done_pulse { 1.0 } else { 0.0 }),
+                            );
                             ctx.data_mut(|d| d.insert_temp(prev_key, mov));
                         }
                         ob_injected = true;
@@ -3386,13 +3975,19 @@ let project_dir = if selected_name.eq_ignore_ascii_case(&name) {
 
         // Evaluate Rust Plugin nodes
         {
-            let plugin_ids: Vec<NodeId> = self.graph.nodes.iter()
+            let plugin_ids: Vec<NodeId> = self
+                .graph
+                .nodes
+                .iter()
                 .filter(|(_, n)| matches!(n.node_type, NodeType::RustPlugin { .. }))
                 .map(|(&id, _)| id)
                 .collect();
             for id in plugin_ids {
                 let inputs: Vec<PortValue> = self.graph.collect_inputs(id, &values);
-                let node = match self.graph.nodes.get_mut(&id) { Some(n) => n, None => continue };
+                let node = match self.graph.nodes.get_mut(&id) {
+                    Some(n) => n,
+                    None => continue,
+                };
                 let outputs = nodes::rust_plugin::evaluate(id, &mut node.node_type, &inputs, ctx);
                 for (port, val) in outputs {
                     values.insert((id, port), val);
@@ -3406,8 +4001,10 @@ let project_dir = if selected_name.eq_ignore_ascii_case(&name) {
                 d.insert_temp(egui::Id::new("wgpu_target_format"), rs.target_format);
             });
         }
-            let img_content_hash = |img: &ImageData| -> u64 {
-            let mut h: u64 = (img.width as u64).wrapping_mul(31).wrapping_add(img.height as u64);
+        let img_content_hash = |img: &ImageData| -> u64 {
+            let mut h: u64 = (img.width as u64)
+                .wrapping_mul(31)
+                .wrapping_add(img.height as u64);
             let len = img.pixels.len();
             // Read 64 bits at a time and cap the sample count, so cost is
             // bounded (~8k iterations) regardless of resolution. A sparse
@@ -3443,13 +4040,17 @@ let project_dir = if selected_name.eq_ignore_ascii_case(&name) {
             match val {
                 PortValue::Image(img) => img_content_hash(img),
                 PortValue::GpuImage(h) => {
-                    let mut k = (h.node_id as u64).wrapping_mul(31).wrapping_add(h.port as u64);
+                    let mut k = (h.node_id as u64)
+                        .wrapping_mul(31)
+                        .wrapping_add(h.port as u64);
                     k = k.wrapping_mul(31).wrapping_add(h.frame_stamp);
                     k
                 }
                 PortValue::Mesh(m) => std::sync::Arc::as_ptr(m) as usize as u64,
                 PortValue::GpuMesh(h) => {
-                    let mut k = (h.node_id as u64).wrapping_mul(31).wrapping_add(h.port as u64);
+                    let mut k = (h.node_id as u64)
+                        .wrapping_mul(31)
+                        .wrapping_add(h.port as u64);
                     k = k.wrapping_mul(31).wrapping_add(h.frame_stamp);
                     k
                 }
@@ -3481,9 +4082,8 @@ let project_dir = if selected_name.eq_ignore_ascii_case(&name) {
             }
             set
         };
-        let has_cpu_consumer_cached = |nid: NodeId, port: usize| -> bool {
-            cpu_consumer_producers.contains(&(nid, port))
-        };
+        let has_cpu_consumer_cached =
+            |nid: NodeId, port: usize| -> bool { cpu_consumer_producers.contains(&(nid, port)) };
         // Populate the per-WgslViewer CPU consumer hint thread_local so that
         // `render_offscreen` (which runs later this frame in the egui paint
         // pass) knows whether to skip its readback. Default-true is safe;
@@ -3511,14 +4111,20 @@ let project_dir = if selected_name.eq_ignore_ascii_case(&name) {
         // otherwise we fall back to the legacy `PortValue::Image` path
         // (which carries CPU bytes for downstream CPU consumers).
         for &id in &topo {
-            let is_viewer = self.graph.nodes.get(&id)
+            let is_viewer = self
+                .graph
+                .nodes
+                .get(&id)
                 .map(|n| matches!(n.node_type, NodeType::WgslViewer { .. }))
                 .unwrap_or(false);
             if is_viewer {
-                if let Some(img) = ctx.data_mut(|d| d.get_temp::<std::sync::Arc<ImageData>>(egui::Id::new(("wgsl_image_output", id)))) {
-                    let has_gpu_entry = self.gpu_tex_cache
-                        .get_node_output_cloned(id, 0)
-                        .is_some();
+                if let Some(img) = ctx.data_mut(|d| {
+                    d.get_temp::<std::sync::Arc<ImageData>>(egui::Id::new((
+                        "wgsl_image_output",
+                        id,
+                    )))
+                }) {
+                    let has_gpu_entry = self.gpu_tex_cache.get_node_output_cloned(id, 0).is_some();
                     // If any downstream consumer needs CPU pixels (Transform,
                     // Crop, ColorChannel, AI Request, ML Model, save-to-disk,
                     // Theme BG, …) we must readback the GPU texture into a CPU
@@ -3527,7 +4133,10 @@ let project_dir = if selected_name.eq_ignore_ascii_case(&name) {
                     let needs_cpu = has_cpu_consumer_cached(id, 0);
                     if has_gpu_entry && img.pixels.is_empty() && needs_cpu {
                         if let Some(rs) = &self.wgpu_render_state {
-                            if let Some(cpu_img) = self.gpu_tex_cache.readback_node_output(id, 0, &rs.device, &rs.queue) {
+                            if let Some(cpu_img) = self
+                                .gpu_tex_cache
+                                .readback_node_output(id, 0, &rs.device, &rs.queue)
+                            {
                                 values.insert((id, 0), PortValue::Image(cpu_img));
                                 continue;
                             }
@@ -3551,7 +4160,8 @@ let project_dir = if selected_name.eq_ignore_ascii_case(&name) {
                         // first frame work correctly.
                         if let Some(rs) = &self.wgpu_render_state {
                             if !img.pixels.is_empty() {
-                                self.gpu_tex_cache.get_or_upload(&rs.device, &rs.queue, &img);
+                                self.gpu_tex_cache
+                                    .get_or_upload(&rs.device, &rs.queue, &img);
                             }
                         }
                         values.insert((id, 0), PortValue::Image(img));
@@ -3563,25 +4173,36 @@ let project_dir = if selected_name.eq_ignore_ascii_case(&name) {
         // so downstream nodes (Map Range → Image Style) see fresh values.
         {
             let connections = self.graph.connections.clone();
-            let analyzer_ids: Vec<NodeId> = self.graph.nodes.iter()
+            let analyzer_ids: Vec<NodeId> = self
+                .graph
+                .nodes
+                .iter()
                 .filter(|(_, n)| match &n.node_type {
                     NodeType::AudioAnalyzer => true,
                     NodeType::Dynamic { inner } => inner.node.type_tag() == "audio_analyzer",
                     _ => false,
                 })
-                .map(|(&id, _)| id).collect();
+                .map(|(&id, _)| id)
+                .collect();
             for id in analyzer_ids {
-                let (amp, peak, bass, mid, treble) = self.audio.analyzer_results.get(&id)
+                let (amp, peak, bass, mid, treble) = self
+                    .audio
+                    .analyzer_results
+                    .get(&id)
                     .and_then(|a| a.try_lock().ok())
                     .map(|a| (a.amplitude, a.peak, a.bass, a.mid, a.treble))
                     .unwrap_or((0.0, 0.0, 0.0, 0.0, 0.0));
-                let source_name = connections.iter()
+                let source_name = connections
+                    .iter()
                     .find(|c| c.to_node == id && c.to_port == 0)
                     .and_then(|c| self.graph.nodes.get(&c.from_node))
                     .map(|n| n.node_type.title().to_string())
                     .unwrap_or_default();
                 ctx.data_mut(|d| {
-                    d.insert_temp(egui::Id::new(("audio_analysis", id)), [amp, peak, bass, mid, treble]);
+                    d.insert_temp(
+                        egui::Id::new(("audio_analysis", id)),
+                        [amp, peak, bass, mid, treble],
+                    );
                     d.insert_temp(egui::Id::new(("audio_analysis_source", id)), source_name);
                 });
                 values.insert((id, 0), PortValue::Float(amp));
@@ -3592,16 +4213,23 @@ let project_dir = if selected_name.eq_ignore_ascii_case(&name) {
             }
 
             // ── Spectrum Analyzer injection ────────────────────────────
-            let spectrum_ids: Vec<NodeId> = self.graph.nodes.iter()
+            let spectrum_ids: Vec<NodeId> = self
+                .graph
+                .nodes
+                .iter()
                 .filter(|(_, n)| match &n.node_type {
                     NodeType::SpectrumAnalyzer => true,
                     NodeType::Dynamic { inner } => inner.node.type_tag() == "music_visualizer",
                     _ => false,
                 })
-                .map(|(&id, _)| id).collect();
+                .map(|(&id, _)| id)
+                .collect();
             for id in spectrum_ids {
                 let sample_rate = self.audio.engine_sample_rate.max(1.0);
-                let (bins, phases, peak_hz, centroid_hz, energy) = self.audio.spectrum_results.get(&id)
+                let (bins, phases, peak_hz, centroid_hz, energy) = self
+                    .audio
+                    .spectrum_results
+                    .get(&id)
                     .and_then(|s| s.try_lock().ok())
                     .map(|s| {
                         let bins = s.bins.clone();
@@ -3624,7 +4252,10 @@ let project_dir = if selected_name.eq_ignore_ascii_case(&name) {
                         let mut sum_wf = 0.0f32;
                         let mut sum = 0.0f32;
                         for (i, &v) in bins.iter().enumerate() {
-                            if v > peak_val { peak_val = v; peak_idx = i; }
+                            if v > peak_val {
+                                peak_val = v;
+                                peak_idx = i;
+                            }
                             let f = bin_to_hz(i);
                             sum_w += v;
                             sum_wf += v * f;
@@ -3635,13 +4266,18 @@ let project_dir = if selected_name.eq_ignore_ascii_case(&name) {
                         let energy = (sum / n as f32).clamp(0.0, 1.0);
                         (bins, phases, peak_hz, centroid_hz, energy)
                     })
-                    .unwrap_or_else(|| (
-                        vec![0.0f32; crate::audio::analysis::SPECTRUM_BINS],
-                        vec![0.5f32; crate::audio::analysis::SPECTRUM_BINS],
-                        0.0, 0.0, 0.0,
-                    ));
+                    .unwrap_or_else(|| {
+                        (
+                            vec![0.0f32; crate::audio::analysis::SPECTRUM_BINS],
+                            vec![0.5f32; crate::audio::analysis::SPECTRUM_BINS],
+                            0.0,
+                            0.0,
+                            0.0,
+                        )
+                    });
 
-                let source_name = connections.iter()
+                let source_name = connections
+                    .iter()
                     .find(|c| c.to_node == id && c.to_port == 0)
                     .and_then(|c| self.graph.nodes.get(&c.from_node))
                     .map(|n| n.node_type.title().to_string())
@@ -3649,12 +4285,18 @@ let project_dir = if selected_name.eq_ignore_ascii_case(&name) {
                 ctx.data_mut(|d| {
                     d.insert_temp(egui::Id::new(("spectrum_bins", id)), bins.clone());
                     d.insert_temp(egui::Id::new(("spectrum_phases", id)), phases.clone());
-                    d.insert_temp(egui::Id::new(("spectrum_scalars", id)), [peak_hz, centroid_hz, energy]);
+                    d.insert_temp(
+                        egui::Id::new(("spectrum_scalars", id)),
+                        [peak_hz, centroid_hz, energy],
+                    );
                     d.insert_temp(egui::Id::new(("spectrum_source", id)), source_name);
                 });
                 // Rasterize bars for SpectrumAnalyzer only (port 0 = Image).
                 // Music Visualizer renders its own image in evaluate(), don't overwrite.
-                if matches!(self.graph.nodes.get(&id).map(|n| &n.node_type), Some(NodeType::SpectrumAnalyzer)) {
+                if matches!(
+                    self.graph.nodes.get(&id).map(|n| &n.node_type),
+                    Some(NodeType::SpectrumAnalyzer)
+                ) {
                     let img = crate::nodes::spectrum_analyzer::rasterize_bins(&bins, 256, 96);
                     values.insert((id, 0), PortValue::Image(std::sync::Arc::new(img)));
                     values.insert((id, 1), PortValue::Float(peak_hz));
@@ -3665,18 +4307,26 @@ let project_dir = if selected_name.eq_ignore_ascii_case(&name) {
         }
         for (&id, node) in &self.graph.nodes {
             if matches!(node.node_type, NodeType::AudioPlayer { .. }) {
-                if let Some(progress) = ctx.data_mut(|d| d.get_temp::<f32>(egui::Id::new(("audio_player_progress", id)))) {
+                if let Some(progress) = ctx
+                    .data_mut(|d| d.get_temp::<f32>(egui::Id::new(("audio_player_progress", id))))
+                {
                     values.insert((id, 1), PortValue::Float(progress));
                 }
             }
             if matches!(node.node_type, NodeType::AudioPlaylist { .. }) {
-                if let Some(p) = ctx.data_mut(|d| d.get_temp::<f32>(egui::Id::new(("pl_progress", id)))) {
+                if let Some(p) =
+                    ctx.data_mut(|d| d.get_temp::<f32>(egui::Id::new(("pl_progress", id))))
+                {
                     values.insert((id, 1), PortValue::Float(p));
                 }
-                if let Some(idx) = ctx.data_mut(|d| d.get_temp::<f32>(egui::Id::new(("pl_index", id)))) {
+                if let Some(idx) =
+                    ctx.data_mut(|d| d.get_temp::<f32>(egui::Id::new(("pl_index", id))))
+                {
                     values.insert((id, 2), PortValue::Float(idx));
                 }
-                if let Some(name) = ctx.data_mut(|d| d.get_temp::<String>(egui::Id::new(("pl_name", id)))) {
+                if let Some(name) =
+                    ctx.data_mut(|d| d.get_temp::<String>(egui::Id::new(("pl_name", id))))
+                {
                     values.insert((id, 3), PortValue::Text(name));
                 }
             }
@@ -3684,27 +4334,41 @@ let project_dir = if selected_name.eq_ignore_ascii_case(&name) {
             // inject X/Y/Conf back into values map so downstream nodes see them.
             if let NodeType::Dynamic { ref inner } = node.node_type {
                 if inner.node.type_tag() == "keypoint_extract" {
-                    if let Some(x) = ctx.data_mut(|d| d.get_temp::<f32>(egui::Id::new(("kp_x", id)))) {
+                    if let Some(x) =
+                        ctx.data_mut(|d| d.get_temp::<f32>(egui::Id::new(("kp_x", id))))
+                    {
                         values.insert((id, 0), PortValue::Float(x));
                     }
-                    if let Some(y) = ctx.data_mut(|d| d.get_temp::<f32>(egui::Id::new(("kp_y", id)))) {
+                    if let Some(y) =
+                        ctx.data_mut(|d| d.get_temp::<f32>(egui::Id::new(("kp_y", id))))
+                    {
                         values.insert((id, 1), PortValue::Float(y));
                     }
-                    if let Some(c) = ctx.data_mut(|d| d.get_temp::<f32>(egui::Id::new(("kp_conf", id)))) {
+                    if let Some(c) =
+                        ctx.data_mut(|d| d.get_temp::<f32>(egui::Id::new(("kp_conf", id))))
+                    {
                         values.insert((id, 2), PortValue::Float(c));
                     }
                 }
                 if inner.node.type_tag() == "pose_match" {
-                    if let Some(l) = ctx.data_mut(|d| d.get_temp::<String>(egui::Id::new(("pm_label", id)))) {
+                    if let Some(l) =
+                        ctx.data_mut(|d| d.get_temp::<String>(egui::Id::new(("pm_label", id))))
+                    {
                         values.insert((id, 0), PortValue::Text(l));
                     }
-                    if let Some(c) = ctx.data_mut(|d| d.get_temp::<f32>(egui::Id::new(("pm_conf", id)))) {
+                    if let Some(c) =
+                        ctx.data_mut(|d| d.get_temp::<f32>(egui::Id::new(("pm_conf", id))))
+                    {
                         values.insert((id, 1), PortValue::Float(c));
                     }
-                    if let Some(p) = ctx.data_mut(|d| d.get_temp::<String>(egui::Id::new(("pm_probs", id)))) {
+                    if let Some(p) =
+                        ctx.data_mut(|d| d.get_temp::<String>(egui::Id::new(("pm_probs", id))))
+                    {
                         values.insert((id, 2), PortValue::Text(p));
                     }
-                    if let Some(m) = ctx.data_mut(|d| d.get_temp::<f32>(egui::Id::new(("pm_matched", id)))) {
+                    if let Some(m) =
+                        ctx.data_mut(|d| d.get_temp::<f32>(egui::Id::new(("pm_matched", id))))
+                    {
                         values.insert((id, 3), PortValue::Float(m));
                     }
                 }
@@ -3719,8 +4383,13 @@ let project_dir = if selected_name.eq_ignore_ascii_case(&name) {
         {
             let node_ids = self.graph.ensure_topo_order();
             for nid in node_ids {
-                let is_dynamic = matches!(self.graph.nodes.get(&nid).map(|n| &n.node_type), Some(NodeType::Dynamic { .. }));
-                if !is_dynamic { continue; }
+                let is_dynamic = matches!(
+                    self.graph.nodes.get(&nid).map(|n| &n.node_type),
+                    Some(NodeType::Dynamic { .. })
+                );
+                if !is_dynamic {
+                    continue;
+                }
                 let inputs: Vec<PortValue> = self.graph.collect_inputs(nid, &values);
                 // Skip nodes with image inputs (handled in the image loop below).
                 // Must include GpuImage too — otherwise a Dynamic node with a
@@ -3728,9 +4397,16 @@ let project_dir = if selected_name.eq_ignore_ascii_case(&name) {
                 // `inner.node.evaluate(&inputs)` path which only matches
                 // PortValue::Image and stamps `None` into `values`, racing
                 // with the image loop's correct evaluation below.
-                if inputs.iter().any(|v| matches!(v, PortValue::Image(_) | PortValue::GpuImage(_))) { continue; }
+                if inputs
+                    .iter()
+                    .any(|v| matches!(v, PortValue::Image(_) | PortValue::GpuImage(_)))
+                {
+                    continue;
+                }
                 // Only re-evaluate if any input is non-None (connected)
-                if inputs.iter().all(|v| matches!(v, PortValue::None)) { continue; }
+                if inputs.iter().all(|v| matches!(v, PortValue::None)) {
+                    continue;
+                }
                 if let Some(mut node) = self.graph.nodes.remove(&nid) {
                     if let NodeType::Dynamic { ref mut inner } = node.node_type {
                         let results = inner.node.evaluate(&inputs);
@@ -3762,33 +4438,59 @@ let project_dir = if selected_name.eq_ignore_ascii_case(&name) {
                 // Trait-based image nodes (Transform, ImageStyle, ColorChannel, Crop, etc.)
                 // need re-evaluation here because image sources weren't populated during graph.evaluate().
                 // Cached: only reprocess when inputs (image content + param state) change.
-                let is_dynamic = matches!(self.graph.nodes.get(&id).map(|n| &n.node_type), Some(NodeType::Dynamic { .. }));
+                let is_dynamic = matches!(
+                    self.graph.nodes.get(&id).map(|n| &n.node_type),
+                    Some(NodeType::Dynamic { .. })
+                );
                 // HandDetectionNode/FaceDetection/PoseDetection: image input is consumed by async
                 // inference, not synchronous evaluate(). Their annotated output comes from egui
                 // temp data (set during render). Exclude them so their match arms below run.
-                let is_async_ml_node = is_dynamic && self.graph.nodes.get(&id).map(|n| match &n.node_type {
-                    NodeType::Dynamic { inner } => {
-                        let tag = inner.node.type_tag();
-                        tag == "hand_detection" || tag == "face_detection" || tag == "pose_detection"
-                    },
-                    _ => false,
-                }).unwrap_or(false);
-                if is_dynamic && !is_async_ml_node && inputs.iter().any(|v| matches!(v,
-                    PortValue::Image(_) | PortValue::GpuImage(_)
-                    | PortValue::Mesh(_) | PortValue::GpuMesh(_)
-                )) {
+                let is_async_ml_node = is_dynamic
+                    && self
+                        .graph
+                        .nodes
+                        .get(&id)
+                        .map(|n| match &n.node_type {
+                            NodeType::Dynamic { inner } => {
+                                let tag = inner.node.type_tag();
+                                tag == "hand_detection"
+                                    || tag == "face_detection"
+                                    || tag == "pose_detection"
+                            }
+                            _ => false,
+                        })
+                        .unwrap_or(false);
+                if is_dynamic
+                    && !is_async_ml_node
+                    && inputs.iter().any(|v| {
+                        matches!(
+                            v,
+                            PortValue::Image(_)
+                                | PortValue::GpuImage(_)
+                                | PortValue::Mesh(_)
+                                | PortValue::GpuMesh(_)
+                        )
+                    })
+                {
                     // Build cache key from image content + params + node state.
                     // Mesh / Material / Camera all flow through `img_or_gpu_hash`
                     // so 3D Render reacts to upstream changes.
                     let mut cache_key: u64 = 0;
                     for inp in &inputs {
                         match inp {
-                            PortValue::Image(_) | PortValue::GpuImage(_)
-                            | PortValue::Mesh(_) | PortValue::GpuMesh(_)
+                            PortValue::Image(_)
+                            | PortValue::GpuImage(_)
+                            | PortValue::Mesh(_)
+                            | PortValue::GpuMesh(_)
                             | PortValue::Text(_) => {
-                                cache_key = cache_key.wrapping_mul(31).wrapping_add(img_or_gpu_hash(inp))
+                                cache_key = cache_key
+                                    .wrapping_mul(31)
+                                    .wrapping_add(img_or_gpu_hash(inp))
                             }
-                            PortValue::Float(f) => cache_key = cache_key.wrapping_mul(31).wrapping_add(f.to_bits() as u64),
+                            PortValue::Float(f) => {
+                                cache_key =
+                                    cache_key.wrapping_mul(31).wrapping_add(f.to_bits() as u64)
+                            }
                             _ => {}
                         }
                     }
@@ -3803,13 +4505,16 @@ let project_dir = if selected_name.eq_ignore_ascii_case(&name) {
                         }
                     }
                     let cache_id = egui::Id::new(("dyn_img_cache", id));
-                    let cached: Option<(u64, Vec<(usize, PortValue)>)> = ctx.data_mut(|d| d.get_temp(cache_id));
+                    let cached: Option<(u64, Vec<(usize, PortValue)>)> =
+                        ctx.data_mut(|d| d.get_temp(cache_id));
                     if let Some((prev_key, prev_results)) = cached {
                         if prev_key == cache_key {
                             // Cache hit: keep any cached GPU output texture alive past
                             // the 2-frame LRU and re-publish to the display callback's
                             // prerendered map (which is cleared every frame).
-                            let has_gpu_output = prev_results.iter().any(|(_, v)| matches!(v, PortValue::GpuImage(_)));
+                            let has_gpu_output = prev_results
+                                .iter()
+                                .any(|(_, v)| matches!(v, PortValue::GpuImage(_)));
                             if has_gpu_output {
                                 self.gpu_tex_cache.touch(id, 0);
                                 if let Some(rs) = &self.wgpu_render_state {
@@ -3837,23 +4542,39 @@ let project_dir = if selected_name.eq_ignore_ascii_case(&name) {
                     // GpuImage and handle it inside evaluate_with_ctx.
                     let cpu_inputs: Vec<PortValue> = {
                         // Query per-port CPU needs from the node
-                        let needs_cpu_per_port: Vec<bool> = self.graph.nodes.get(&id)
-                            .map(|n| (0..inputs.len()).map(|p| n.node_type.needs_cpu_image_input(p)).collect())
+                        let needs_cpu_per_port: Vec<bool> = self
+                            .graph
+                            .nodes
+                            .get(&id)
+                            .map(|n| {
+                                (0..inputs.len())
+                                    .map(|p| n.node_type.needs_cpu_image_input(p))
+                                    .collect()
+                            })
                             .unwrap_or_else(|| vec![true; inputs.len()]);
-                        inputs.iter().enumerate().map(|(port_idx, v)| match v {
-                            PortValue::GpuImage(h) => {
-                                if *needs_cpu_per_port.get(port_idx).unwrap_or(&true) {
-                                    if let Some(rs) = &self.wgpu_render_state {
-                                        self.gpu_tex_cache.readback_node_output(h.node_id, h.port, &rs.device, &rs.queue)
-                                            .map(PortValue::Image)
-                                            .unwrap_or(PortValue::None)
-                                    } else { PortValue::None }
-                                } else {
-                                    v.clone() // pass GpuImage through for GPU-native nodes
+                        inputs
+                            .iter()
+                            .enumerate()
+                            .map(|(port_idx, v)| match v {
+                                PortValue::GpuImage(h) => {
+                                    if *needs_cpu_per_port.get(port_idx).unwrap_or(&true) {
+                                        if let Some(rs) = &self.wgpu_render_state {
+                                            self.gpu_tex_cache
+                                                .readback_node_output(
+                                                    h.node_id, h.port, &rs.device, &rs.queue,
+                                                )
+                                                .map(PortValue::Image)
+                                                .unwrap_or(PortValue::None)
+                                        } else {
+                                            PortValue::None
+                                        }
+                                    } else {
+                                        v.clone() // pass GpuImage through for GPU-native nodes
+                                    }
                                 }
-                            }
-                            other => other.clone(),
-                        }).collect()
+                                other => other.clone(),
+                            })
+                            .collect()
                     };
                     if let Some(mut node_mut) = self.graph.nodes.remove(&id) {
                         if let NodeType::Dynamic { ref mut inner } = node_mut.node_type {
@@ -3891,7 +4612,10 @@ let project_dir = if selected_name.eq_ignore_ascii_case(&name) {
                     }
                     continue;
                 }
-                let node = match self.graph.nodes.get(&id) { Some(n) => n, None => continue };
+                let node = match self.graph.nodes.get(&id) {
+                    Some(n) => n,
+                    None => continue,
+                };
                 match &node.node_type {
                     NodeType::ImageNode { image_data, .. } => {
                         // Pass-through any image variant; downstream may be CPU
@@ -3908,7 +4632,11 @@ let project_dir = if selected_name.eq_ignore_ascii_case(&name) {
                             Some(PortValue::GpuImage(h)) => {
                                 if needs_cpu_downstream {
                                     if let Some(rs) = &self.wgpu_render_state {
-                                        if let Some(cpu_img) = self.gpu_tex_cache.readback_node_output(h.node_id, h.port, &rs.device, &rs.queue) {
+                                        if let Some(cpu_img) =
+                                            self.gpu_tex_cache.readback_node_output(
+                                                h.node_id, h.port, &rs.device, &rs.queue,
+                                            )
+                                        {
                                             PortValue::Image(cpu_img)
                                         } else {
                                             PortValue::GpuImage(*h)
@@ -3920,14 +4648,28 @@ let project_dir = if selected_name.eq_ignore_ascii_case(&name) {
                                     PortValue::GpuImage(*h)
                                 }
                             }
-                            _ => image_data.as_ref().map(|img| PortValue::Image(img.clone())).unwrap_or(PortValue::None),
+                            _ => image_data
+                                .as_ref()
+                                .map(|img| PortValue::Image(img.clone()))
+                                .unwrap_or(PortValue::None),
                         };
                         values.insert((id, 0), out);
                     }
-                    NodeType::ImageEffects { brightness, contrast, saturation, hue, exposure, gamma } => {
+                    NodeType::ImageEffects {
+                        brightness,
+                        contrast,
+                        saturation,
+                        hue,
+                        exposure,
+                        gamma,
+                    } => {
                         // Accept either CPU `Image` or GPU `GpuImage` upstream.
                         let stub_owned: Option<ImageData> = match inputs.first() {
-                            Some(PortValue::GpuImage(h)) => Some(ImageData { width: h.width, height: h.height, pixels: Vec::new() }),
+                            Some(PortValue::GpuImage(h)) => Some(ImageData {
+                                width: h.width,
+                                height: h.height,
+                                pixels: Vec::new(),
+                            }),
                             _ => None,
                         };
                         let img_ref: Option<&ImageData> = match inputs.first() {
@@ -3936,9 +4678,12 @@ let project_dir = if selected_name.eq_ignore_ascii_case(&name) {
                             _ => None,
                         };
                         if let Some(img) = img_ref {
-                            let param_hash = ((*brightness * 1000.0) as u64) ^ ((*contrast * 1000.0) as u64) << 8
-                                ^ ((*saturation * 1000.0) as u64) << 16 ^ ((*hue * 10.0) as u64) << 24
-                                ^ ((*exposure * 1000.0) as u64) << 32 ^ ((*gamma * 1000.0) as u64) << 40;
+                            let param_hash = ((*brightness * 1000.0) as u64)
+                                ^ ((*contrast * 1000.0) as u64) << 8
+                                ^ ((*saturation * 1000.0) as u64) << 16
+                                ^ ((*hue * 10.0) as u64) << 24
+                                ^ ((*exposure * 1000.0) as u64) << 32
+                                ^ ((*gamma * 1000.0) as u64) << 40;
                             // Defensive: `if let Some(img) = img_ref` above ensures
                             // `inputs.first()` is Some here, but guard anyway so a
                             // future refactor (e.g. default-texture fallback path) can't
@@ -3946,7 +4691,8 @@ let project_dir = if selected_name.eq_ignore_ascii_case(&name) {
                             let cache_key = param_hash
                                 ^ inputs.first().map(|v| img_or_gpu_hash(v)).unwrap_or(0);
                             let cache_id = egui::Id::new(("img_fx_cache", id));
-                            let cached: Option<(u64, PortValue)> = ctx.data_mut(|d| d.get_temp(cache_id));
+                            let cached: Option<(u64, PortValue)> =
+                                ctx.data_mut(|d| d.get_temp(cache_id));
                             if let Some((prev_key, prev_val)) = cached {
                                 if prev_key == cache_key {
                                     if matches!(&prev_val, PortValue::GpuImage(_)) {
@@ -3961,21 +4707,52 @@ let project_dir = if selected_name.eq_ignore_ascii_case(&name) {
                             }
                             let needs_readback = has_cpu_consumer_cached(id, 0);
                             let result_val: PortValue = if let Some(rs) = &self.wgpu_render_state {
-                                nodes::image_effects::process_gpu_cached(img, *brightness, *contrast, *saturation, *hue, *exposure, *gamma, id, rs, &mut self.gpu_tex_cache, input_sources.first().copied().flatten(), needs_readback)
-                                    .unwrap_or_else(|| {
-                                        // CPU fallback only meaningful when we actually have pixels
-                                        if !img.pixels.is_empty() {
-                                            PortValue::Image(nodes::image_effects::process(img, *brightness, *contrast, *saturation, *hue, *exposure, *gamma))
-                                        } else {
-                                            PortValue::None
-                                        }
-                                    })
+                                nodes::image_effects::process_gpu_cached(
+                                    img,
+                                    *brightness,
+                                    *contrast,
+                                    *saturation,
+                                    *hue,
+                                    *exposure,
+                                    *gamma,
+                                    id,
+                                    rs,
+                                    &mut self.gpu_tex_cache,
+                                    input_sources.first().copied().flatten(),
+                                    needs_readback,
+                                )
+                                .unwrap_or_else(|| {
+                                    // CPU fallback only meaningful when we actually have pixels
+                                    if !img.pixels.is_empty() {
+                                        PortValue::Image(nodes::image_effects::process(
+                                            img,
+                                            *brightness,
+                                            *contrast,
+                                            *saturation,
+                                            *hue,
+                                            *exposure,
+                                            *gamma,
+                                        ))
+                                    } else {
+                                        PortValue::None
+                                    }
+                                })
                             } else if !img.pixels.is_empty() {
-                                PortValue::Image(nodes::image_effects::process(img, *brightness, *contrast, *saturation, *hue, *exposure, *gamma))
+                                PortValue::Image(nodes::image_effects::process(
+                                    img,
+                                    *brightness,
+                                    *contrast,
+                                    *saturation,
+                                    *hue,
+                                    *exposure,
+                                    *gamma,
+                                ))
                             } else {
                                 PortValue::None
                             };
-                            ctx.data_mut(|d| d.insert_temp(cache_id, (cache_key, result_val.clone())));
+                            ctx.data_mut(|d| {
+                                d.insert_temp(cache_id, (cache_key, result_val.clone()))
+                            });
                             values.insert((id, 0), result_val);
                         }
                     }
@@ -3993,12 +4770,18 @@ let project_dir = if selected_name.eq_ignore_ascii_case(&name) {
                         // stale LUT.
                         let mut pts_hash: u64 = points.len() as u64;
                         for p in points.iter() {
-                            pts_hash = pts_hash.wrapping_mul(31).wrapping_add(p[0].to_bits() as u64);
-                            pts_hash = pts_hash.wrapping_mul(31).wrapping_add(p[1].to_bits() as u64);
+                            pts_hash = pts_hash
+                                .wrapping_mul(31)
+                                .wrapping_add(p[0].to_bits() as u64);
+                            pts_hash = pts_hash
+                                .wrapping_mul(31)
+                                .wrapping_add(p[1].to_bits() as u64);
                         }
                         let cache_id = egui::Id::new(("curve_lut_cache", id));
-                        let cached: Option<(u64, std::sync::Arc<ImageData>)> = ctx.data_mut(|d| d.get_temp(cache_id));
-                        let need_regen = cached.as_ref().map(|(h, _)| *h != pts_hash).unwrap_or(true);
+                        let cached: Option<(u64, std::sync::Arc<ImageData>)> =
+                            ctx.data_mut(|d| d.get_temp(cache_id));
+                        let need_regen =
+                            cached.as_ref().map(|(h, _)| *h != pts_hash).unwrap_or(true);
                         if need_regen {
                             // Generate 256×1 LUT image
                             let w = 256u32;
@@ -4019,9 +4802,19 @@ let project_dir = if selected_name.eq_ignore_ascii_case(&name) {
                     }
                     // Draw migrated to trait-based DrawNode
                     // Noise migrated to trait-based NoiseNode (evaluated in graph.evaluate)
-                    NodeType::ColorCurves { master, red, green, blue, .. } => {
+                    NodeType::ColorCurves {
+                        master,
+                        red,
+                        green,
+                        blue,
+                        ..
+                    } => {
                         let stub_owned: Option<ImageData> = match inputs.first() {
-                            Some(PortValue::GpuImage(h)) => Some(ImageData { width: h.width, height: h.height, pixels: Vec::new() }),
+                            Some(PortValue::GpuImage(h)) => Some(ImageData {
+                                width: h.width,
+                                height: h.height,
+                                pixels: Vec::new(),
+                            }),
                             _ => None,
                         };
                         let img_ref: Option<&ImageData> = match inputs.first() {
@@ -4031,10 +4824,19 @@ let project_dir = if selected_name.eq_ignore_ascii_case(&name) {
                         };
                         if let Some(img) = img_ref {
                             let mut curve_hash: u64 = 0;
-                            for pts in [master.as_slice(), red.as_slice(), green.as_slice(), blue.as_slice()] {
+                            for pts in [
+                                master.as_slice(),
+                                red.as_slice(),
+                                green.as_slice(),
+                                blue.as_slice(),
+                            ] {
                                 for p in pts {
-                                    curve_hash = curve_hash.wrapping_mul(31).wrapping_add(p[0].to_bits() as u64);
-                                    curve_hash = curve_hash.wrapping_mul(31).wrapping_add(p[1].to_bits() as u64);
+                                    curve_hash = curve_hash
+                                        .wrapping_mul(31)
+                                        .wrapping_add(p[0].to_bits() as u64);
+                                    curve_hash = curve_hash
+                                        .wrapping_mul(31)
+                                        .wrapping_add(p[1].to_bits() as u64);
                                 }
                             }
                             // Defensive: same as the img_fx_cache site above — guarded
@@ -4043,7 +4845,8 @@ let project_dir = if selected_name.eq_ignore_ascii_case(&name) {
                             let cache_key = inputs.first().map(|v| img_or_gpu_hash(v)).unwrap_or(0)
                                 ^ curve_hash;
                             let cache_id = egui::Id::new(("cc_cache", id));
-                            let cached: Option<(u64, PortValue)> = ctx.data_mut(|d| d.get_temp(cache_id));
+                            let cached: Option<(u64, PortValue)> =
+                                ctx.data_mut(|d| d.get_temp(cache_id));
                             if let Some((prev_key, prev_val)) = cached {
                                 if prev_key == cache_key {
                                     if matches!(&prev_val, PortValue::GpuImage(_)) {
@@ -4059,28 +4862,49 @@ let project_dir = if selected_name.eq_ignore_ascii_case(&name) {
                             let needs_readback = has_cpu_consumer_cached(id, 0);
                             let result_val: PortValue = if let Some(rs) = &self.wgpu_render_state {
                                 nodes::color_curves::process_gpu_cached(
-                                    img, master, red, green, blue, id, rs, &mut self.gpu_tex_cache, input_sources.first().copied().flatten(), needs_readback)
-                                    .unwrap_or_else(|| {
-                                        if !img.pixels.is_empty() {
-                                            PortValue::Image(nodes::color_curves::process(img, master, red, green, blue))
-                                        } else {
-                                            PortValue::None
-                                        }
-                                    })
+                                    img,
+                                    master,
+                                    red,
+                                    green,
+                                    blue,
+                                    id,
+                                    rs,
+                                    &mut self.gpu_tex_cache,
+                                    input_sources.first().copied().flatten(),
+                                    needs_readback,
+                                )
+                                .unwrap_or_else(|| {
+                                    if !img.pixels.is_empty() {
+                                        PortValue::Image(nodes::color_curves::process(
+                                            img, master, red, green, blue,
+                                        ))
+                                    } else {
+                                        PortValue::None
+                                    }
+                                })
                             } else if !img.pixels.is_empty() {
-                                PortValue::Image(nodes::color_curves::process(img, master, red, green, blue))
+                                PortValue::Image(nodes::color_curves::process(
+                                    img, master, red, green, blue,
+                                ))
                             } else {
                                 PortValue::None
                             };
-                            ctx.data_mut(|d| d.insert_temp(cache_id, (cache_key, result_val.clone())));
+                            ctx.data_mut(|d| {
+                                d.insert_temp(cache_id, (cache_key, result_val.clone()))
+                            });
                             values.insert((id, 0), result_val);
                         }
                     }
-                    NodeType::VideoPlayer { current_frame, duration, .. } => {
+                    NodeType::VideoPlayer {
+                        current_frame,
+                        duration,
+                        ..
+                    } => {
                         if let Some(frame) = current_frame {
                             values.insert((id, 0), PortValue::Image(frame.clone()));
                             if let Some(rs) = &self.wgpu_render_state {
-                                self.gpu_tex_cache.get_or_upload(&rs.device, &rs.queue, frame);
+                                self.gpu_tex_cache
+                                    .get_or_upload(&rs.device, &rs.queue, frame);
                                 self.gpu_tex_cache.mark_node_source(frame, id, 0);
                             }
                             if *duration > 0.0 {
@@ -4096,7 +4920,8 @@ let project_dir = if selected_name.eq_ignore_ascii_case(&name) {
                             // Tag the entry with (node_id, 0) so the per-frame snapshot
                             // exports it for WGSL Viewer External image inputs to resolve.
                             if let Some(rs) = &self.wgpu_render_state {
-                                self.gpu_tex_cache.get_or_upload(&rs.device, &rs.queue, frame);
+                                self.gpu_tex_cache
+                                    .get_or_upload(&rs.device, &rs.queue, frame);
                                 self.gpu_tex_cache.mark_node_source(frame, id, 0);
                             }
                         }
@@ -4108,7 +4933,9 @@ let project_dir = if selected_name.eq_ignore_ascii_case(&name) {
                     // resolve an upstream texture.
                     NodeType::Dynamic { inner } if inner.node.type_tag() == "video_in" => {
                         let any = &*inner.node as &dyn std::any::Any;
-                        if let Some(vin) = any.downcast_ref::<crate::nodes::video_in_node::VideoInNode>() {
+                        if let Some(vin) =
+                            any.downcast_ref::<crate::nodes::video_in_node::VideoInNode>()
+                        {
                             // CPU path (Camera / Screen): upload frame to GPU
                             // cache and emit PortValue::Image so CPU consumers
                             // (Transform / Crop / Fill / AI Request / ML) still
@@ -4116,7 +4943,8 @@ let project_dir = if selected_name.eq_ignore_ascii_case(&name) {
                             if let Some(frame) = vin.current_frame.as_ref() {
                                 values.insert((id, 0), PortValue::Image(frame.clone()));
                                 if let Some(rs) = &self.wgpu_render_state {
-                                    self.gpu_tex_cache.get_or_upload(&rs.device, &rs.queue, frame);
+                                    self.gpu_tex_cache
+                                        .get_or_upload(&rs.device, &rs.queue, frame);
                                     self.gpu_tex_cache.mark_node_source(frame, id, 0);
                                 }
                             }
@@ -4147,7 +4975,12 @@ let project_dir = if selected_name.eq_ignore_ascii_case(&name) {
                             }
                         }
                     }
-                    NodeType::MlModel { annotated_frame, result_text, result_json, .. } => {
+                    NodeType::MlModel {
+                        annotated_frame,
+                        result_text,
+                        result_json,
+                        ..
+                    } => {
                         if let Some(frame) = annotated_frame {
                             values.insert((id, 0), PortValue::Image(frame.clone()));
                         }
@@ -4193,7 +5026,10 @@ let project_dir = if selected_name.eq_ignore_ascii_case(&name) {
         // AudioAnalyzer + AudioPlayer values already injected before the image evaluation loop above.
         // Sync OB Hub detected_devices from ObManager + auto-connect saved ports
         {
-            let hub_nodes: Vec<(NodeId, String)> = self.graph.nodes.iter()
+            let hub_nodes: Vec<(NodeId, String)> = self
+                .graph
+                .nodes
+                .iter()
                 .filter_map(|(&id, n)| {
                     if let NodeType::ObHub { port_name, .. } = &n.node_type {
                         Some((id, port_name.clone()))
@@ -4208,7 +5044,9 @@ let project_dir = if selected_name.eq_ignore_ascii_case(&name) {
                     let _ = self.ob.connect_hub(*hub_id, port_name);
                 }
                 // Sync detected_devices into NodeType
-                let detected: Vec<(String, u8)> = self.ob.get_hub(*hub_id)
+                let detected: Vec<(String, u8)> = self
+                    .ob
+                    .get_hub(*hub_id)
                     .map(|h| h.devices.keys().cloned().collect())
                     .unwrap_or_default();
                 // Build a label list for a (sorted) device set mirroring
@@ -4254,9 +5092,15 @@ let project_dir = if selected_name.eq_ignore_ascii_case(&name) {
                                 labels.push(format!("orb{}_gz", id));
                             }
                             other => {
-                                labels.push(format!("{}{}_val",
-                                    other.chars().next().map(|c| c.to_string()).unwrap_or_default(),
-                                    id));
+                                labels.push(format!(
+                                    "{}{}_val",
+                                    other
+                                        .chars()
+                                        .next()
+                                        .map(|c| c.to_string())
+                                        .unwrap_or_default(),
+                                    id
+                                ));
                             }
                         }
                     }
@@ -4264,7 +5108,10 @@ let project_dir = if selected_name.eq_ignore_ascii_case(&name) {
                 };
                 let mut stale_ports: Vec<usize> = Vec::new();
                 if let Some(node) = self.graph.nodes.get(hub_id) {
-                    if let NodeType::ObHub { detected_devices, .. } = &node.node_type {
+                    if let NodeType::ObHub {
+                        detected_devices, ..
+                    } = &node.node_type
+                    {
                         let old_labels = build_labels(detected_devices);
                         let new_labels = build_labels(&detected);
                         if old_labels != new_labels {
@@ -4278,7 +5125,10 @@ let project_dir = if selected_name.eq_ignore_ascii_case(&name) {
                     }
                 }
                 if let Some(node) = self.graph.nodes.get_mut(hub_id) {
-                    if let NodeType::ObHub { detected_devices, .. } = &mut node.node_type {
+                    if let NodeType::ObHub {
+                        detected_devices, ..
+                    } = &mut node.node_type
+                    {
                         *detected_devices = detected;
                     }
                 }
@@ -4299,7 +5149,9 @@ let project_dir = if selected_name.eq_ignore_ascii_case(&name) {
         for (&id, node) in &self.graph.nodes {
             match &node.node_type {
                 // Synth and AudioPlayer output their NodeId so FX nodes can reference them
-                NodeType::Synth { .. } | NodeType::AudioPlayer { .. } | NodeType::AudioPlaylist { .. } => {
+                NodeType::Synth { .. }
+                | NodeType::AudioPlayer { .. }
+                | NodeType::AudioPlaylist { .. } => {
                     values.insert((id, 0), PortValue::Float(id as f32));
                 }
                 _ => {}
@@ -4311,11 +5163,27 @@ let project_dir = if selected_name.eq_ignore_ascii_case(&name) {
         {
             let mut bg_img: Option<std::sync::Arc<ImageData>> = None;
             let mut bg_wgsl_node: Option<NodeId> = None;
-            if let Some((&theme_id, _)) = self.graph.nodes.iter().find(|(_, n)| matches!(n.node_type, NodeType::Theme { .. })) {
-                if let Some(conn) = self.graph.connections.iter().find(|c| c.to_node == theme_id && c.to_port == 21) {
+            if let Some((&theme_id, _)) = self
+                .graph
+                .nodes
+                .iter()
+                .find(|(_, n)| matches!(n.node_type, NodeType::Theme { .. }))
+            {
+                if let Some(conn) = self
+                    .graph
+                    .connections
+                    .iter()
+                    .find(|c| c.to_node == theme_id && c.to_port == 21)
+                {
                     let source_node = conn.from_node;
                     // Check if the source is a WGSL Viewer — render shader directly as BG
-                    if self.graph.nodes.get(&source_node).map(|n| matches!(n.node_type, NodeType::WgslViewer { .. })).unwrap_or(false) {
+                    if self
+                        .graph
+                        .nodes
+                        .get(&source_node)
+                        .map(|n| matches!(n.node_type, NodeType::WgslViewer { .. }))
+                        .unwrap_or(false)
+                    {
                         bg_wgsl_node = Some(source_node);
                     } else {
                         // Regular image source (Image node, ImageEffects, Blend, etc.)
@@ -4325,7 +5193,9 @@ let project_dir = if selected_name.eq_ignore_ascii_case(&name) {
                         // produce a CPU-side BG image for the canvas painter.
                         if let Some(val) = values.get(&(conn.from_node, conn.from_port)) {
                             match val {
-                                PortValue::Image(img) => { bg_img = Some(img.clone()); }
+                                PortValue::Image(img) => {
+                                    bg_img = Some(img.clone());
+                                }
                                 PortValue::GpuImage(h) => {
                                     if let Some(rs) = &self.wgpu_render_state {
                                         if let Some(img) = self.gpu_tex_cache.readback_node_output(
@@ -4357,14 +5227,30 @@ let project_dir = if selected_name.eq_ignore_ascii_case(&name) {
         self.handle_system_node_actions(ctx);
         // Handle OSC In spawn requests (create new OscIn pre-configured for a discovered address)
         {
-            let osc_ids: Vec<NodeId> = self.graph.nodes.keys().copied()
-                .filter(|id| matches!(self.graph.nodes.get(id).map(|n| &n.node_type), Some(NodeType::OscIn { .. })))
+            let osc_ids: Vec<NodeId> = self
+                .graph
+                .nodes
+                .keys()
+                .copied()
+                .filter(|id| {
+                    matches!(
+                        self.graph.nodes.get(id).map(|n| &n.node_type),
+                        Some(NodeType::OscIn { .. })
+                    )
+                })
                 .collect();
             for osc_id in osc_ids {
                 let spawn_id = egui::Id::new(("osc_spawn", osc_id));
-                if let Some((addr, argc, port)) = ctx.data_mut(|d| d.get_temp::<(String, usize, u16)>(spawn_id)) {
+                if let Some((addr, argc, port)) =
+                    ctx.data_mut(|d| d.get_temp::<(String, usize, u16)>(spawn_id))
+                {
                     ctx.data_mut(|d| d.remove::<(String, usize, u16)>(spawn_id));
-                    let src_pos = self.graph.nodes.get(&osc_id).map(|n| n.pos).unwrap_or([200.0, 200.0]);
+                    let src_pos = self
+                        .graph
+                        .nodes
+                        .get(&osc_id)
+                        .map(|n| n.pos)
+                        .unwrap_or([200.0, 200.0]);
                     let nt = NodeType::OscIn {
                         port,
                         address_filter: addr,
@@ -4378,31 +5264,102 @@ let project_dir = if selected_name.eq_ignore_ascii_case(&name) {
                     self.push_undo();
                     let new_id = self.add_node_selected(ctx, nt, [src_pos[0] + 280.0, src_pos[1]]);
                     // Auto-start listening on the spawned node
-                    self.osc.process(vec![crate::osc::OscAction::StartListening { node_id: new_id, port }]);
+                    self.osc
+                        .process(vec![crate::osc::OscAction::StartListening {
+                            node_id: new_id,
+                            port,
+                        }]);
                 }
             }
         }
         // Handle OB Hub spawn requests (create device node auto-connected to hub)
         {
-            let hub_ids: Vec<NodeId> = self.graph.nodes.keys().copied()
-                .filter(|id| matches!(self.graph.nodes.get(id).map(|n| &n.node_type), Some(NodeType::ObHub { .. })))
+            let hub_ids: Vec<NodeId> = self
+                .graph
+                .nodes
+                .keys()
+                .copied()
+                .filter(|id| {
+                    matches!(
+                        self.graph.nodes.get(id).map(|n| &n.node_type),
+                        Some(NodeType::ObHub { .. })
+                    )
+                })
                 .collect();
             for hub_id in hub_ids {
                 let spawn_id = egui::Id::new(("ob_spawn", hub_id));
                 if let Some((dtype, did)) = ctx.data_mut(|d| d.get_temp::<(String, u8)>(spawn_id)) {
                     ctx.data_mut(|d| d.remove::<(String, u8)>(spawn_id));
-                    let hub_pos = self.graph.nodes.get(&hub_id).map(|n| n.pos).unwrap_or([200.0, 200.0]);
+                    let hub_pos = self
+                        .graph
+                        .nodes
+                        .get(&hub_id)
+                        .map(|n| n.pos)
+                        .unwrap_or([200.0, 200.0]);
                     let nt = match dtype.as_str() {
-                        "joystick" => NodeType::ObJoystick { device_id: did, hub_node_id: hub_id, label_color: [255, 255, 255] },
-                        "encoder" => NodeType::ObEncoder { device_id: did, hub_node_id: hub_id, label_color: [255, 255, 255] },
-                        "move" => NodeType::ObMove { device_id: did, hub_node_id: hub_id },
-                        "bend" => NodeType::ObBend { device_id: did, hub_node_id: hub_id, label_color: [255, 255, 255] },
-                        "pressure" => NodeType::ObPressure { device_id: did, hub_node_id: hub_id, label_color: [255, 255, 255] },
-                        "distance" => NodeType::ObDistance { device_id: did, hub_node_id: hub_id, label_color: [255, 255, 255] },
-                        "knob" => NodeType::ObKnob { device_id: did, hub_node_id: hub_id, label_color: [255, 255, 255] },
-                        "orb" => NodeType::ObOrb { device_id: did, hub_node_id: hub_id, mode: 0, color: [255, 255, 255], param1: 0.0, param2: 0.0, speed: 1.0, brightness: 1.0 },
-                        "motor" => NodeType::ObMotor { device_id: did, hub_node_id: hub_id, mode: 0, dir: 1, speed: 400.0, amount: 90.0 },
-                        "light" => NodeType::ObLight { device_id: did, hub_node_id: hub_id, mode: 0, color: [255, 180, 100], brightness: 0.20, position: 0.5, speed: 0.5, color_mode: 0, send_mode: 0 },
+                        "joystick" => NodeType::ObJoystick {
+                            device_id: did,
+                            hub_node_id: hub_id,
+                            label_color: [255, 255, 255],
+                        },
+                        "encoder" => NodeType::ObEncoder {
+                            device_id: did,
+                            hub_node_id: hub_id,
+                            label_color: [255, 255, 255],
+                        },
+                        "move" => NodeType::ObMove {
+                            device_id: did,
+                            hub_node_id: hub_id,
+                        },
+                        "bend" => NodeType::ObBend {
+                            device_id: did,
+                            hub_node_id: hub_id,
+                            label_color: [255, 255, 255],
+                        },
+                        "pressure" => NodeType::ObPressure {
+                            device_id: did,
+                            hub_node_id: hub_id,
+                            label_color: [255, 255, 255],
+                        },
+                        "distance" => NodeType::ObDistance {
+                            device_id: did,
+                            hub_node_id: hub_id,
+                            label_color: [255, 255, 255],
+                        },
+                        "knob" => NodeType::ObKnob {
+                            device_id: did,
+                            hub_node_id: hub_id,
+                            label_color: [255, 255, 255],
+                        },
+                        "orb" => NodeType::ObOrb {
+                            device_id: did,
+                            hub_node_id: hub_id,
+                            mode: 0,
+                            color: [255, 255, 255],
+                            param1: 0.0,
+                            param2: 0.0,
+                            speed: 1.0,
+                            brightness: 1.0,
+                        },
+                        "motor" => NodeType::ObMotor {
+                            device_id: did,
+                            hub_node_id: hub_id,
+                            mode: 0,
+                            dir: 1,
+                            speed: 400.0,
+                            amount: 90.0,
+                        },
+                        "light" => NodeType::ObLight {
+                            device_id: did,
+                            hub_node_id: hub_id,
+                            mode: 0,
+                            color: [255, 180, 100],
+                            brightness: 0.20,
+                            position: 0.5,
+                            speed: 0.5,
+                            color_mode: 0,
+                            send_mode: 0,
+                        },
                         _ => continue,
                     };
                     self.push_undo();
@@ -4423,13 +5380,18 @@ let project_dir = if selected_name.eq_ignore_ascii_case(&name) {
     }
 }
 impl PatchworkApp {
-   pub(super) fn switch_document(&mut self, document_id: u64) -> bool {
+    pub(super) fn switch_document(&mut self, document_id: u64) -> bool {
         // Nothing to do if the requested document is already active.
         if self.documents.active().id == document_id {
             return true;
         }
         // Check the destination before changing any state.
-        if !self.documents.documents.iter().any(|doc| doc.id == document_id) {
+        if !self
+            .documents
+            .documents
+            .iter()
+            .any(|doc| doc.id == document_id)
+        {
             return false;
         }
         // Save the current document's state.
@@ -4459,9 +5421,9 @@ impl PatchworkApp {
             self.is_dirty = next.is_dirty;
             self.undo_history = next.undo_history.clone();
             self.project_path = next
-            .path
-            .as_ref()
-            .map(|path| path.to_string_lossy().into_owned());
+                .path
+                .as_ref()
+                .map(|path| path.to_string_lossy().into_owned());
         }
         // Clear temporary canvas state.
         self.port_positions.clear();
@@ -4475,14 +5437,11 @@ impl PatchworkApp {
         self.caches_dirty = true;
         true
     }
-        fn sync_active_document(&mut self) {
+    fn sync_active_document(&mut self) {
         let doc = self.documents.active_mut();
         // Graph and project information
         doc.graph = self.graph.clone();
-        doc.path = self
-        .project_path
-        .as_ref()
-        .map(std::path::PathBuf::from);
+        doc.path = self.project_path.as_ref().map(std::path::PathBuf::from);
         // Editor state
         doc.selected_nodes = self.selected_nodes.clone();
         doc.pinned_nodes = self.pinned_nodes.clone();
@@ -4494,56 +5453,56 @@ impl PatchworkApp {
         doc.is_dirty = self.is_dirty;
         // Update the document title
         doc.title = doc
-        .path
-        .as_ref()
-        .and_then(|path| path.file_stem())
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "Untitled".to_string());
-}
-fn create_new_tab(&mut self) {
-    let id = self.documents.new_document("Untitled");
-    self.switch_document(id);
-}
-fn close_tab(&mut self, document_id: u64) -> bool {
-// Do not close the last remaining tab.
-    if self.documents.documents.len() <= 1 {
-        return false;
+            .path
+            .as_ref()
+            .and_then(|path| path.file_stem())
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "Untitled".to_string());
     }
-// Check whether the tab has unsaved changes.
-let is_active = self.documents.active().id == document_id;
-let Some(document) = self
-        .documents
-        .documents
-        .iter()
-        .find(|doc| doc.id == document_id)
-    else {
-        return false;
-    };
-
-    let is_dirty = if is_active {
-        self.is_dirty
-    } else {
-        document.is_dirty
-    };
-
-    // Never silently discard unsaved work.
-   if is_dirty {
-    return false;
-}
-if is_active {
-        // Find another tab to activate before removing this one.
-        let Some(next_id) = self
+    fn create_new_tab(&mut self) {
+        let id = self.documents.new_document("Untitled");
+        self.switch_document(id);
+    }
+    fn close_tab(&mut self, document_id: u64) -> bool {
+        // Do not close the last remaining tab.
+        if self.documents.documents.len() <= 1 {
+            return false;
+        }
+        // Check whether the tab has unsaved changes.
+        let is_active = self.documents.active().id == document_id;
+        let Some(document) = self
             .documents
             .documents
             .iter()
-            .find(|doc| doc.id != document_id)
-            .map(|doc| doc.id)
+            .find(|doc| doc.id == document_id)
         else {
             return false;
         };
-// Saves the outgoing document and loads the next document.
-        self.switch_document(next_id);
+
+        let is_dirty = if is_active {
+            self.is_dirty
+        } else {
+            document.is_dirty
+        };
+
+        // Never silently discard unsaved work.
+        if is_dirty {
+            return false;
+        }
+        if is_active {
+            // Find another tab to activate before removing this one.
+            let Some(next_id) = self
+                .documents
+                .documents
+                .iter()
+                .find(|doc| doc.id != document_id)
+                .map(|doc| doc.id)
+            else {
+                return false;
+            };
+            // Saves the outgoing document and loads the next document.
+            self.switch_document(next_id);
+        }
+        self.documents.close_document(document_id)
     }
-self.documents.close_document(document_id)
-}
 }

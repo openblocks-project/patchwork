@@ -5,7 +5,7 @@
 //! First Clock node to initialize spawns the thread. Play/Pause/Stop/BPM are global.
 //! Each Clock node applies its own subdivision locally.
 
-use std::sync::atomic::{AtomicU64, AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 
 // ── Global transport ─────────────────────────────────────────────────────────
@@ -28,7 +28,13 @@ pub fn get_or_create_transport(default_bpm: f64) -> &'static GlobalTransport {
 
         std::thread::Builder::new()
             .name("patchwork-clock".into())
-            .spawn(move || ClockThread { state: clock_state, commands: rx }.run())
+            .spawn(move || {
+                ClockThread {
+                    state: clock_state,
+                    commands: rx,
+                }
+                .run()
+            })
             .expect("spawn clock thread");
 
         crate::system_log::log("Transport clock thread started (1ms resolution)");
@@ -51,11 +57,17 @@ pub fn get_transport() -> Option<&'static GlobalTransport> {
 pub struct AtomicF64(AtomicU64);
 
 impl AtomicF64 {
-    pub fn new(v: f64) -> Self { Self(AtomicU64::new(v.to_bits())) }
+    pub fn new(v: f64) -> Self {
+        Self(AtomicU64::new(v.to_bits()))
+    }
     #[inline]
-    pub fn load(&self) -> f64 { f64::from_bits(self.0.load(Ordering::Relaxed)) }
+    pub fn load(&self) -> f64 {
+        f64::from_bits(self.0.load(Ordering::Relaxed))
+    }
     #[inline]
-    pub fn store(&self, v: f64) { self.0.store(v.to_bits(), Ordering::Relaxed); }
+    pub fn store(&self, v: f64) {
+        self.0.store(v.to_bits(), Ordering::Relaxed);
+    }
 }
 
 // ── TransportState ───────────────────────────────────────────────────────────
@@ -146,7 +158,9 @@ impl ClockThread {
 
                 let current_beat_int = accumulated_beats.floor() as u64;
                 if current_beat_int > last_beat_int {
-                    self.state.beat_count.store(current_beat_int, Ordering::Relaxed);
+                    self.state
+                        .beat_count
+                        .store(current_beat_int, Ordering::Relaxed);
                     last_beat_int = current_beat_int;
                 }
             } else {

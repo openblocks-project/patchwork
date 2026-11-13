@@ -27,7 +27,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::thread::JoinHandle;
 
 use eframe::egui::{self, RichText};
@@ -38,7 +38,7 @@ use crate::node_trait::{NodeBehavior, RenderContext};
 
 const MAX_LATENT_DIM: usize = 32;
 const DEFAULT_LATENT_DIM: usize = 8;
-const N_LATENT_PORTS: usize = 8;       // hardcoded in/out latent ports per direction
+const N_LATENT_PORTS: usize = 8; // hardcoded in/out latent ports per direction
 const ENCODER_BLOCK_SIZE: usize = 2048; // samples per encoder forward pass
 const OUTPUT_RING_CAPACITY: usize = 32_768;
 const INPUT_RING_CAPACITY: usize = 16_384; // ~340 ms at 48 kHz; encoder block + slack
@@ -122,7 +122,9 @@ impl Default for NeuralAudioNode {
 
 impl NeuralAudioNode {
     fn ensure_thread(&mut self) {
-        if self.inference_thread.is_some() { return; }
+        if self.inference_thread.is_some() {
+            return;
+        }
         let bridge = self.bridge.clone();
         self.inference_thread = std::thread::Builder::new()
             .name("neural-audio-inference".to_string())
@@ -151,7 +153,9 @@ impl NeuralAudioNode {
     fn write_slider_bias_to_bridge(&self) {
         if let Ok(mut g) = self.bridge.latents.lock() {
             let n = self.n_latent.min(self.latent_values.len()).min(g.len());
-            for i in 0..n { g[i] = self.latent_values[i]; }
+            for i in 0..n {
+                g[i] = self.latent_values[i];
+            }
         }
     }
 }
@@ -163,7 +167,9 @@ impl Drop for NeuralAudioNode {
 }
 
 fn short_filename(path: &str) -> String {
-    if path.is_empty() { return String::new(); }
+    if path.is_empty() {
+        return String::new();
+    }
     std::path::Path::new(path)
         .file_name()
         .map(|s| s.to_string_lossy().to_string())
@@ -171,11 +177,21 @@ fn short_filename(path: &str) -> String {
 }
 
 impl NodeBehavior for NeuralAudioNode {
-    fn title(&self) -> &str { "Neural Audio" }
-    fn type_tag(&self) -> &str { "neural_audio" }
-    fn color_hint(&self) -> [u8; 3] { [180, 100, 255] }
-    fn min_width(&self) -> Option<f32> { Some(260.0) }
-    fn inline_ports(&self) -> bool { true }
+    fn title(&self) -> &str {
+        "Neural Audio"
+    }
+    fn type_tag(&self) -> &str {
+        "neural_audio"
+    }
+    fn color_hint(&self) -> [u8; 3] {
+        [180, 100, 255]
+    }
+    fn min_width(&self) -> Option<f32> {
+        Some(260.0)
+    }
+    fn inline_ports(&self) -> bool {
+        true
+    }
 
     fn inputs(&self) -> Vec<PortDef> {
         let mut v = Vec::with_capacity(1 + N_LATENT_PORTS);
@@ -205,11 +221,18 @@ impl NodeBehavior for NeuralAudioNode {
                 mask[i] = true;
             }
         }
-        if let Ok(mut g) = self.bridge.upstream_latent.lock() { *g = upstream; }
-        if let Ok(mut g) = self.bridge.upstream_mask.lock() { *g = mask; }
+        if let Ok(mut g) = self.bridge.upstream_latent.lock() {
+            *g = upstream;
+        }
+        if let Ok(mut g) = self.bridge.upstream_mask.lock() {
+            *g = mask;
+        }
 
         // Emit Latent Out values from the live latent (output ports 1..=N_LATENT_PORTS).
-        let live = self.bridge.live_latent.lock()
+        let live = self
+            .bridge
+            .live_latent
+            .lock()
             .map(|g| g.clone())
             .unwrap_or_else(|_| vec![0.0; self.n_latent]);
         let mut out = Vec::with_capacity(N_LATENT_PORTS);
@@ -225,23 +248,35 @@ impl NodeBehavior for NeuralAudioNode {
         let dim = egui::Color32::from_rgb(110, 110, 120);
 
         // Sync detected latent dim
-        let detected = self.bridge.n_latent.load(Ordering::Acquire).clamp(1, MAX_LATENT_DIM);
+        let detected = self
+            .bridge
+            .n_latent
+            .load(Ordering::Acquire)
+            .clamp(1, MAX_LATENT_DIM);
         if detected != self.n_latent {
             self.n_latent = detected;
             if self.latent_values.len() < detected {
                 self.latent_values.resize(detected, 0.0);
             }
             if let Ok(mut g) = self.bridge.latents.lock() {
-                if g.len() != detected { g.resize(detected, 0.0); }
+                if g.len() != detected {
+                    g.resize(detected, 0.0);
+                }
             }
             if let Ok(mut g) = self.bridge.frozen_latent.lock() {
-                if g.len() != detected { g.resize(detected, 0.0); }
+                if g.len() != detected {
+                    g.resize(detected, 0.0);
+                }
             }
             if let Ok(mut g) = self.bridge.last_encoded_latent.lock() {
-                if g.len() != detected { g.resize(detected, 0.0); }
+                if g.len() != detected {
+                    g.resize(detected, 0.0);
+                }
             }
             if let Ok(mut g) = self.bridge.live_latent.lock() {
-                if g.len() != detected { g.resize(detected, 0.0); }
+                if g.len() != detected {
+                    g.resize(detected, 0.0);
+                }
             }
         }
 
@@ -250,33 +285,42 @@ impl NodeBehavior for NeuralAudioNode {
         let mode = self.bridge.mode.load(Ordering::Acquire);
         let (status_text, status_color) = match status {
             STATUS_NO_MODEL => ("No model".to_string(), dim),
-            STATUS_LOADING  => ("Loading…".to_string(), egui::Color32::from_rgb(255, 200, 80)),
-            STATUS_READY    => {
+            STATUS_LOADING => (
+                "Loading…".to_string(),
+                egui::Color32::from_rgb(255, 200, 80),
+            ),
+            STATUS_READY => {
                 let label = match mode {
                     MODE_TRANSFER => "Transfer",
-                    MODE_FROZEN   => "Frozen",
-                    MODE_DRIVEN   => "Driven",
-                    _             => "Generate",
+                    MODE_FROZEN => "Frozen",
+                    MODE_DRIVEN => "Driven",
+                    _ => "Generate",
                 };
                 (label.to_string(), egui::Color32::from_rgb(120, 220, 140))
             }
-            STATUS_ERROR    => ("Error".to_string(), egui::Color32::from_rgb(255, 100, 100)),
-            _               => ("Unknown".to_string(), dim),
+            STATUS_ERROR => ("Error".to_string(), egui::Color32::from_rgb(255, 100, 100)),
+            _ => ("Unknown".to_string(), dim),
         };
         ui.horizontal(|ui| {
             ui.label(RichText::new("●").color(status_color));
             ui.label(RichText::new(status_text).small().color(status_color));
             let n = self.bridge.samples_generated.load(Ordering::Relaxed);
             if n > 0 {
-                ui.label(RichText::new(format!("· {} k samples", n / 1000))
-                    .small().color(dim));
+                ui.label(
+                    RichText::new(format!("· {} k samples", n / 1000))
+                        .small()
+                        .color(dim),
+                );
             }
         });
         if status == STATUS_ERROR {
             if let Ok(err) = self.bridge.last_error.lock() {
                 if !err.is_empty() {
-                    ui.label(RichText::new(err.as_str()).small()
-                        .color(egui::Color32::from_rgb(255, 100, 100)));
+                    ui.label(
+                        RichText::new(err.as_str())
+                            .small()
+                            .color(egui::Color32::from_rgb(255, 100, 100)),
+                    );
                 }
             }
         }
@@ -291,7 +335,11 @@ impl NodeBehavior for NeuralAudioNode {
                     self.set_decoder_path(path);
                 }
             }
-            ui.label(RichText::new(short_filename(&self.decoder_path)).small().color(dim));
+            ui.label(
+                RichText::new(short_filename(&self.decoder_path))
+                    .small()
+                    .color(dim),
+            );
         });
         ui.horizontal(|ui| {
             let encoder_btn = ui.small_button("📂 Encoder…");
@@ -303,7 +351,11 @@ impl NodeBehavior for NeuralAudioNode {
                     self.set_encoder_path(path);
                 }
             }
-            ui.label(RichText::new(short_filename(&self.encoder_path)).small().color(dim));
+            ui.label(
+                RichText::new(short_filename(&self.encoder_path))
+                    .small()
+                    .color(dim),
+            );
         });
 
         // ── Freeze toggle ───────────────────────────────────────────
@@ -319,13 +371,17 @@ impl NodeBehavior for NeuralAudioNode {
                         self.bridge.frozen_latent.lock(),
                     ) {
                         let n = self.n_latent.min(src.len()).min(dst.len());
-                        for i in 0..n { dst[i] = src[i]; }
+                        for i in 0..n {
+                            dst[i] = src[i];
+                        }
                     }
                 }
                 self.bridge.frozen.store(!frozen, Ordering::Release);
             }
             if ui.small_button("Zero").clicked() {
-                for v in self.latent_values.iter_mut() { *v = 0.0; }
+                for v in self.latent_values.iter_mut() {
+                    *v = 0.0;
+                }
                 self.write_slider_bias_to_bridge();
             }
             if ui.small_button("Random").clicked() {
@@ -343,12 +399,33 @@ impl NodeBehavior for NeuralAudioNode {
         ui.add_space(2.0);
 
         // ── Per-dim latent rows (in port + slider + value + out port) ─
-        let live = self.bridge.live_latent.lock().map(|g| g.clone()).unwrap_or_default();
-        let upstream_mask = self.bridge.upstream_mask.lock().map(|g| g.clone()).unwrap_or_default();
-        let bias_label_color = if mode == MODE_GENERATE { dim } else { egui::Color32::from_rgb(140, 200, 240) };
-        let bias_header = if mode == MODE_GENERATE { "Latents" } else { "Latents — bias" };
-        ui.label(RichText::new(format!("{} ({})", bias_header, self.n_latent))
-            .small().color(bias_label_color));
+        let live = self
+            .bridge
+            .live_latent
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_default();
+        let upstream_mask = self
+            .bridge
+            .upstream_mask
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_default();
+        let bias_label_color = if mode == MODE_GENERATE {
+            dim
+        } else {
+            egui::Color32::from_rgb(140, 200, 240)
+        };
+        let bias_header = if mode == MODE_GENERATE {
+            "Latents"
+        } else {
+            "Latents — bias"
+        };
+        ui.label(
+            RichText::new(format!("{} ({})", bias_header, self.n_latent))
+                .small()
+                .color(bias_label_color),
+        );
 
         let mut changed = false;
         for i in 0..self.n_latent {
@@ -357,16 +434,25 @@ impl NodeBehavior for NeuralAudioNode {
                 // Latent In port (only show for first N_LATENT_PORTS dims)
                 if i < N_LATENT_PORTS {
                     crate::nodes::inline_port_circle(
-                        ui, node_id, port_idx, true,
-                        ctx.connections, ctx.port_positions, ctx.dragging_from,
-                        ctx.pending_disconnects, PortKind::Number,
+                        ui,
+                        node_id,
+                        port_idx,
+                        true,
+                        ctx.connections,
+                        ctx.port_positions,
+                        ctx.dragging_from,
+                        ctx.pending_disconnects,
+                        PortKind::Number,
                     );
                 } else {
                     ui.add_space(20.0);
                 }
                 ui.label(RichText::new(format!("z{}", i)).small().color(dim));
                 if let Some(v) = self.latent_values.get_mut(i) {
-                    if ui.add(egui::Slider::new(v, -3.0..=3.0).show_value(false)).changed() {
+                    if ui
+                        .add(egui::Slider::new(v, -3.0..=3.0).show_value(false))
+                        .changed()
+                    {
                         changed = true;
                     }
                 }
@@ -377,21 +463,33 @@ impl NodeBehavior for NeuralAudioNode {
                 } else {
                     egui::Color32::from_rgb(180, 180, 180)
                 };
-                ui.label(RichText::new(format!("{:+.2}", live_v))
-                    .small().monospace().color(val_color));
+                ui.label(
+                    RichText::new(format!("{:+.2}", live_v))
+                        .small()
+                        .monospace()
+                        .color(val_color),
+                );
                 // Latent Out port (only show for first N_LATENT_PORTS dims)
                 if i < N_LATENT_PORTS {
                     crate::nodes::inline_port_circle(
-                        ui, node_id, port_idx, false,
-                        ctx.connections, ctx.port_positions, ctx.dragging_from,
-                        ctx.pending_disconnects, PortKind::Number,
+                        ui,
+                        node_id,
+                        port_idx,
+                        false,
+                        ctx.connections,
+                        ctx.port_positions,
+                        ctx.dragging_from,
+                        ctx.pending_disconnects,
+                        PortKind::Number,
                     );
                 } else {
                     ui.add_space(20.0);
                 }
             });
         }
-        if changed { self.write_slider_bias_to_bridge(); }
+        if changed {
+            self.write_slider_bias_to_bridge();
+        }
 
         ui.add_space(2.0);
         ui.separator();
@@ -400,27 +498,53 @@ impl NodeBehavior for NeuralAudioNode {
         // ── Audio In + Audio Out rows ────────────────────────────────
         ui.horizontal(|ui| {
             crate::nodes::inline_port_circle(
-                ui, node_id, 0, true,
-                ctx.connections, ctx.port_positions, ctx.dragging_from,
-                ctx.pending_disconnects, PortKind::Audio,
+                ui,
+                node_id,
+                0,
+                true,
+                ctx.connections,
+                ctx.port_positions,
+                ctx.dragging_from,
+                ctx.pending_disconnects,
+                PortKind::Audio,
             );
             let has_encoder = !self.encoder_path.is_empty();
-            let label_color = if has_encoder { dim } else { egui::Color32::from_rgb(80, 80, 90) };
-            ui.label(RichText::new(if has_encoder { "Audio in" } else { "Audio in (load encoder)" })
-                .small().color(label_color));
+            let label_color = if has_encoder {
+                dim
+            } else {
+                egui::Color32::from_rgb(80, 80, 90)
+            };
+            ui.label(
+                RichText::new(if has_encoder {
+                    "Audio in"
+                } else {
+                    "Audio in (load encoder)"
+                })
+                .small()
+                .color(label_color),
+            );
         });
         crate::nodes::output_port_row(
-            ui, "Audio", "", node_id, 0,
-            ctx.port_positions, ctx.dragging_from, ctx.connections,
-            ctx.pending_disconnects, PortKind::Audio,
+            ui,
+            "Audio",
+            "",
+            node_id,
+            0,
+            ctx.port_positions,
+            ctx.dragging_from,
+            ctx.connections,
+            ctx.pending_disconnects,
+            PortKind::Audio,
         );
 
         if status == STATUS_LOADING {
-            ui.ctx().request_repaint_after(std::time::Duration::from_millis(120));
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(120));
         }
         // Repaint while playing so live latent values update on the UI.
         if status == STATUS_READY {
-            ui.ctx().request_repaint_after(std::time::Duration::from_millis(50));
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(50));
         }
     }
 
@@ -435,26 +559,35 @@ impl NodeBehavior for NeuralAudioNode {
 
     fn load_state(&mut self, state: &serde_json::Value) {
         if let Some(arr) = state.get("latents").and_then(|v| v.as_array()) {
-            self.latent_values = arr.iter()
+            self.latent_values = arr
+                .iter()
                 .filter_map(|v| v.as_f64().map(|x| x as f32))
                 .collect();
             self.n_latent = self.latent_values.len().clamp(1, MAX_LATENT_DIM);
             self.write_slider_bias_to_bridge();
         }
         // Backwards-compat: old saves used `model_path` for the decoder.
-        let decoder = state.get("decoder_path").and_then(|v| v.as_str())
+        let decoder = state
+            .get("decoder_path")
+            .and_then(|v| v.as_str())
             .or_else(|| state.get("model_path").and_then(|v| v.as_str()))
             .unwrap_or("");
         if !decoder.is_empty() {
             let p = PathBuf::from(decoder);
-            if p.exists() { self.set_decoder_path(p); }
-            else { self.decoder_path = decoder.to_string(); }
+            if p.exists() {
+                self.set_decoder_path(p);
+            } else {
+                self.decoder_path = decoder.to_string();
+            }
         }
         if let Some(s) = state.get("encoder_path").and_then(|v| v.as_str()) {
             if !s.is_empty() {
                 let p = PathBuf::from(s);
-                if p.exists() { self.set_encoder_path(p); }
-                else { self.encoder_path = s.to_string(); }
+                if p.exists() {
+                    self.set_encoder_path(p);
+                } else {
+                    self.encoder_path = s.to_string();
+                }
             }
         }
         if let Some(b) = state.get("frozen").and_then(|v| v.as_bool()) {
@@ -493,16 +626,26 @@ fn run_inference_thread(bridge: Arc<NeuralAudioBridge>) {
                         decoder_input = name;
                         bridge.n_latent.store(n_lat, Ordering::Release);
                         // Resize all latent vectors in bridge
-                        for m in [&bridge.latents, &bridge.frozen_latent,
-                                  &bridge.last_encoded_latent, &bridge.live_latent] {
-                            if let Ok(mut g) = m.lock() { g.resize(n_lat, 0.0); }
+                        for m in [
+                            &bridge.latents,
+                            &bridge.frozen_latent,
+                            &bridge.last_encoded_latent,
+                            &bridge.live_latent,
+                        ] {
+                            if let Ok(mut g) = m.lock() {
+                                g.resize(n_lat, 0.0);
+                            }
                         }
-                        if let Ok(mut e) = bridge.last_error.lock() { e.clear(); }
+                        if let Ok(mut e) = bridge.last_error.lock() {
+                            e.clear();
+                        }
                         decoder = Some(s);
                         bridge.status.store(STATUS_READY, Ordering::Release);
                     }
                     Err(err) => {
-                        if let Ok(mut e) = bridge.last_error.lock() { *e = err; }
+                        if let Ok(mut e) = bridge.last_error.lock() {
+                            *e = err;
+                        }
                         bridge.status.store(STATUS_ERROR, Ordering::Release);
                     }
                 }
@@ -523,7 +666,9 @@ fn run_inference_thread(bridge: Arc<NeuralAudioBridge>) {
                         encoder = Some(s);
                     }
                     Err(err) => {
-                        if let Ok(mut e) = bridge.last_error.lock() { *e = err; }
+                        if let Ok(mut e) = bridge.last_error.lock() {
+                            *e = err;
+                        }
                     }
                 }
             }
@@ -550,7 +695,9 @@ fn run_inference_thread(bridge: Arc<NeuralAudioBridge>) {
         if !frozen && encoder.is_some() && input_avail {
             // Drain ENCODER_BLOCK_SIZE samples from input ring
             input_block.resize(ENCODER_BLOCK_SIZE, 0.0);
-            bridge.input_buffer.read_into(&mut input_block, ENCODER_BLOCK_SIZE);
+            bridge
+                .input_buffer
+                .read_into(&mut input_block, ENCODER_BLOCK_SIZE);
             // Detect non-silence (we don't run encoder on dead air)
             let energy = input_block.iter().map(|s| s.abs()).fold(0.0_f32, f32::max);
             if energy > 1e-4 {
@@ -580,9 +727,17 @@ fn run_inference_thread(bridge: Arc<NeuralAudioBridge>) {
         }
 
         // ── Compose with upstream Latent In overrides + slider bias ───
-        let upstream = bridge.upstream_latent.lock().map(|g| g.clone()).unwrap_or_default();
-        let mask     = bridge.upstream_mask.lock().map(|g| g.clone()).unwrap_or_default();
-        let sliders  = bridge.latents.lock().map(|g| g.clone()).unwrap_or_default();
+        let upstream = bridge
+            .upstream_latent
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_default();
+        let mask = bridge
+            .upstream_mask
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_default();
+        let sliders = bridge.latents.lock().map(|g| g.clone()).unwrap_or_default();
 
         let mut z = vec![0.0f32; latent_dim];
         let mut any_driven = false;
@@ -597,7 +752,9 @@ fn run_inference_thread(bridge: Arc<NeuralAudioBridge>) {
             let bias = sliders.get(i).copied().unwrap_or(0.0);
             z[i] = b + bias;
         }
-        if any_driven { active_mode = MODE_DRIVEN; }
+        if any_driven {
+            active_mode = MODE_DRIVEN;
+        }
         bridge.mode.store(active_mode, Ordering::Release);
 
         // Publish live latent for UI + Latent Out ports
@@ -624,16 +781,25 @@ fn run_inference_thread(bridge: Arc<NeuralAudioBridge>) {
                 continue;
             }
         };
-        let Some(out) = outputs.into_iter().next() else { continue };
+        let Some(out) = outputs.into_iter().next() else {
+            continue;
+        };
         let value = out.1;
         let view = match value.try_extract_tensor::<f32>() {
             Ok(t) => t,
-            Err(e) => { set_error(&bridge, format!("extract: {e}")); continue; }
+            Err(e) => {
+                set_error(&bridge, format!("extract: {e}"));
+                continue;
+            }
         };
         let samples: &[f32] = view.1;
-        if samples.is_empty() { continue; }
+        if samples.is_empty() {
+            continue;
+        }
         bridge.output_buffer.write(samples);
-        bridge.samples_generated.fetch_add(samples.len() as u64, Ordering::Relaxed);
+        bridge
+            .samples_generated
+            .fetch_add(samples.len() as u64, Ordering::Relaxed);
     }
 }
 
@@ -646,28 +812,40 @@ fn run_encoder(
     let shape = vec![1i64, 1i64, audio.len() as i64];
     let tensor = ort::value::Tensor::from_array((shape, audio.to_vec().into_boxed_slice()))
         .map_err(|e| format!("tensor: {e}"))?;
-    let outputs = sess.run(ort::inputs![input_name => tensor])
+    let outputs = sess
+        .run(ort::inputs![input_name => tensor])
         .map_err(|e| format!("run: {e}"))?;
-    let out = outputs.into_iter().next().ok_or_else(|| "no outputs".to_string())?;
-    let view = out.1.try_extract_tensor::<f32>().map_err(|e| format!("extract: {e}"))?;
+    let out = outputs
+        .into_iter()
+        .next()
+        .ok_or_else(|| "no outputs".to_string())?;
+    let view = out
+        .1
+        .try_extract_tensor::<f32>()
+        .map_err(|e| format!("extract: {e}"))?;
     let data: &[f32] = view.1;
     let n = latent_dim.min(data.len());
     Ok(data[..n].to_vec())
 }
 
 fn set_error(bridge: &NeuralAudioBridge, msg: String) {
-    if let Ok(mut e) = bridge.last_error.lock() { *e = msg; }
+    if let Ok(mut e) = bridge.last_error.lock() {
+        *e = msg;
+    }
     bridge.status.store(STATUS_ERROR, Ordering::Release);
 }
 
 fn build_session(path: &PathBuf) -> Result<(ort::session::Session, String, usize), String> {
-    let mut builder = crate::ml::ep::session_builder()
-        .map_err(|e| format!("session_builder: {e}"))?;
-    let session = builder.commit_from_file(path)
+    let mut builder =
+        crate::ml::ep::session_builder().map_err(|e| format!("session_builder: {e}"))?;
+    let session = builder
+        .commit_from_file(path)
         .map_err(|e| format!("load model: {e}"))?;
 
     let inputs = session.inputs();
-    let input = inputs.first().ok_or_else(|| "model has no inputs".to_string())?;
+    let input = inputs
+        .first()
+        .ok_or_else(|| "model has no inputs".to_string())?;
     let name = input.name().to_string();
 
     // Try to detect latent dim from input shape's axis-1 (decoder convention).

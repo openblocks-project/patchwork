@@ -2,9 +2,9 @@
 //! Effect processors — wrap existing DSP math from AudioEffect enum.
 //! Each struct implements AudioProcessor for one effect type.
 
-use crate::audio::processor::{AudioProcessor, ProcessorKind, ProcessContext};
-use crate::audio::smoothed::SmoothedParam;
 use crate::audio::biquad::BiquadFilter;
+use crate::audio::processor::{AudioProcessor, ProcessContext, ProcessorKind};
+use crate::audio::smoothed::SmoothedParam;
 
 // ── Gain ──────────────────────────────────────────────────────────────────────
 
@@ -14,13 +14,19 @@ pub struct GainProcessor {
 
 impl GainProcessor {
     pub fn new(level: f32) -> Self {
-        Self { level: SmoothedParam::new(level, 5.0) }
+        Self {
+            level: SmoothedParam::new(level, 5.0),
+        }
     }
 }
 
 impl AudioProcessor for GainProcessor {
-    fn type_id(&self) -> &str { "gain" }
-    fn kind(&self) -> ProcessorKind { ProcessorKind::Effect }
+    fn type_id(&self) -> &str {
+        "gain"
+    }
+    fn kind(&self) -> ProcessorKind {
+        ProcessorKind::Effect
+    }
 
     fn process_block(&mut self, input: &[f32], output: &mut [f32], _ctx: &ProcessContext) {
         for i in 0..input.len() {
@@ -29,16 +35,22 @@ impl AudioProcessor for GainProcessor {
     }
 
     fn set_params(&mut self, params: &[f32]) {
-        if let Some(&v) = params.first() { self.level.set(v); }
+        if let Some(&v) = params.first() {
+            self.level.set(v);
+        }
     }
 
-    fn param_count(&self) -> usize { 1 }
+    fn param_count(&self) -> usize {
+        1
+    }
 
     fn prepare(&mut self, _sample_rate: f32, _max_block_size: usize) {
         self.level = SmoothedParam::new(self.level.target, 5.0);
     }
 
-    fn reset(&mut self) { self.level.current = self.level.target; }
+    fn reset(&mut self) {
+        self.level.current = self.level.target;
+    }
 }
 
 // ── LowPass ───────────────────────────────────────────────────────────────────
@@ -50,13 +62,20 @@ pub struct LowPassProcessor {
 
 impl LowPassProcessor {
     pub fn new(cutoff: f32) -> Self {
-        Self { cutoff: SmoothedParam::new(cutoff, 10.0), state: 0.0 }
+        Self {
+            cutoff: SmoothedParam::new(cutoff, 10.0),
+            state: 0.0,
+        }
     }
 }
 
 impl AudioProcessor for LowPassProcessor {
-    fn type_id(&self) -> &str { "lowpass" }
-    fn kind(&self) -> ProcessorKind { ProcessorKind::Effect }
+    fn type_id(&self) -> &str {
+        "lowpass"
+    }
+    fn kind(&self) -> ProcessorKind {
+        ProcessorKind::Effect
+    }
 
     fn process_block(&mut self, input: &[f32], output: &mut [f32], ctx: &ProcessContext) {
         for i in 0..input.len() {
@@ -70,16 +89,22 @@ impl AudioProcessor for LowPassProcessor {
     }
 
     fn set_params(&mut self, params: &[f32]) {
-        if let Some(&v) = params.first() { self.cutoff.set(v); }
+        if let Some(&v) = params.first() {
+            self.cutoff.set(v);
+        }
     }
 
-    fn param_count(&self) -> usize { 1 }
+    fn param_count(&self) -> usize {
+        1
+    }
 
     fn prepare(&mut self, _sample_rate: f32, _max_block_size: usize) {
         self.cutoff = SmoothedParam::new(self.cutoff.target, 10.0);
     }
 
-    fn reset(&mut self) { self.state = 0.0; }
+    fn reset(&mut self) {
+        self.state = 0.0;
+    }
 }
 
 // ── HighPass ──────────────────────────────────────────────────────────────────
@@ -91,13 +116,20 @@ pub struct HighPassProcessor {
 
 impl HighPassProcessor {
     pub fn new(cutoff: f32) -> Self {
-        Self { cutoff: SmoothedParam::new(cutoff, 10.0), state: 0.0 }
+        Self {
+            cutoff: SmoothedParam::new(cutoff, 10.0),
+            state: 0.0,
+        }
     }
 }
 
 impl AudioProcessor for HighPassProcessor {
-    fn type_id(&self) -> &str { "highpass" }
-    fn kind(&self) -> ProcessorKind { ProcessorKind::Effect }
+    fn type_id(&self) -> &str {
+        "highpass"
+    }
+    fn kind(&self) -> ProcessorKind {
+        ProcessorKind::Effect
+    }
 
     fn process_block(&mut self, input: &[f32], output: &mut [f32], ctx: &ProcessContext) {
         for i in 0..input.len() {
@@ -112,16 +144,22 @@ impl AudioProcessor for HighPassProcessor {
     }
 
     fn set_params(&mut self, params: &[f32]) {
-        if let Some(&v) = params.first() { self.cutoff.set(v); }
+        if let Some(&v) = params.first() {
+            self.cutoff.set(v);
+        }
     }
 
-    fn param_count(&self) -> usize { 1 }
+    fn param_count(&self) -> usize {
+        1
+    }
 
     fn prepare(&mut self, _sample_rate: f32, _max_block_size: usize) {
         self.cutoff = SmoothedParam::new(self.cutoff.target, 10.0);
     }
 
-    fn reset(&mut self) { self.state = 0.0; }
+    fn reset(&mut self) {
+        self.state = 0.0;
+    }
 }
 
 // ── Delay ─────────────────────────────────────────────────────────────────────
@@ -138,18 +176,28 @@ pub struct DelayProcessor {
 impl DelayProcessor {
     pub fn new(time_ms: f32, feedback: f32) -> Self {
         Self {
-            time_ms, feedback: SmoothedParam::new(feedback, 10.0),
-            buffer: Vec::new(), write_pos: 0, max_delay_samples: 0, sample_rate: 44100.0,
+            time_ms,
+            feedback: SmoothedParam::new(feedback, 10.0),
+            buffer: Vec::new(),
+            write_pos: 0,
+            max_delay_samples: 0,
+            sample_rate: 44100.0,
         }
     }
 }
 
 impl AudioProcessor for DelayProcessor {
-    fn type_id(&self) -> &str { "delay" }
-    fn kind(&self) -> ProcessorKind { ProcessorKind::Effect }
+    fn type_id(&self) -> &str {
+        "delay"
+    }
+    fn kind(&self) -> ProcessorKind {
+        ProcessorKind::Effect
+    }
 
     fn process_block(&mut self, input: &[f32], output: &mut [f32], _ctx: &ProcessContext) {
-        if self.buffer.is_empty() { return; }
+        if self.buffer.is_empty() {
+            return;
+        }
 
         let delay_samples = (self.time_ms * self.sample_rate / 1000.0) as usize;
         let delay_samples = delay_samples.clamp(1, self.max_delay_samples - 1);
@@ -170,11 +218,17 @@ impl AudioProcessor for DelayProcessor {
     }
 
     fn set_params(&mut self, params: &[f32]) {
-        if let Some(&v) = params.first() { self.time_ms = v; }
-        if let Some(&v) = params.get(1) { self.feedback.set(v); }
+        if let Some(&v) = params.first() {
+            self.time_ms = v;
+        }
+        if let Some(&v) = params.get(1) {
+            self.feedback.set(v);
+        }
     }
 
-    fn param_count(&self) -> usize { 2 } // time_ms, feedback
+    fn param_count(&self) -> usize {
+        2
+    } // time_ms, feedback
 
     fn prepare(&mut self, sample_rate: f32, _max_block_size: usize) {
         self.sample_rate = sample_rate;
@@ -198,13 +252,19 @@ pub struct DistortionProcessor {
 
 impl DistortionProcessor {
     pub fn new(drive: f32) -> Self {
-        Self { drive: SmoothedParam::new(drive, 5.0) }
+        Self {
+            drive: SmoothedParam::new(drive, 5.0),
+        }
     }
 }
 
 impl AudioProcessor for DistortionProcessor {
-    fn type_id(&self) -> &str { "distortion" }
-    fn kind(&self) -> ProcessorKind { ProcessorKind::Effect }
+    fn type_id(&self) -> &str {
+        "distortion"
+    }
+    fn kind(&self) -> ProcessorKind {
+        ProcessorKind::Effect
+    }
 
     fn process_block(&mut self, input: &[f32], output: &mut [f32], _ctx: &ProcessContext) {
         for i in 0..input.len() {
@@ -214,10 +274,14 @@ impl AudioProcessor for DistortionProcessor {
     }
 
     fn set_params(&mut self, params: &[f32]) {
-        if let Some(&v) = params.first() { self.drive.set(v); }
+        if let Some(&v) = params.first() {
+            self.drive.set(v);
+        }
     }
 
-    fn param_count(&self) -> usize { 1 }
+    fn param_count(&self) -> usize {
+        1
+    }
 
     fn prepare(&mut self, _sample_rate: f32, _max_block_size: usize) {
         self.drive = SmoothedParam::new(self.drive.target, 5.0);
@@ -245,15 +309,22 @@ impl ReverbProcessor {
             room_size: SmoothedParam::new(room_size, 20.0),
             damping: SmoothedParam::new(damping, 20.0),
             mix: SmoothedParam::new(mix, 20.0),
-            comb_buffers: [vec![], vec![], vec![], vec![]], comb_pos: [0; 4], comb_filter_state: [0.0; 4],
-            allpass_buffers: [vec![], vec![]], allpass_pos: [0; 2],
+            comb_buffers: [vec![], vec![], vec![], vec![]],
+            comb_pos: [0; 4],
+            comb_filter_state: [0.0; 4],
+            allpass_buffers: [vec![], vec![]],
+            allpass_pos: [0; 2],
         }
     }
 }
 
 impl AudioProcessor for ReverbProcessor {
-    fn type_id(&self) -> &str { "reverb" }
-    fn kind(&self) -> ProcessorKind { ProcessorKind::Effect }
+    fn type_id(&self) -> &str {
+        "reverb"
+    }
+    fn kind(&self) -> ProcessorKind {
+        ProcessorKind::Effect
+    }
 
     fn process_block(&mut self, input: &[f32], output: &mut [f32], _ctx: &ProcessContext) {
         for i in 0..input.len() {
@@ -269,7 +340,9 @@ impl AudioProcessor for ReverbProcessor {
             let mut comb_out = 0.0f32;
             for j in 0..4 {
                 let buf = &mut self.comb_buffers[j];
-                if buf.is_empty() { continue; }
+                if buf.is_empty() {
+                    continue;
+                }
                 let pos = &mut self.comb_pos[j];
                 let filt = &mut self.comb_filter_state[j];
                 let delayed = buf[*pos];
@@ -283,7 +356,9 @@ impl AudioProcessor for ReverbProcessor {
             let mut out = comb_out;
             for j in 0..2 {
                 let buf = &mut self.allpass_buffers[j];
-                if buf.is_empty() { continue; }
+                if buf.is_empty() {
+                    continue;
+                }
                 let pos = &mut self.allpass_pos[j];
                 let delayed = buf[*pos];
                 let ap_out = -out + delayed;
@@ -297,12 +372,20 @@ impl AudioProcessor for ReverbProcessor {
     }
 
     fn set_params(&mut self, params: &[f32]) {
-        if let Some(&v) = params.first() { self.room_size.set(v); }
-        if let Some(&v) = params.get(1) { self.damping.set(v); }
-        if let Some(&v) = params.get(2) { self.mix.set(v); }
+        if let Some(&v) = params.first() {
+            self.room_size.set(v);
+        }
+        if let Some(&v) = params.get(1) {
+            self.damping.set(v);
+        }
+        if let Some(&v) = params.get(2) {
+            self.mix.set(v);
+        }
     }
 
-    fn param_count(&self) -> usize { 3 }
+    fn param_count(&self) -> usize {
+        3
+    }
 
     fn prepare(&mut self, sample_rate: f32, _max_block_size: usize) {
         let sr_scale = (sample_rate / 44100.0).max(0.5);
@@ -312,10 +395,7 @@ impl AudioProcessor for ReverbProcessor {
             (1277.0 * sr_scale) as usize,
             (1356.0 * sr_scale) as usize,
         ];
-        let allpass_lengths = [
-            (556.0 * sr_scale) as usize,
-            (441.0 * sr_scale) as usize,
-        ];
+        let allpass_lengths = [(556.0 * sr_scale) as usize, (441.0 * sr_scale) as usize];
         for (i, &len) in comb_lengths.iter().enumerate() {
             self.comb_buffers[i] = vec![0.0; len.max(1)];
             self.comb_pos[i] = 0;
@@ -331,8 +411,12 @@ impl AudioProcessor for ReverbProcessor {
     }
 
     fn reset(&mut self) {
-        for buf in &mut self.comb_buffers { buf.fill(0.0); }
-        for buf in &mut self.allpass_buffers { buf.fill(0.0); }
+        for buf in &mut self.comb_buffers {
+            buf.fill(0.0);
+        }
+        for buf in &mut self.allpass_buffers {
+            buf.fill(0.0);
+        }
         self.comb_pos = [0; 4];
         self.allpass_pos = [0; 2];
         self.comb_filter_state = [0.0; 4];
@@ -368,8 +452,12 @@ impl NoiseRemovalProcessor {
 }
 
 impl AudioProcessor for NoiseRemovalProcessor {
-    fn type_id(&self) -> &str { "noise_removal" }
-    fn kind(&self) -> ProcessorKind { ProcessorKind::Effect }
+    fn type_id(&self) -> &str {
+        "noise_removal"
+    }
+    fn kind(&self) -> ProcessorKind {
+        ProcessorKind::Effect
+    }
 
     fn process_block(&mut self, input: &[f32], output: &mut [f32], _ctx: &ProcessContext) {
         // Only rebuild biquad coeffs when the cutoff moves enough to matter
@@ -384,7 +472,7 @@ impl AudioProcessor for NoiseRemovalProcessor {
         // gets muted via an exponential ramp (avoids clicks on gate events).
         let gate_thresh = self.gate_thresh.tick().max(0.0);
         let gate_on = gate_thresh > 0.0;
-        let env_attack = 0.25f32;   // fast rise
+        let env_attack = 0.25f32; // fast rise
         let env_release = 0.0005f32; // slow fall
 
         for i in 0..input.len() {
@@ -408,11 +496,17 @@ impl AudioProcessor for NoiseRemovalProcessor {
     }
 
     fn set_params(&mut self, params: &[f32]) {
-        if let Some(&v) = params.first() { self.cutoff_hz.set(v); }
-        if let Some(&v) = params.get(1) { self.gate_thresh.set(v); }
+        if let Some(&v) = params.first() {
+            self.cutoff_hz.set(v);
+        }
+        if let Some(&v) = params.get(1) {
+            self.gate_thresh.set(v);
+        }
     }
 
-    fn param_count(&self) -> usize { 2 }
+    fn param_count(&self) -> usize {
+        2
+    }
 
     fn prepare(&mut self, sample_rate: f32, _max_block_size: usize) {
         self.sample_rate = sample_rate;
@@ -443,8 +537,12 @@ impl EqProcessor {
 }
 
 impl AudioProcessor for EqProcessor {
-    fn type_id(&self) -> &str { "eq" }
-    fn kind(&self) -> ProcessorKind { ProcessorKind::Effect }
+    fn type_id(&self) -> &str {
+        "eq"
+    }
+    fn kind(&self) -> ProcessorKind {
+        ProcessorKind::Effect
+    }
 
     fn process_block(&mut self, input: &[f32], output: &mut [f32], _ctx: &ProcessContext) {
         for i in 0..input.len() {
@@ -460,12 +558,16 @@ impl AudioProcessor for EqProcessor {
         // EQ params are the curve points — updated via replace, not atomic slots
     }
 
-    fn param_count(&self) -> usize { 0 }
+    fn param_count(&self) -> usize {
+        0
+    }
 
     fn prepare(&mut self, _sample_rate: f32, _max_block_size: usize) {}
 
     fn reset(&mut self) {
-        for band in &mut self.bands { band.reset(); }
+        for band in &mut self.bands {
+            band.reset();
+        }
     }
 
     fn set_eq_bands(&mut self, bands: Vec<crate::audio::biquad::BiquadFilter>, hash: u64) {
@@ -481,7 +583,9 @@ impl AudioProcessor for EqProcessor {
         self.curve_hash = hash;
     }
 
-    fn eq_curve_hash(&self) -> u64 { self.curve_hash }
+    fn eq_curve_hash(&self) -> u64 {
+        self.curve_hash
+    }
 }
 
 // ── Pitch Shift (granular overlap-add) ───────────────────────────────────────
@@ -499,7 +603,7 @@ pub struct PitchShiftProcessor {
     grain_size: usize,
     /// Phase (0..grain_size) and fractional read offset for each of the 2 grains.
     grain_phase: [f64; 2],
-    grain_read:  [f64; 2],
+    grain_read: [f64; 2],
     /// Absolute ring position (in samples) where each grain started.
     /// Captured when the grain (re)wraps, then frozen — `read_pos`
     /// is `grain_start + grain_read`. This is what makes ratio=1 a
@@ -520,7 +624,7 @@ impl PitchShiftProcessor {
             write: 0,
             grain_size: 2048,
             grain_phase: [0.0, 0.0],
-            grain_read:  [0.0, 0.0],
+            grain_read: [0.0, 0.0],
             grain_start: [0.0, 0.0],
         }
     }
@@ -537,11 +641,17 @@ impl PitchShiftProcessor {
 }
 
 impl AudioProcessor for PitchShiftProcessor {
-    fn type_id(&self) -> &str { "pitchshift" }
-    fn kind(&self) -> ProcessorKind { ProcessorKind::Effect }
+    fn type_id(&self) -> &str {
+        "pitchshift"
+    }
+    fn kind(&self) -> ProcessorKind {
+        ProcessorKind::Effect
+    }
 
     fn process_block(&mut self, input: &[f32], output: &mut [f32], _ctx: &ProcessContext) {
-        if self.ring.is_empty() { return; }
+        if self.ring.is_empty() {
+            return;
+        }
         let n = self.ring.len();
         let gs = self.grain_size as f64;
         let nf = n as f64;
@@ -569,7 +679,7 @@ impl AudioProcessor for PitchShiftProcessor {
                 out += self.read_lerp(read_pos) * win;
 
                 self.grain_phase[g] += 1.0;
-                self.grain_read[g]  += ratio;
+                self.grain_read[g] += ratio;
 
                 // When grain completes, restart it gs samples behind the
                 // current write head (write_f is the position we just wrote
@@ -577,7 +687,7 @@ impl AudioProcessor for PitchShiftProcessor {
                 // — close enough; off-by-one is masked by the Hann window).
                 if self.grain_phase[g] >= gs {
                     self.grain_phase[g] = 0.0;
-                    self.grain_read[g]  = 0.0;
+                    self.grain_read[g] = 0.0;
                     self.grain_start[g] = (write_f - gs).rem_euclid(nf);
                 }
             }
@@ -592,28 +702,29 @@ impl AudioProcessor for PitchShiftProcessor {
         }
     }
 
-    fn param_count(&self) -> usize { 1 }
+    fn param_count(&self) -> usize {
+        1
+    }
 
     fn prepare(&mut self, sample_rate: f32, _max_block_size: usize) {
         // ~46 ms grain, rounded to next power of two
-        self.grain_size = ((sample_rate * 0.046) as usize).next_power_of_two().max(512);
+        self.grain_size = ((sample_rate * 0.046) as usize)
+            .next_power_of_two()
+            .max(512);
         // Ring must fit at least 2× the grain so the read head never overtakes write
         let ring_size = self.grain_size * 4;
         self.ring = vec![0.0; ring_size];
         self.write = 0;
         // Stagger the two grains by half a grain so one is always at full window
         self.grain_phase = [0.0, self.grain_size as f64 / 2.0];
-        self.grain_read  = [0.0, self.grain_size as f64 / 2.0];
+        self.grain_read = [0.0, self.grain_size as f64 / 2.0];
         // Anchor each grain `grain_size` samples behind the start of the
         // ring, modulo n. With write=0 that lands at n - grain_size,
         // which is in the silent prefill — the first ~gs samples of
         // output are silence (natural latency) until the ring fills.
         let nf = ring_size as f64;
         let gsf = self.grain_size as f64;
-        self.grain_start = [
-            (-gsf).rem_euclid(nf),
-            (-gsf).rem_euclid(nf),
-        ];
+        self.grain_start = [(-gsf).rem_euclid(nf), (-gsf).rem_euclid(nf)];
         self.semitones = SmoothedParam::new(self.semitones.target, 30.0);
     }
 
@@ -621,12 +732,9 @@ impl AudioProcessor for PitchShiftProcessor {
         self.ring.fill(0.0);
         self.write = 0;
         self.grain_phase = [0.0, self.grain_size as f64 / 2.0];
-        self.grain_read  = [0.0, self.grain_size as f64 / 2.0];
+        self.grain_read = [0.0, self.grain_size as f64 / 2.0];
         let nf = self.ring.len() as f64;
         let gsf = self.grain_size as f64;
-        self.grain_start = [
-            (-gsf).rem_euclid(nf),
-            (-gsf).rem_euclid(nf),
-        ];
+        self.grain_start = [(-gsf).rem_euclid(nf), (-gsf).rem_euclid(nf)];
     }
 }

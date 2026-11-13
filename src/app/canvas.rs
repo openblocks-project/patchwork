@@ -1,6 +1,11 @@
 use super::*;
 
-pub(super) fn point_near_bezier(p: egui::Pos2, from: egui::Pos2, to: egui::Pos2, threshold: f32) -> bool {
+pub(super) fn point_near_bezier(
+    p: egui::Pos2,
+    from: egui::Pos2,
+    to: egui::Pos2,
+    threshold: f32,
+) -> bool {
     let dx = (to.x - from.x).abs().max(50.0) * 0.5;
     let cp1 = egui::pos2(from.x + dx, from.y);
     let cp2 = egui::pos2(to.x - dx, to.y);
@@ -8,10 +13,18 @@ pub(super) fn point_near_bezier(p: egui::Pos2, from: egui::Pos2, to: egui::Pos2,
         let t = i as f32 / 20.0;
         let it = 1.0 - t;
         let pt = egui::pos2(
-            it*it*it*from.x + 3.0*it*it*t*cp1.x + 3.0*it*t*t*cp2.x + t*t*t*to.x,
-            it*it*it*from.y + 3.0*it*it*t*cp1.y + 3.0*it*t*t*cp2.y + t*t*t*to.y,
+            it * it * it * from.x
+                + 3.0 * it * it * t * cp1.x
+                + 3.0 * it * t * t * cp2.x
+                + t * t * t * to.x,
+            it * it * it * from.y
+                + 3.0 * it * it * t * cp1.y
+                + 3.0 * it * t * t * cp2.y
+                + t * t * t * to.y,
         );
-        if pt.distance(p) < threshold { return true; }
+        if pt.distance(p) < threshold {
+            return true;
+        }
     }
     false
 }
@@ -23,8 +36,14 @@ fn eval_bezier(from: egui::Pos2, to: egui::Pos2, t: f32) -> egui::Pos2 {
     let cp2 = egui::pos2(to.x - dx, to.y);
     let it = 1.0 - t;
     egui::pos2(
-        it*it*it*from.x + 3.0*it*it*t*cp1.x + 3.0*it*t*t*cp2.x + t*t*t*to.x,
-        it*it*it*from.y + 3.0*it*it*t*cp1.y + 3.0*it*t*t*cp2.y + t*t*t*to.y,
+        it * it * it * from.x
+            + 3.0 * it * it * t * cp1.x
+            + 3.0 * it * t * t * cp2.x
+            + t * t * t * to.x,
+        it * it * it * from.y
+            + 3.0 * it * it * t * cp1.y
+            + 3.0 * it * t * t * cp2.y
+            + t * t * t * to.y,
     )
 }
 
@@ -33,13 +52,21 @@ fn eval_bezier(from: egui::Pos2, to: egui::Pos2, t: f32) -> egui::Pos2 {
 pub(super) struct WiggleParams {
     pub activity: f32,
     pub time: f32,
-    pub gravity: f32,    // 0=none, 1=heavy droop
-    pub range: f32,      // amplitude multiplier
-    pub speed: f32,      // speed multiplier (0.1=slow, 2.0=fast)
+    pub gravity: f32, // 0=none, 1=heavy droop
+    pub range: f32,   // amplitude multiplier
+    pub speed: f32,   // speed multiplier (0.1=slow, 2.0=fast)
 }
 
 impl Default for WiggleParams {
-    fn default() -> Self { Self { activity: 0.0, time: 0.0, gravity: 0.0, range: 1.0, speed: 1.0 } }
+    fn default() -> Self {
+        Self {
+            activity: 0.0,
+            time: 0.0,
+            gravity: 0.0,
+            range: 1.0,
+            speed: 1.0,
+        }
+    }
 }
 
 /// Draw a wire connector plug at an endpoint.
@@ -84,19 +111,35 @@ pub(super) fn draw_wire_connector(
     };
 
     painter.rect_filled(rect, corner, fill);
-    painter.rect_stroke(rect, corner, egui::Stroke::new(1.5, border_col), egui::StrokeKind::Outside);
+    painter.rect_stroke(
+        rect,
+        corner,
+        egui::Stroke::new(1.5, border_col),
+        egui::StrokeKind::Outside,
+    );
 
     // Small notch/line inside to suggest a plug contact
     let notch_y = center.y;
     let notch_w = w * 0.3;
     painter.line_segment(
-        [egui::pos2(center.x - notch_w, notch_y), egui::pos2(center.x + notch_w, notch_y)],
+        [
+            egui::pos2(center.x - notch_w, notch_y),
+            egui::pos2(center.x + notch_w, notch_y),
+        ],
         egui::Stroke::new(1.0, border_col),
     );
 }
 
 /// Draw a wire between two points. style: 0=Bezier, 1=Straight, 2=Orthogonal, 3=Wiggly
-pub(super) fn draw_wire(painter: &egui::Painter, from: egui::Pos2, to: egui::Pos2, color: egui::Color32, width: f32, style: u8, wp: &WiggleParams) {
+pub(super) fn draw_wire(
+    painter: &egui::Painter,
+    from: egui::Pos2,
+    to: egui::Pos2,
+    color: egui::Color32,
+    width: f32,
+    style: u8,
+    wp: &WiggleParams,
+) {
     match style {
         1 => {
             // Straight line
@@ -105,7 +148,9 @@ pub(super) fn draw_wire(painter: &egui::Painter, from: egui::Pos2, to: egui::Pos
         2 => {
             // Orthogonal with rounded corners
             let mid_x = (from.x + to.x) / 2.0;
-            let corner_r = 12.0_f32.min((to.x - from.x).abs() / 4.0).min((to.y - from.y).abs() / 2.0);
+            let corner_r = 12.0_f32
+                .min((to.x - from.x).abs() / 4.0)
+                .min((to.y - from.y).abs() / 2.0);
             let points = if (from.y - to.y).abs() < 2.0 {
                 vec![from, to]
             } else {
@@ -136,8 +181,15 @@ pub(super) fn draw_wire(painter: &egui::Painter, from: egui::Pos2, to: egui::Pos
             } else {
                 let dx = (to.x - from.x).abs().max(50.0) * 0.5;
                 painter.add(egui::epaint::CubicBezierShape::from_points_stroke(
-                    [from, egui::pos2(from.x + dx, from.y), egui::pos2(to.x - dx, to.y), to],
-                    false, egui::Color32::TRANSPARENT, egui::Stroke::new(width, color),
+                    [
+                        from,
+                        egui::pos2(from.x + dx, from.y),
+                        egui::pos2(to.x - dx, to.y),
+                        to,
+                    ],
+                    false,
+                    egui::Color32::TRANSPARENT,
+                    egui::Stroke::new(width, color),
                 ));
             }
         }
@@ -149,7 +201,14 @@ pub(super) fn draw_wire(painter: &egui::Painter, from: egui::Pos2, to: egui::Pos
 /// - Port-area fade: wiggles near-zero at both endpoints (steeper than plain sine envelope)
 /// - Gravity: catenary-like downward sag, strongest at midpoint
 /// - Phase travels from→to direction
-fn draw_wiggly_wire(painter: &egui::Painter, from: egui::Pos2, to: egui::Pos2, color: egui::Color32, width: f32, wp: &WiggleParams) {
+fn draw_wiggly_wire(
+    painter: &egui::Painter,
+    from: egui::Pos2,
+    to: egui::Pos2,
+    color: egui::Color32,
+    width: f32,
+    wp: &WiggleParams,
+) {
     let segments = 50;
     let dist = from.distance(to).max(1.0);
     let activity = wp.activity;
@@ -210,13 +269,29 @@ fn draw_wiggly_wire(painter: &egui::Painter, from: egui::Pos2, to: egui::Pos2, c
 }
 
 /// Draw a 3D-effect wire: shadow underneath + main color + bright highlight on top.
-pub(super) fn draw_wire_3d(painter: &egui::Painter, from: egui::Pos2, to: egui::Pos2, color: egui::Color32, width: f32, style: u8, wp: &WiggleParams) {
+pub(super) fn draw_wire_3d(
+    painter: &egui::Painter,
+    from: egui::Pos2,
+    to: egui::Pos2,
+    color: egui::Color32,
+    width: f32,
+    style: u8,
+    wp: &WiggleParams,
+) {
     let rgba = color.to_array();
     // 1. Shadow layer (dark, wider, offset slightly down)
     let shadow = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 40);
     let shadow_from = egui::pos2(from.x, from.y + 1.5);
     let shadow_to = egui::pos2(to.x, to.y + 1.5);
-    draw_wire(painter, shadow_from, shadow_to, shadow, width + 3.0, style, wp);
+    draw_wire(
+        painter,
+        shadow_from,
+        shadow_to,
+        shadow,
+        width + 3.0,
+        style,
+        wp,
+    );
 
     // 2. Dark edge (creates depth — slightly wider than main)
     let dark_edge = egui::Color32::from_rgb(
@@ -238,12 +313,26 @@ pub(super) fn draw_wire_3d(painter: &egui::Painter, from: egui::Pos2, to: egui::
     );
     let hl_from = egui::pos2(from.x, from.y - 0.5);
     let hl_to = egui::pos2(to.x, to.y - 0.5);
-    draw_wire(painter, hl_from, hl_to, highlight, (width * 0.25).max(1.0), style, wp);
+    draw_wire(
+        painter,
+        hl_from,
+        hl_to,
+        highlight,
+        (width * 0.25).max(1.0),
+        style,
+        wp,
+    );
 }
 
 /// Backward-compatible wrapper
 #[allow(dead_code)]
-pub(super) fn draw_bezier(painter: &egui::Painter, from: egui::Pos2, to: egui::Pos2, color: egui::Color32, width: f32) {
+pub(super) fn draw_bezier(
+    painter: &egui::Painter,
+    from: egui::Pos2,
+    to: egui::Pos2,
+    color: egui::Color32,
+    width: f32,
+) {
     draw_wire(painter, from, to, color, width, 0, &WiggleParams::default());
 }
 
@@ -399,16 +488,23 @@ impl super::PatchworkApp {
         });
     }
 
-    pub(super) fn render_connections(&mut self, ctx: &egui::Context, values: &HashMap<(NodeId, usize), PortValue>) {
+    pub(super) fn render_connections(
+        &mut self,
+        ctx: &egui::Context,
+        values: &HashMap<(NodeId, usize), PortValue>,
+    ) {
         // let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Middle, egui::Id::new("connections")));
-        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Background, egui::Id::new("connections")));
+        let painter = ctx.layer_painter(egui::LayerId::new(
+            egui::Order::Background,
+            egui::Id::new("connections"),
+        ));
         let pointer = ctx.pointer_latest_pos();
         let clicked = ctx.input(|i| i.pointer.button_clicked(egui::PointerButton::Primary));
         let now = ctx.input(|i| i.time) as f32;
         let mut hovered_conn: Option<usize> = None;
 
         // ── Wire color palette (derived from PortKind) ──────────────────
-        let color_none  = egui::Color32::from_rgb(140, 140, 140);   // gray fallback
+        let color_none = egui::Color32::from_rgb(140, 140, 140); // gray fallback
 
         // Wire thickness + style + wiggly params from Theme
         let (wire_thickness, wire_style, wiggle_gravity, wiggle_range, wiggle_speed, wiggle_signal): (f32, u8, f32, f32, f32, f32) = self.graph.nodes.values()
@@ -422,29 +518,36 @@ impl super::PatchworkApp {
 
         // Pre-compute wire colors for all connections + drag
         // Uses PortKind from port definitions for semantic coloring
-        let compute_wire_color = |nodes: &HashMap<NodeId, Node>, from_node: NodeId, from_port: usize| -> egui::Color32 {
-            if let Some(node) = nodes.get(&from_node) {
-                let outputs = node.node_type.outputs();
-                if let Some(pdef) = outputs.get(from_port) {
-                    let c = pdef.kind.base_color();
-                    return egui::Color32::from_rgb(c[0], c[1], c[2]);
+        let compute_wire_color =
+            |nodes: &HashMap<NodeId, Node>, from_node: NodeId, from_port: usize| -> egui::Color32 {
+                if let Some(node) = nodes.get(&from_node) {
+                    let outputs = node.node_type.outputs();
+                    if let Some(pdef) = outputs.get(from_port) {
+                        let c = pdef.kind.base_color();
+                        return egui::Color32::from_rgb(c[0], c[1], c[2]);
+                    }
                 }
-            }
-            // Fallback: infer from runtime value
-            match values.get(&(from_node, from_port)) {
-                Some(v) => {
-                    let c = PortKind::from_value(v).base_color();
-                    egui::Color32::from_rgb(c[0], c[1], c[2])
+                // Fallback: infer from runtime value
+                match values.get(&(from_node, from_port)) {
+                    Some(v) => {
+                        let c = PortKind::from_value(v).base_color();
+                        egui::Color32::from_rgb(c[0], c[1], c[2])
+                    }
+                    _ => color_none,
                 }
-                _ => color_none,
-            }
-        };
+            };
         // Pre-compute all wire colors (so we don't borrow self.graph during rendering)
-        let wire_colors: Vec<egui::Color32> = self.graph.connections.iter()
+        let wire_colors: Vec<egui::Color32> = self
+            .graph
+            .connections
+            .iter()
             .map(|c| compute_wire_color(&self.graph.nodes, c.from_node, c.from_port))
             .collect();
         // Pre-compute destination (input) port colors for connector plugs
-        let wire_dest_colors: Vec<egui::Color32> = self.graph.connections.iter()
+        let wire_dest_colors: Vec<egui::Color32> = self
+            .graph
+            .connections
+            .iter()
             .map(|c| {
                 if let Some(node) = self.graph.nodes.get(&c.to_node) {
                     let inputs = node.node_type.inputs();
@@ -466,8 +569,12 @@ impl super::PatchworkApp {
                     if let Some(pdef) = inputs.get(pidx) {
                         let c = pdef.kind.base_color();
                         egui::Color32::from_rgb(c[0], c[1], c[2])
-                    } else { color_none }
-                } else { color_none }
+                    } else {
+                        color_none
+                    }
+                } else {
+                    color_none
+                }
             }
         } else {
             color_none
@@ -475,13 +582,19 @@ impl super::PatchworkApp {
 
         // ── Draw established connections ──────────────────────────────────
         for (idx, conn) in self.graph.connections.iter().enumerate() {
-            let from = self.port_positions.get(&(conn.from_node, conn.from_port, false));
+            let from = self
+                .port_positions
+                .get(&(conn.from_node, conn.from_port, false));
             let to = self.port_positions.get(&(conn.to_node, conn.to_port, true));
             if let (Some(&a), Some(&b)) = (from, to) {
                 let conn_id = (conn.from_node, conn.from_port, conn.to_node, conn.to_port);
                 let is_selected = self.selected_connection.as_ref() == Some(&conn_id);
-                let is_hovered = pointer.map(|p| point_near_bezier(p, a, b, 10.0)).unwrap_or(false);
-                if is_hovered { hovered_conn = Some(idx); }
+                let is_hovered = pointer
+                    .map(|p| point_near_bezier(p, a, b, 10.0))
+                    .unwrap_or(false);
+                if is_hovered {
+                    hovered_conn = Some(idx);
+                }
 
                 let base_color = wire_colors[idx];
 
@@ -493,30 +606,42 @@ impl super::PatchworkApp {
                     (base_color, wire_thickness + 1.0)
                 } else if is_hovered {
                     let arr = base_color.to_array();
-                    (egui::Color32::from_rgb(
-                        (arr[0] as u16 + 50).min(255) as u8,
-                        (arr[1] as u16 + 50).min(255) as u8,
-                        (arr[2] as u16 + 50).min(255) as u8,
-                    ), wire_thickness + 1.0)
+                    (
+                        egui::Color32::from_rgb(
+                            (arr[0] as u16 + 50).min(255) as u8,
+                            (arr[1] as u16 + 50).min(255) as u8,
+                            (arr[2] as u16 + 50).min(255) as u8,
+                        ),
+                        wire_thickness + 1.0,
+                    )
                 } else {
                     (base_color, wire_thickness)
                 };
 
                 // Compute wire activity for curved mode when range>0 AND the user
                 // has given signal weight > 0 (otherwise activity is ignored).
-                let wire_activity = if wire_style == 0 && wiggle_range > 0.0 && wiggle_signal > 0.0 {
+                let wire_activity = if wire_style == 0 && wiggle_range > 0.0 && wiggle_signal > 0.0
+                {
                     let val_id = egui::Id::new(("wire_val_hash", conn.from_node, conn.from_port));
-                    let activity_id = egui::Id::new(("wire_activity", conn.from_node, conn.from_port));
+                    let activity_id =
+                        egui::Id::new(("wire_activity", conn.from_node, conn.from_port));
                     let smooth_id = egui::Id::new(("wire_smooth", conn.from_node, conn.from_port));
                     let cur_hash = match values.get(&(conn.from_node, conn.from_port)) {
                         Some(PortValue::Float(f)) => (*f * 10000.0) as i64,
-                        Some(PortValue::Text(s)) => s.len() as i64 * 31 + s.bytes().next().unwrap_or(0) as i64,
-                        Some(PortValue::Image(img)) => img.width as i64 * img.height as i64 + img.pixels.first().copied().unwrap_or(0) as i64,
+                        Some(PortValue::Text(s)) => {
+                            s.len() as i64 * 31 + s.bytes().next().unwrap_or(0) as i64
+                        }
+                        Some(PortValue::Image(img)) => {
+                            img.width as i64 * img.height as i64
+                                + img.pixels.first().copied().unwrap_or(0) as i64
+                        }
                         // GpuImage wires animate via the per-frame `frame_stamp`
                         // counter so the wiggle still pulses even though pixels
                         // never touch the CPU.
-                        Some(PortValue::GpuImage(h)) => (h.frame_stamp as i64).wrapping_mul(1_000_003)
-                            ^ (h.width as i64 * h.height as i64),
+                        Some(PortValue::GpuImage(h)) => {
+                            (h.frame_stamp as i64).wrapping_mul(1_000_003)
+                                ^ (h.width as i64 * h.height as i64)
+                        }
                         _ => 0i64,
                     };
                     let prev_hash = ctx.data_mut(|d| d.get_temp::<i64>(val_id).unwrap_or(0));
@@ -531,7 +656,11 @@ impl super::PatchworkApp {
                     let prev_smooth = ctx.data_mut(|d| d.get_temp::<f32>(smooth_id).unwrap_or(0.0));
                     let rise_speed = 0.15; // how fast to ramp up (0.15 = ~7 frames to reach peak)
                     let fall_speed = 0.04; // how fast to settle down (0.04 = ~25 frames to fade)
-                    let speed = if raw_target > prev_smooth { rise_speed } else { fall_speed };
+                    let speed = if raw_target > prev_smooth {
+                        rise_speed
+                    } else {
+                        fall_speed
+                    };
                     let smoothed = prev_smooth + (raw_target - prev_smooth) * speed;
                     ctx.data_mut(|d| {
                         d.insert_temp(val_id, cur_hash);
@@ -587,9 +716,13 @@ impl super::PatchworkApp {
         // ── Click to select/open wire menu ────────────────────────────────
         if clicked {
             if let Some(idx) = hovered_conn {
-                let near_port = pointer.map(|p| {
-                    self.port_positions.values().any(|&pp| pp.distance(p) < PORT_INTERACT)
-                }).unwrap_or(false);
+                let near_port = pointer
+                    .map(|p| {
+                        self.port_positions
+                            .values()
+                            .any(|&pp| pp.distance(p) < PORT_INTERACT)
+                    })
+                    .unwrap_or(false);
                 if !near_port {
                     if let Some(conn) = self.graph.connections.get(idx) {
                         let cid = (conn.from_node, conn.from_port, conn.to_node, conn.to_port);
@@ -655,7 +788,13 @@ impl super::PatchworkApp {
                             } else {
                                 format!("{} Insert node…", crate::icons::PLUS)
                             };
-                            if ui.add(egui::Button::new(egui::RichText::new(insert_label)).frame(false)).clicked() {
+                            if ui
+                                .add(
+                                    egui::Button::new(egui::RichText::new(insert_label))
+                                        .frame(false),
+                                )
+                                .clicked()
+                            {
                                 self.wire_insert_picker_open = !self.wire_insert_picker_open;
                                 if self.wire_insert_picker_open {
                                     self.wire_insert_search.clear();
@@ -666,18 +805,20 @@ impl super::PatchworkApp {
                             // click-outside detection of the wire menu also
                             // covers the picker without extra plumbing).
                             if self.wire_insert_picker_open {
-                                ui.add(egui::TextEdit::singleline(&mut self.wire_insert_search)
-                                    .hint_text("Search…")
-                                    .desired_width(ui.available_width()));
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut self.wire_insert_search)
+                                        .hint_text("Search…")
+                                        .desired_width(ui.available_width()),
+                                );
 
                                 let query = self.wire_insert_search.to_lowercase();
                                 let cat = crate::nodes::catalog();
                                 let inv = 1.0 / self.canvas_zoom;
                                 let dim = ui.visuals().widgets.noninteractive.fg_stroke.color;
                                 let mut any_shown = false;
-                                egui::ScrollArea::vertical()
-                                    .max_height(280.0 * inv)
-                                    .show(ui, |ui| {
+                                egui::ScrollArea::vertical().max_height(280.0 * inv).show(
+                                    ui,
+                                    |ui| {
                                         for entry in &cat {
                                             // Build a sample instance to inspect ports.
                                             let nt = (entry.factory)();
@@ -685,11 +826,23 @@ impl super::PatchworkApp {
                                             // compatible with the wire's port kind —
                                             // anything else can't be inserted on a wire,
                                             // so it doesn't belong in this menu.
-                                            let in_kind = match nt.inputs().first() { Some(p) => p.kind, None => continue };
-                                            let out_kind = match nt.outputs().first() { Some(p) => p.kind, None => continue };
+                                            let in_kind = match nt.inputs().first() {
+                                                Some(p) => p.kind,
+                                                None => continue,
+                                            };
+                                            let out_kind = match nt.outputs().first() {
+                                                Some(p) => p.kind,
+                                                None => continue,
+                                            };
                                             if let Some(wk) = wire_kind {
-                                                if !crate::graph::PortKind::compatible(wk, in_kind) { continue; }
-                                                if !crate::graph::PortKind::compatible(out_kind, wk) { continue; }
+                                                if !crate::graph::PortKind::compatible(wk, in_kind)
+                                                {
+                                                    continue;
+                                                }
+                                                if !crate::graph::PortKind::compatible(out_kind, wk)
+                                                {
+                                                    continue;
+                                                }
                                             }
                                             // Search filter (label or category).
                                             if !query.is_empty()
@@ -698,26 +851,52 @@ impl super::PatchworkApp {
                                             {
                                                 continue;
                                             }
-                                            if ui.add(egui::Button::new(
-                                                egui::RichText::new(format!("{}  {}", crate::icons::node_icon(entry.label), entry.label)).small()
-                                            ).frame(false)).clicked() {
+                                            if ui
+                                                .add(
+                                                    egui::Button::new(
+                                                        egui::RichText::new(format!(
+                                                            "{}  {}",
+                                                            crate::icons::node_icon(entry.label),
+                                                            entry.label
+                                                        ))
+                                                        .small(),
+                                                    )
+                                                    .frame(false),
+                                                )
+                                                .clicked()
+                                            {
                                                 insert_request = Some((entry.factory)());
                                             }
                                             any_shown = true;
                                         }
                                         if !any_shown {
-                                            ui.label(egui::RichText::new("No compatible nodes").small().italics().color(dim));
+                                            ui.label(
+                                                egui::RichText::new("No compatible nodes")
+                                                    .small()
+                                                    .italics()
+                                                    .color(dim),
+                                            );
                                         }
-                                    });
+                                    },
+                                );
                             }
 
                             ui.separator();
 
                             // Delete button
-                            if ui.add(egui::Button::new(
-                                egui::RichText::new(format!("{} Delete wire", crate::icons::TRASH))
-                                    .color(egui::Color32::from_rgb(255, 100, 100))
-                            ).frame(false)).clicked() {
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        egui::RichText::new(format!(
+                                            "{} Delete wire",
+                                            crate::icons::TRASH
+                                        ))
+                                        .color(egui::Color32::from_rgb(255, 100, 100)),
+                                    )
+                                    .frame(false),
+                                )
+                                .clicked()
+                            {
                                 self.push_undo();
                                 self.graph.connections.remove(conn_idx);
                                 self.selected_connection = None;
@@ -737,20 +916,35 @@ impl super::PatchworkApp {
                         (c.from_node, c.from_port, c.to_node, c.to_port)
                     };
                     let mid_pos: [f32; 2] = {
-                        let from_pos = self.graph.nodes.get(&from_node).map(|n| n.pos).unwrap_or([0.0, 0.0]);
-                        let to_pos = self.graph.nodes.get(&to_node).map(|n| n.pos).unwrap_or([0.0, 0.0]);
+                        let from_pos = self
+                            .graph
+                            .nodes
+                            .get(&from_node)
+                            .map(|n| n.pos)
+                            .unwrap_or([0.0, 0.0]);
+                        let to_pos = self
+                            .graph
+                            .nodes
+                            .get(&to_node)
+                            .map(|n| n.pos)
+                            .unwrap_or([0.0, 0.0]);
                         // Slight downward bias so the new node doesn't overlap
                         // an existing label/wire path centerline.
-                        [(from_pos[0] + to_pos[0]) * 0.5, (from_pos[1] + to_pos[1]) * 0.5 + 20.0]
+                        [
+                            (from_pos[0] + to_pos[0]) * 0.5,
+                            (from_pos[1] + to_pos[1]) * 0.5 + 20.0,
+                        ]
                     };
 
                     self.push_undo();
                     let new_id = self.add_node_selected(ctx, nt, mid_pos);
                     // Remove the original wire (don't trust conn_idx after add_node).
-                    self.graph.connections.retain(|c| !(
-                        c.from_node == from_node && c.from_port == from_port &&
-                        c.to_node == to_node && c.to_port == to_port
-                    ));
+                    self.graph.connections.retain(|c| {
+                        !(c.from_node == from_node
+                            && c.from_port == from_port
+                            && c.to_node == to_node
+                            && c.to_port == to_port)
+                    });
                     // Wire `from → new.input[0]` and `new.output[0] → to`.
                     self.graph.add_connection(from_node, from_port, new_id, 0);
                     self.graph.add_connection(new_id, 0, to_node, to_port);
@@ -766,14 +960,21 @@ impl super::PatchworkApp {
                 // Close on click outside or Escape. The menu rect grows when the
                 // picker is open so click-outside detection still works.
                 let esc = ctx.input(|i| i.key_pressed(egui::Key::Escape));
-                let menu_height = if self.wire_insert_picker_open { 380.0 } else { 110.0 };
+                let menu_height = if self.wire_insert_picker_open {
+                    380.0
+                } else {
+                    110.0
+                };
                 let click_outside = ctx.input(|i| {
                     i.pointer.button_clicked(egui::PointerButton::Primary)
                         || i.pointer.button_clicked(egui::PointerButton::Secondary)
-                }) && ctx.pointer_latest_pos()
+                }) && ctx
+                    .pointer_latest_pos()
                     .map(|p| {
-                        let menu_rect = egui::Rect::from_min_size(pos, egui::vec2(220.0, menu_height));
-                        !menu_rect.contains(p) && !hovered_conn.map(|h| h == conn_idx).unwrap_or(false)
+                        let menu_rect =
+                            egui::Rect::from_min_size(pos, egui::vec2(220.0, menu_height));
+                        !menu_rect.contains(p)
+                            && !hovered_conn.map(|h| h == conn_idx).unwrap_or(false)
                     })
                     .unwrap_or(false);
 
@@ -798,9 +999,13 @@ impl super::PatchworkApp {
                     let hit_radius = PORT_INTERACT * 2.0;
                     let mut snap_target: Option<(f32, egui::Pos2, bool)> = None; // (dist, pos, compatible)
                     for (&(tnid, tpidx, tis_input), &tpos) in &self.port_positions {
-                        if tnid == nid { continue; }
+                        if tnid == nid {
+                            continue;
+                        }
                         let valid_dir = (is_output && tis_input) || (!is_output && !tis_input);
-                        if !valid_dir { continue; }
+                        if !valid_dir {
+                            continue;
+                        }
                         let dist = tpos.distance(ptr);
                         if dist < hit_radius {
                             let tgt_kind = self.graph.port_kind(tnid, tpidx, !tis_input);
@@ -820,13 +1025,35 @@ impl super::PatchworkApp {
                         ptr
                     };
 
-                    let drag_wp = WiggleParams { activity: 0.3 * wiggle_signal, time: now, gravity: wiggle_gravity, range: wiggle_range, speed: wiggle_speed };
+                    let drag_wp = WiggleParams {
+                        activity: 0.3 * wiggle_signal,
+                        time: now,
+                        gravity: wiggle_gravity,
+                        range: wiggle_range,
+                        speed: wiggle_speed,
+                    };
                     if is_output {
-                        draw_wire_3d(&painter, from, wire_end, drag_color, wire_thickness, wire_style, &drag_wp);
+                        draw_wire_3d(
+                            &painter,
+                            from,
+                            wire_end,
+                            drag_color,
+                            wire_thickness,
+                            wire_style,
+                            &drag_wp,
+                        );
                         draw_wire_connector(&painter, from, drag_color, true);
                         draw_wire_connector(&painter, wire_end, drag_color, false);
                     } else {
-                        draw_wire_3d(&painter, wire_end, from, drag_color, wire_thickness, wire_style, &drag_wp);
+                        draw_wire_3d(
+                            &painter,
+                            wire_end,
+                            from,
+                            drag_color,
+                            wire_thickness,
+                            wire_style,
+                            &drag_wp,
+                        );
                         draw_wire_connector(&painter, from, drag_color, false);
                         draw_wire_connector(&painter, wire_end, drag_color, true);
                     }
@@ -834,9 +1061,11 @@ impl super::PatchworkApp {
                     // Draw highlight ring on snap target
                     if let Some((_, snap_pos, compat)) = snap_target {
                         let ring_color = if compat {
-                            egui::Color32::from_rgba_unmultiplied(100, 255, 100, 180) // green = compatible
+                            egui::Color32::from_rgba_unmultiplied(100, 255, 100, 180)
+                        // green = compatible
                         } else {
-                            egui::Color32::from_rgba_unmultiplied(255, 80, 80, 180) // red = incompatible
+                            egui::Color32::from_rgba_unmultiplied(255, 80, 80, 180)
+                            // red = incompatible
                         };
                         painter.circle_stroke(snap_pos, 12.0, egui::Stroke::new(2.5, ring_color));
                     }
@@ -852,7 +1081,9 @@ impl super::PatchworkApp {
                 NodeType::ObEncoder { hub_node_id, .. } if *hub_node_id != 0 => *hub_node_id,
                 _ => continue,
             };
-            if let (Some(hub_rect), Some(dev_rect)) = (self.node_rects.get(&hub_id), self.node_rects.get(&dev_id)) {
+            if let (Some(hub_rect), Some(dev_rect)) =
+                (self.node_rects.get(&hub_id), self.node_rects.get(&dev_id))
+            {
                 let from = egui::pos2(hub_rect.right(), hub_rect.center().y);
                 let to = egui::pos2(dev_rect.left(), dev_rect.center().y);
                 // Draw dashed line

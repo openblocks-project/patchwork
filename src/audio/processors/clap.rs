@@ -6,10 +6,10 @@
 //!   Uses 3 virtual params (Note, Velocity, Gate) at the end of the param array
 //!   to receive MIDI data via the existing atomic param system.
 
-use crate::audio::processor::{AudioProcessor, ProcessorKind, ProcessContext};
 use crate::audio::clap_host::{ClapInstance, ClapPluginType};
-use std::sync::Arc;
 use crate::audio::params::AtomicF32;
+use crate::audio::processor::{AudioProcessor, ProcessContext, ProcessorKind};
+use std::sync::Arc;
 
 pub struct ClapProcessor {
     instance: ClapInstance,
@@ -32,12 +32,26 @@ impl ClapProcessor {
     pub fn new(instance: ClapInstance) -> Self {
         let plugin_type = instance.info.plugin_type;
         let param_ids: Vec<u32> = instance.info.params.iter().map(|p| p.id).collect();
-        let param_ranges: Vec<(f64, f64)> = instance.info.params.iter().map(|p| (p.min, p.max)).collect();
+        let param_ranges: Vec<(f64, f64)> = instance
+            .info
+            .params
+            .iter()
+            .map(|p| (p.min, p.max))
+            .collect();
         // For instruments, add 3 extra slots for virtual note params (Note, Vel, Gate)
-        let total_params = param_ids.len() + if plugin_type == ClapPluginType::Instrument { 3 } else { 0 };
+        let total_params = param_ids.len()
+            + if plugin_type == ClapPluginType::Instrument {
+                3
+            } else {
+                0
+            };
         let prev_params = vec![f32::NAN; total_params];
         Self {
-            instance, plugin_type, param_ids, param_ranges, prev_params,
+            instance,
+            plugin_type,
+            param_ids,
+            param_ranges,
+            prev_params,
             shared_params: None,
             prev_gate: 0.0,
             current_note: -1,
@@ -46,7 +60,9 @@ impl ClapProcessor {
 }
 
 impl AudioProcessor for ClapProcessor {
-    fn type_id(&self) -> &str { "clap_plugin" }
+    fn type_id(&self) -> &str {
+        "clap_plugin"
+    }
 
     fn kind(&self) -> ProcessorKind {
         match self.plugin_type {
@@ -65,9 +81,15 @@ impl AudioProcessor for ClapProcessor {
                     let (min, max) = self.param_ranges[idx];
                     let normalized = if (max - min).abs() > f64::EPSILON {
                         ((value - min) / (max - min)) as f32
-                    } else { 0.0 };
-                    if idx < shared.len() { shared[idx].store(normalized); }
-                    if idx < self.prev_params.len() { self.prev_params[idx] = normalized; }
+                    } else {
+                        0.0
+                    };
+                    if idx < shared.len() {
+                        shared[idx].store(normalized);
+                    }
+                    if idx < self.prev_params.len() {
+                        self.prev_params[idx] = normalized;
+                    }
                 }
             }
         }
@@ -85,7 +107,9 @@ impl AudioProcessor for ClapProcessor {
             let (min, max) = self.param_ranges[i];
             let scaled = min + (value as f64) * (max - min);
             self.instance.set_param(self.param_ids[i], scaled);
-            if i < self.prev_params.len() { self.prev_params[i] = value; }
+            if i < self.prev_params.len() {
+                self.prev_params[i] = value;
+            }
         }
 
         // For instruments: handle virtual note params (Note, Velocity, Gate)
@@ -129,7 +153,11 @@ impl AudioProcessor for ClapProcessor {
 
     fn param_count(&self) -> usize {
         let base = self.param_ids.len();
-        if self.plugin_type == ClapPluginType::Instrument { base + 3 } else { base }
+        if self.plugin_type == ClapPluginType::Instrument {
+            base + 3
+        } else {
+            base
+        }
     }
 
     fn prepare(&mut self, _sample_rate: f32, _max_block_size: usize) {}

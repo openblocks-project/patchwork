@@ -1,10 +1,10 @@
-use eframe::egui;
-use crate::nodes::ScrollAreaExt;
-use crate::graph::{NodeId, PortValue, Connection, Graph, PortKind};
+use crate::graph::ImageData;
+use crate::graph::{Connection, Graph, NodeId, PortKind, PortValue};
 use crate::http::HttpAction;
+use crate::nodes::ScrollAreaExt;
+use eframe::egui;
 use std::collections::HashMap;
 use std::sync::Arc;
-use crate::graph::ImageData;
 
 // ── Style presets ─────────────────────────────────────────────────────────────
 
@@ -107,15 +107,13 @@ pub fn models_for(provider: &str, mode: u8) -> Vec<(&'static str, &'static str)>
         //     ("dall-e-3", "DALL·E 3"),
         // ],
         ("openai", 1) => vec![
-    ("gpt-image-2", "GPT Image 2"),
-    ("gpt-image-1-mini", "GPT Image 1 Mini"),
-],
+            ("gpt-image-2", "GPT Image 2"),
+            ("gpt-image-1-mini", "GPT Image 1 Mini"),
+        ],
         // ("google", 1) => vec![
         //     ("imagen-3-generate-002", "Imagen 3"),
         // ],
-        ("google", 1) => vec![
-    ("imagen-3-generate-002", "Imagen 3"),
-],
+        ("google", 1) => vec![("imagen-3-generate-002", "Imagen 3")],
         // anthropic + image: empty (no native image generation API)
         _ => vec![],
     }
@@ -215,10 +213,18 @@ pub fn render(
         }
     }
 
-    let system_wired = connections.iter().any(|c| c.to_node == node_id && c.to_port == 0);
-    let prompt_wired = connections.iter().any(|c| c.to_node == node_id && c.to_port == 1);
-    let trigger_wired = connections.iter().any(|c| c.to_node == node_id && c.to_port == 2);
-    let image_wired = connections.iter().any(|c| c.to_node == node_id && c.to_port == 3);
+    let system_wired = connections
+        .iter()
+        .any(|c| c.to_node == node_id && c.to_port == 0);
+    let prompt_wired = connections
+        .iter()
+        .any(|c| c.to_node == node_id && c.to_port == 1);
+    let trigger_wired = connections
+        .iter()
+        .any(|c| c.to_node == node_id && c.to_port == 2);
+    let image_wired = connections
+        .iter()
+        .any(|c| c.to_node == node_id && c.to_port == 3);
 
     // ── Mode toggle (Text / Image) at the very top ───────────────
     {
@@ -227,10 +233,7 @@ pub fn render(
             let avail = ui.available_width();
             let half = (avail - 6.0) * 0.5;
             if ui
-                .add_sized(
-                    [half, 24.0],
-                    egui::SelectableLabel::new(*mode == 0, "Text"),
-                )
+                .add_sized([half, 24.0], egui::SelectableLabel::new(*mode == 0, "Text"))
                 .clicked()
             {
                 *mode = 0;
@@ -268,23 +271,63 @@ pub fn render(
 
     // ── Input ports ──
     ui.horizontal(|ui| {
-        super::inline_port_circle(ui, node_id, 0, true, connections, port_positions, dragging_from, pending_disconnects, PortKind::Text);
+        super::inline_port_circle(
+            ui,
+            node_id,
+            0,
+            true,
+            connections,
+            port_positions,
+            dragging_from,
+            pending_disconnects,
+            PortKind::Text,
+        );
         ui.label(egui::RichText::new("System").small());
         ui.add_space(4.0);
-        super::inline_port_circle(ui, node_id, 1, true, connections, port_positions, dragging_from, pending_disconnects, PortKind::Text);
+        super::inline_port_circle(
+            ui,
+            node_id,
+            1,
+            true,
+            connections,
+            port_positions,
+            dragging_from,
+            pending_disconnects,
+            PortKind::Text,
+        );
         ui.label(egui::RichText::new("Prompt").small());
         ui.add_space(4.0);
-        super::inline_port_circle(ui, node_id, 2, true, connections, port_positions, dragging_from, pending_disconnects, PortKind::Trigger);
+        super::inline_port_circle(
+            ui,
+            node_id,
+            2,
+            true,
+            connections,
+            port_positions,
+            dragging_from,
+            pending_disconnects,
+            PortKind::Trigger,
+        );
         ui.label(egui::RichText::new("Send").small());
     });
     // Image input port — separate row so the indicator doesn't overflow
     ui.horizontal(|ui| {
-        super::inline_port_circle(ui, node_id, 3, true, connections, port_positions, dragging_from, pending_disconnects, PortKind::Image);
+        super::inline_port_circle(
+            ui,
+            node_id,
+            3,
+            true,
+            connections,
+            port_positions,
+            dragging_from,
+            pending_disconnects,
+            PortKind::Image,
+        );
         ui.label(egui::RichText::new("Image").small());
         if image_wired {
             // Show tiny dimension indicator if we can read the value
-            let dims = Graph::static_input_value(connections, values, node_id, 3)
-                .image_dimensions();
+            let dims =
+                Graph::static_input_value(connections, values, node_id, 3).image_dimensions();
             if let Some((w, h)) = dims {
                 ui.label(
                     egui::RichText::new(format!("[{}×{}]", w, h))
@@ -360,7 +403,11 @@ pub fn render(
 
     // ── Style preset chips (mode-aware) ──
     if !system_wired {
-        let presets: &[StylePreset] = if *mode == 1 { IMAGE_PRESETS } else { TEXT_PRESETS };
+        let presets: &[StylePreset] = if *mode == 1 {
+            IMAGE_PRESETS
+        } else {
+            TEXT_PRESETS
+        };
         ui.label(
             egui::RichText::new("Style")
                 .small()
@@ -422,7 +469,11 @@ pub fn render(
     // ── Temperature ──
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new("Temp").small());
-        ui.add(egui::Slider::new(temperature, 0.0..=2.0).step_by(0.1).show_value(true));
+        ui.add(
+            egui::Slider::new(temperature, 0.0..=2.0)
+                .step_by(0.1)
+                .show_value(true),
+        );
     });
 
     // ── Format dropdown (Text mode only) ──
@@ -482,32 +533,33 @@ pub fn render(
     // Helper to dispatch a request. Single chokepoint for all three
     // entry points (button / trigger port / MCP), so duplicate
     // suppression lives in exactly one place.
-    let dispatch =
-        |actions: &mut Vec<HttpAction>| {
-            if is_pending || dispatched.get() {
-                return;
-            }
-            let img_b64 = eff_image.as_ref().and_then(|img| encode_image_to_jpeg_b64(img));
-            let (url, headers, body) = build_request(
-                provider,
-                model,
-                api_key,
-                &eff_system,
-                &eff_prompt,
-                *max_tokens,
-                *temperature,
-                *mode,
-                img_b64.as_deref(),
-            );
-            actions.push(HttpAction::SendRequest {
-                node_id,
-                url,
-                method: "POST".into(),
-                headers,
-                body,
-            });
-            dispatched.set(true);
-        };
+    let dispatch = |actions: &mut Vec<HttpAction>| {
+        if is_pending || dispatched.get() {
+            return;
+        }
+        let img_b64 = eff_image
+            .as_ref()
+            .and_then(|img| encode_image_to_jpeg_b64(img));
+        let (url, headers, body) = build_request(
+            provider,
+            model,
+            api_key,
+            &eff_system,
+            &eff_prompt,
+            *max_tokens,
+            *temperature,
+            *mode,
+            img_b64.as_deref(),
+        );
+        actions.push(HttpAction::SendRequest {
+            node_id,
+            url,
+            method: "POST".into(),
+            headers,
+            body,
+        });
+        dispatched.set(true);
+    };
 
     // ── Send button ──
     ui.horizontal(|ui| {
@@ -515,14 +567,25 @@ pub fn render(
         // dispatched earlier this frame (e.g. from a trigger port).
         let in_flight = is_pending || dispatched.get();
         let can_send = !eff_prompt.is_empty() && !api_key.is_empty() && !in_flight;
-        let btn_text = if in_flight { "\u{23f3} Thinking..." } else { "\u{25b6} Send" };
-        if ui.add_enabled(can_send, egui::Button::new(btn_text)).clicked() {
+        let btn_text = if in_flight {
+            "\u{23f3} Thinking..."
+        } else {
+            "\u{25b6} Send"
+        };
+        if ui
+            .add_enabled(can_send, egui::Button::new(btn_text))
+            .clicked()
+        {
             dispatch(actions);
         }
 
         // Status indicator
         if eff_prompt.is_empty() {
-            ui.label(egui::RichText::new("(type a prompt)").small().color(egui::Color32::GRAY));
+            ui.label(
+                egui::RichText::new("(type a prompt)")
+                    .small()
+                    .color(egui::Color32::GRAY),
+            );
         } else if api_key.is_empty() {
             ui.label(
                 egui::RichText::new("(need API key)")
@@ -568,9 +631,8 @@ pub fn render(
         // otherwise a request mid-flight would silently swallow the MCP
         // event and the model would never run.
         if dispatched.get() {
-            ui.ctx().data_mut(|d| {
-                d.insert_temp(egui::Id::new(("mcp_ai_triggered", node_id)), true)
-            });
+            ui.ctx()
+                .data_mut(|d| d.insert_temp(egui::Id::new(("mcp_ai_triggered", node_id)), true));
         }
     }
 
@@ -583,45 +645,67 @@ pub fn render(
             format!("{}ch", response.len())
         };
         super::output_port_row(
-            ui, "Response", &val_str, node_id, 0, port_positions, dragging_from, connections,
-            pending_disconnects, PortKind::Text,
+            ui,
+            "Response",
+            &val_str,
+            node_id,
+            0,
+            port_positions,
+            dragging_from,
+            connections,
+            pending_disconnects,
+            PortKind::Text,
         );
     }
     {
-        let val_str = if status.is_empty() { "\u{2014}".to_string() } else { status.to_string() };
+        let val_str = if status.is_empty() {
+            "\u{2014}".to_string()
+        } else {
+            status.to_string()
+        };
         super::output_port_row(
-            ui, "Status", &val_str, node_id, 1, port_positions, dragging_from, connections,
-            pending_disconnects, PortKind::Text,
+            ui,
+            "Status",
+            &val_str,
+            node_id,
+            1,
+            port_positions,
+            dragging_from,
+            connections,
+            pending_disconnects,
+            PortKind::Text,
         );
     }
 
     // ── Response preview ──
     if !response.is_empty() {
         ui.collapsing(format!("Response ({} chars)", response.len()), |ui| {
-            egui::ScrollArea::vertical().max_height(150.0).show_pannable(ui, |ui| {
-                if *mode == 1 {
-                    // Image mode: show as a hyperlink
-                    ui.hyperlink(response);
-                } else {
-                    let rt = *response_type;
-                    if rt == 2 || rt == 3 || rt == 4 {
-                        // Code/WGSL/HTML — show as code
-                        ui.add(
-                            egui::TextEdit::multiline(&mut response.to_string())
-                                .code_editor()
-                                .desired_width(f32::INFINITY)
-                                .interactive(false),
-                        );
+            egui::ScrollArea::vertical()
+                .max_height(150.0)
+                .show_pannable(ui, |ui| {
+                    if *mode == 1 {
+                        // Image mode: show as a hyperlink
+                        ui.hyperlink(response);
                     } else {
-                        // Text/JSON — show as wrapped text
-                        ui.add(
-                            egui::TextEdit::multiline(&mut response.to_string())
-                                .desired_width(f32::INFINITY)
-                                .interactive(false),
-                        );
+                        let rt = *response_type;
+                        if rt == 2 || rt == 3 || rt == 4 {
+                            // Code/WGSL/HTML — show as code
+                            ui.add(
+                                egui::TextEdit::multiline(&mut response.to_string())
+                                    .code_editor()
+                                    .desired_width(f32::INFINITY)
+                                    .interactive(false),
+                            );
+                        } else {
+                            // Text/JSON — show as wrapped text
+                            ui.add(
+                                egui::TextEdit::multiline(&mut response.to_string())
+                                    .desired_width(f32::INFINITY)
+                                    .interactive(false),
+                            );
+                        }
                     }
-                }
-            });
+                });
         });
     }
 }
@@ -649,11 +733,7 @@ pub fn build_request(
             // would never actually trigger via UI. This only protects against
             // hand-edited project files.
             if is_image_mode {
-                return (
-                    "about:anthropic-no-image".into(),
-                    vec![],
-                    "{}".into(),
-                );
+                return ("about:anthropic-no-image".into(), vec![], "{}".into());
             }
             let url = "https://api.anthropic.com/v1/messages".into();
             let headers = vec![

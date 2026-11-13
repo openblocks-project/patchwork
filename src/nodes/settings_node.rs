@@ -18,19 +18,33 @@ use serde::{Deserialize, Serialize};
 pub struct SettingsNode {}
 
 impl NodeBehavior for SettingsNode {
-    fn title(&self) -> &str { "Settings" }
-    fn inputs(&self) -> Vec<PortDef> { vec![] }
-    fn outputs(&self) -> Vec<PortDef> { vec![] }
-    fn color_hint(&self) -> [u8; 3] { [140, 140, 160] }
+    fn title(&self) -> &str {
+        "Settings"
+    }
+    fn inputs(&self) -> Vec<PortDef> {
+        vec![]
+    }
+    fn outputs(&self) -> Vec<PortDef> {
+        vec![]
+    }
+    fn color_hint(&self) -> [u8; 3] {
+        [140, 140, 160]
+    }
 
     fn evaluate(&mut self, _inputs: &[PortValue]) -> Vec<(usize, PortValue)> {
         vec![]
     }
 
-    fn type_tag(&self) -> &str { "settings" }
-    fn save_state(&self) -> serde_json::Value { serde_json::to_value(self).unwrap_or_default() }
+    fn type_tag(&self) -> &str {
+        "settings"
+    }
+    fn save_state(&self) -> serde_json::Value {
+        serde_json::to_value(self).unwrap_or_default()
+    }
     fn load_state(&mut self, state: &serde_json::Value) {
-        if let Ok(l) = serde_json::from_value::<SettingsNode>(state.clone()) { *self = l; }
+        if let Ok(l) = serde_json::from_value::<SettingsNode>(state.clone()) {
+            *self = l;
+        }
     }
 
     fn render_with_context(&mut self, ui: &mut egui::Ui, _ctx: &mut RenderContext) {

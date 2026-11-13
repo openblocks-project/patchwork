@@ -1,7 +1,7 @@
 use crate::graph::*;
+use crate::nodes::ScrollAreaExt;
 use crate::serial::SerialAction;
 use eframe::egui;
-use crate::nodes::ScrollAreaExt;
 use std::collections::HashMap;
 
 const MAX_LOG: usize = 500;
@@ -34,7 +34,11 @@ pub fn render(
         ui.label(egui::RichText::new(status).color(color));
 
         egui::ComboBox::from_id_salt(("serial_port", node_id))
-            .selected_text(if port_name.is_empty() { "Port..." } else { port_name.as_str() })
+            .selected_text(if port_name.is_empty() {
+                "Port..."
+            } else {
+                port_name.as_str()
+            })
             .width(120.0)
             .show_ui(ui, |ui| {
                 for p in available_ports {
@@ -102,7 +106,9 @@ pub fn render(
                 .desired_width(120.0)
                 .hint_text("type & enter"),
         );
-        if (re.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) || ui.button("TX").clicked() {
+        if (re.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))
+            || ui.button("TX").clicked()
+        {
             if is_connected && !send_buf.is_empty() {
                 serial_actions.push(SerialAction::Send {
                     node_id,
@@ -134,11 +140,20 @@ pub fn render(
                     } else {
                         egui::Color32::from_rgb(200, 200, 200)
                     };
-                    ui.label(egui::RichText::new(line.as_str()).monospace().small().color(color));
+                    ui.label(
+                        egui::RichText::new(line.as_str())
+                            .monospace()
+                            .small()
+                            .color(color),
+                    );
                 }
             });
     } else if is_connected {
-        ui.label(egui::RichText::new("Listening...").small().color(egui::Color32::GRAY));
+        ui.label(
+            egui::RichText::new("Listening...")
+                .small()
+                .color(egui::Color32::GRAY),
+        );
     }
 
     // Update last_line for output port
@@ -146,5 +161,7 @@ pub fn render(
         *last_line = l.clone();
     }
 
-    while log.len() > MAX_LOG { log.remove(0); }
+    while log.len() > MAX_LOG {
+        log.remove(0);
+    }
 }

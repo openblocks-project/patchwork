@@ -11,31 +11,46 @@
 use crate::graph::{Graph, NodeId, PortDef, PortKind, PortValue};
 use crate::http::HttpAction;
 use crate::node_trait::{NodeBehavior, RenderContext};
-use crate::nodes::ai_shared::{
-    build_request_for_config, extract_ai_response, language_system_prompt, strip_code_fences,
-    CODE_LANGUAGES,
-};
-use crate::nodes::text_gen_node::{apply_overrides, read_config, validation_error, GenKind};
-use eframe::egui;
 use crate::nodes::ScrollAreaExt;
+use crate::nodes::ai_shared::{
+    CODE_LANGUAGES, build_request_for_config, extract_ai_response, language_system_prompt,
+    strip_code_fences,
+};
+use crate::nodes::text_gen_node::{GenKind, apply_overrides, read_config, validation_error};
+use eframe::egui;
 use serde::{Deserialize, Serialize};
 
-fn default_temperature() -> f32 { 0.4 }
-fn default_max_tokens() -> u32 { 2048 }
-fn default_language() -> String { "Rust".into() }
+fn default_temperature() -> f32 {
+    0.4
+}
+fn default_max_tokens() -> u32 {
+    2048
+}
+fn default_language() -> String {
+    "Rust".into()
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CodeGenNode {
-    #[serde(default = "default_language")] pub language: String,
-    #[serde(default)] pub spec: String,
-    #[serde(default = "default_temperature")] pub temperature: f32,
-    #[serde(default = "default_max_tokens")] pub max_tokens: u32,
-    #[serde(default)] pub model_override: String,
-    #[serde(default)] pub provider_override: String,
+    #[serde(default = "default_language")]
+    pub language: String,
+    #[serde(default)]
+    pub spec: String,
+    #[serde(default = "default_temperature")]
+    pub temperature: f32,
+    #[serde(default = "default_max_tokens")]
+    pub max_tokens: u32,
+    #[serde(default)]
+    pub model_override: String,
+    #[serde(default)]
+    pub provider_override: String,
 
-    #[serde(skip)] pub code: String,
-    #[serde(skip)] pub status: String,
-    #[serde(skip)] pub last_trigger: f32,
+    #[serde(skip)]
+    pub code: String,
+    #[serde(skip)]
+    pub status: String,
+    #[serde(skip)]
+    pub last_trigger: f32,
 }
 
 impl Default for CodeGenNode {
@@ -55,7 +70,9 @@ impl Default for CodeGenNode {
 }
 
 impl NodeBehavior for CodeGenNode {
-    fn title(&self) -> &str { "Code Gen" }
+    fn title(&self) -> &str {
+        "Code Gen"
+    }
 
     fn inputs(&self) -> Vec<PortDef> {
         vec![
@@ -72,11 +89,15 @@ impl NodeBehavior for CodeGenNode {
         ]
     }
 
-    fn color_hint(&self) -> [u8; 3] { [200, 140, 220] }
+    fn color_hint(&self) -> [u8; 3] {
+        [200, 140, 220]
+    }
 
     /// Renders ports inline via `inline_port_circle` and `output_port_row` —
     /// opt out of the framework's default top/bottom port rendering.
-    fn inline_ports(&self) -> bool { true }
+    fn inline_ports(&self) -> bool {
+        true
+    }
 
     fn evaluate(&mut self, _inputs: &[PortValue]) -> Vec<(usize, PortValue)> {
         vec![
@@ -85,20 +106,30 @@ impl NodeBehavior for CodeGenNode {
         ]
     }
 
-    fn type_tag(&self) -> &str { "code_gen" }
+    fn type_tag(&self) -> &str {
+        "code_gen"
+    }
 
-    fn save_state(&self) -> serde_json::Value { serde_json::to_value(self).unwrap_or_default() }
+    fn save_state(&self) -> serde_json::Value {
+        serde_json::to_value(self).unwrap_or_default()
+    }
 
     fn load_state(&mut self, state: &serde_json::Value) {
-        if let Ok(l) = serde_json::from_value::<CodeGenNode>(state.clone()) { *self = l; }
+        if let Ok(l) = serde_json::from_value::<CodeGenNode>(state.clone()) {
+            *self = l;
+        }
     }
 
     fn apply_http_response(&mut self, body: String, status: u16) {
         if (200..300).contains(&status) {
             let provider = if self.provider_override.is_empty() {
-                if body.contains("\"candidates\"") { "google" }
-                else if body.contains("\"content\":[{\"type\"") { "anthropic" }
-                else { "openai" }
+                if body.contains("\"candidates\"") {
+                    "google"
+                } else if body.contains("\"content\":[{\"type\"") {
+                    "anthropic"
+                } else {
+                    "openai"
+                }
             } else {
                 self.provider_override.as_str()
             };
@@ -115,18 +146,43 @@ impl NodeBehavior for CodeGenNode {
         let dim = egui::Color32::from_rgb(140, 140, 155);
         let accent = ui.visuals().hyperlink_color;
 
-        let config_wired = ctx.connections.iter().any(|c| c.to_node == ctx.node_id && c.to_port == 0);
-        let spec_wired = ctx.connections.iter().any(|c| c.to_node == ctx.node_id && c.to_port == 1);
-        let trigger_wired = ctx.connections.iter().any(|c| c.to_node == ctx.node_id && c.to_port == 2);
+        let config_wired = ctx
+            .connections
+            .iter()
+            .any(|c| c.to_node == ctx.node_id && c.to_port == 0);
+        let spec_wired = ctx
+            .connections
+            .iter()
+            .any(|c| c.to_node == ctx.node_id && c.to_port == 1);
+        let trigger_wired = ctx
+            .connections
+            .iter()
+            .any(|c| c.to_node == ctx.node_id && c.to_port == 2);
 
         // ── Input ports + gear ──────────────────────────────────
         ui.horizontal(|ui| {
-            crate::nodes::inline_port_circle(ui, ctx.node_id, 0, true, ctx.connections,
-                ctx.port_positions, ctx.dragging_from, ctx.pending_disconnects, PortKind::Text);
-            ui.label(egui::RichText::new("Config").small()
-                .color(if config_wired { accent } else { dim }));
+            crate::nodes::inline_port_circle(
+                ui,
+                ctx.node_id,
+                0,
+                true,
+                ctx.connections,
+                ctx.port_positions,
+                ctx.dragging_from,
+                ctx.pending_disconnects,
+                PortKind::Text,
+            );
+            ui.label(
+                egui::RichText::new("Config")
+                    .small()
+                    .color(if config_wired { accent } else { dim }),
+            );
             ui.add_space(6.0);
-            if ui.small_button("⚙").on_hover_text("Open AI Config").clicked() {
+            if ui
+                .small_button("⚙")
+                .on_hover_text("Open AI Config")
+                .clicked()
+            {
                 ui.ctx().data_mut(|d| {
                     d.insert_temp(
                         egui::Id::new("ai_gear_click"),
@@ -136,12 +192,30 @@ impl NodeBehavior for CodeGenNode {
             }
         });
         ui.horizontal(|ui| {
-            crate::nodes::inline_port_circle(ui, ctx.node_id, 1, true, ctx.connections,
-                ctx.port_positions, ctx.dragging_from, ctx.pending_disconnects, PortKind::Text);
+            crate::nodes::inline_port_circle(
+                ui,
+                ctx.node_id,
+                1,
+                true,
+                ctx.connections,
+                ctx.port_positions,
+                ctx.dragging_from,
+                ctx.pending_disconnects,
+                PortKind::Text,
+            );
             ui.label(egui::RichText::new("Spec").small());
             ui.add_space(8.0);
-            crate::nodes::inline_port_circle(ui, ctx.node_id, 2, true, ctx.connections,
-                ctx.port_positions, ctx.dragging_from, ctx.pending_disconnects, PortKind::Trigger);
+            crate::nodes::inline_port_circle(
+                ui,
+                ctx.node_id,
+                2,
+                true,
+                ctx.connections,
+                ctx.port_positions,
+                ctx.dragging_from,
+                ctx.pending_disconnects,
+                PortKind::Trigger,
+            );
             ui.label(egui::RichText::new("Send").small());
         });
 
@@ -174,24 +248,38 @@ impl NodeBehavior for CodeGenNode {
         // ── Parameters ──────────────────────────────────────────
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("Temp").small());
-            ui.add(egui::Slider::new(&mut self.temperature, 0.0..=2.0).step_by(0.1).show_value(true));
+            ui.add(
+                egui::Slider::new(&mut self.temperature, 0.0..=2.0)
+                    .step_by(0.1)
+                    .show_value(true),
+            );
         });
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("Max tokens").small());
-            ui.add(egui::DragValue::new(&mut self.max_tokens).range(1..=32_000).speed(16));
+            ui.add(
+                egui::DragValue::new(&mut self.max_tokens)
+                    .range(1..=32_000)
+                    .speed(16),
+            );
         });
 
         // ── Override ────────────────────────────────────────────
         ui.collapsing("Override provider/model", |ui| {
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Provider").small());
-                ui.add(egui::TextEdit::singleline(&mut self.provider_override)
-                    .desired_width(100.0).hint_text("custom/…"));
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.provider_override)
+                        .desired_width(100.0)
+                        .hint_text("custom/…"),
+                );
             });
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Model").small());
-                ui.add(egui::TextEdit::singleline(&mut self.model_override)
-                    .desired_width(160.0).hint_text("e.g. qwen2.5-coder"));
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.model_override)
+                        .desired_width(160.0)
+                        .hint_text("e.g. qwen2.5-coder"),
+                );
             });
         });
 
@@ -204,23 +292,42 @@ impl NodeBehavior for CodeGenNode {
         }
         let eff_spec = if spec_wired {
             match Graph::static_input_value(ctx.connections, ctx.values, ctx.node_id, 1) {
-                PortValue::Text(s) => s, _ => self.spec.clone()
+                PortValue::Text(s) => s,
+                _ => self.spec.clone(),
             }
-        } else { self.spec.clone() };
+        } else {
+            self.spec.clone()
+        };
         let system = language_system_prompt(&self.language).to_string();
 
         let validation = validation_error(&cfg_opt);
         let dispatched = std::cell::Cell::new(false);
 
         let do_send = |ctx: &mut RenderContext, status: &mut String| {
-            if ctx.http_pending || dispatched.get() { return; }
-            let Some(ref cfg) = cfg_opt else { return; };
-            if cfg.model.is_empty() || cfg.api_key.is_empty() { return; }
+            if ctx.http_pending || dispatched.get() {
+                return;
+            }
+            let Some(ref cfg) = cfg_opt else {
+                return;
+            };
+            if cfg.model.is_empty() || cfg.api_key.is_empty() {
+                return;
+            }
             let (url, headers, body) = build_request_for_config(
-                cfg, &system, &eff_spec, self.max_tokens, self.temperature, 0, None,
+                cfg,
+                &system,
+                &eff_spec,
+                self.max_tokens,
+                self.temperature,
+                0,
+                None,
             );
             ctx.http_actions.push(HttpAction::SendRequest {
-                node_id: ctx.node_id, url, method: "POST".into(), headers, body,
+                node_id: ctx.node_id,
+                url,
+                method: "POST".into(),
+                headers,
+                body,
             });
             *status = "thinking…".into();
             dispatched.set(true);
@@ -230,8 +337,15 @@ impl NodeBehavior for CodeGenNode {
         ui.horizontal(|ui| {
             let in_flight = ctx.http_pending || dispatched.get();
             let can_send = !eff_spec.is_empty() && validation.is_none() && !in_flight;
-            let btn_text = if in_flight { "⏳ Thinking…" } else { "▶ Generate" };
-            if ui.add_enabled(can_send, egui::Button::new(btn_text)).clicked() {
+            let btn_text = if in_flight {
+                "⏳ Thinking…"
+            } else {
+                "▶ Generate"
+            };
+            if ui
+                .add_enabled(can_send, egui::Button::new(btn_text))
+                .clicked()
+            {
                 do_send(ctx, &mut self.status);
             }
             let (text, color) = if let Some(v) = validation.as_ref() {
@@ -253,7 +367,8 @@ impl NodeBehavior for CodeGenNode {
         // Trigger rising edge
         if trigger_wired {
             let v = match Graph::static_input_value(ctx.connections, ctx.values, ctx.node_id, 2) {
-                PortValue::Float(f) => f, _ => 0.0
+                PortValue::Float(f) => f,
+                _ => 0.0,
             };
             if v > 0.5 && self.last_trigger <= 0.5 && !eff_spec.is_empty() && validation.is_none() {
                 do_send(ctx, &mut self.status);
@@ -263,29 +378,53 @@ impl NodeBehavior for CodeGenNode {
 
         // ── Output ports ────────────────────────────────────────
         ui.separator();
-        let preview = if self.code.is_empty() { "—".into() } else { format!("{}ch", self.code.len()) };
+        let preview = if self.code.is_empty() {
+            "—".into()
+        } else {
+            format!("{}ch", self.code.len())
+        };
         crate::nodes::output_port_row(
-            ui, "Code", &preview, ctx.node_id, 0,
-            ctx.port_positions, ctx.dragging_from, ctx.connections, ctx.pending_disconnects,
+            ui,
+            "Code",
+            &preview,
+            ctx.node_id,
+            0,
+            ctx.port_positions,
+            ctx.dragging_from,
+            ctx.connections,
+            ctx.pending_disconnects,
             PortKind::Text,
         );
-        let st = if self.status.is_empty() { "—".to_string() } else { self.status.clone() };
+        let st = if self.status.is_empty() {
+            "—".to_string()
+        } else {
+            self.status.clone()
+        };
         crate::nodes::output_port_row(
-            ui, "Status", &st, ctx.node_id, 1,
-            ctx.port_positions, ctx.dragging_from, ctx.connections, ctx.pending_disconnects,
+            ui,
+            "Status",
+            &st,
+            ctx.node_id,
+            1,
+            ctx.port_positions,
+            ctx.dragging_from,
+            ctx.connections,
+            ctx.pending_disconnects,
             PortKind::Text,
         );
 
         if !self.code.is_empty() {
             ui.collapsing(format!("Code ({} chars)", self.code.len()), |ui| {
-                egui::ScrollArea::vertical().max_height(180.0).show_pannable(ui, |ui| {
-                    ui.add(
-                        egui::TextEdit::multiline(&mut self.code.clone())
-                            .code_editor()
-                            .desired_width(f32::INFINITY)
-                            .interactive(false),
-                    );
-                });
+                egui::ScrollArea::vertical()
+                    .max_height(180.0)
+                    .show_pannable(ui, |ui| {
+                        ui.add(
+                            egui::TextEdit::multiline(&mut self.code.clone())
+                                .code_editor()
+                                .desired_width(f32::INFINITY)
+                                .interactive(false),
+                        );
+                    });
             });
         }
         // NodeId is unused in closure captures above but Rust keeps it via closure move
@@ -293,12 +432,17 @@ impl NodeBehavior for CodeGenNode {
     }
 }
 
-fn _id_dummy(_n: NodeId) -> () { () }
+fn _id_dummy(_n: NodeId) -> () {
+    ()
+}
 
 #[allow(dead_code)]
 pub fn register(registry: &mut crate::node_trait::NodeRegistryInner) {
     registry.register("code_gen", |state| {
-        if let Ok(n) = serde_json::from_value::<CodeGenNode>(state.clone()) { Box::new(n) }
-        else { Box::new(CodeGenNode::default()) }
+        if let Ok(n) = serde_json::from_value::<CodeGenNode>(state.clone()) {
+            Box::new(n)
+        } else {
+            Box::new(CodeGenNode::default())
+        }
     });
 }

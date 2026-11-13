@@ -1,8 +1,8 @@
-use eframe::egui::{self, RichText, Sense};
-use std::sync::Arc;
 use crate::graph::{PortDef, PortKind, PortValue};
 use crate::node_trait::{NodeBehavior, RenderContext};
-use crate::transport::{TransportState, TransportCommand, ClockThread};
+use crate::transport::{ClockThread, TransportCommand, TransportState};
+use eframe::egui::{self, RichText, Sense};
+use std::sync::Arc;
 
 // ── Clock Node ───────────────────────────────────────────────────────────────
 //
@@ -20,16 +20,40 @@ use crate::transport::{TransportState, TransportCommand, ClockThread};
 //   Out last-2: Beat, BPM
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-struct SubdivPreset { label: &'static str, value: f32 }
+struct SubdivPreset {
+    label: &'static str,
+    value: f32,
+}
 
 const SUBDIV_PRESETS: &[SubdivPreset] = &[
-    SubdivPreset { label: "÷4", value: 0.25 },
-    SubdivPreset { label: "÷2", value: 0.5 },
-    SubdivPreset { label: "×1", value: 1.0 },
-    SubdivPreset { label: "×2", value: 2.0 },
-    SubdivPreset { label: "×3", value: 3.0 },
-    SubdivPreset { label: "×4", value: 4.0 },
-    SubdivPreset { label: "×8", value: 8.0 },
+    SubdivPreset {
+        label: "÷4",
+        value: 0.25,
+    },
+    SubdivPreset {
+        label: "÷2",
+        value: 0.5,
+    },
+    SubdivPreset {
+        label: "×1",
+        value: 1.0,
+    },
+    SubdivPreset {
+        label: "×2",
+        value: 2.0,
+    },
+    SubdivPreset {
+        label: "×3",
+        value: 3.0,
+    },
+    SubdivPreset {
+        label: "×4",
+        value: 4.0,
+    },
+    SubdivPreset {
+        label: "×8",
+        value: 8.0,
+    },
 ];
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -47,7 +71,13 @@ struct ClockChannel {
 }
 
 impl Default for ClockChannel {
-    fn default() -> Self { Self { subdivision: 1.0, shift: 0.0, last_subdiv_beat: 0 } }
+    fn default() -> Self {
+        Self {
+            subdivision: 1.0,
+            shift: 0.0,
+            last_subdiv_beat: 0,
+        }
+    }
 }
 
 pub struct ClockNode {
@@ -66,17 +96,25 @@ pub struct ClockNode {
 
 impl std::fmt::Debug for ClockNode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ClockNode").field("bpm", &self.bpm).field("channels", &self.channels.len()).finish()
+        f.debug_struct("ClockNode")
+            .field("bpm", &self.bpm)
+            .field("channels", &self.channels.len())
+            .finish()
     }
 }
 
 impl Clone for ClockNode {
     fn clone(&self) -> Self {
         Self {
-            bpm: self.bpm, beats_per_bar: self.beats_per_bar,
+            bpm: self.bpm,
+            beats_per_bar: self.beats_per_bar,
             channels: self.channels.clone(),
-            transport: None, command_tx: None,
-            beats: 0.0, beat_count: 0, running: false, synced: false,
+            transport: None,
+            command_tx: None,
+            beats: 0.0,
+            beat_count: 0,
+            running: false,
+            synced: false,
         }
     }
 }
@@ -84,50 +122,79 @@ impl Clone for ClockNode {
 impl Default for ClockNode {
     fn default() -> Self {
         Self {
-            bpm: 120.0, beats_per_bar: 4,
+            bpm: 120.0,
+            beats_per_bar: 4,
             channels: vec![ClockChannel::default()],
-            transport: None, command_tx: None,
-            beats: 0.0, beat_count: 0, running: false, synced: false,
+            transport: None,
+            command_tx: None,
+            beats: 0.0,
+            beat_count: 0,
+            running: false,
+            synced: false,
         }
     }
 }
 
 impl ClockNode {
     fn ensure_started(&mut self) {
-        if self.transport.is_some() { return; }
+        if self.transport.is_some() {
+            return;
+        }
         let state = Arc::new(TransportState::new(self.bpm as f64));
         let (tx, rx) = crossbeam_channel::unbounded();
         let cs = Arc::clone(&state);
         std::thread::Builder::new()
             .name("patchwork-clock".into())
-            .spawn(move || ClockThread { state: cs, commands: rx }.run())
+            .spawn(move || {
+                ClockThread {
+                    state: cs,
+                    commands: rx,
+                }
+                .run()
+            })
             .ok();
         self.transport = Some(state);
         self.command_tx = Some(tx);
     }
 
     fn send(&self, cmd: TransportCommand) {
-        if let Some(ref tx) = self.command_tx { let _ = tx.send(cmd); }
+        if let Some(ref tx) = self.command_tx {
+            let _ = tx.send(cmd);
+        }
     }
 
     // Output port layout:
     // Per channel i: port i*2 = Trigger, port i*2+1 = Phase
     // After all channels: Beat, BPM
-    fn beat_port(&self) -> usize { self.channels.len() * 2 }
-    fn bpm_port(&self) -> usize { self.channels.len() * 2 + 1 }
+    fn beat_port(&self) -> usize {
+        self.channels.len() * 2
+    }
+    fn bpm_port(&self) -> usize {
+        self.channels.len() * 2 + 1
+    }
 }
 
 impl NodeBehavior for ClockNode {
-    fn title(&self)      -> &str   { "Clock" }
-    fn type_tag(&self)   -> &str   { "clock" }
-    fn color_hint(&self) -> [u8;3] { [80, 220, 180] }
-    fn min_width(&self)  -> Option<f32> { Some(220.0) }
-    fn inline_ports(&self) -> bool { true }
+    fn title(&self) -> &str {
+        "Clock"
+    }
+    fn type_tag(&self) -> &str {
+        "clock"
+    }
+    fn color_hint(&self) -> [u8; 3] {
+        [80, 220, 180]
+    }
+    fn min_width(&self) -> Option<f32> {
+        Some(220.0)
+    }
+    fn inline_ports(&self) -> bool {
+        true
+    }
 
     fn inputs(&self) -> Vec<PortDef> {
         vec![
-            PortDef::new("BPM",  PortKind::Number),
-            PortDef::new("Beat Sync", PortKind::Number),  // monotonic beats from another Clock
+            PortDef::new("BPM", PortKind::Number),
+            PortDef::new("Beat Sync", PortKind::Number), // monotonic beats from another Clock
         ]
     }
 
@@ -148,7 +215,7 @@ impl NodeBehavior for ClockNode {
             ports.push(PortDef::dynamic(plabel, PortKind::Normalized));
         }
         ports.push(PortDef::new("Beat", PortKind::Number));
-        ports.push(PortDef::new("BPM",  PortKind::Number));
+        ports.push(PortDef::new("BPM", PortKind::Number));
         ports
     }
 
@@ -198,38 +265,65 @@ impl NodeBehavior for ClockNode {
                 ch.last_subdiv_beat = subdiv_beat;
                 1.0
             } else {
-                if subdiv_beat < ch.last_subdiv_beat { ch.last_subdiv_beat = subdiv_beat; }
+                if subdiv_beat < ch.last_subdiv_beat {
+                    ch.last_subdiv_beat = subdiv_beat;
+                }
                 0.0
             };
-            out.push((i * 2,     PortValue::Float(trigger)));
+            out.push((i * 2, PortValue::Float(trigger)));
             out.push((i * 2 + 1, PortValue::Float(shifted_phase)));
         }
         out.push((self.beat_port(), PortValue::Float(self.beat_count as f32)));
-        out.push((self.bpm_port(),  PortValue::Float(self.bpm)));
+        out.push((self.bpm_port(), PortValue::Float(self.bpm)));
         out
     }
 
     fn render_with_context(&mut self, ui: &mut egui::Ui, ctx: &mut RenderContext) {
         let node_id = ctx.node_id;
-        let dim   = egui::Color32::from_rgb(110, 110, 120);
+        let dim = egui::Color32::from_rgb(110, 110, 120);
         let green = egui::Color32::from_rgb(80, 220, 120);
-        let blue  = egui::Color32::from_rgb(100, 180, 240);
+        let blue = egui::Color32::from_rgb(100, 180, 240);
 
         self.ensure_started();
 
         // ── Input ports ──────────────────────────────────────────────────
-        let bpm_wired = ctx.connections.iter().any(|c| c.to_node == node_id && c.to_port == 0);
-        let sync_wired = ctx.connections.iter().any(|c| c.to_node == node_id && c.to_port == 1);
+        let bpm_wired = ctx
+            .connections
+            .iter()
+            .any(|c| c.to_node == node_id && c.to_port == 0);
+        let sync_wired = ctx
+            .connections
+            .iter()
+            .any(|c| c.to_node == node_id && c.to_port == 1);
 
         ui.horizontal(|ui| {
-            crate::nodes::inline_port_circle(ui, node_id, 0, true,
-                ctx.connections, ctx.port_positions, ctx.dragging_from, ctx.pending_disconnects, PortKind::Number);
+            crate::nodes::inline_port_circle(
+                ui,
+                node_id,
+                0,
+                true,
+                ctx.connections,
+                ctx.port_positions,
+                ctx.dragging_from,
+                ctx.pending_disconnects,
+                PortKind::Number,
+            );
             ui.label(RichText::new("BPM").small().color(dim));
             if bpm_wired {
-                ui.label(RichText::new(format!("{:.1}", self.bpm)).small().monospace().color(blue));
+                ui.label(
+                    RichText::new(format!("{:.1}", self.bpm))
+                        .small()
+                        .monospace()
+                        .color(blue),
+                );
             } else {
                 let old = self.bpm;
-                ui.add(egui::DragValue::new(&mut self.bpm).speed(0.5).range(1.0..=999.0).max_decimals(1));
+                ui.add(
+                    egui::DragValue::new(&mut self.bpm)
+                        .speed(0.5)
+                        .range(1.0..=999.0)
+                        .max_decimals(1),
+                );
                 if (self.bpm - old).abs() > 0.01 {
                     self.send(TransportCommand::SetBpm(self.bpm as f64));
                 }
@@ -237,10 +331,22 @@ impl NodeBehavior for ClockNode {
         });
 
         ui.horizontal(|ui| {
-            crate::nodes::inline_port_circle(ui, node_id, 1, true,
-                ctx.connections, ctx.port_positions, ctx.dragging_from, ctx.pending_disconnects, PortKind::Number);
-            ui.label(RichText::new("Beat Sync").small().color(
-                if sync_wired { green } else { dim }));
+            crate::nodes::inline_port_circle(
+                ui,
+                node_id,
+                1,
+                true,
+                ctx.connections,
+                ctx.port_positions,
+                ctx.dragging_from,
+                ctx.pending_disconnects,
+                PortKind::Number,
+            );
+            ui.label(RichText::new("Beat Sync").small().color(if sync_wired {
+                green
+            } else {
+                dim
+            }));
             if sync_wired {
                 ui.label(RichText::new("✓ locked").small().color(green));
             }
@@ -254,12 +360,17 @@ impl NodeBehavior for ClockNode {
         if !sync_wired {
             ui.horizontal(|ui| {
                 if ui.button(if self.running { "⏸" } else { "▶" }).clicked() {
-                    if self.running { self.send(TransportCommand::Pause); }
-                    else { self.send(TransportCommand::Play); }
+                    if self.running {
+                        self.send(TransportCommand::Pause);
+                    } else {
+                        self.send(TransportCommand::Play);
+                    }
                 }
                 if ui.button("⏹").clicked() {
                     self.send(TransportCommand::Stop);
-                    for ch in &mut self.channels { ch.last_subdiv_beat = 0; }
+                    for ch in &mut self.channels {
+                        ch.last_subdiv_beat = 0;
+                    }
                 }
                 ui.add_space(4.0);
                 ui.label(RichText::new(format!("{:.0} BPM", self.bpm)).strong());
@@ -271,11 +382,21 @@ impl NodeBehavior for ClockNode {
         let bar = (self.beat_count / bpb as u64) + 1;
         let beat_in_bar = (self.beat_count % bpb as u64) + 1;
         ui.horizontal(|ui| {
-            ui.label(RichText::new(format!("{}:{}", bar, beat_in_bar))
-                .monospace().strong().color(if self.running { green } else { dim }));
+            ui.label(
+                RichText::new(format!("{}:{}", bar, beat_in_bar))
+                    .monospace()
+                    .strong()
+                    .color(if self.running { green } else { dim }),
+            );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let mut bpb_val = self.beats_per_bar as f32;
-                ui.add(egui::DragValue::new(&mut bpb_val).speed(0.1).range(1.0..=16.0).max_decimals(0).suffix("/bar"));
+                ui.add(
+                    egui::DragValue::new(&mut bpb_val)
+                        .speed(0.1)
+                        .range(1.0..=16.0)
+                        .max_decimals(0)
+                        .suffix("/bar"),
+                );
                 self.beats_per_bar = bpb_val as u32;
             });
         });
@@ -283,28 +404,46 @@ impl NodeBehavior for ClockNode {
         // Phase ring (first channel)
         let main_phase = if let Some(ch) = self.channels.first() {
             ((self.beats * ch.subdivision as f64) % 1.0) as f32
-        } else { 0.0 };
+        } else {
+            0.0
+        };
 
         let ring_size = 40.0;
         let (rect, _) = ui.allocate_exact_size(egui::vec2(ring_size, ring_size), Sense::hover());
         let center = rect.center();
         let radius = ring_size * 0.4;
         let painter = ui.painter();
-        painter.circle_stroke(center, radius, egui::Stroke::new(1.5, egui::Color32::from_rgb(40, 45, 55)));
+        painter.circle_stroke(
+            center,
+            radius,
+            egui::Stroke::new(1.5, egui::Color32::from_rgb(40, 45, 55)),
+        );
         let segments = 24;
         let filled = (main_phase * segments as f32) as usize;
         for i in 0..segments {
-            let a1 = std::f32::consts::TAU * (i as f32 / segments as f32) - std::f32::consts::FRAC_PI_2;
-            let a2 = std::f32::consts::TAU * ((i + 1) as f32 / segments as f32) - std::f32::consts::FRAC_PI_2;
+            let a1 =
+                std::f32::consts::TAU * (i as f32 / segments as f32) - std::f32::consts::FRAC_PI_2;
+            let a2 = std::f32::consts::TAU * ((i + 1) as f32 / segments as f32)
+                - std::f32::consts::FRAC_PI_2;
             let ri = radius - 4.0;
             let p1 = center + egui::vec2(a1.cos() * ri, a1.sin() * ri);
             let p2 = center + egui::vec2(a1.cos() * radius, a1.sin() * radius);
             let p3 = center + egui::vec2(a2.cos() * radius, a2.sin() * radius);
             let p4 = center + egui::vec2(a2.cos() * ri, a2.sin() * ri);
             let col = if i < filled {
-                if self.running { egui::Color32::from_rgb(80, 220, 180) } else { egui::Color32::from_rgb(80, 80, 60) }
-            } else { egui::Color32::from_rgb(30, 32, 38) };
-            painter.add(egui::Shape::convex_polygon(vec![p1, p2, p3, p4], col, egui::Stroke::NONE));
+                if self.running {
+                    egui::Color32::from_rgb(80, 220, 180)
+                } else {
+                    egui::Color32::from_rgb(80, 80, 60)
+                }
+            } else {
+                egui::Color32::from_rgb(30, 32, 38)
+            };
+            painter.add(egui::Shape::convex_polygon(
+                vec![p1, p2, p3, p4],
+                col,
+                egui::Stroke::NONE,
+            ));
         }
 
         ui.add_space(2.0);
@@ -330,16 +469,25 @@ impl NodeBehavior for ClockNode {
 
             ui.horizontal(|ui| {
                 // Subdivision DragValue + dropdown
-                ui.add(egui::DragValue::new(&mut self.channels[i].subdivision)
-                    .speed(0.05).range(0.0625..=32.0).max_decimals(2).prefix("×"));
+                ui.add(
+                    egui::DragValue::new(&mut self.channels[i].subdivision)
+                        .speed(0.05)
+                        .range(0.0625..=32.0)
+                        .max_decimals(2)
+                        .prefix("×"),
+                );
                 egui::ComboBox::from_id_salt(egui::Id::new(("ch_subdiv", node_id, i)))
                     .width(42.0)
                     .selected_text("")
                     .show_ui(ui, |ui| {
                         for preset in SUBDIV_PRESETS {
-                            if ui.selectable_label(
-                                (self.channels[i].subdivision - preset.value).abs() < 0.001,
-                                preset.label).clicked() {
+                            if ui
+                                .selectable_label(
+                                    (self.channels[i].subdivision - preset.value).abs() < 0.001,
+                                    preset.label,
+                                )
+                                .clicked()
+                            {
                                 self.channels[i].subdivision = preset.value;
                             }
                         }
@@ -347,18 +495,29 @@ impl NodeBehavior for ClockNode {
 
                 // Per-channel shift (phase offset). Compact DragValue
                 // that shows fraction labels for common musical offsets.
-                ui.add(egui::DragValue::new(&mut self.channels[i].shift)
-                    .speed(0.01).range(0.0..=0.99).max_decimals(2)
-                    .prefix("⟳")
-                    .custom_formatter(|v, _| {
-                        if v.abs() < 0.005 { "0".into() }
-                        else if (v - 0.25).abs() < 0.01 { "¼".into() }
-                        else if (v - 0.333).abs() < 0.02 { "⅓".into() }
-                        else if (v - 0.5).abs() < 0.01 { "½".into() }
-                        else if (v - 0.667).abs() < 0.02 { "⅔".into() }
-                        else if (v - 0.75).abs() < 0.01 { "¾".into() }
-                        else { format!("{:.2}", v) }
-                    })
+                ui.add(
+                    egui::DragValue::new(&mut self.channels[i].shift)
+                        .speed(0.01)
+                        .range(0.0..=0.99)
+                        .max_decimals(2)
+                        .prefix("⟳")
+                        .custom_formatter(|v, _| {
+                            if v.abs() < 0.005 {
+                                "0".into()
+                            } else if (v - 0.25).abs() < 0.01 {
+                                "¼".into()
+                            } else if (v - 0.333).abs() < 0.02 {
+                                "⅓".into()
+                            } else if (v - 0.5).abs() < 0.01 {
+                                "½".into()
+                            } else if (v - 0.667).abs() < 0.02 {
+                                "⅔".into()
+                            } else if (v - 0.75).abs() < 0.01 {
+                                "¾".into()
+                            } else {
+                                format!("{:.2}", v)
+                            }
+                        }),
                 );
 
                 // Mini phase bar (shows shifted phase)
@@ -368,21 +527,47 @@ impl NodeBehavior for ClockNode {
                 p.rect_filled(br, 2.0, egui::Color32::from_rgb(30, 32, 38));
                 let fw = br.width() * phase.clamp(0.0, 1.0);
                 if fw > 0.5 {
-                    p.rect_filled(egui::Rect::from_min_size(br.min, egui::vec2(fw, br.height())), 2.0,
-                        egui::Color32::from_rgb(80, 220, 180));
+                    p.rect_filled(
+                        egui::Rect::from_min_size(br.min, egui::vec2(fw, br.height())),
+                        2.0,
+                        egui::Color32::from_rgb(80, 220, 180),
+                    );
                 }
 
                 // Output ports on right
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if self.channels.len() > 1 {
-                        if ui.small_button(RichText::new("−").color(egui::Color32::from_rgb(220, 80, 80))).clicked() {
+                        if ui
+                            .small_button(
+                                RichText::new("−").color(egui::Color32::from_rgb(220, 80, 80)),
+                            )
+                            .clicked()
+                        {
                             remove_idx = Some(i);
                         }
                     }
-                    crate::nodes::inline_port_circle(ui, node_id, phase_port, false,
-                        ctx.connections, ctx.port_positions, ctx.dragging_from, ctx.pending_disconnects, PortKind::Normalized);
-                    crate::nodes::inline_port_circle(ui, node_id, trig_port, false,
-                        ctx.connections, ctx.port_positions, ctx.dragging_from, ctx.pending_disconnects, PortKind::Trigger);
+                    crate::nodes::inline_port_circle(
+                        ui,
+                        node_id,
+                        phase_port,
+                        false,
+                        ctx.connections,
+                        ctx.port_positions,
+                        ctx.dragging_from,
+                        ctx.pending_disconnects,
+                        PortKind::Normalized,
+                    );
+                    crate::nodes::inline_port_circle(
+                        ui,
+                        node_id,
+                        trig_port,
+                        false,
+                        ctx.connections,
+                        ctx.port_positions,
+                        ctx.dragging_from,
+                        ctx.pending_disconnects,
+                        PortKind::Trigger,
+                    );
                 });
             });
         }
@@ -401,12 +586,34 @@ impl NodeBehavior for ClockNode {
         ui.add_space(2.0);
 
         // ── Fixed output ports (Beat, BPM) ───────────────────────────────
-        crate::nodes::output_port_row(ui, "Beat", &format!("{}", self.beat_count),
-            node_id, self.beat_port(), ctx.port_positions, ctx.dragging_from, ctx.connections, ctx.pending_disconnects, PortKind::Number);
-        crate::nodes::output_port_row(ui, "BPM", &format!("{:.0}", self.bpm),
-            node_id, self.bpm_port(), ctx.port_positions, ctx.dragging_from, ctx.connections, ctx.pending_disconnects, PortKind::Number);
+        crate::nodes::output_port_row(
+            ui,
+            "Beat",
+            &format!("{}", self.beat_count),
+            node_id,
+            self.beat_port(),
+            ctx.port_positions,
+            ctx.dragging_from,
+            ctx.connections,
+            ctx.pending_disconnects,
+            PortKind::Number,
+        );
+        crate::nodes::output_port_row(
+            ui,
+            "BPM",
+            &format!("{:.0}", self.bpm),
+            node_id,
+            self.bpm_port(),
+            ctx.port_positions,
+            ctx.dragging_from,
+            ctx.connections,
+            ctx.pending_disconnects,
+            PortKind::Number,
+        );
 
-        if self.running || self.synced { ui.ctx().request_repaint(); }
+        if self.running || self.synced {
+            ui.ctx().request_repaint();
+        }
     }
 
     fn save_state(&self) -> serde_json::Value {
@@ -421,15 +628,31 @@ impl NodeBehavior for ClockNode {
     }
 
     fn load_state(&mut self, state: &serde_json::Value) {
-        if let Some(v) = state.get("bpm").and_then(|v| v.as_f64()) { self.bpm = v as f32; }
-        if let Some(v) = state.get("beats_per_bar").and_then(|v| v.as_u64()) { self.beats_per_bar = v as u32; }
+        if let Some(v) = state.get("bpm").and_then(|v| v.as_f64()) {
+            self.bpm = v as f32;
+        }
+        if let Some(v) = state.get("beats_per_bar").and_then(|v| v.as_u64()) {
+            self.beats_per_bar = v as u32;
+        }
         if let Some(chs) = state.get("channels").and_then(|v| v.as_array()) {
-            self.channels = chs.iter().map(|ch| {
-                let subdiv = ch.get("subdivision").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
-                let shift = ch.get("shift").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
-                ClockChannel { subdivision: subdiv, shift, last_subdiv_beat: 0 }
-            }).collect();
-            if self.channels.is_empty() { self.channels.push(ClockChannel::default()); }
+            self.channels = chs
+                .iter()
+                .map(|ch| {
+                    let subdiv = ch
+                        .get("subdivision")
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(1.0) as f32;
+                    let shift = ch.get("shift").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+                    ClockChannel {
+                        subdivision: subdiv,
+                        shift,
+                        last_subdiv_beat: 0,
+                    }
+                })
+                .collect();
+            if self.channels.is_empty() {
+                self.channels.push(ClockChannel::default());
+            }
         }
     }
 }

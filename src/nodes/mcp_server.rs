@@ -1,12 +1,8 @@
 use crate::mcp::McpLog;
-use eframe::egui;
 use crate::nodes::ScrollAreaExt;
+use eframe::egui;
 
-pub fn render(
-    ui: &mut egui::Ui,
-    mcp_log: &McpLog,
-    _mcp_thread_running: bool,
-) {
+pub fn render(ui: &mut egui::Ui, mcp_log: &McpLog, _mcp_thread_running: bool) {
     let log_entries: Vec<String> = if let Ok(l) = mcp_log.lock() {
         l.clone()
     } else {
@@ -30,9 +26,17 @@ pub fn render(
 
     if has_client {
         let cmd_count = log_entries.iter().filter(|e| e.starts_with('→')).count();
-        ui.label(egui::RichText::new(format!("{} commands processed", cmd_count)).small().color(egui::Color32::GRAY));
+        ui.label(
+            egui::RichText::new(format!("{} commands processed", cmd_count))
+                .small()
+                .color(egui::Color32::GRAY),
+        );
     } else {
-        ui.label(egui::RichText::new("Configure in Claude Desktop settings").small().color(egui::Color32::GRAY));
+        ui.label(
+            egui::RichText::new("Configure in Claude Desktop settings")
+                .small()
+                .color(egui::Color32::GRAY),
+        );
     }
 
     ui.separator();
@@ -48,23 +52,29 @@ pub fn render(
     });
 
     if log_entries.is_empty() {
-        ui.colored_label(egui::Color32::from_rgb(80, 80, 80), "Waiting for MCP client...");
+        ui.colored_label(
+            egui::Color32::from_rgb(80, 80, 80),
+            "Waiting for MCP client...",
+        );
     } else {
-        egui::ScrollArea::vertical().max_height(180.0).stick_to_bottom(true).show_pannable(ui, |ui| {
-            for entry in log_entries.iter().rev().take(50).rev() {
-                let color = if entry.starts_with('→') {
-                    egui::Color32::from_rgb(100, 180, 255) // command in
-                } else if entry.starts_with("← ERR") {
-                    egui::Color32::from_rgb(255, 100, 100) // error
-                } else if entry.starts_with('←') {
-                    egui::Color32::from_rgb(100, 200, 100) // response out
-                } else if entry.starts_with('✓') {
-                    egui::Color32::from_rgb(80, 200, 80) // system
-                } else {
-                    egui::Color32::from_rgb(140, 140, 140) // info
-                };
-                ui.label(egui::RichText::new(entry).small().monospace().color(color));
-            }
-        });
+        egui::ScrollArea::vertical()
+            .max_height(180.0)
+            .stick_to_bottom(true)
+            .show_pannable(ui, |ui| {
+                for entry in log_entries.iter().rev().take(50).rev() {
+                    let color = if entry.starts_with('→') {
+                        egui::Color32::from_rgb(100, 180, 255) // command in
+                    } else if entry.starts_with("← ERR") {
+                        egui::Color32::from_rgb(255, 100, 100) // error
+                    } else if entry.starts_with('←') {
+                        egui::Color32::from_rgb(100, 200, 100) // response out
+                    } else if entry.starts_with('✓') {
+                        egui::Color32::from_rgb(80, 200, 80) // system
+                    } else {
+                        egui::Color32::from_rgb(140, 140, 140) // info
+                    };
+                    ui.label(egui::RichText::new(entry).small().monospace().color(color));
+                }
+            });
     }
 }

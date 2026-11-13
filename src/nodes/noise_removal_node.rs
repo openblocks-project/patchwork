@@ -1,7 +1,7 @@
-use eframe::egui::{self, RichText};
-use serde::{Deserialize, Serialize};
 use crate::graph::{PortDef, PortKind, PortValue};
 use crate::node_trait::{NodeBehavior, RenderContext};
+use eframe::egui::{self, RichText};
+use serde::{Deserialize, Serialize};
 
 // ── NoiseRemovalNode ─────────────────────────────────────────────────────────
 //
@@ -29,25 +29,41 @@ pub struct NoiseRemovalNode {
     params_cache: Vec<f32>,
 }
 
-fn default_cutoff() -> f32 { 80.0 }
+fn default_cutoff() -> f32 {
+    80.0
+}
 
 impl Default for NoiseRemovalNode {
     fn default() -> Self {
-        Self { cutoff_hz: 80.0, gate_threshold: 0.0, params_cache: vec![80.0, 0.0] }
+        Self {
+            cutoff_hz: 80.0,
+            gate_threshold: 0.0,
+            params_cache: vec![80.0, 0.0],
+        }
     }
 }
 
 impl NodeBehavior for NoiseRemovalNode {
-    fn title(&self)      -> &str   { "Noise Removal" }
-    fn type_tag(&self)   -> &str   { "noise_removal" }
-    fn color_hint(&self) -> [u8;3] { [120, 200, 255] }
-    fn min_width(&self)  -> Option<f32> { Some(200.0) }
-    fn inline_ports(&self) -> bool { true }
+    fn title(&self) -> &str {
+        "Noise Removal"
+    }
+    fn type_tag(&self) -> &str {
+        "noise_removal"
+    }
+    fn color_hint(&self) -> [u8; 3] {
+        [120, 200, 255]
+    }
+    fn min_width(&self) -> Option<f32> {
+        Some(200.0)
+    }
+    fn inline_ports(&self) -> bool {
+        true
+    }
 
     fn inputs(&self) -> Vec<PortDef> {
         vec![
-            PortDef::new("Audio",     PortKind::Audio),
-            PortDef::new("Cutoff",    PortKind::Number),
+            PortDef::new("Audio", PortKind::Audio),
+            PortDef::new("Cutoff", PortKind::Number),
             PortDef::new("Threshold", PortKind::Number),
         ]
     }
@@ -56,7 +72,9 @@ impl NodeBehavior for NoiseRemovalNode {
         vec![PortDef::new("Audio", PortKind::Audio)]
     }
 
-    fn audio_params(&self) -> &[f32] { &self.params_cache }
+    fn audio_params(&self) -> &[f32] {
+        &self.params_cache
+    }
 
     fn evaluate(&mut self, _inputs: &[PortValue]) -> Vec<(usize, PortValue)> {
         // Audio is routed through the audio engine's processor buffers, not
@@ -72,8 +90,15 @@ impl NodeBehavior for NoiseRemovalNode {
         // Audio input port
         ui.horizontal(|ui| {
             crate::nodes::inline_port_circle(
-                ui, node_id, 0, true, ctx.connections,
-                ctx.port_positions, ctx.dragging_from, ctx.pending_disconnects, PortKind::Audio,
+                ui,
+                node_id,
+                0,
+                true,
+                ctx.connections,
+                ctx.port_positions,
+                ctx.dragging_from,
+                ctx.pending_disconnects,
+                PortKind::Audio,
             );
             ui.label(RichText::new("Audio In").small().color(dim));
         });
@@ -83,46 +108,76 @@ impl NodeBehavior for NoiseRemovalNode {
         ui.add_space(2.0);
 
         // Cutoff
-        let cutoff_wired = ctx.connections.iter().any(|c| c.to_node == node_id && c.to_port == 1);
+        let cutoff_wired = ctx
+            .connections
+            .iter()
+            .any(|c| c.to_node == node_id && c.to_port == 1);
         if cutoff_wired {
-            self.cutoff_hz = crate::graph::Graph::static_input_value(
-                ctx.connections, ctx.values, node_id, 1,
-            ).as_float().clamp(20.0, 500.0);
+            self.cutoff_hz =
+                crate::graph::Graph::static_input_value(ctx.connections, ctx.values, node_id, 1)
+                    .as_float()
+                    .clamp(20.0, 500.0);
         }
         ui.horizontal(|ui| {
             crate::nodes::inline_port_circle(
-                ui, node_id, 1, true, ctx.connections,
-                ctx.port_positions, ctx.dragging_from, ctx.pending_disconnects, PortKind::Number,
+                ui,
+                node_id,
+                1,
+                true,
+                ctx.connections,
+                ctx.port_positions,
+                ctx.dragging_from,
+                ctx.pending_disconnects,
+                PortKind::Number,
             );
             ui.label(RichText::new("Cutoff").small().color(dim));
             if !cutoff_wired {
-                ui.add(egui::DragValue::new(&mut self.cutoff_hz)
-                    .speed(1.0)
-                    .range(20.0..=500.0)
-                    .suffix(" Hz"));
+                ui.add(
+                    egui::DragValue::new(&mut self.cutoff_hz)
+                        .speed(1.0)
+                        .range(20.0..=500.0)
+                        .suffix(" Hz"),
+                );
             } else {
-                ui.label(RichText::new(format!("{:.0} Hz", self.cutoff_hz))
-                    .small().monospace().color(accent));
+                ui.label(
+                    RichText::new(format!("{:.0} Hz", self.cutoff_hz))
+                        .small()
+                        .monospace()
+                        .color(accent),
+                );
             }
         });
 
         // Threshold (0 = off)
-        let thr_wired = ctx.connections.iter().any(|c| c.to_node == node_id && c.to_port == 2);
+        let thr_wired = ctx
+            .connections
+            .iter()
+            .any(|c| c.to_node == node_id && c.to_port == 2);
         if thr_wired {
-            self.gate_threshold = crate::graph::Graph::static_input_value(
-                ctx.connections, ctx.values, node_id, 2,
-            ).as_float().clamp(0.0, 0.5);
+            self.gate_threshold =
+                crate::graph::Graph::static_input_value(ctx.connections, ctx.values, node_id, 2)
+                    .as_float()
+                    .clamp(0.0, 0.5);
         }
         ui.horizontal(|ui| {
             crate::nodes::inline_port_circle(
-                ui, node_id, 2, true, ctx.connections,
-                ctx.port_positions, ctx.dragging_from, ctx.pending_disconnects, PortKind::Number,
+                ui,
+                node_id,
+                2,
+                true,
+                ctx.connections,
+                ctx.port_positions,
+                ctx.dragging_from,
+                ctx.pending_disconnects,
+                PortKind::Number,
             );
             ui.label(RichText::new("Gate").small().color(dim));
             if !thr_wired {
-                ui.add(egui::Slider::new(&mut self.gate_threshold, 0.0..=0.2)
-                    .show_value(false)
-                    .logarithmic(false));
+                ui.add(
+                    egui::Slider::new(&mut self.gate_threshold, 0.0..=0.2)
+                        .show_value(false)
+                        .logarithmic(false),
+                );
                 let label = if self.gate_threshold < 0.0005 {
                     "off".to_string()
                 } else {
@@ -130,8 +185,12 @@ impl NodeBehavior for NoiseRemovalNode {
                 };
                 ui.label(RichText::new(label).small().monospace());
             } else {
-                ui.label(RichText::new(format!("{:.3}", self.gate_threshold))
-                    .small().monospace().color(accent));
+                ui.label(
+                    RichText::new(format!("{:.3}", self.gate_threshold))
+                        .small()
+                        .monospace()
+                        .color(accent),
+                );
             }
         });
 
@@ -141,14 +200,22 @@ impl NodeBehavior for NoiseRemovalNode {
 
         // Output
         crate::nodes::output_port_row(
-            ui, "Audio", "",
-            node_id, 0,
-            ctx.port_positions, ctx.dragging_from, ctx.connections, ctx.pending_disconnects,
+            ui,
+            "Audio",
+            "",
+            node_id,
+            0,
+            ctx.port_positions,
+            ctx.dragging_from,
+            ctx.connections,
+            ctx.pending_disconnects,
             PortKind::Audio,
         );
 
         // Refresh params cache so the audio thread sees the latest values.
-        if self.params_cache.len() < 2 { self.params_cache.resize(2, 0.0); }
+        if self.params_cache.len() < 2 {
+            self.params_cache.resize(2, 0.0);
+        }
         self.params_cache[0] = self.cutoff_hz;
         self.params_cache[1] = self.gate_threshold;
     }

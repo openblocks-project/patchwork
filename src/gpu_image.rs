@@ -79,7 +79,9 @@ pub fn frame_snapshot_get_texture(
 /// Mark a node's GPU cache entries as stale. Safe to call from anywhere on
 /// the GUI thread (e.g. inside a node's `render` fn).
 pub fn request_node_invalidation(node_id: NodeId) {
-    PENDING_NODE_INVALIDATIONS.with(|s| { s.borrow_mut().insert(node_id); });
+    PENDING_NODE_INVALIDATIONS.with(|s| {
+        s.borrow_mut().insert(node_id);
+    });
 }
 
 /// Queue a producer's freshly rendered output texture for publication into
@@ -100,7 +102,9 @@ pub fn queue_publish_node_output(
 /// Set the per-node CPU consumer hint. Called by the eval loop for every
 /// GPU producer node before its render function runs.
 pub fn set_cpu_consumer_hint(node_id: NodeId, needs_cpu: bool) {
-    CPU_CONSUMER_HINTS.with(|m| { m.borrow_mut().insert(node_id, needs_cpu); });
+    CPU_CONSUMER_HINTS.with(|m| {
+        m.borrow_mut().insert(node_id, needs_cpu);
+    });
 }
 
 /// Read the CPU consumer hint for a node. Returns `None` if not set
@@ -142,7 +146,10 @@ pub struct GpuTextureCache {
 
 impl GpuTextureCache {
     pub fn new() -> Self {
-        Self { entries: HashMap::new(), current_frame: 0 }
+        Self {
+            entries: HashMap::new(),
+            current_frame: 0,
+        }
     }
 
     /// Call at start of each frame
@@ -155,14 +162,14 @@ impl GpuTextureCache {
         // freshly drained publishes from the previous frame.
         FRAME_TEX_SNAPSHOT.with(|m| m.borrow_mut().clear());
         // Evict textures older than 2 frames
-        self.entries.retain(|_, v| self.current_frame - v.frame <= 2);
+        self.entries
+            .retain(|_, v| self.current_frame - v.frame <= 2);
 
         // Drain any pending node-level invalidations queued from render
         // functions that didn't have access to the cache directly
         // (camera device switch, video file load, node deletion).
-        let pending: Vec<NodeId> = PENDING_NODE_INVALIDATIONS.with(|s| {
-            s.borrow_mut().drain().collect()
-        });
+        let pending: Vec<NodeId> =
+            PENDING_NODE_INVALIDATIONS.with(|s| s.borrow_mut().drain().collect());
         for nid in pending {
             self.invalidate_node(nid, render_state);
         }
@@ -203,10 +210,7 @@ impl GpuTextureCache {
             map.clear();
             for ct in self.entries.values() {
                 if let Some(nid) = ct.src_node {
-                    map.insert(
-                        (nid, ct.src_port),
-                        (ct.view.clone(), ct.width, ct.height),
-                    );
+                    map.insert((nid, ct.src_port), (ct.view.clone(), ct.width, ct.height));
                 }
             }
         });
@@ -271,10 +275,7 @@ impl GpuTextureCache {
     /// keyed by `(node_id, port)` — `fix_next_id` restarts ids at 1,
     /// so without this every Open would race the 2-frame LRU and
     /// briefly leak the old project's pixels into the new one.
-    pub fn clear_all(
-        &mut self,
-        render_state: Option<&eframe::egui_wgpu::RenderState>,
-    ) {
+    pub fn clear_all(&mut self, render_state: Option<&eframe::egui_wgpu::RenderState>) {
         self.entries.clear();
         if let Some(rs) = render_state {
             let mut renderer = rs.renderer.write();
@@ -303,17 +304,27 @@ impl GpuTextureCache {
     ) -> &wgpu::TextureView {
         let key = Arc::as_ptr(img) as u64;
         // Check if cached and same dimensions
-        let needs_upload = self.entries.get(&key)
+        let needs_upload = self
+            .entries
+            .get(&key)
             .map(|c| c.width != img.width || c.height != img.height)
             .unwrap_or(true);
 
         if needs_upload {
             let texture = upload_texture(device, queue, img, "cached_tex");
             let view = texture.create_view(&Default::default());
-            self.entries.insert(key, CachedTexture {
-                texture, view, width: img.width, height: img.height, frame: self.current_frame,
-                src_node: None, src_port: 0,
-            });
+            self.entries.insert(
+                key,
+                CachedTexture {
+                    texture,
+                    view,
+                    width: img.width,
+                    height: img.height,
+                    frame: self.current_frame,
+                    src_node: None,
+                    src_port: 0,
+                },
+            );
         } else {
             // Update frame stamp to prevent eviction
             if let Some(entry) = self.entries.get_mut(&key) {
@@ -327,20 +338,30 @@ impl GpuTextureCache {
         // black fallback and log the unexpected case so the bug stays visible.
         if !self.entries.contains_key(&key) {
             crate::system_log::log(
-                "gpu_image::get_or_upload: cache entry missing after upload — inserting 1×1 black fallback"
+                "gpu_image::get_or_upload: cache entry missing after upload — inserting 1×1 black fallback",
             );
             let fallback_data = crate::graph::ImageData::solid(1, 1, 0, 0, 0, 255);
             let texture = upload_texture(device, queue, &fallback_data, "gpu_cache_fallback");
             let view = texture.create_view(&Default::default());
-            self.entries.insert(key, CachedTexture {
-                texture, view, width: 1, height: 1,
-                frame: self.current_frame, src_node: None, src_port: 0,
-            });
+            self.entries.insert(
+                key,
+                CachedTexture {
+                    texture,
+                    view,
+                    width: 1,
+                    height: 1,
+                    frame: self.current_frame,
+                    src_node: None,
+                    src_port: 0,
+                },
+            );
         }
 
         // Safe: the `contains_key` + insert above guarantees this never fires; expect
         // (not unwrap) makes the invariant explicit for future readers.
-        &self.entries.get(&key)
+        &self
+            .entries
+            .get(&key)
             .expect("BUG: get_or_upload fallback insert did not insert key")
             .view
     }
@@ -354,7 +375,12 @@ impl GpuTextureCache {
     /// the cache but are invisible to `frame_snapshot_get_view`. Producers
     /// (Camera, VideoPlayer, ML, etc.) should call this immediately after
     /// `get_or_upload` so downstream External slots can resolve them.
-    pub fn mark_node_source(&mut self, img: &Arc<ImageData>, node_id: crate::graph::NodeId, port: usize) {
+    pub fn mark_node_source(
+        &mut self,
+        img: &Arc<ImageData>,
+        node_id: crate::graph::NodeId,
+        port: usize,
+    ) {
         let key = Arc::as_ptr(img) as u64;
         if let Some(entry) = self.entries.get_mut(&key) {
             entry.src_node = Some(node_id);
@@ -364,45 +390,72 @@ impl GpuTextureCache {
 
     /// Store a rendered output texture in the cache, keyed by the output Arc<ImageData>.
     /// Call after readback — the next node in the chain can reuse this texture.
-    pub fn cache_output(
-        &mut self,
-        img: &Arc<ImageData>,
-        texture: wgpu::Texture,
-    ) {
+    pub fn cache_output(&mut self, img: &Arc<ImageData>, texture: wgpu::Texture) {
         let key = Arc::as_ptr(img) as u64;
         let view = texture.create_view(&Default::default());
-        self.entries.insert(key, CachedTexture {
-            texture, view, width: img.width, height: img.height, frame: self.current_frame,
-            src_node: None, src_port: 0,
-        });
+        self.entries.insert(
+            key,
+            CachedTexture {
+                texture,
+                view,
+                width: img.width,
+                height: img.height,
+                frame: self.current_frame,
+                src_node: None,
+                src_port: 0,
+            },
+        );
     }
 
     /// Check if a GPU texture exists for this image (without uploading)
     pub fn has_texture(&self, img: &Arc<ImageData>) -> bool {
         let key = Arc::as_ptr(img) as u64;
-        self.entries.get(&key).map(|c| c.width == img.width && c.height == img.height).unwrap_or(false)
+        self.entries
+            .get(&key)
+            .map(|c| c.width == img.width && c.height == img.height)
+            .unwrap_or(false)
     }
 
     /// Get a cached view (returns None if not cached)
     pub fn get_view(&self, img: &Arc<ImageData>) -> Option<&wgpu::TextureView> {
         let key = Arc::as_ptr(img) as u64;
-        self.entries.get(&key)
+        self.entries
+            .get(&key)
             .filter(|c| c.width == img.width && c.height == img.height)
             .map(|c| &c.view)
     }
 
     /// Store a GPU texture keyed by (NodeId, port) — for GPU-to-GPU passing between nodes.
-    pub fn cache_node_output(&mut self, node_id: crate::graph::NodeId, port: usize, texture: wgpu::Texture, width: u32, height: u32) {
+    pub fn cache_node_output(
+        &mut self,
+        node_id: crate::graph::NodeId,
+        port: usize,
+        texture: wgpu::Texture,
+        width: u32,
+        height: u32,
+    ) {
         let key = (node_id as u64).wrapping_mul(31).wrapping_add(port as u64);
         let view = texture.create_view(&Default::default());
-        self.entries.insert(key, CachedTexture {
-            texture, view, width, height, frame: self.current_frame,
-            src_node: Some(node_id), src_port: port,
-        });
+        self.entries.insert(
+            key,
+            CachedTexture {
+                texture,
+                view,
+                width,
+                height,
+                frame: self.current_frame,
+                src_node: Some(node_id),
+                src_port: port,
+            },
+        );
     }
 
     /// Get a GPU texture by (NodeId, port) — for reading a previous node's GPU output.
-    pub fn get_node_output(&self, node_id: crate::graph::NodeId, port: usize) -> Option<(&wgpu::TextureView, u32, u32)> {
+    pub fn get_node_output(
+        &self,
+        node_id: crate::graph::NodeId,
+        port: usize,
+    ) -> Option<(&wgpu::TextureView, u32, u32)> {
         let key = (node_id as u64).wrapping_mul(31).wrapping_add(port as u64);
         self.entries.get(&key).map(|c| (&c.view, c.width, c.height))
     }
@@ -411,9 +464,15 @@ impl GpuTextureCache {
     /// can hold the view across subsequent `&mut self` calls (e.g. `cache_node_output`).
     /// `wgpu::TextureView` is Arc-reference-counted internally, so cloning is cheap and
     /// the cache itself keeps the backing texture alive.
-    pub fn get_node_output_cloned(&self, node_id: crate::graph::NodeId, port: usize) -> Option<(wgpu::TextureView, u32, u32)> {
+    pub fn get_node_output_cloned(
+        &self,
+        node_id: crate::graph::NodeId,
+        port: usize,
+    ) -> Option<(wgpu::TextureView, u32, u32)> {
         let key = (node_id as u64).wrapping_mul(31).wrapping_add(port as u64);
-        self.entries.get(&key).map(|c| (c.view.clone(), c.width, c.height))
+        self.entries
+            .get(&key)
+            .map(|c| (c.view.clone(), c.width, c.height))
     }
 
     /// Store a pre-rendered output texture in the display callback resources,
@@ -426,45 +485,97 @@ impl GpuTextureCache {
         let key = (node_id as u64).wrapping_mul(31).wrapping_add(0u64);
         if let Some(cached) = self.entries.get(&key) {
             let mut renderer = render_state.renderer.write();
-            let store = renderer.callback_resources.entry::<GpuDisplayStore>().or_insert_with(|| GpuDisplayStore {
-                resources: None,
-                instances: HashMap::new(),
-                prerendered: HashMap::new(),
-            });
+            let store = renderer
+                .callback_resources
+                .entry::<GpuDisplayStore>()
+                .or_insert_with(|| GpuDisplayStore {
+                    resources: None,
+                    instances: HashMap::new(),
+                    prerendered: HashMap::new(),
+                });
             // Initialize display resources if needed
             if store.resources.is_none() {
                 let device = &render_state.device;
                 let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                    label: Some("display_shader"), source: wgpu::ShaderSource::Wgsl(DISPLAY_SHADER.into()),
+                    label: Some("display_shader"),
+                    source: wgpu::ShaderSource::Wgsl(DISPLAY_SHADER.into()),
                 });
                 let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                     label: Some("display_bgl"),
                     entries: &[
-                        wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::FRAGMENT,
-                            ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
-                        wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::FRAGMENT,
-                            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 0,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Texture {
+                                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                                view_dimension: wgpu::TextureViewDimension::D2,
+                                multisampled: false,
+                            },
+                            count: None,
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 1,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                            count: None,
+                        },
                     ],
                 });
-                let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: None, bind_group_layouts: &[&bgl], push_constant_ranges: &[] });
-                let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                    label: Some("display_pipeline"), layout: Some(&pl),
-                    vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs_main"), buffers: &[], compilation_options: wgpu::PipelineCompilationOptions::default() },
-                    fragment: Some(wgpu::FragmentState { module: &shader, entry_point: Some("fs_main"), targets: &[Some(render_state.target_format.into())], compilation_options: wgpu::PipelineCompilationOptions::default() }),
-                    primitive: wgpu::PrimitiveState::default(), depth_stencil: None, multisample: wgpu::MultisampleState::default(), multiview: None, cache: None,
+                let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: None,
+                    bind_group_layouts: &[&bgl],
+                    push_constant_ranges: &[],
                 });
-                let sampler = device.create_sampler(&wgpu::SamplerDescriptor { mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, ..Default::default() });
-                store.resources = Some(GpuDisplayResources { pipeline, bind_group_layout: bgl, sampler });
+                let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some("display_pipeline"),
+                    layout: Some(&pl),
+                    vertex: wgpu::VertexState {
+                        module: &shader,
+                        entry_point: Some("vs_main"),
+                        buffers: &[],
+                        compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &shader,
+                        entry_point: Some("fs_main"),
+                        targets: &[Some(render_state.target_format.into())],
+                        compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    }),
+                    primitive: wgpu::PrimitiveState::default(),
+                    depth_stencil: None,
+                    multisample: wgpu::MultisampleState::default(),
+                    multiview: None,
+                    cache: None,
+                });
+                let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+                    mag_filter: wgpu::FilterMode::Linear,
+                    min_filter: wgpu::FilterMode::Linear,
+                    ..Default::default()
+                });
+                store.resources = Some(GpuDisplayResources {
+                    pipeline,
+                    bind_group_layout: bgl,
+                    sampler,
+                });
             }
             // Create bind group for the cached texture
             if let Some(res) = &store.resources {
-                let bg = render_state.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: None, layout: &res.bind_group_layout,
-                    entries: &[
-                        wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&cached.view) },
-                        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&res.sampler) },
-                    ],
-                });
+                let bg = render_state
+                    .device
+                    .create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: None,
+                        layout: &res.bind_group_layout,
+                        entries: &[
+                            wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: wgpu::BindingResource::TextureView(&cached.view),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 1,
+                                resource: wgpu::BindingResource::Sampler(&res.sampler),
+                            },
+                        ],
+                    });
                 let view = cached.texture.create_view(&Default::default());
                 store.prerendered.insert(node_id, (view, bg));
             }
@@ -506,7 +617,13 @@ impl GpuTextureCache {
     ) -> Option<Arc<ImageData>> {
         let key = (node_id as u64).wrapping_mul(31).wrapping_add(port as u64);
         let cached = self.entries.get(&key)?;
-        Some(readback_texture(device, queue, &cached.texture, cached.width, cached.height))
+        Some(readback_texture(
+            device,
+            queue,
+            &cached.texture,
+            cached.width,
+            cached.height,
+        ))
     }
 
     /// Per-`(node_id, port)` frame stamp used by the eval-loop param
@@ -642,10 +759,12 @@ impl egui_wgpu::CallbackTrait for GpuBlendCallback {
         encoder: &mut wgpu::CommandEncoder,
         callback_resources: &mut egui_wgpu::CallbackResources,
     ) -> Vec<wgpu::CommandBuffer> {
-        let store = callback_resources.entry::<GpuBlendStore>().or_insert_with(|| GpuBlendStore {
-            resources: None,
-            instances: HashMap::new(),
-        });
+        let store = callback_resources
+            .entry::<GpuBlendStore>()
+            .or_insert_with(|| GpuBlendStore {
+                resources: None,
+                instances: HashMap::new(),
+            });
 
         // Initialize pipeline on first use
         if store.resources.is_none() {
@@ -658,7 +777,7 @@ impl egui_wgpu::CallbackTrait for GpuBlendCallback {
 
         let w = self.img_a.width.max(self.img_b.width);
         let h = self.img_a.height.max(self.img_b.height);
-        
+
         // Upload params
         let params = [self.mode, self.mix.to_bits(), 0u32, 0u32];
         queue.write_buffer(&res.uniform_buffer, 0, bytemuck::cast_slice(&params));
@@ -672,12 +791,18 @@ impl egui_wgpu::CallbackTrait for GpuBlendCallback {
         // Create output render target
         let output_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("blend_output"),
-            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
         let output_view = output_texture.create_view(&Default::default());
@@ -687,10 +812,22 @@ impl egui_wgpu::CallbackTrait for GpuBlendCallback {
             label: Some("blend_bind_group"),
             layout: &res.bind_group_layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: res.uniform_buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&view_a) },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&view_b) },
-                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&res.sampler) },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: res.uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&view_a),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&view_b),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::Sampler(&res.sampler),
+                },
             ],
         });
 
@@ -719,19 +856,28 @@ impl egui_wgpu::CallbackTrait for GpuBlendCallback {
             label: Some("blend_display_bg"),
             layout: &res.display_bind_group_layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&output_view) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&res.sampler) },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&output_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&res.sampler),
+                },
             ],
         });
 
-        store.instances.insert(self.node_id, GpuBlendInstance {
-            _bind_group: bind_group,
-            output_texture,
-            _output_view: output_view,
-            display_bind_group,
-            width: w,
-            height: h,
-        });
+        store.instances.insert(
+            self.node_id,
+            GpuBlendInstance {
+                _bind_group: bind_group,
+                output_texture,
+                _output_view: output_view,
+                display_bind_group,
+                width: w,
+                height: h,
+            },
+        );
 
         Vec::new()
     }
@@ -743,7 +889,8 @@ impl egui_wgpu::CallbackTrait for GpuBlendCallback {
         callback_resources: &egui_wgpu::CallbackResources,
     ) {
         if let Some(store) = callback_resources.get::<GpuBlendStore>() {
-            if let (Some(res), Some(inst)) = (&store.resources, store.instances.get(&self.node_id)) {
+            if let (Some(res), Some(inst)) = (&store.resources, store.instances.get(&self.node_id))
+            {
                 render_pass.set_pipeline(&res.display_pipeline);
                 render_pass.set_bind_group(0, &inst.display_bind_group, &[]);
                 render_pass.draw(0..3, 0..1);
@@ -779,7 +926,10 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 }
 "#;
 
-fn create_blend_pipeline(device: &wgpu::Device, target_format: wgpu::TextureFormat) -> GpuBlendResources {
+fn create_blend_pipeline(
+    device: &wgpu::Device,
+    target_format: wgpu::TextureFormat,
+) -> GpuBlendResources {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("blend_shader"),
         source: wgpu::ShaderSource::Wgsl(BLEND_SHADER.into()),
@@ -879,27 +1029,28 @@ fn create_blend_pipeline(device: &wgpu::Device, target_format: wgpu::TextureForm
         source: wgpu::ShaderSource::Wgsl(DISPLAY_SHADER.into()),
     });
 
-    let display_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("display_layout"),
-        entries: &[
-            wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                    view_dimension: wgpu::TextureViewDimension::D2,
-                    multisampled: false,
+    let display_bind_group_layout =
+        device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("display_layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
                 },
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: 1,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                count: None,
-            },
-        ],
-    });
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
 
     let display_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("display_pipeline_layout"),
@@ -933,30 +1084,67 @@ fn create_blend_pipeline(device: &wgpu::Device, target_format: wgpu::TextureForm
         cache: None,
     });
 
-    GpuBlendResources { pipeline, display_pipeline, display_bind_group_layout, bind_group_layout, sampler, uniform_buffer }
+    GpuBlendResources {
+        pipeline,
+        display_pipeline,
+        display_bind_group_layout,
+        bind_group_layout,
+        sampler,
+        uniform_buffer,
+    }
 }
 
-pub fn upload_texture(device: &wgpu::Device, queue: &wgpu::Queue, img: &ImageData, label: &str) -> wgpu::Texture {
+pub fn upload_texture(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    img: &ImageData,
+    label: &str,
+) -> wgpu::Texture {
     // Guard against empty pixel buffers (GPU-only placeholders)
     if img.pixels.is_empty() {
         let tex = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some(label), size: wgpu::Extent3d { width: img.width.max(1), height: img.height.max(1), depth_or_array_layers: 1 },
-            mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
+            label: Some(label),
+            size: wgpu::Extent3d {
+                width: img.width.max(1),
+                height: img.height.max(1),
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST, view_formats: &[],
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
         });
         let black = vec![0u8; (img.width.max(1) * img.height.max(1) * 4) as usize];
         queue.write_texture(
-            wgpu::TexelCopyTextureInfo { texture: &tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            wgpu::TexelCopyTextureInfo {
+                texture: &tex,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
             &black,
-            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(img.width.max(1) * 4), rows_per_image: Some(img.height.max(1)) },
-            wgpu::Extent3d { width: img.width.max(1), height: img.height.max(1), depth_or_array_layers: 1 },
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(img.width.max(1) * 4),
+                rows_per_image: Some(img.height.max(1)),
+            },
+            wgpu::Extent3d {
+                width: img.width.max(1),
+                height: img.height.max(1),
+                depth_or_array_layers: 1,
+            },
         );
         return tex;
     }
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some(label),
-        size: wgpu::Extent3d { width: img.width, height: img.height, depth_or_array_layers: 1 },
+        size: wgpu::Extent3d {
+            width: img.width,
+            height: img.height,
+            depth_or_array_layers: 1,
+        },
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
@@ -978,7 +1166,11 @@ pub fn upload_texture(device: &wgpu::Device, queue: &wgpu::Queue, img: &ImageDat
             bytes_per_row: Some(img.width * 4),
             rows_per_image: Some(img.height),
         },
-        wgpu::Extent3d { width: img.width, height: img.height, depth_or_array_layers: 1 },
+        wgpu::Extent3d {
+            width: img.width,
+            height: img.height,
+            depth_or_array_layers: 1,
+        },
     );
 
     texture
@@ -1019,13 +1211,19 @@ pub fn readback_texture(
                 rows_per_image: Some(height),
             },
         },
-        wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
     );
     queue.submit(Some(encoder.finish()));
 
     let slice = staging.slice(..);
     let (tx, rx) = std::sync::mpsc::channel();
-    slice.map_async(wgpu::MapMode::Read, move |result| { let _ = tx.send(result); });
+    slice.map_async(wgpu::MapMode::Read, move |result| {
+        let _ = tx.send(result);
+    });
     device.poll(wgpu::Maintain::Wait);
     let _ = rx.recv();
 
@@ -1061,7 +1259,11 @@ pub fn readback_texture(
         crate::video_io::pixel_swizzle::rgba_to_bgra_in_place(&mut pixels);
     }
 
-    Arc::new(ImageData { width, height, pixels })
+    Arc::new(ImageData {
+        width,
+        height,
+        pixels,
+    })
 }
 
 /// Readback variant that emits **BGRA byte order** regardless of the
@@ -1117,13 +1319,19 @@ pub fn readback_texture_bgra(
                 rows_per_image: Some(height),
             },
         },
-        wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
     );
     queue.submit(Some(encoder.finish()));
 
     let slice = staging.slice(..);
     let (tx, rx) = std::sync::mpsc::channel();
-    slice.map_async(wgpu::MapMode::Read, move |result| { let _ = tx.send(result); });
+    slice.map_async(wgpu::MapMode::Read, move |result| {
+        let _ = tx.send(result);
+    });
     device.poll(wgpu::Maintain::Wait);
     let _ = rx.recv();
 
@@ -1194,47 +1402,77 @@ impl egui_wgpu::CallbackTrait for GpuImageDisplayCallback {
         _encoder: &mut wgpu::CommandEncoder,
         callback_resources: &mut egui_wgpu::CallbackResources,
     ) -> Vec<wgpu::CommandBuffer> {
-        let store = callback_resources.entry::<GpuDisplayStore>().or_insert_with(|| GpuDisplayStore {
-            resources: None,
-            instances: HashMap::new(),
-            prerendered: HashMap::new(),
-        });
+        let store = callback_resources
+            .entry::<GpuDisplayStore>()
+            .or_insert_with(|| GpuDisplayStore {
+                resources: None,
+                instances: HashMap::new(),
+                prerendered: HashMap::new(),
+            });
 
         if store.resources.is_none() {
             let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("display_shader"),
                 source: wgpu::ShaderSource::Wgsl(DISPLAY_SHADER.into()),
             });
-            let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("display_bgl"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0, visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1, visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                        count: None,
-                    },
-                ],
-            });
+            let bind_group_layout =
+                device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("display_bgl"),
+                    entries: &[
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 0,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Texture {
+                                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                                view_dimension: wgpu::TextureViewDimension::D2,
+                                multisampled: false,
+                            },
+                            count: None,
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 1,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                            count: None,
+                        },
+                    ],
+                });
             let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: None, bind_group_layouts: &[&bind_group_layout], push_constant_ranges: &[],
+                label: None,
+                bind_group_layouts: &[&bind_group_layout],
+                push_constant_ranges: &[],
             });
             let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("display_pipeline"),
                 layout: Some(&pipeline_layout),
-                vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs_main"), buffers: &[], compilation_options: wgpu::PipelineCompilationOptions::default() },
-                fragment: Some(wgpu::FragmentState { module: &shader, entry_point: Some("fs_main"), targets: &[Some(self.target_format.into())], compilation_options: wgpu::PipelineCompilationOptions::default() }),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_main"),
+                    buffers: &[],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs_main"),
+                    targets: &[Some(self.target_format.into())],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                }),
                 primitive: wgpu::PrimitiveState::default(),
-                depth_stencil: None, multisample: wgpu::MultisampleState::default(), multiview: None, cache: None,
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview: None,
+                cache: None,
             });
             let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-                mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, ..Default::default()
+                mag_filter: wgpu::FilterMode::Linear,
+                min_filter: wgpu::FilterMode::Linear,
+                ..Default::default()
             });
-            store.resources = Some(GpuDisplayResources { pipeline, bind_group_layout, sampler });
+            store.resources = Some(GpuDisplayResources {
+                pipeline,
+                bind_group_layout,
+                sampler,
+            });
         }
 
         let res = match store.resources.as_ref() {
@@ -1258,14 +1496,27 @@ impl egui_wgpu::CallbackTrait for GpuImageDisplayCallback {
         let texture = upload_texture(device, queue, &self.img, "display_img");
         let view = texture.create_view(&Default::default());
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None, layout: &res.bind_group_layout,
+            label: None,
+            layout: &res.bind_group_layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&res.sampler) },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&res.sampler),
+                },
             ],
         });
 
-        store.instances.insert(self.node_id, GpuDisplayInstance { bind_group, _texture: texture });
+        store.instances.insert(
+            self.node_id,
+            GpuDisplayInstance {
+                bind_group,
+                _texture: texture,
+            },
+        );
         Vec::new()
     }
 
@@ -1276,7 +1527,10 @@ impl egui_wgpu::CallbackTrait for GpuImageDisplayCallback {
         callback_resources: &egui_wgpu::CallbackResources,
     ) {
         if let Some(store) = callback_resources.get::<GpuDisplayStore>() {
-            let res = match &store.resources { Some(r) => r, None => return };
+            let res = match &store.resources {
+                Some(r) => r,
+                None => return,
+            };
 
             // Try pre-rendered source first (zero-copy GPU path)
             if let Some(src) = &self.gpu_source {
@@ -1297,4 +1551,3 @@ impl egui_wgpu::CallbackTrait for GpuImageDisplayCallback {
         }
     }
 }
-

@@ -12,9 +12,9 @@
 pub struct SmoothedParam {
     pub current: f32,
     pub target: f32,
-    coeff: f32,           // per-sample smoothing coefficient
+    coeff: f32, // per-sample smoothing coefficient
     #[allow(dead_code)]
-    smooth_ms: f32,       // stored to recompute coeff if sample rate changes
+    smooth_ms: f32, // stored to recompute coeff if sample rate changes
 }
 
 impl SmoothedParam {
@@ -83,4 +83,3 @@ impl<'de> serde::Deserialize<'de> for SmoothedParam {
         Ok(Self::new(value, 5.0))
     }
 }
-

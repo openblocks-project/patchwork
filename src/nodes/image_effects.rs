@@ -15,29 +15,55 @@ pub fn render(
     pending_disconnects: &mut Vec<(NodeId, usize)>,
 ) {
     let (brightness, contrast, saturation, hue, exposure, gamma) = match node_type {
-        NodeType::ImageEffects { brightness, contrast, saturation, hue, exposure, gamma } =>
-            (brightness, contrast, saturation, hue, exposure, gamma),
+        NodeType::ImageEffects {
+            brightness,
+            contrast,
+            saturation,
+            hue,
+            exposure,
+            gamma,
+        } => (brightness, contrast, saturation, hue, exposure, gamma),
         _ => return,
     };
 
     // Port 0: Image input
     {
-        let is_wired = connections.iter().any(|c| c.to_node == node_id && c.to_port == 0);
+        let is_wired = connections
+            .iter()
+            .any(|c| c.to_node == node_id && c.to_port == 0);
         ui.horizontal(|ui| {
-            super::inline_port_circle(ui, node_id, 0, true, connections, port_positions, dragging_from, pending_disconnects, PortKind::Image);
+            super::inline_port_circle(
+                ui,
+                node_id,
+                0,
+                true,
+                connections,
+                port_positions,
+                dragging_from,
+                pending_disconnects,
+                PortKind::Image,
+            );
             ui.label(egui::RichText::new("Image:").small());
             if is_wired {
                 let v = Graph::static_input_value(connections, values, node_id, 0);
                 match &v {
                     PortValue::Image(img) => {
-                        ui.label(egui::RichText::new(format!("[{}x{}]", img.width, img.height))
-                            .small().color(egui::Color32::from_rgb(80, 170, 255)));
+                        ui.label(
+                            egui::RichText::new(format!("[{}x{}]", img.width, img.height))
+                                .small()
+                                .color(egui::Color32::from_rgb(80, 170, 255)),
+                        );
                     }
                     PortValue::GpuImage(h) => {
-                        ui.label(egui::RichText::new(format!("[{}x{} gpu]", h.width, h.height))
-                            .small().color(egui::Color32::from_rgb(80, 170, 255)));
+                        ui.label(
+                            egui::RichText::new(format!("[{}x{} gpu]", h.width, h.height))
+                                .small()
+                                .color(egui::Color32::from_rgb(80, 170, 255)),
+                        );
                     }
-                    _ => { ui.label(egui::RichText::new("—").small()); }
+                    _ => {
+                        ui.label(egui::RichText::new("—").small());
+                    }
                 }
             } else {
                 ui.label(egui::RichText::new("—").small().color(egui::Color32::GRAY));
@@ -48,18 +74,76 @@ pub fn render(
     ui.separator();
 
     // Parameters: each is ● Label: on first line, slider + value on second
-    struct Param<'a> { port: usize, label: &'a str, val: &'a mut f32, min: f32, max: f32, suffix: &'a str, kind: PortKind }
+    struct Param<'a> {
+        port: usize,
+        label: &'a str,
+        val: &'a mut f32,
+        min: f32,
+        max: f32,
+        suffix: &'a str,
+        kind: PortKind,
+    }
     let mut params = [
-        Param { port: 1, label: "Brightness", val: brightness, min: 0.0, max: 3.0, suffix: "", kind: PortKind::Normalized },
-        Param { port: 2, label: "Contrast", val: contrast, min: 0.0, max: 3.0, suffix: "", kind: PortKind::Normalized },
-        Param { port: 3, label: "Saturation", val: saturation, min: 0.0, max: 3.0, suffix: "", kind: PortKind::Normalized },
-        Param { port: 4, label: "Hue", val: hue, min: 0.0, max: 360.0, suffix: "°", kind: PortKind::Number },
-        Param { port: 5, label: "Exposure", val: exposure, min: -3.0, max: 3.0, suffix: "", kind: PortKind::Number },
-        Param { port: 6, label: "Gamma", val: gamma, min: 0.1, max: 3.0, suffix: "", kind: PortKind::Number },
+        Param {
+            port: 1,
+            label: "Brightness",
+            val: brightness,
+            min: 0.0,
+            max: 3.0,
+            suffix: "",
+            kind: PortKind::Normalized,
+        },
+        Param {
+            port: 2,
+            label: "Contrast",
+            val: contrast,
+            min: 0.0,
+            max: 3.0,
+            suffix: "",
+            kind: PortKind::Normalized,
+        },
+        Param {
+            port: 3,
+            label: "Saturation",
+            val: saturation,
+            min: 0.0,
+            max: 3.0,
+            suffix: "",
+            kind: PortKind::Normalized,
+        },
+        Param {
+            port: 4,
+            label: "Hue",
+            val: hue,
+            min: 0.0,
+            max: 360.0,
+            suffix: "°",
+            kind: PortKind::Number,
+        },
+        Param {
+            port: 5,
+            label: "Exposure",
+            val: exposure,
+            min: -3.0,
+            max: 3.0,
+            suffix: "",
+            kind: PortKind::Number,
+        },
+        Param {
+            port: 6,
+            label: "Gamma",
+            val: gamma,
+            min: 0.1,
+            max: 3.0,
+            suffix: "",
+            kind: PortKind::Number,
+        },
     ];
 
     for param in &mut params {
-        let is_wired = connections.iter().any(|c| c.to_node == node_id && c.to_port == param.port);
+        let is_wired = connections
+            .iter()
+            .any(|c| c.to_node == node_id && c.to_port == param.port);
 
         // Override from input if connected
         if is_wired {
@@ -69,13 +153,27 @@ pub fn render(
 
         // Row 1: ● Label:
         ui.horizontal(|ui| {
-            super::inline_port_circle(ui, node_id, param.port, true, connections, port_positions, dragging_from, pending_disconnects, param.kind);
+            super::inline_port_circle(
+                ui,
+                node_id,
+                param.port,
+                true,
+                connections,
+                port_positions,
+                dragging_from,
+                pending_disconnects,
+                param.kind,
+            );
 
             ui.label(egui::RichText::new(format!("{}:", param.label)).small());
 
             if is_wired {
-                ui.label(egui::RichText::new(format!("{:.2}{}", *param.val, param.suffix))
-                    .small().monospace().color(egui::Color32::from_rgb(80, 170, 255)));
+                ui.label(
+                    egui::RichText::new(format!("{:.2}{}", *param.val, param.suffix))
+                        .small()
+                        .monospace()
+                        .color(egui::Color32::from_rgb(80, 170, 255)),
+                );
             }
         });
 
@@ -83,9 +181,12 @@ pub fn render(
         if !is_wired {
             ui.horizontal(|ui| {
                 ui.add_space(16.0); // indent to align with label
-                let slider = egui::Slider::new(param.val, param.min..=param.max)
-                    .show_value(true);
-                let slider = if !param.suffix.is_empty() { slider.suffix(param.suffix) } else { slider };
+                let slider = egui::Slider::new(param.val, param.min..=param.max).show_value(true);
+                let slider = if !param.suffix.is_empty() {
+                    slider.suffix(param.suffix)
+                } else {
+                    slider
+                };
                 ui.add(slider);
             });
         }
@@ -100,19 +201,40 @@ pub fn render(
             Some(PortValue::GpuImage(h)) => format!("[{}x{} gpu]", h.width, h.height),
             _ => "—".to_string(),
         };
-        super::output_port_row(ui, "Image", &val_str, node_id, 0, port_positions, dragging_from, connections, pending_disconnects, PortKind::Image);
+        super::output_port_row(
+            ui,
+            "Image",
+            &val_str,
+            node_id,
+            0,
+            port_positions,
+            dragging_from,
+            connections,
+            pending_disconnects,
+            PortKind::Image,
+        );
     }
 
     // Preview info
     let input_val = Graph::static_input_value(connections, values, node_id, 0);
     match &input_val {
         PortValue::Image(img) => {
-            ui.label(egui::RichText::new(format!("{}x{}", img.width, img.height)).small().color(egui::Color32::GRAY));
+            ui.label(
+                egui::RichText::new(format!("{}x{}", img.width, img.height))
+                    .small()
+                    .color(egui::Color32::GRAY),
+            );
         }
         PortValue::GpuImage(h) => {
-            ui.label(egui::RichText::new(format!("{}x{} (gpu)", h.width, h.height)).small().color(egui::Color32::GRAY));
+            ui.label(
+                egui::RichText::new(format!("{}x{} (gpu)", h.width, h.height))
+                    .small()
+                    .color(egui::Color32::GRAY),
+            );
         }
-        _ => { ui.colored_label(egui::Color32::GRAY, "Connect image input"); }
+        _ => {
+            ui.colored_label(egui::Color32::GRAY, "Connect image input");
+        }
     }
 }
 
@@ -124,13 +246,25 @@ pub fn render(
 /// hue-matrix (two trig calls + 18 multiplications) on *every pixel*.
 /// Those are now computed once; the inner loop is just a linear
 /// affine combination of r/g/b.
-pub fn process(img: &ImageData, brightness: f32, contrast: f32, saturation: f32, hue: f32, exposure: f32, gamma: f32) -> Arc<ImageData> {
+pub fn process(
+    img: &ImageData,
+    brightness: f32,
+    contrast: f32,
+    saturation: f32,
+    hue: f32,
+    exposure: f32,
+    gamma: f32,
+) -> Arc<ImageData> {
     let mut pixels = img.pixels.clone();
     let len = pixels.len();
 
     // Precompute per-effect activation + constants.
     let exp_active = exposure.abs() > 0.001;
-    let exp_mult = if exp_active { 2.0f32.powf(exposure) } else { 1.0 };
+    let exp_mult = if exp_active {
+        2.0f32.powf(exposure)
+    } else {
+        1.0
+    };
 
     // Combined gain for exposure + brightness (one multiply per channel
     // instead of two).
@@ -145,7 +279,11 @@ pub fn process(img: &ImageData, brightness: f32, contrast: f32, saturation: f32,
     // inner loop when hue ≠ 0.)
     let hue_rad = hue * std::f32::consts::PI / 180.0;
     let hue_active = hue_rad.abs() > 0.001;
-    let (cos_h, sin_h) = if hue_active { (hue_rad.cos(), hue_rad.sin()) } else { (1.0, 0.0) };
+    let (cos_h, sin_h) = if hue_active {
+        (hue_rad.cos(), hue_rad.sin())
+    } else {
+        (1.0, 0.0)
+    };
     let m_rr = 0.213 + 0.787 * cos_h - 0.213 * sin_h;
     let m_rg = 0.715 - 0.715 * cos_h - 0.715 * sin_h;
     let m_rb = 0.072 - 0.072 * cos_h + 0.928 * sin_h;
@@ -164,12 +302,14 @@ pub fn process(img: &ImageData, brightness: f32, contrast: f32, saturation: f32,
 
     let mut i = 0;
     while i + 3 < len {
-        let mut r = pixels[i]   as f32 * inv_255;
-        let mut g = pixels[i+1] as f32 * inv_255;
-        let mut b = pixels[i+2] as f32 * inv_255;
+        let mut r = pixels[i] as f32 * inv_255;
+        let mut g = pixels[i + 1] as f32 * inv_255;
+        let mut b = pixels[i + 2] as f32 * inv_255;
 
         // Exposure × Brightness folded into one gain.
-        r *= gain; g *= gain; b *= gain;
+        r *= gain;
+        g *= gain;
+        b *= gain;
 
         // Contrast: one mad per channel.
         r = contrast * r + con_bias;
@@ -188,7 +328,9 @@ pub fn process(img: &ImageData, brightness: f32, contrast: f32, saturation: f32,
             let nr = r * m_rr + g * m_rg + b * m_rb;
             let ng = r * m_gr + g * m_gg + b * m_gb;
             let nb = r * m_br + g * m_bg + b * m_bb;
-            r = nr; g = ng; b = nb;
+            r = nr;
+            g = ng;
+            b = nb;
         }
 
         if gamma_active {
@@ -197,13 +339,17 @@ pub fn process(img: &ImageData, brightness: f32, contrast: f32, saturation: f32,
             b = b.max(0.0).powf(inv_g);
         }
 
-        pixels[i]   = (r.clamp(0.0, 1.0) * 255.0) as u8;
-        pixels[i+1] = (g.clamp(0.0, 1.0) * 255.0) as u8;
-        pixels[i+2] = (b.clamp(0.0, 1.0) * 255.0) as u8;
+        pixels[i] = (r.clamp(0.0, 1.0) * 255.0) as u8;
+        pixels[i + 1] = (g.clamp(0.0, 1.0) * 255.0) as u8;
+        pixels[i + 2] = (b.clamp(0.0, 1.0) * 255.0) as u8;
         i += 4;
     }
 
-    Arc::new(ImageData { width: img.width, height: img.height, pixels })
+    Arc::new(ImageData {
+        width: img.width,
+        height: img.height,
+        pixels,
+    })
 }
 
 // ── GPU-accelerated image effects ───────────────────────────────────────────
@@ -292,18 +438,19 @@ struct ImageEffectsStore {
 /// the CPU-upload-heavy `process_gpu` path, which would corrupt stub
 /// `GpuImage` inputs (empty pixels) into solid black textures and
 /// poison the per-node param cache for the rest of the session.
-fn ensure_pipeline(
-    node_id: NodeId,
-    render_state: &eframe::egui_wgpu::RenderState,
-) -> bool {
+fn ensure_pipeline(node_id: NodeId, render_state: &eframe::egui_wgpu::RenderState) -> bool {
     let device = &render_state.device;
     let already = {
         let renderer = render_state.renderer.read();
-        renderer.callback_resources.get::<ImageEffectsStore>()
+        renderer
+            .callback_resources
+            .get::<ImageEffectsStore>()
             .and_then(|s| s.nodes.get(&node_id))
             .is_some()
     };
-    if already { return true; }
+    if already {
+        return true;
+    }
 
     device.push_error_scope(wgpu::ErrorFilter::Validation);
 
@@ -391,14 +538,21 @@ fn ensure_pipeline(
         ..Default::default()
     });
 
-    let gpu = ImageEffectsGpu { pipeline, bind_group_layout, uniform_buffer, sampler };
+    let gpu = ImageEffectsGpu {
+        pipeline,
+        bind_group_layout,
+        uniform_buffer,
+        sampler,
+    };
     let mut renderer = render_state.renderer.write();
     if let Some(store) = renderer.callback_resources.get_mut::<ImageEffectsStore>() {
         store.nodes.insert(node_id, gpu);
     } else {
         let mut nodes = HashMap::new();
         nodes.insert(node_id, gpu);
-        renderer.callback_resources.insert(ImageEffectsStore { nodes });
+        renderer
+            .callback_resources
+            .insert(ImageEffectsStore { nodes });
     }
     true
 }
@@ -406,8 +560,12 @@ fn ensure_pipeline(
 #[allow(dead_code)]
 pub fn process_gpu(
     img: &ImageData,
-    brightness: f32, contrast: f32, saturation: f32,
-    hue: f32, exposure: f32, gamma: f32,
+    brightness: f32,
+    contrast: f32,
+    saturation: f32,
+    hue: f32,
+    exposure: f32,
+    gamma: f32,
     node_id: NodeId,
     render_state: &eframe::egui_wgpu::RenderState,
 ) -> Option<Arc<ImageData>> {
@@ -415,9 +573,13 @@ pub fn process_gpu(
     let queue = &render_state.queue;
     let w = img.width;
     let h = img.height;
-    if w == 0 || h == 0 { return None; }
+    if w == 0 || h == 0 {
+        return None;
+    }
 
-    if !ensure_pipeline(node_id, render_state) { return None; }
+    if !ensure_pipeline(node_id, render_state) {
+        return None;
+    }
 
     // Upload input image
     let input_tex = crate::gpu_image::upload_texture(device, queue, img, "img_fx_input");
@@ -426,8 +588,13 @@ pub fn process_gpu(
     // Output texture
     let output_tex = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("img_fx_output"),
-        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-        mip_level_count: 1, sample_count: 1,
+        size: wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format: wgpu::TextureFormat::Rgba8UnormSrgb,
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
@@ -440,16 +607,27 @@ pub fn process_gpu(
     let store = renderer.callback_resources.get::<ImageEffectsStore>()?;
     let gpu = store.nodes.get(&node_id)?;
 
-    let params = [brightness, contrast, saturation, hue, exposure, gamma, w as f32, h as f32];
+    let params = [
+        brightness, contrast, saturation, hue, exposure, gamma, w as f32, h as f32,
+    ];
     queue.write_buffer(&gpu.uniform_buffer, 0, bytemuck::cast_slice(&params));
 
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: None,
         layout: &gpu.bind_group_layout,
         entries: &[
-            wgpu::BindGroupEntry { binding: 0, resource: gpu.uniform_buffer.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&input_view) },
-            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&gpu.sampler) },
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: gpu.uniform_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(&input_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::Sampler(&gpu.sampler),
+            },
         ],
     });
 
@@ -475,15 +653,25 @@ pub fn process_gpu(
     queue.submit(Some(encoder.finish()));
     drop(renderer);
 
-    Some(crate::gpu_image::readback_texture(device, queue, &output_tex, w, h))
+    Some(crate::gpu_image::readback_texture(
+        device,
+        queue,
+        &output_tex,
+        w,
+        h,
+    ))
 }
 
 /// GPU processing with output caching for zero-copy display.
 /// Same as process_gpu but caches output texture for downstream GPU nodes and Display.
 pub fn process_gpu_cached(
     img: &ImageData,
-    brightness: f32, contrast: f32, saturation: f32,
-    hue: f32, exposure: f32, gamma: f32,
+    brightness: f32,
+    contrast: f32,
+    saturation: f32,
+    hue: f32,
+    exposure: f32,
+    gamma: f32,
     node_id: NodeId,
     render_state: &eframe::egui_wgpu::RenderState,
     tex_cache: &mut crate::gpu_image::GpuTextureCache,
@@ -494,7 +682,9 @@ pub fn process_gpu_cached(
     let queue = &render_state.queue;
     let w = img.width;
     let h = img.height;
-    if w == 0 || h == 0 { return None; }
+    if w == 0 || h == 0 {
+        return None;
+    }
 
     // Ensure pipeline exists. We must NOT fall back to `process_gpu` here:
     // it CPU-uploads `img` via `upload_texture`, which silently produces a
@@ -502,7 +692,9 @@ pub fn process_gpu_cached(
     // the input arrived as a `GpuImage` stub from an upstream GPU node).
     // The black result then poisons the per-node `("img_fx_cache", id)`
     // param cache for the rest of the session.
-    if !ensure_pipeline(node_id, render_state) { return None; }
+    if !ensure_pipeline(node_id, render_state) {
+        return None;
+    }
 
     // Bind input from upstream GPU cache when available; only upload from
     // CPU as a fallback (saves one CPU→GPU upload per frame in GPU chains).
@@ -525,10 +717,18 @@ pub fn process_gpu_cached(
     // Output with TEXTURE_BINDING so it can be cached for display
     let output_tex = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("img_fx_output"),
-        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-        mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
+        size: wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
         format: wgpu::TextureFormat::Rgba8UnormSrgb,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::TEXTURE_BINDING,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::COPY_SRC
+            | wgpu::TextureUsages::TEXTURE_BINDING,
         view_formats: &[],
     });
     let output_view = output_tex.create_view(&Default::default());
@@ -537,15 +737,27 @@ pub fn process_gpu_cached(
     let store = renderer.callback_resources.get::<ImageEffectsStore>()?;
     let gpu = store.nodes.get(&node_id)?;
 
-    let params = [brightness, contrast, saturation, hue, exposure, gamma, w as f32, h as f32];
+    let params = [
+        brightness, contrast, saturation, hue, exposure, gamma, w as f32, h as f32,
+    ];
     queue.write_buffer(&gpu.uniform_buffer, 0, bytemuck::cast_slice(&params));
 
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: None, layout: &gpu.bind_group_layout,
+        label: None,
+        layout: &gpu.bind_group_layout,
         entries: &[
-            wgpu::BindGroupEntry { binding: 0, resource: gpu.uniform_buffer.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&input_view) },
-            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&gpu.sampler) },
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: gpu.uniform_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(&input_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::Sampler(&gpu.sampler),
+            },
         ],
     });
 
@@ -554,10 +766,15 @@ pub fn process_gpu_cached(
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("img_fx_pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &output_view, resolve_target: None,
-                ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
+                view: &output_view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Store,
+                },
             })],
-            depth_stencil_attachment: None, ..Default::default()
+            depth_stencil_attachment: None,
+            ..Default::default()
         });
         pass.set_pipeline(&gpu.pipeline);
         pass.set_bind_group(0, &bind_group, &[]);
@@ -602,9 +819,7 @@ pub(crate) fn cleanup_node(
 /// Wipe every Image Effects GPU pipeline. Called by
 /// `GpuTextureCache::clear_all` on project load/undo/redo so the new
 /// project can't reuse pipelines indexed by colliding node ids.
-pub(crate) fn cleanup_all(
-    callback_resources: &mut eframe::egui_wgpu::CallbackResources,
-) {
+pub(crate) fn cleanup_all(callback_resources: &mut eframe::egui_wgpu::CallbackResources) {
     if let Some(store) = callback_resources.get_mut::<ImageEffectsStore>() {
         store.nodes.clear();
     }

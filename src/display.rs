@@ -49,11 +49,17 @@ impl Display {
 /// cope with an empty list gracefully.
 pub fn enumerate_displays() -> Vec<Display> {
     #[cfg(target_os = "macos")]
-    { return macos::enumerate(); }
+    {
+        return macos::enumerate();
+    }
     #[cfg(target_os = "linux")]
-    { return linux::enumerate(); }
+    {
+        return linux::enumerate();
+    }
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    { return Vec::new(); }
+    {
+        return Vec::new();
+    }
 }
 
 // ── macOS ───────────────────────────────────────────────────────────────────
@@ -120,10 +126,7 @@ mod linux {
 
     pub fn enumerate() -> Vec<Display> {
         // Try xrandr first — common on X11 + XWayland sessions.
-        let Ok(out) = Command::new("xrandr")
-            .arg("--listmonitors")
-            .output()
-        else {
+        let Ok(out) = Command::new("xrandr").arg("--listmonitors").output() else {
             return Vec::new();
         };
         if !out.status.success() {
@@ -135,12 +138,16 @@ mod linux {
             // Format: " 0: +*HDMI-1 1920/520x1080/290+0+0  HDMI-1"
             //          idx primary geometry                  name
             let line = line.trim();
-            if !line.contains(':') { continue; }
+            if !line.contains(':') {
+                continue;
+            }
             let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() < 3 { continue; }
+            if parts.len() < 3 {
+                continue;
+            }
             let primary_name = parts[1]; // "+*HDMI-1" or "+HDMI-1"
             let is_primary = primary_name.contains('*');
-            let geom = parts[2];          // "1920/520x1080/290+0+0"
+            let geom = parts[2]; // "1920/520x1080/290+0+0"
             let (size, origin) = parse_xrandr_geom(geom).unwrap_or(((1920, 1080), (0, 0)));
             let name = parts.last().unwrap_or(&"").to_string();
             displays.push(Display {
@@ -151,7 +158,9 @@ mod linux {
                 is_primary,
             });
             // Safety net against pathological xrandr output.
-            if idx > 32 { break; }
+            if idx > 32 {
+                break;
+            }
         }
         displays
     }
@@ -186,8 +195,11 @@ mod tests {
     #[test]
     fn pretty_label_formats() {
         let d = Display {
-            id: "eDP-1".into(), name: "Built-in".into(),
-            origin: (0, 0), size: (1920, 1080), is_primary: true,
+            id: "eDP-1".into(),
+            name: "Built-in".into(),
+            origin: (0, 0),
+            size: (1920, 1080),
+            is_primary: true,
         };
         assert_eq!(d.pretty_label(), "Built-in — 1920×1080 ★");
     }

@@ -24,9 +24,9 @@ use std::path::PathBuf;
 // ── Re-exports from ai_request ───────────────────────────────────────────────
 
 pub use crate::nodes::ai_request::{
-    base64_decode, base64_encode, build_request, encode_image_to_jpeg_b64,
-    extract_ai_response, models_for, provider_label, strip_code_fences,
-    try_save_imagen_image, StylePreset, IMAGE_PRESETS, TEXT_FORMATS, TEXT_PRESETS,
+    IMAGE_PRESETS, StylePreset, TEXT_FORMATS, TEXT_PRESETS, base64_decode, base64_encode,
+    build_request, encode_image_to_jpeg_b64, extract_ai_response, models_for, provider_label,
+    strip_code_fences, try_save_imagen_image,
 };
 
 // ── CodeGen languages + system prompts ───────────────────────────────────────
@@ -40,9 +40,12 @@ pub const CODE_LANGUAGES: &[&str] = &["Rust", "WGSL", "HTML", "JSON"];
 /// cleanly into PatchWork's WGSL Viewer.
 pub fn language_system_prompt(language: &str) -> &'static str {
     match language {
-        "Rust" => "You are a senior Rust engineer. Reply with idiomatic, well-typed Rust. \
-            Output ONLY the code — no markdown fences, no prose, no explanations.",
-        "WGSL" => "You are a WGSL shader expert writing fragment shaders that drop directly \
+        "Rust" => {
+            "You are a senior Rust engineer. Reply with idiomatic, well-typed Rust. \
+            Output ONLY the code — no markdown fences, no prose, no explanations."
+        }
+        "WGSL" => {
+            "You are a WGSL shader expert writing fragment shaders that drop directly \
             into PatchWork's WGSL Viewer node.\n\
             \n\
             STRICT OUTPUT FORMAT:\n\
@@ -59,10 +62,13 @@ pub fn language_system_prompt(language: &str) -> &'static str {
             CONVENTIONS:\n\
             - Use `in.uv` (already in [0,1], y-flipped) as your normalized coordinate.\n\
             - Animate with `u.time`. Return `vec4<f32>(rgb, 1.0)`.\n\
-            - Prefer `mix`, `smoothstep`, `fract`, `sin`, `length` over heavy loops.",
-        "HTML" => "You are a senior web engineer. Reply with a single self-contained HTML \
+            - Prefer `mix`, `smoothstep`, `fract`, `sin`, `length` over heavy loops."
+        }
+        "HTML" => {
+            "You are a senior web engineer. Reply with a single self-contained HTML \
             document (inline CSS and JS only; no external assets). Output ONLY the HTML — \
-            no markdown fences, no explanations.",
+            no markdown fences, no explanations."
+        }
         "JSON" => "Reply with a single valid JSON object. No prose, no code fences, no commentary.",
         _ => "Output only source code. No markdown fences, no prose.",
     }
@@ -74,11 +80,16 @@ pub fn language_system_prompt(language: &str) -> &'static str {
 /// One file per bundle lives at `~/.patchwork/ai_configs/<name>.json`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ConfigBundle {
-    #[serde(default)] pub text: KindDefault,
-    #[serde(default)] pub image: KindDefault,
-    #[serde(default)] pub code: KindDefault,
-    #[serde(default)] pub keys: ProviderKeys,
-    #[serde(default)] pub custom: CustomEndpoint,
+    #[serde(default)]
+    pub text: KindDefault,
+    #[serde(default)]
+    pub image: KindDefault,
+    #[serde(default)]
+    pub code: KindDefault,
+    #[serde(default)]
+    pub keys: ProviderKeys,
+    #[serde(default)]
+    pub custom: CustomEndpoint,
 }
 
 impl ConfigBundle {
@@ -87,9 +98,18 @@ impl ConfigBundle {
     /// pasted in.
     pub fn seeded() -> Self {
         Self {
-            text: KindDefault { provider: "anthropic".into(), model: "claude-sonnet-4-20250514".into() },
-            image: KindDefault { provider: "openai".into(), model: "dall-e-3".into() },
-            code: KindDefault { provider: "anthropic".into(), model: "claude-sonnet-4-20250514".into() },
+            text: KindDefault {
+                provider: "anthropic".into(),
+                model: "claude-sonnet-4-20250514".into(),
+            },
+            image: KindDefault {
+                provider: "openai".into(),
+                model: "dall-e-3".into(),
+            },
+            code: KindDefault {
+                provider: "anthropic".into(),
+                model: "claude-sonnet-4-20250514".into(),
+            },
             keys: ProviderKeys::default(),
             custom: CustomEndpoint::default(),
         }
@@ -104,7 +124,8 @@ impl ConfigBundle {
 pub struct ConfigPayload {
     pub provider: String,
     pub model: String,
-    #[serde(default)] pub api_key: String,
+    #[serde(default)]
+    pub api_key: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub base_url: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -123,9 +144,13 @@ impl ConfigPayload {
 /// Returns `None` on empty input, non-JSON, or missing provider.
 pub fn parse_config_port(raw: &str) -> Option<ConfigPayload> {
     let trimmed = raw.trim();
-    if trimmed.is_empty() { return None; }
+    if trimmed.is_empty() {
+        return None;
+    }
     let p: ConfigPayload = serde_json::from_str(trimmed).ok()?;
-    if p.provider.is_empty() { return None; }
+    if p.provider.is_empty() {
+        return None;
+    }
     Some(p)
 }
 
@@ -155,7 +180,11 @@ impl ConfigBundlePayload {
     }
 }
 
-fn payload_from_kind(k: &KindDefault, keys: &ProviderKeys, custom: &CustomEndpoint) -> ConfigPayload {
+fn payload_from_kind(
+    k: &KindDefault,
+    keys: &ProviderKeys,
+    custom: &CustomEndpoint,
+) -> ConfigPayload {
     let (api_key, _from_env) = resolve_key(&k.provider, keys);
     if k.provider == "custom" {
         ConfigPayload {
@@ -186,7 +215,9 @@ fn payload_from_kind(k: &KindDefault, keys: &ProviderKeys, custom: &CustomEndpoi
 /// non-JSON or when the selected kind's payload is empty.
 pub fn parse_bundle_then_pick(raw: &str, kind: &str) -> Option<ConfigPayload> {
     let trimmed = raw.trim();
-    if trimmed.is_empty() { return None; }
+    if trimmed.is_empty() {
+        return None;
+    }
     // Bundle shape (preferred).
     if let Ok(b) = serde_json::from_str::<ConfigBundlePayload>(trimmed) {
         let picked = match kind {
@@ -195,12 +226,16 @@ pub fn parse_bundle_then_pick(raw: &str, kind: &str) -> Option<ConfigPayload> {
             "code" => b.code,
             _ => return None,
         };
-        if picked.provider.is_empty() { return None; }
+        if picked.provider.is_empty() {
+            return None;
+        }
         return Some(picked);
     }
     // Flat payload fallback.
     if let Ok(p) = serde_json::from_str::<ConfigPayload>(trimmed) {
-        if !p.provider.is_empty() { return Some(p); }
+        if !p.provider.is_empty() {
+            return Some(p);
+        }
     }
     None
 }
@@ -217,7 +252,9 @@ pub fn ai_configs_dir() -> Option<PathBuf> {
 
 fn config_path(name: &str) -> Option<PathBuf> {
     let name = sanitize_config_name(name);
-    if name.is_empty() { return None; }
+    if name.is_empty() {
+        return None;
+    }
     Some(ai_configs_dir()?.join(format!("{}.json", name)))
 }
 
@@ -235,12 +272,16 @@ fn sanitize_config_name(name: &str) -> String {
 /// `"default"` first. Ensures a `"default"` entry exists — if the
 /// directory is empty or missing, a blank `default.json` is seeded.
 pub fn list_config_names() -> Vec<String> {
-    let Some(dir) = ai_configs_dir() else { return vec!["default".into()]; };
+    let Some(dir) = ai_configs_dir() else {
+        return vec!["default".into()];
+    };
     let mut names: Vec<String> = Vec::new();
     if let Ok(rd) = std::fs::read_dir(&dir) {
         for e in rd.flatten() {
             let path = e.path();
-            if path.extension().and_then(|x| x.to_str()) != Some("json") { continue; }
+            if path.extension().and_then(|x| x.to_str()) != Some("json") {
+                continue;
+            }
             if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
                 names.push(stem.to_string());
             }
@@ -295,7 +336,9 @@ pub fn delete_config(name: &str) -> std::io::Result<()> {
     let p = config_path(name).ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid config name")
     })?;
-    if p.exists() { std::fs::remove_file(&p)?; }
+    if p.exists() {
+        std::fs::remove_file(&p)?;
+    }
     Ok(())
 }
 
@@ -331,7 +374,9 @@ pub fn load_active_payload(kind: &str) -> Option<ConfigPayload> {
         "code" => payload_from_kind(&bundle.code, &bundle.keys, &bundle.custom),
         _ => return None,
     };
-    if payload.provider.is_empty() { return None; }
+    if payload.provider.is_empty() {
+        return None;
+    }
     Some(payload)
 }
 
@@ -341,15 +386,18 @@ pub fn load_active_payload(kind: &str) -> Option<ConfigPayload> {
 /// hard-coded default providers/models.
 pub fn migrate_legacy_profiles_if_any() {
     let settings = Settings::load();
-    let Some(legacy) = settings.legacy_profiles.as_ref() else { return; };
-    let Some(profiles) = legacy.as_object() else { return; };
+    let Some(legacy) = settings.legacy_profiles.as_ref() else {
+        return;
+    };
+    let Some(profiles) = legacy.as_object() else {
+        return;
+    };
     for (name, keys_val) in profiles {
         if load_config(name).is_some() {
             // A per-file config already exists; don't clobber it.
             continue;
         }
-        let keys: ProviderKeys = serde_json::from_value(keys_val.clone())
-            .unwrap_or_default();
+        let keys: ProviderKeys = serde_json::from_value(keys_val.clone()).unwrap_or_default();
         let mut bundle = ConfigBundle::seeded();
         bundle.keys = keys;
         let _ = save_config(name, &bundle);
@@ -415,8 +463,16 @@ pub fn build_custom_request(
     let mut headers: Vec<(String, String)> = Vec::new();
     headers.push(("Content-Type".into(), "application/json".into()));
     if !api_key.is_empty() {
-        let header = if auth_header.is_empty() { "Authorization" } else { auth_header };
-        let fmt = if auth_format.is_empty() { "Bearer {key}" } else { auth_format };
+        let header = if auth_header.is_empty() {
+            "Authorization"
+        } else {
+            auth_header
+        };
+        let fmt = if auth_format.is_empty() {
+            "Bearer {key}"
+        } else {
+            auth_format
+        };
         let value = fmt.replace("{key}", api_key);
         headers.push((header.into(), value));
     }
@@ -511,7 +567,9 @@ mod tests {
     #[test]
     fn resolve_key_returns_empty_when_no_pool_no_env() {
         let p = ProviderKeys::default();
-        if std::env::var("OPENAI_API_KEY").is_ok() { return; }
+        if std::env::var("OPENAI_API_KEY").is_ok() {
+            return;
+        }
         let (k, env) = resolve_key("openai", &p);
         assert_eq!(k, "");
         assert!(!env);
@@ -573,7 +631,16 @@ mod tests {
     #[test]
     fn custom_request_skips_auth_when_key_empty() {
         let (url, headers, _body) = build_custom_request(
-            "http://localhost:11434/v1", "", "", "", "llama3", "", "hi", 256, 0.7, None,
+            "http://localhost:11434/v1",
+            "",
+            "",
+            "",
+            "llama3",
+            "",
+            "hi",
+            256,
+            0.7,
+            None,
         );
         assert_eq!(url, "http://localhost:11434/v1/chat/completions");
         assert!(headers.iter().all(|(h, _)| h != "Authorization"));
@@ -582,8 +649,16 @@ mod tests {
     #[test]
     fn custom_request_applies_auth_template() {
         let (_, headers, _) = build_custom_request(
-            "https://openrouter.ai/api/v1", "Authorization", "Bearer {key}",
-            "sk-or-xxx", "anthropic/claude-3.5-sonnet", "", "hi", 256, 0.7, None,
+            "https://openrouter.ai/api/v1",
+            "Authorization",
+            "Bearer {key}",
+            "sk-or-xxx",
+            "anthropic/claude-3.5-sonnet",
+            "",
+            "hi",
+            256,
+            0.7,
+            None,
         );
         let auth = headers.iter().find(|(h, _)| h == "Authorization");
         assert!(auth.is_some());

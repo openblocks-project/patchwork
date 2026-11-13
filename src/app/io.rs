@@ -10,14 +10,18 @@ fn truncate_for_error(s: &str) -> String {
         trimmed.to_string()
     } else {
         let mut end = 160;
-        while !trimmed.is_char_boundary(end) && end > 0 { end -= 1; }
+        while !trimmed.is_char_boundary(end) && end > 0 {
+            end -= 1;
+        }
         format!("{}…", &trimmed[..end])
     }
 }
 
 /// Convert an absolute asset path to relative (relative to project directory).
 fn make_relative(abs_path: &str, project_dir: &str) -> String {
-    if abs_path.is_empty() { return String::new(); }
+    if abs_path.is_empty() {
+        return String::new();
+    }
     let abs = Path::new(abs_path);
     let dir = Path::new(project_dir);
     if let Ok(rel) = abs.strip_prefix(dir) {
@@ -40,7 +44,9 @@ fn make_relative(abs_path: &str, project_dir: &str) -> String {
 /// legitimately reference a shared asset at a fixed location) but logged
 /// when the path looks suspicious (HOME / system dirs).
 fn make_absolute(rel_path: &str, project_dir: &str) -> String {
-    if rel_path.is_empty() { return String::new(); }
+    if rel_path.is_empty() {
+        return String::new();
+    }
     let p = Path::new(rel_path);
     if p.is_absolute() {
         // Light scrutiny on absolute paths: log a warning if they target a
@@ -77,23 +83,37 @@ fn make_absolute(rel_path: &str, project_dir: &str) -> String {
 /// user-private locations. Used only for a warning log, not for hard rejection.
 fn looks_sensitive_abs(p: &str) -> bool {
     const SENSITIVE_PREFIXES: &[&str] = &[
-        "/etc/", "/private/etc/",
-        "/var/", "/private/var/",
-        "/usr/", "/bin/", "/sbin/",
-        "/proc/", "/sys/",
-        "/.ssh", "/.aws", "/.gnupg",
-        "C:\\Windows\\", "C:\\Program Files",
+        "/etc/",
+        "/private/etc/",
+        "/var/",
+        "/private/var/",
+        "/usr/",
+        "/bin/",
+        "/sbin/",
+        "/proc/",
+        "/sys/",
+        "/.ssh",
+        "/.aws",
+        "/.gnupg",
+        "C:\\Windows\\",
+        "C:\\Program Files",
     ];
     let lower = p.to_ascii_lowercase();
-    SENSITIVE_PREFIXES.iter().any(|pfx| lower.starts_with(&pfx.to_ascii_lowercase()))
-        || lower.contains("/.ssh/") || lower.contains("/.aws/") || lower.contains("/.gnupg/")
+    SENSITIVE_PREFIXES
+        .iter()
+        .any(|pfx| lower.starts_with(&pfx.to_ascii_lowercase()))
+        || lower.contains("/.ssh/")
+        || lower.contains("/.aws/")
+        || lower.contains("/.gnupg/")
 }
 
 /// Convert all asset paths in a graph to relative (for saving).
 fn relativize_paths(graph: &mut Graph, project_dir: &str) {
     for node in graph.nodes.values_mut() {
         match &mut node.node_type {
-            NodeType::ImageNode { path, save_path, .. } => {
+            NodeType::ImageNode {
+                path, save_path, ..
+            } => {
                 *path = make_relative(path, project_dir);
                 *save_path = make_relative(save_path, project_dir);
             }
@@ -107,9 +127,13 @@ fn relativize_paths(graph: &mut Graph, project_dir: &str) {
                 *plugin_path = make_relative(plugin_path, project_dir);
             }
             NodeType::CustomNodeInstance { file, .. } => {
-            *file = make_relative(file, project_dir);
+                *file = make_relative(file, project_dir);
             }
-            NodeType::MlModel { model_path, labels_path, .. } => {
+            NodeType::MlModel {
+                model_path,
+                labels_path,
+                ..
+            } => {
                 *model_path = make_relative(model_path, project_dir);
                 *labels_path = make_relative(labels_path, project_dir);
             }
@@ -122,7 +146,9 @@ fn relativize_paths(graph: &mut Graph, project_dir: &str) {
 fn absolutize_paths(graph: &mut Graph, project_dir: &str) {
     for node in graph.nodes.values_mut() {
         match &mut node.node_type {
-            NodeType::ImageNode { path, save_path, .. } => {
+            NodeType::ImageNode {
+                path, save_path, ..
+            } => {
                 *path = make_absolute(path, project_dir);
                 *save_path = make_absolute(save_path, project_dir);
             }
@@ -136,9 +162,13 @@ fn absolutize_paths(graph: &mut Graph, project_dir: &str) {
                 *plugin_path = make_absolute(plugin_path, project_dir);
             }
             NodeType::CustomNodeInstance { file, .. } => {
-    *file = make_absolute(file, project_dir);
-}
-            NodeType::MlModel { model_path, labels_path, .. } => {
+                *file = make_absolute(file, project_dir);
+            }
+            NodeType::MlModel {
+                model_path,
+                labels_path,
+                ..
+            } => {
                 *model_path = make_absolute(model_path, project_dir);
                 *labels_path = make_absolute(labels_path, project_dir);
             }
@@ -160,7 +190,9 @@ struct ProjectFile {
     canvas_zoom: f32,
 }
 
-fn default_one_f32() -> f32 { 1.0 }
+fn default_one_f32() -> f32 {
+    1.0
+}
 
 /// Minimal session state that gets auto-saved on close and restored on launch.
 #[derive(Serialize, Deserialize)]
@@ -278,10 +310,18 @@ impl super::PatchworkApp {
         // Always start with DSP, Camera, Mic off for safety
         for node in graph.nodes.values_mut() {
             match &mut node.node_type {
-                NodeType::AudioDevice { enabled, .. } => { *enabled = false; }
-                NodeType::Camera { active, .. } => { *active = false; }
-                NodeType::AudioInput { active, .. } => { *active = false; }
-                NodeType::VideoPlayer { playing, .. } => { *playing = false; }
+                NodeType::AudioDevice { enabled, .. } => {
+                    *enabled = false;
+                }
+                NodeType::Camera { active, .. } => {
+                    *active = false;
+                }
+                NodeType::AudioInput { active, .. } => {
+                    *active = false;
+                }
+                NodeType::VideoPlayer { playing, .. } => {
+                    *playing = false;
+                }
                 _ => {}
             }
         }
@@ -295,7 +335,11 @@ impl super::PatchworkApp {
         // keys carried in last_session.json (older builds wrote both; new
         // builds read keys from `~/.patchwork/keys.json` first).
         let user_keys = load_user_keys();
-        self.api_keys = if !user_keys.is_empty() { user_keys } else { state.api_keys };
+        self.api_keys = if !user_keys.is_empty() {
+            user_keys
+        } else {
+            state.api_keys
+        };
         self.is_dirty = state.is_dirty;
         self.recent_projects = state.recent_projects;
         self.port_positions.clear();
@@ -321,9 +365,12 @@ impl super::PatchworkApp {
     /// — there's no way to enumerate without knowing every type. The
     /// next frame just rebuilds whatever it needs.
     pub(super) fn clear_caches_if_dirty(&mut self, ctx: &egui::Context) {
-        if !self.caches_dirty { return; }
+        if !self.caches_dirty {
+            return;
+        }
         self.caches_dirty = false;
-        self.gpu_tex_cache.clear_all(self.wgpu_render_state.as_ref());
+        self.gpu_tex_cache
+            .clear_all(self.wgpu_render_state.as_ref());
         ctx.data_mut(|d| d.clear());
         // Theme settings rely on `theme_accent` in temp data; re-emit
         // it immediately so the very next render doesn't flash a
@@ -332,59 +379,88 @@ impl super::PatchworkApp {
     }
     pub(super) fn handle_file_drop(&mut self, ctx: &egui::Context) {
         // Capture pointer position BEFORE processing drops (macOS clears it during drop)
-        let drop_pos = ctx.input(|i| {
-            // Try hover_pos first (most reliable during drag-over), then pointer
-            i.pointer.hover_pos()
-                .or_else(|| i.pointer.latest_pos())
-        }).unwrap_or(egui::pos2(300.0, 300.0));
+        let drop_pos = ctx
+            .input(|i| {
+                // Try hover_pos first (most reliable during drag-over), then pointer
+                i.pointer.hover_pos().or_else(|| i.pointer.latest_pos())
+            })
+            .unwrap_or(egui::pos2(300.0, 300.0));
 
-        let dropped: Vec<_> = ctx.input(|i| i.raw.dropped_files.iter().filter_map(|f| f.path.clone()).collect());
-        if !dropped.is_empty() { self.push_undo(); }
+        let dropped: Vec<_> = ctx.input(|i| {
+            i.raw
+                .dropped_files
+                .iter()
+                .filter_map(|f| f.path.clone())
+                .collect()
+        });
+        if !dropped.is_empty() {
+            self.push_undo();
+        }
         let image_exts = ["png", "jpg", "jpeg", "gif", "bmp", "webp"];
         let video_exts = ["mp4", "mov", "avi", "webm", "mkv"];
         let audio_exts = ["mp3", "wav", "ogg", "flac", "aac", "m4a"];
-        let mesh_exts  = ["gltf", "glb"];
+        let mesh_exts = ["gltf", "glb"];
         let off_e = self.canvas_offset / self.canvas_zoom;
-        let mut new_ids: std::collections::HashSet<crate::graph::NodeId> = std::collections::HashSet::new();
+        let mut new_ids: std::collections::HashSet<crate::graph::NodeId> =
+            std::collections::HashSet::new();
         for (idx, path) in dropped.iter().enumerate() {
             // Stack multiple dropped files vertically from the drop point
             let canvas_x = drop_pos.x - off_e.x;
             let canvas_y = drop_pos.y - off_e.y + (idx as f32 * 40.0);
 
-            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+            let ext = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+                .to_lowercase();
             let nid = if audio_exts.contains(&ext.as_str()) {
-                self.graph.add_node(NodeType::AudioPlayer {
-                    file_path: path.display().to_string(),
-                    volume: 1.0,
-                    looping: false,
-                    duration_secs: 0.0,
-                }, [canvas_x, canvas_y])
+                self.graph.add_node(
+                    NodeType::AudioPlayer {
+                        file_path: path.display().to_string(),
+                        volume: 1.0,
+                        looping: false,
+                        duration_secs: 0.0,
+                    },
+                    [canvas_x, canvas_y],
+                )
             } else if image_exts.contains(&ext.as_str()) {
-                let image_data = crate::nodes::image_node::load_image_from_path(&path.display().to_string());
-                self.graph.add_node(NodeType::ImageNode {
-                    path: path.display().to_string(),
-                    save_path: String::new(),
-                    image_data,
-                    preview_size: 150.0,
-                    last_save_hash: 0,
-                    cached_file: String::new(),
-                }, [canvas_x, canvas_y])
+                let image_data =
+                    crate::nodes::image_node::load_image_from_path(&path.display().to_string());
+                self.graph.add_node(
+                    NodeType::ImageNode {
+                        path: path.display().to_string(),
+                        save_path: String::new(),
+                        image_data,
+                        preview_size: 150.0,
+                        last_save_hash: 0,
+                        cached_file: String::new(),
+                    },
+                    [canvas_x, canvas_y],
+                )
             } else if video_exts.contains(&ext.as_str()) {
-                self.graph.add_node(NodeType::VideoPlayer {
-                    path: path.display().to_string(),
-                    playing: false, looping: false,
-                    res_w: 640, res_h: 480,
-                    current_frame: None,
-                    duration: 0.0, speed: 1.0,
-                    status: "Loaded".into(),
-                }, [canvas_x, canvas_y])
+                self.graph.add_node(
+                    NodeType::VideoPlayer {
+                        path: path.display().to_string(),
+                        playing: false,
+                        looping: false,
+                        res_w: 640,
+                        res_h: 480,
+                        current_frame: None,
+                        duration: 0.0,
+                        speed: 1.0,
+                        status: "Loaded".into(),
+                    },
+                    [canvas_x, canvas_y],
+                )
             } else if mesh_exts.contains(&ext.as_str()) {
                 // If the drop landed on an existing 3D Shape node, update its
                 // custom path in place instead of spawning a fresh node — the
                 // user wanted to swap the asset, not duplicate it. Falls
                 // through to spawn-new on any miss.
                 let target_screen = drop_pos + egui::vec2(0.0, idx as f32 * 40.0);
-                let hit_id: Option<NodeId> = self.node_rects.iter()
+                let hit_id: Option<NodeId> = self
+                    .node_rects
+                    .iter()
                     .find(|(_, r)| r.contains(target_screen))
                     .map(|(&id, _)| id);
                 let mut updated_existing = false;
@@ -392,7 +468,9 @@ impl super::PatchworkApp {
                     if let Some(node) = self.graph.nodes.get_mut(&id) {
                         if let NodeType::Dynamic { inner } = &mut node.node_type {
                             let any_mut = &mut *inner.node as &mut dyn std::any::Any;
-                            if let Some(s) = any_mut.downcast_mut::<crate::nodes::shape_3d::Shape3DNode>() {
+                            if let Some(s) =
+                                any_mut.downcast_mut::<crate::nodes::shape_3d::Shape3DNode>()
+                            {
                                 s.kind = crate::nodes::shape_3d::ShapeKind::Custom;
                                 s.custom_path = path.display().to_string();
                                 s.cached_custom = None;
@@ -405,9 +483,15 @@ impl super::PatchworkApp {
                 if updated_existing {
                     hit_id.unwrap()
                 } else {
-                    let node = crate::nodes::shape_3d::Shape3DNode::from_gltf_path(path.display().to_string());
+                    let node = crate::nodes::shape_3d::Shape3DNode::from_gltf_path(
+                        path.display().to_string(),
+                    );
                     self.graph.add_node(
-                        NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(node) } },
+                        NodeType::Dynamic {
+                            inner: crate::graph::DynNode {
+                                node: Box::new(node),
+                            },
+                        },
                         [canvas_x, canvas_y],
                     )
                 }
@@ -415,7 +499,14 @@ impl super::PatchworkApp {
                 let mut file_node = crate::nodes::file_node::FileNode::default();
                 file_node.path = path.display().to_string();
                 file_node.load_file();
-                self.graph.add_node(NodeType::Dynamic { inner: crate::graph::DynNode { node: Box::new(file_node) } }, [canvas_x, canvas_y])
+                self.graph.add_node(
+                    NodeType::Dynamic {
+                        inner: crate::graph::DynNode {
+                            node: Box::new(file_node),
+                        },
+                    },
+                    [canvas_x, canvas_y],
+                )
             };
             new_ids.insert(nid);
         }
@@ -441,7 +532,8 @@ impl super::PatchworkApp {
                             port_name: port_name.clone(),
                         });
                     } else if port_name.is_empty() && connected {
-                        midi_actions.push(crate::midi::MidiAction::DisconnectInput { node_id: nid });
+                        midi_actions
+                            .push(crate::midi::MidiAction::DisconnectInput { node_id: nid });
                     }
                 }
             }
@@ -453,12 +545,22 @@ impl super::PatchworkApp {
         for nid in node_ids {
             if let Some(msg) = self.midi.poll_input(nid) {
                 if let Some(node) = self.graph.nodes.get_mut(&nid) {
-                    if let NodeType::MidiIn { channel, note, velocity, log, .. } = &mut node.node_type {
+                    if let NodeType::MidiIn {
+                        channel,
+                        note,
+                        velocity,
+                        log,
+                        ..
+                    } = &mut node.node_type
+                    {
                         if msg.len() >= 3 {
                             *channel = msg[0] & 0x0F;
                             let status = msg[0] & 0xF0;
                             match status {
-                                0x80 | 0x90 | 0xA0 | 0xB0 => { *note = msg[1]; *velocity = msg[2]; }
+                                0x80 | 0x90 | 0xA0 | 0xB0 => {
+                                    *note = msg[1];
+                                    *velocity = msg[2];
+                                }
                                 _ => {}
                             }
                         }
@@ -475,7 +577,12 @@ impl super::PatchworkApp {
         let mut serial_actions: Vec<crate::serial::SerialAction> = Vec::new();
         for &nid in &node_ids {
             if let Some(node) = self.graph.nodes.get(&nid) {
-                if let NodeType::Serial { port_name, baud_rate, .. } = &node.node_type {
+                if let NodeType::Serial {
+                    port_name,
+                    baud_rate,
+                    ..
+                } = &node.node_type
+                {
                     let connected = self.serial.is_connected(nid);
                     if !port_name.is_empty() && !connected {
                         serial_actions.push(crate::serial::SerialAction::Connect {
@@ -484,7 +591,8 @@ impl super::PatchworkApp {
                             baud_rate: *baud_rate,
                         });
                     } else if port_name.is_empty() && connected {
-                        serial_actions.push(crate::serial::SerialAction::Disconnect { node_id: nid });
+                        serial_actions
+                            .push(crate::serial::SerialAction::Disconnect { node_id: nid });
                     }
                 }
             }
@@ -513,11 +621,19 @@ impl super::PatchworkApp {
         // Auto-start/stop listeners for MCP-triggered OscIn nodes
         for &nid in &node_ids {
             if let Some(node) = self.graph.nodes.get(&nid) {
-                if let NodeType::OscIn { listening, port, .. } = &node.node_type {
+                if let NodeType::OscIn {
+                    listening, port, ..
+                } = &node.node_type
+                {
                     if *listening && !self.osc.is_listening(nid) && *port > 0 {
-                        self.osc.process(vec![crate::osc::OscAction::StartListening { node_id: nid, port: *port }]);
+                        self.osc
+                            .process(vec![crate::osc::OscAction::StartListening {
+                                node_id: nid,
+                                port: *port,
+                            }]);
                     } else if !*listening && self.osc.is_listening(nid) {
-                        self.osc.process(vec![crate::osc::OscAction::StopListening { node_id: nid }]);
+                        self.osc
+                            .process(vec![crate::osc::OscAction::StopListening { node_id: nid }]);
                     }
                 }
             }
@@ -526,30 +642,51 @@ impl super::PatchworkApp {
             let messages = self.osc.poll(nid);
             if !messages.is_empty() {
                 if let Some(node) = self.graph.nodes.get_mut(&nid) {
-                    if let NodeType::OscIn { address_filter, arg_count, last_args, last_args_text, log, discovered, .. } = &mut node.node_type {
+                    if let NodeType::OscIn {
+                        address_filter,
+                        arg_count,
+                        last_args,
+                        last_args_text,
+                        log,
+                        discovered,
+                        ..
+                    } = &mut node.node_type
+                    {
                         for msg in messages {
                             // Auto-discover: track unique addresses with their arg counts
                             let preview = msg.args_text.join(", ");
-                            if let Some(entry) = discovered.iter_mut().find(|(a, _, _)| *a == msg.address) {
+                            if let Some(entry) =
+                                discovered.iter_mut().find(|(a, _, _)| *a == msg.address)
+                            {
                                 entry.1 = msg.args_float.len();
                                 entry.2 = preview.clone();
                             } else {
-                                discovered.push((msg.address.clone(), msg.args_float.len(), preview.clone()));
+                                discovered.push((
+                                    msg.address.clone(),
+                                    msg.args_float.len(),
+                                    preview.clone(),
+                                ));
                             }
 
                             // Log ALL messages (before filtering)
                             log.push(format!("{} [{}]", msg.address, msg.args_text.join(", ")));
-                            if log.len() > 200 { log.remove(0); }
+                            if log.len() > 200 {
+                                log.remove(0);
+                            }
 
                             // Address filter: skip if doesn't match
-                            if !address_filter.is_empty() && !msg.address.contains(address_filter.as_str()) {
+                            if !address_filter.is_empty()
+                                && !msg.address.contains(address_filter.as_str())
+                            {
                                 continue;
                             }
 
                             // Update last_args (float) and last_args_text
                             for (i, &val) in msg.args_float.iter().enumerate() {
                                 if i < *arg_count {
-                                    while last_args.len() <= i { last_args.push(0.0); }
+                                    while last_args.len() <= i {
+                                        last_args.push(0.0);
+                                    }
                                     last_args[i] = val;
                                 }
                             }
@@ -568,11 +705,19 @@ impl super::PatchworkApp {
         let node_ids: Vec<NodeId> = self.graph.nodes.keys().copied().collect();
         for nid in node_ids {
             let frames = self.dmx.poll_input(nid);
-            if frames.is_empty() { continue; }
+            if frames.is_empty() {
+                continue;
+            }
             // Use the most recent frame — DMX is sampled, old frames stale.
             if let Some(latest) = frames.into_iter().last() {
                 if let Some(node) = self.graph.nodes.get_mut(&nid) {
-                    if let NodeType::DmxIn { last_values, channel_count, start_at, .. } = &mut node.node_type {
+                    if let NodeType::DmxIn {
+                        last_values,
+                        channel_count,
+                        start_at,
+                        ..
+                    } = &mut node.node_type
+                    {
                         let start_idx = (*start_at as usize).saturating_sub(1).min(511);
                         last_values.resize(*channel_count, 0);
                         for i in 0..*channel_count {
@@ -591,13 +736,24 @@ impl super::PatchworkApp {
         let node_ids: Vec<NodeId> = self.graph.nodes.keys().copied().collect();
         for nid in node_ids {
             let frames = self.artnet.poll(nid);
-            if frames.is_empty() { continue; }
+            if frames.is_empty() {
+                continue;
+            }
             if let Some(node) = self.graph.nodes.get_mut(&nid) {
-                if let NodeType::ArtNetIn { last_values, channel_count, start_at, universe, universe_filter, .. } = &mut node.node_type {
+                if let NodeType::ArtNetIn {
+                    last_values,
+                    channel_count,
+                    start_at,
+                    universe,
+                    universe_filter,
+                    ..
+                } = &mut node.node_type
+                {
                     let want_univ = *universe;
                     let filter_on = *universe_filter;
                     // Pick the most recent matching frame.
-                    let latest = frames.into_iter()
+                    let latest = frames
+                        .into_iter()
                         .filter(|f| !filter_on || f.universe == want_univ)
                         .last();
                     if let Some(latest) = latest {
@@ -617,9 +773,19 @@ impl super::PatchworkApp {
         let events = self.network.poll();
         for event in events {
             match event {
-                crate::network::NetworkEvent::LinkReady { node_id, link, secret_hex } => {
+                crate::network::NetworkEvent::LinkReady {
+                    node_id,
+                    link,
+                    secret_hex,
+                } => {
                     if let Some(node) = self.graph.nodes.get_mut(&node_id) {
-                        if let NodeType::NetworkSend { last_link, persistent_secret, identity_mode, .. } = &mut node.node_type {
+                        if let NodeType::NetworkSend {
+                            last_link,
+                            persistent_secret,
+                            identity_mode,
+                            ..
+                        } = &mut node.node_type
+                        {
                             *last_link = Some(link);
                             if *identity_mode == 1 && !secret_hex.is_empty() {
                                 *persistent_secret = Some(secret_hex);
@@ -629,14 +795,30 @@ impl super::PatchworkApp {
                 }
                 crate::network::NetworkEvent::SendStatus { node_id, peers } => {
                     if let Some(node) = self.graph.nodes.get_mut(&node_id) {
-                        if let NodeType::NetworkSend { last_peer_count, .. } = &mut node.node_type {
+                        if let NodeType::NetworkSend {
+                            last_peer_count, ..
+                        } = &mut node.node_type
+                        {
                             *last_peer_count = peers;
                         }
                     }
                 }
-                crate::network::NetworkEvent::Received { node_id, values, sender_short_id } => {
+                crate::network::NetworkEvent::Received {
+                    node_id,
+                    values,
+                    sender_short_id,
+                } => {
                     if let Some(node) = self.graph.nodes.get_mut(&node_id) {
-                        if let NodeType::NetworkReceive { last_values, last_values_text, last_sender, status, connected, imported_schema, .. } = &mut node.node_type {
+                        if let NodeType::NetworkReceive {
+                            last_values,
+                            last_values_text,
+                            last_sender,
+                            status,
+                            connected,
+                            imported_schema,
+                            ..
+                        } = &mut node.node_type
+                        {
                             // Update values from received data
                             last_values.clear();
                             last_values_text.clear();
@@ -661,7 +843,10 @@ impl super::PatchworkApp {
                                 }
                             }
                             // Format sender short ID
-                            *last_sender = sender_short_id.iter().map(|b| format!("{:02x}", b)).collect::<String>();
+                            *last_sender = sender_short_id
+                                .iter()
+                                .map(|b| format!("{:02x}", b))
+                                .collect::<String>();
                             *connected = true;
                             let port_count = imported_schema.len();
                             *status = format!("Connected ({} ports)", port_count);
@@ -674,7 +859,9 @@ impl super::PatchworkApp {
                             NodeType::NetworkSend { .. } => {
                                 eprintln!("Network send error for node {}: {}", node_id, error);
                             }
-                            NodeType::NetworkReceive { status, connected, .. } => {
+                            NodeType::NetworkReceive {
+                                status, connected, ..
+                            } => {
                                 *status = format!("Error: {}", error);
                                 *connected = false;
                             }
@@ -703,9 +890,13 @@ impl super::PatchworkApp {
         let key = egui::Id::new("ai_gear_click");
         let pending: Option<(NodeId, usize)> =
             ctx.data_mut(|d| d.remove_temp::<(NodeId, usize)>(key));
-        let Some((requester, out_port)) = pending else { return; };
+        let Some((requester, out_port)) = pending else {
+            return;
+        };
 
-        let Some(req_node) = self.graph.nodes.get(&requester) else { return; };
+        let Some(req_node) = self.graph.nodes.get(&requester) else {
+            return;
+        };
         let req_pos = req_node.pos;
 
         let already_wired = self
@@ -721,7 +912,9 @@ impl super::PatchworkApp {
         // Look for an existing AiConfig on the graph.
         let existing = self.graph.nodes.iter().find_map(|(nid, n)| {
             if let NodeType::Dynamic { inner } = &n.node_type {
-                if inner.node.type_tag() == "ai_config" { return Some(*nid); }
+                if inner.node.type_tag() == "ai_config" {
+                    return Some(*nid);
+                }
             }
             None
         });
@@ -749,7 +942,9 @@ impl super::PatchworkApp {
             if let Some(resp) = self.http.poll(nid) {
                 if let Some(node) = self.graph.nodes.get_mut(&nid) {
                     match &mut node.node_type {
-                        NodeType::HttpRequest { response, status, .. } => {
+                        NodeType::HttpRequest {
+                            response, status, ..
+                        } => {
                             *status = format!("{}", resp.status);
                             *response = resp.body.clone();
                             // Surface non-2xx and network errors as node errors.
@@ -758,35 +953,55 @@ impl super::PatchworkApp {
                             if resp.status == 0 {
                                 crate::node_errors::report_for(
                                     nid,
-                                    format!("HTTP request failed: {}", truncate_for_error(&resp.body)),
+                                    format!(
+                                        "HTTP request failed: {}",
+                                        truncate_for_error(&resp.body)
+                                    ),
                                 );
                             } else if !(200..300).contains(&resp.status) {
                                 crate::node_errors::report_for(
                                     nid,
-                                    format!("HTTP {}: {}", resp.status, truncate_for_error(&resp.body)),
+                                    format!(
+                                        "HTTP {}: {}",
+                                        resp.status,
+                                        truncate_for_error(&resp.body)
+                                    ),
                                 );
                             } else {
                                 crate::node_errors::clear(nid);
                             }
                         }
-                        NodeType::AiRequest { provider, response, status, .. } => {
+                        NodeType::AiRequest {
+                            provider,
+                            response,
+                            status,
+                            ..
+                        } => {
                             if resp.status >= 200 && resp.status < 300 {
                                 // Auto-detect provider from response if not set
                                 let prov = if provider.is_empty() {
-                                    if resp.body.contains("\"candidates\"") { "google" }
-                                    else if resp.body.contains("\"content\":[{\"type\"") { "anthropic" }
-                                    else { "openai" }
+                                    if resp.body.contains("\"candidates\"") {
+                                        "google"
+                                    } else if resp.body.contains("\"content\":[{\"type\"") {
+                                        "anthropic"
+                                    } else {
+                                        "openai"
+                                    }
                                 } else {
                                     provider.as_str()
                                 };
-                                *response = crate::nodes::ai_request::extract_ai_response(prov, &resp.body);
+                                *response =
+                                    crate::nodes::ai_request::extract_ai_response(prov, &resp.body);
                                 *status = "done".into();
                                 crate::node_errors::clear(nid);
                             } else {
                                 *response = resp.body.clone();
                                 *status = format!("error: {}", resp.status);
-                                let label = if resp.status == 0 { "AI request failed".to_string() }
-                                            else { format!("AI HTTP {}", resp.status) };
+                                let label = if resp.status == 0 {
+                                    "AI request failed".to_string()
+                                } else {
+                                    format!("AI HTTP {}", resp.status)
+                                };
                                 crate::node_errors::report_for(
                                     nid,
                                     format!("{}: {}", label, truncate_for_error(&resp.body)),
@@ -798,10 +1013,15 @@ impl super::PatchworkApp {
                             // handle their own response extraction via
                             // `apply_http_response`. Non-HTTP trait nodes have
                             // a no-op default impl, so this is safe for all.
-                            inner.node.apply_http_response(resp.body.clone(), resp.status);
+                            inner
+                                .node
+                                .apply_http_response(resp.body.clone(), resp.status);
                             if !(200..300).contains(&resp.status) {
-                                let label = if resp.status == 0 { "Request failed".to_string() }
-                                            else { format!("HTTP {}", resp.status) };
+                                let label = if resp.status == 0 {
+                                    "Request failed".to_string()
+                                } else {
+                                    format!("HTTP {}", resp.status)
+                                };
                                 crate::node_errors::report_for(
                                     nid,
                                     format!("{}: {}", label, truncate_for_error(&resp.body)),
@@ -826,14 +1046,23 @@ impl super::PatchworkApp {
             self.ml_running.remove(&nid);
             if let Some(node) = self.graph.nodes.get_mut(&nid) {
                 match &mut node.node_type {
-                    NodeType::MlModel { result_text, result_json, annotated_frame, status, .. } => {
+                    NodeType::MlModel {
+                        result_text,
+                        result_json,
+                        annotated_frame,
+                        status,
+                        ..
+                    } => {
                         *result_text = result.result_text;
                         *result_json = result.result_json;
                         *annotated_frame = result.annotated_frame;
                         let s = result.status.clone();
                         *status = s;
                         if status.starts_with("Error") || status.starts_with("error") {
-                            crate::node_errors::report_for(nid, format!("ML inference: {}", status));
+                            crate::node_errors::report_for(
+                                nid,
+                                format!("ML inference: {}", status),
+                            );
                         } else {
                             crate::node_errors::clear(nid);
                         }
@@ -844,7 +1073,7 @@ impl super::PatchworkApp {
                         let key = match inner.node.type_tag() {
                             "face_detection" => "face_det_result",
                             "pose_detection" => "pose_det_result",
-                            _                => "hand_det_result",
+                            _ => "hand_det_result",
                         };
                         let result_id = egui::Id::new((key, nid));
                         ctx.data_mut(|d| d.insert_temp(result_id, result));
@@ -863,12 +1092,18 @@ impl super::PatchworkApp {
                 // Still running — consume and discard any queued request so it
                 // doesn't accumulate across frames.
                 let inference_id = egui::Id::new(("ml_inference", nid));
-                ctx.data_mut(|d| d.remove::<crate::nodes::ml_model::MlInferenceRequest>(inference_id));
+                ctx.data_mut(|d| {
+                    d.remove::<crate::nodes::ml_model::MlInferenceRequest>(inference_id)
+                });
                 continue;
             }
             let inference_id = egui::Id::new(("ml_inference", nid));
-            if let Some(req) = ctx.data_mut(|d| d.get_temp::<crate::nodes::ml_model::MlInferenceRequest>(inference_id)) {
-                ctx.data_mut(|d| d.remove::<crate::nodes::ml_model::MlInferenceRequest>(inference_id));
+            if let Some(req) = ctx.data_mut(|d| {
+                d.get_temp::<crate::nodes::ml_model::MlInferenceRequest>(inference_id)
+            }) {
+                ctx.data_mut(|d| {
+                    d.remove::<crate::nodes::ml_model::MlInferenceRequest>(inference_id)
+                });
                 self.ml_running.insert(nid);
                 let tx = self.ml_tx.clone();
                 std::thread::spawn(move || {
@@ -907,15 +1142,24 @@ impl super::PatchworkApp {
                     buf.replay();
                 }
                 // Re-send connect command so the engine is wired if it was cleaned up
-                let outgoing: Vec<(NodeId, NodeId, usize)> = self.graph.connections.iter()
-                    .filter(|c| c.from_node == nid && self.audio.node_params.contains_key(&c.to_node))
+                let outgoing: Vec<(NodeId, NodeId, usize)> = self
+                    .graph
+                    .connections
+                    .iter()
+                    .filter(|c| {
+                        c.from_node == nid && self.audio.node_params.contains_key(&c.to_node)
+                    })
                     .map(|c| (c.from_node, c.to_node, c.to_port))
                     .collect();
                 for (fn_, tn, tp) in outgoing {
                     let engine_port = if matches!(
                         self.graph.nodes.get(&tn).map(|n| &n.node_type),
                         Some(crate::graph::NodeType::AudioMixer { .. })
-                    ) { tp / 2 } else { tp };
+                    ) {
+                        tp / 2
+                    } else {
+                        tp
+                    };
                     self.audio.connect_audio(fn_, tn, engine_port);
                 }
             }
@@ -931,7 +1175,9 @@ impl super::PatchworkApp {
                 continue;
             }
             let req_id = egui::Id::new(("tts_request", nid));
-            if let Some(req) = ctx.data_mut(|d| d.get_temp::<crate::nodes::tts_node::TtsSynthRequest>(req_id)) {
+            if let Some(req) =
+                ctx.data_mut(|d| d.get_temp::<crate::nodes::tts_node::TtsSynthRequest>(req_id))
+            {
                 ctx.data_mut(|d| d.remove::<crate::nodes::tts_node::TtsSynthRequest>(req_id));
                 let tts_tx = self.tts_tx.clone();
                 self.audio.start_tts_synthesis(nid, &req, &tts_tx);
@@ -939,15 +1185,24 @@ impl super::PatchworkApp {
                 // Immediately wire TTS → downstream audio connections.
                 // pending_connection_sync fires 1 frame later; doing it here ensures
                 // the engine connection is live before the first audio callback reads.
-                let outgoing: Vec<(NodeId, usize, NodeId, usize)> = self.graph.connections.iter()
-                    .filter(|c| c.from_node == nid && self.audio.node_params.contains_key(&c.to_node))
+                let outgoing: Vec<(NodeId, usize, NodeId, usize)> = self
+                    .graph
+                    .connections
+                    .iter()
+                    .filter(|c| {
+                        c.from_node == nid && self.audio.node_params.contains_key(&c.to_node)
+                    })
                     .map(|c| (c.from_node, c.from_port, c.to_node, c.to_port))
                     .collect();
                 for (fn_, _fp, tn, tp) in outgoing {
                     let engine_port = if matches!(
                         self.graph.nodes.get(&tn).map(|n| &n.node_type),
                         Some(crate::graph::NodeType::AudioMixer { .. })
-                    ) { tp / 2 } else { tp };
+                    ) {
+                        tp / 2
+                    } else {
+                        tp
+                    };
                     self.audio.connect_audio(fn_, tn, engine_port);
                 }
             }
@@ -969,107 +1224,99 @@ impl super::PatchworkApp {
 
     /// Save to existing project path (Cmd+S). Falls back to Save As if no path set.
     pub(super) fn save_project_quick(&mut self) -> bool {
-           if self.documents.active().kind == crate::document::DocumentKind::CustomNode {
-    let Some(path) = self.documents.active().path.clone() else {
-        crate::system_log::error(
-            "Cannot save custom node: no .pwnode path assigned.".to_string()
-        );
-        return false;
-    };
+        if self.documents.active().kind == crate::document::DocumentKind::CustomNode {
+            let Some(path) = self.documents.active().path.clone() else {
+                crate::system_log::error(
+                    "Cannot save custom node: no .pwnode path assigned.".to_string(),
+                );
+                return false;
+            };
 
-  let existing = match crate::document::CustomNodeFile::load(&path) {
-    Ok(file) => file,
-    Err(error) => {
-        crate::system_log::error(format!(
-            "Cannot save custom node: {error}"
-        ));
-        return false;
-    }
-};
+            let existing = match crate::document::CustomNodeFile::load(&path) {
+                Ok(file) => file,
+                Err(error) => {
+                    crate::system_log::error(format!("Cannot save custom node: {error}"));
+                    return false;
+                }
+            };
 
-let mut interface_nodes: Vec<_> = self.graph.nodes.values().collect();
+            let mut interface_nodes: Vec<_> = self.graph.nodes.values().collect();
 
+            // HashMap iteration order is not stable.
+            // Sort by node ID for consistent port ordering.
+            interface_nodes.sort_by_key(|node| node.id);
 
-// HashMap iteration order is not stable.
-// Sort by node ID for consistent port ordering.
-interface_nodes.sort_by_key(|node| node.id);
+            let mut inputs = Vec::new();
+            let mut outputs = Vec::new();
 
-let mut inputs = Vec::new();
-let mut outputs = Vec::new();
+            for node in interface_nodes {
+                match &node.node_type {
+                    crate::graph::NodeType::CustomInput { name, kind } => {
+                        inputs.push(crate::document::CustomNodePort {
+                            name: name.clone(),
+                            kind: format!("{:?}", kind),
+                        });
+                    }
 
-for node in interface_nodes {
-    match &node.node_type {
-        crate::graph::NodeType::CustomInput { name, kind } => {
-            inputs.push(crate::document::CustomNodePort {
-                name: name.clone(),
-                kind: format!("{:?}", kind),
-            });
+                    crate::graph::NodeType::CustomOutput { name, kind } => {
+                        outputs.push(crate::document::CustomNodePort {
+                            name: name.clone(),
+                            kind: format!("{:?}", kind),
+                        });
+                    }
+
+                    _ => {}
+                }
+            }
+
+            let custom_node = crate::document::CustomNodeFile {
+                version: existing.version,
+                name: existing.name,
+                graph: self.graph.clone(),
+                inputs,
+                outputs,
+            };
+            // Reject recursive dependencies before overwriting the .pwnode file.
+            if let Err(error) =
+                crate::graph::Graph::validate_custom_node_save(&custom_node.graph, &path)
+            {
+                crate::system_log::error(format!("Cannot save custom node: {error}"));
+                return false;
+            }
+            match custom_node.save(&path) {
+                Ok(()) => {
+                    self.is_dirty = false;
+                    self.documents.active_mut().is_dirty = false;
+                    return true;
+                }
+                Err(error) => {
+                    crate::system_log::error(format!("Failed to save custom node: {error}"));
+                    return false;
+                }
+            }
         }
-
-        crate::graph::NodeType::CustomOutput { name, kind } => {
-            outputs.push(crate::document::CustomNodePort {
-                name: name.clone(),
-                kind: format!("{:?}", kind),
-            });
-        }
-
-        _ => {}
-    }
-}
-
-let custom_node = crate::document::CustomNodeFile {
-    version: existing.version,
-    name: existing.name,
-    graph: self.graph.clone(),
-    inputs,
-    outputs,
-};
-    // Reject recursive dependencies before overwriting the .pwnode file.
-if let Err(error) = crate::graph::Graph::validate_custom_node_save(
-    &custom_node.graph,
-    &path,
-) {
-    crate::system_log::error(format!(
-        "Cannot save custom node: {error}"
-    ));
-    return false;
-}
-    match custom_node.save(&path) {
-        Ok(()) => {
-            self.is_dirty = false;
-            self.documents.active_mut().is_dirty = false;
-            return true;
-        }
-        Err(error) => {
-            crate::system_log::error(format!(
-                "Failed to save custom node: {error}"
-            ));
-            return false;
+        if let Some(dir_str) = self.project_path.clone() {
+            self.save_to_dir(dir_str)
+        } else {
+            self.save_project()
         }
     }
-}
-    if let Some(dir_str) = self.project_path.clone() {
-        self.save_to_dir(dir_str)
-    } else {
-        self.save_project()
-    }
-}
 
     /// Save As — prompt for project name, then pick parent folder.
-   pub(super) fn save_project(&mut self) -> bool {
-    // Select the exact project folder.
-    let Some(project_dir) = rfd::FileDialog::new()
-        .set_title("Select Patchwork Project Folder")
-        .pick_folder()
-    else {
-        return false;
-    };
+    pub(super) fn save_project(&mut self) -> bool {
+        // Select the exact project folder.
+        let Some(project_dir) = rfd::FileDialog::new()
+            .set_title("Select Patchwork Project Folder")
+            .pick_folder()
+        else {
+            return false;
+        };
 
-    // Do not create another nested my-project folder.
-    let dir_str = project_dir.display().to_string();
+        // Do not create another nested my-project folder.
+        let dir_str = project_dir.display().to_string();
 
-    self.save_to_dir(dir_str)
-}
+        self.save_to_dir(dir_str)
+    }
     /// Write project.json to the given directory. API keys are persisted to
     /// the per-user store at `~/.patchwork/keys.json` (see `save_user_keys`) —
     /// they never live in the project folder so they don't ride along when
@@ -1080,72 +1327,70 @@ if let Err(error) = crate::graph::Graph::validate_custom_node_save(
     pub(super) fn save_to_dir(&mut self, dir_str: String) -> bool {
         let dir = Path::new(&dir_str);
         // P3: Prevent different tabs from saving to the same project.
-let target_path = std::fs::canonicalize(dir)
-    .unwrap_or_else(|_| dir.to_path_buf());
+        let target_path = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
 
-let active_id = self.documents.active().id;
+        let active_id = self.documents.active().id;
 
-let already_open_in_another_tab =
-    self.documents.documents.iter().any(|doc| {
-        if doc.id == active_id {
-            return false;
-        }
+        let already_open_in_another_tab = self.documents.documents.iter().any(|doc| {
+            if doc.id == active_id {
+                return false;
+            }
 
-        let Some(existing_path) = &doc.path else {
-            return false;
-        };
+            let Some(existing_path) = &doc.path else {
+                return false;
+            };
 
-        let existing_path = std::fs::canonicalize(existing_path)
-            .unwrap_or_else(|_| existing_path.clone());
+            let existing_path =
+                std::fs::canonicalize(existing_path).unwrap_or_else(|_| existing_path.clone());
 
-        existing_path == target_path
-    });
+            existing_path == target_path
+        });
 
-if already_open_in_another_tab {
-    let message = "This project is already open in another tab.\n\n\
+        if already_open_in_another_tab {
+            let message = "This project is already open in another tab.\n\n\
         Please select a different folder to save this project.";
 
-    crate::system_log::error(message.to_string());
+            crate::system_log::error(message.to_string());
 
-    rfd::MessageDialog::new()
-        .set_title("Cannot Save Project")
-        .set_description(message)
-        .set_level(rfd::MessageLevel::Error)
-        .set_buttons(rfd::MessageButtons::Ok)
-        .show();
+            rfd::MessageDialog::new()
+                .set_title("Cannot Save Project")
+                .set_description(message)
+                .set_level(rfd::MessageLevel::Error)
+                .set_buttons(rfd::MessageButtons::Ok)
+                .show();
 
-    return false;
-}
-        // P3: Warn before overwriting an existing project on disk.
-let existing_project = dir.join("project.json");
-
-if existing_project.exists() {
-    let active_path = self.project_path
-        .as_ref()
-        .and_then(|p| std::fs::canonicalize(p).ok());
-
-    let target_path = std::fs::canonicalize(dir).ok();
-
-    // Allow normal saving to the active project's own folder.
-    let is_current_project =
-        active_path.is_some() && active_path == target_path;
-
-    if !is_current_project {
-        let confirmed = rfd::MessageDialog::new()
-            .set_title("Project Already Exists")
-            .set_description(
-                "A Patchwork project already exists in this folder.\n\n\
-                 Do you want to overwrite it?"
-            )
-            .set_level(rfd::MessageLevel::Warning)
-            .set_buttons(rfd::MessageButtons::YesNo)
-            .show();
-
-        if confirmed != rfd::MessageDialogResult::Yes {
             return false;
         }
-    }
-}
+        // P3: Warn before overwriting an existing project on disk.
+        let existing_project = dir.join("project.json");
+
+        if existing_project.exists() {
+            let active_path = self
+                .project_path
+                .as_ref()
+                .and_then(|p| std::fs::canonicalize(p).ok());
+
+            let target_path = std::fs::canonicalize(dir).ok();
+
+            // Allow normal saving to the active project's own folder.
+            let is_current_project = active_path.is_some() && active_path == target_path;
+
+            if !is_current_project {
+                let confirmed = rfd::MessageDialog::new()
+                    .set_title("Project Already Exists")
+                    .set_description(
+                        "A Patchwork project already exists in this folder.\n\n\
+                 Do you want to overwrite it?",
+                    )
+                    .set_level(rfd::MessageLevel::Warning)
+                    .set_buttons(rfd::MessageButtons::YesNo)
+                    .show();
+
+                if confirmed != rfd::MessageDialogResult::Yes {
+                    return false;
+                }
+            }
+        }
         if let Err(e) = std::fs::create_dir_all(dir) {
             crate::system_log::error(format!("Failed to create project folder: {}", e));
             return false;
@@ -1163,7 +1408,9 @@ if existing_project.exists() {
         match serde_json::to_string_pretty(&pf) {
             Ok(json) => {
                 if json.len() < 10 {
-                    crate::system_log::error("Save produced empty JSON — skipping write".to_string());
+                    crate::system_log::error(
+                        "Save produced empty JSON — skipping write".to_string(),
+                    );
                 } else if let Err(e) = std::fs::write(&project_file, &json) {
                     crate::system_log::error(format!("Save failed: {}", e));
                 } else {
@@ -1191,31 +1438,35 @@ if existing_project.exists() {
         if legacy_keys_file.exists() {
             if let Err(e) = std::fs::remove_file(&legacy_keys_file) {
                 crate::system_log::warn(format!(
-                    "Failed to remove legacy api_keys.json from project folder: {}", e
+                    "Failed to remove legacy api_keys.json from project folder: {}",
+                    e
                 ));
             } else {
                 crate::system_log::log(
                     "Migrated: removed legacy api_keys.json from project folder \
-                     (keys now stored at ~/.patchwork/keys.json)"
+                     (keys now stored at ~/.patchwork/keys.json)",
                 );
             }
         }
-       if ok {
-    self.is_dirty = false;
+        if ok {
+            self.is_dirty = false;
 
-    // P3: Associate the saved location with the active document.
-    self.project_path = Some(dir_str.clone());
+            // P3: Associate the saved location with the active document.
+            self.project_path = Some(dir_str.clone());
 
-    // Update the active tab's graph, path, title and dirty state.
-    self.sync_active_document();
+            // Update the active tab's graph, path, title and dirty state.
+            self.sync_active_document();
 
-    self.add_recent(dir_str);
-}
-ok
+            self.add_recent(dir_str);
+        }
+        ok
     }
 
     pub(super) fn load_project(&mut self) {
-        if let Some(path) = rfd::FileDialog::new().add_filter("Patchwork", &["json"]).pick_file() {
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("Patchwork", &["json"])
+            .pick_file()
+        {
             self.load_project_path(path);
         }
     }
@@ -1231,31 +1482,34 @@ ok
             path
         };
         let dir = json_path.parent().map(|p| p.to_path_buf());
-        let dir_str = dir.as_ref().map(|d| d.display().to_string()).unwrap_or_default();
+        let dir_str = dir
+            .as_ref()
+            .map(|d| d.display().to_string())
+            .unwrap_or_default();
         // P3: If this project is already open, switch to its existing tab.
         let requested_path = std::fs::canonicalize(&json_path).ok();
 
         if let Some(existing_id) = self.documents.documents.iter().find_map(|doc| {
-        let open_path = doc.path.as_ref()?;
+            let open_path = doc.path.as_ref()?;
 
-        // Document paths currently store the project directory.
-        let open_json = if open_path.is_dir() {
-            open_path.join("project.json")
-        } else {
-         open_path.clone()
-        };
+            // Document paths currently store the project directory.
+            let open_json = if open_path.is_dir() {
+                open_path.join("project.json")
+            } else {
+                open_path.clone()
+            };
 
-        let existing_path = std::fs::canonicalize(open_json).ok()?;
+            let existing_path = std::fs::canonicalize(open_json).ok()?;
 
-        if Some(existing_path) == requested_path {
-            Some(doc.id)
-        } else {
-            None
+            if Some(existing_path) == requested_path {
+                Some(doc.id)
+            } else {
+                None
+            }
+        }) {
+            self.switch_document(existing_id);
+            return;
         }
-    }) {
-        self.switch_document(existing_id);
-        return;
-    }
 
         if !json_path.exists() {
             crate::system_log::error(format!("Project not found: {}", json_path.display()));
@@ -1279,21 +1533,29 @@ ok
                 return;
             }
         };
-       let mut graph = pf.graph;
+        let mut graph = pf.graph;
         graph.fix_next_id();
         absolutize_paths(&mut graph, &dir_str);
 
-// P3: Create a separate tab for the successfully loaded project.
-// Existing tabs retain their graphs and editor state.
-self.create_new_tab();
+        // P3: Create a separate tab for the successfully loaded project.
+        // Existing tabs retain their graphs and editor state.
+        self.create_new_tab();
         // Always start with DSP, Camera, Mic off for safety —
         // prevents stale "active" state without actual streams running
         for node in graph.nodes.values_mut() {
             match &mut node.node_type {
-                NodeType::AudioDevice { enabled, .. } => { *enabled = false; }
-                NodeType::Camera { active, .. } => { *active = false; }
-                NodeType::AudioInput { active, .. } => { *active = false; }
-                NodeType::VideoPlayer { playing, .. } => { *playing = false; }
+                NodeType::AudioDevice { enabled, .. } => {
+                    *enabled = false;
+                }
+                NodeType::Camera { active, .. } => {
+                    *active = false;
+                }
+                NodeType::AudioInput { active, .. } => {
+                    *active = false;
+                }
+                NodeType::VideoPlayer { playing, .. } => {
+                    *playing = false;
+                }
                 _ => {}
             }
         }
@@ -1351,7 +1613,7 @@ self.create_new_tab();
         } else {
             self.api_keys = user_keys;
         }
-       self.project_path = Some(dir_str.clone());
+        self.project_path = Some(dir_str.clone());
         self.is_dirty = false;
 
         // P3: Store the loaded project's state in the active document.
@@ -1363,7 +1625,9 @@ self.create_new_tab();
     /// Push a project directory to the front of the recents list,
     /// dedup, and cap at 10 entries.
     pub(super) fn add_recent(&mut self, dir: String) {
-        if dir.is_empty() { return; }
+        if dir.is_empty() {
+            return;
+        }
         self.recent_projects.retain(|p| p != &dir);
         self.recent_projects.insert(0, dir);
         self.recent_projects.truncate(10);
@@ -1373,7 +1637,9 @@ self.create_new_tab();
     /// changes. Format is "PatchWork — {project} [*]"; the `*` shows
     /// when there are unsaved changes.
     pub(super) fn update_window_title(&mut self, ctx: &egui::Context) {
-        let name = self.project_path.as_deref()
+        let name = self
+            .project_path
+            .as_deref()
             .and_then(|p| Path::new(p).file_name())
             .map(|f| f.to_string_lossy().to_string())
             .unwrap_or_else(|| "Untitled".to_string());
@@ -1392,35 +1658,37 @@ self.create_new_tab();
     /// cancel the close and pop the confirmation modal. Once the user
     /// has chosen Save / Don't Save, `force_quit` lets the next request
     /// through.
-   pub(super) fn handle_close_request(&mut self, ctx: &egui::Context) {
-    if !ctx.input(|i| i.viewport().close_requested()) {
-        return;
+    pub(super) fn handle_close_request(&mut self, ctx: &egui::Context) {
+        if !ctx.input(|i| i.viewport().close_requested()) {
+            return;
+        }
+
+        if self.force_quit {
+            return;
+        }
+
+        // P3: Check the active tab and all background tabs.
+        // The active tab's latest dirty state lives in self.is_dirty.
+        let has_unsaved_changes =
+            self.is_dirty || self.documents.documents.iter().any(|doc| doc.is_dirty);
+
+        if !has_unsaved_changes {
+            return;
+        }
+
+        // Prevent quitting while any document has unsaved changes.
+        ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        self.pending_quit_dialog = true;
     }
-
-    if self.force_quit {
-        return;
-    }
-
-    // P3: Check the active tab and all background tabs.
-    // The active tab's latest dirty state lives in self.is_dirty.
-    let has_unsaved_changes = self.is_dirty
-        || self.documents.documents.iter().any(|doc| doc.is_dirty);
-
-    if !has_unsaved_changes {
-        return;
-    }
-
-    // Prevent quitting while any document has unsaved changes.
-    ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-    self.pending_quit_dialog = true;
-}
 
     /// Render the "Save changes before quitting?" modal when pending.
     /// Save → save_project_quick (may show a dialog), then close on success.
     /// Don't Save → close, dropping the in-memory edits.
     /// Cancel → just dismiss the modal.
     pub(super) fn render_quit_dialog(&mut self, ctx: &egui::Context) {
-        if !self.pending_quit_dialog { return; }
+        if !self.pending_quit_dialog {
+            return;
+        }
         let mut dismiss = false;
         let mut do_close = false;
         let mut do_save = false;
@@ -1430,74 +1698,78 @@ self.create_new_tab();
             .order(egui::Order::Tooltip)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
-                let name = self.project_path.as_deref()
+                let name = self
+                    .project_path
+                    .as_deref()
                     .and_then(|p| Path::new(p).file_name())
                     .map(|f| f.to_string_lossy().to_string())
                     .unwrap_or_else(|| "this project".to_string());
-                let unsaved_count = self.documents.documents.iter()
-    .filter(|doc| {
-        if doc.id == self.documents.active().id {
-            self.is_dirty
-        } else {
-            doc.is_dirty
-        }
-    })
-    .count();
+                let unsaved_count = self
+                    .documents
+                    .documents
+                    .iter()
+                    .filter(|doc| {
+                        if doc.id == self.documents.active().id {
+                            self.is_dirty
+                        } else {
+                            doc.is_dirty
+                        }
+                    })
+                    .count();
 
-if unsaved_count > 1 {
-    ui.label(format!(
-        "{} tabs have unsaved changes.",
-        unsaved_count
-    ));
-    ui.label(format!(
-        "Save changes to {} before quitting?",
-        name
-    ));
-} else {
-    ui.label(format!(
-        "Save changes to {} before quitting?",
-        name
-    ));
-}
+                if unsaved_count > 1 {
+                    ui.label(format!("{} tabs have unsaved changes.", unsaved_count));
+                    ui.label(format!("Save changes to {} before quitting?", name));
+                } else {
+                    ui.label(format!("Save changes to {} before quitting?", name));
+                }
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    if ui.button("Save").clicked() { do_save = true; }
-                  if ui.button("Discard All & Quit")
-                     .on_hover_text("Discard unsaved changes in every open tab")
-                     .clicked()
-{
-    do_close = true;
-}
-                    if ui.button("Cancel").clicked() { dismiss = true; }
+                    if ui.button("Save").clicked() {
+                        do_save = true;
+                    }
+                    if ui
+                        .button("Discard All & Quit")
+                        .on_hover_text("Discard unsaved changes in every open tab")
+                        .clicked()
+                    {
+                        do_close = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        dismiss = true;
+                    }
                 });
             });
-if do_save {
-    // Save the active document first.
-    if self.is_dirty && !self.save_project_quick() {
-        return;
-    }
+        if do_save {
+            // Save the active document first.
+            if self.is_dirty && !self.save_project_quick() {
+                return;
+            }
 
-    // Update the active document's saved state.
-    self.sync_active_document();
+            // Update the active document's saved state.
+            self.sync_active_document();
 
-    // Find the next unsaved document.
-    let next_dirty_id = self.documents.documents.iter()
-        .find(|doc| doc.is_dirty)
-        .map(|doc| doc.id);
+            // Find the next unsaved document.
+            let next_dirty_id = self
+                .documents
+                .documents
+                .iter()
+                .find(|doc| doc.is_dirty)
+                .map(|doc| doc.id);
 
-    if let Some(document_id) = next_dirty_id {
-        // Move to the next unsaved tab.
-        self.switch_document(document_id);
+            if let Some(document_id) = next_dirty_id {
+                // Move to the next unsaved tab.
+                self.switch_document(document_id);
 
-        // Keep the quit confirmation open.
-        self.pending_quit_dialog = true;
-    } else {
-        // Every document is saved.
-        self.pending_quit_dialog = false;
-        self.force_quit = true;
-        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-    }
-} else if do_close {
+                // Keep the quit confirmation open.
+                self.pending_quit_dialog = true;
+            } else {
+                // Every document is saved.
+                self.pending_quit_dialog = false;
+                self.force_quit = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+        } else if do_close {
             self.pending_quit_dialog = false;
             self.force_quit = true;
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -1508,7 +1780,9 @@ if do_save {
 
     #[allow(dead_code)]
     pub(super) fn project_dir(&self) -> Option<std::path::PathBuf> {
-        self.project_path.as_ref().map(|p| std::path::PathBuf::from(p))
+        self.project_path
+            .as_ref()
+            .map(|p| std::path::PathBuf::from(p))
     }
 
     #[allow(dead_code)]
@@ -1528,7 +1802,20 @@ if do_save {
 
     pub(super) fn apply_theme(&self, ctx: &egui::Context) {
         for node in self.graph.nodes.values() {
-            if let NodeType::Theme { dark_mode, accent, font_size, bg_color, text_color, window_bg, window_alpha, grid_color: _, rounding, spacing, .. } = &node.node_type {
+            if let NodeType::Theme {
+                dark_mode,
+                accent,
+                font_size,
+                bg_color,
+                text_color,
+                window_bg,
+                window_alpha,
+                grid_color: _,
+                rounding,
+                spacing,
+                ..
+            } = &node.node_type
+            {
                 // Publish theme colors to temp data so anywhere with a
                 // ctx can read them without crawling the graph. Read via
                 // `crate::nodes::theme::current_*(ctx)` helpers.
@@ -1537,7 +1824,18 @@ if do_save {
                     d.insert_temp(egui::Id::new("theme_text"), *text_color);
                     d.insert_temp(egui::Id::new("theme_bg"), *bg_color);
                 });
-                nodes::theme::apply(ctx, *dark_mode, *accent, *font_size, *bg_color, *text_color, *window_bg, *window_alpha, *rounding, *spacing);
+                nodes::theme::apply(
+                    ctx,
+                    *dark_mode,
+                    *accent,
+                    *font_size,
+                    *bg_color,
+                    *text_color,
+                    *window_bg,
+                    *window_alpha,
+                    *rounding,
+                    *spacing,
+                );
                 return;
             }
         }
@@ -1554,15 +1852,15 @@ if do_save {
         });
         nodes::theme::apply(
             ctx,
-            true,                   // dark_mode
-            accent,                 // accent
-            14.0,                   // font_size
-            bg_color,               // bg_color
-            text_color,             // text_color
-            [24, 24, 24],           // window_bg
-            240,                    // window_alpha
-            16.0,                   // rounding
-            4.0,                    // spacing
+            true,         // dark_mode
+            accent,       // accent
+            14.0,         // font_size
+            bg_color,     // bg_color
+            text_color,   // text_color
+            [24, 24, 24], // window_bg
+            240,          // window_alpha
+            16.0,         // rounding
+            4.0,          // spacing
         );
     }
 

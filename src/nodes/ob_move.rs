@@ -12,7 +12,10 @@ pub fn render(
     ob_manager: &ObManager,
 ) {
     let (device_id, hub_node_id) = match node_type {
-        NodeType::ObMove { device_id, hub_node_id } => (device_id, hub_node_id),
+        NodeType::ObMove {
+            device_id,
+            hub_node_id,
+        } => (device_id, hub_node_id),
         _ => return,
     };
 
@@ -25,18 +28,22 @@ pub fn render(
     let hid = *hub_node_id;
 
     let (vals, is_active) = {
-        let device = ob_manager.get_hub(hid)
+        let device = ob_manager
+            .get_hub(hid)
             .and_then(|h| h.get_device("move", did))
             .or_else(|| ob_manager.find_device("move", did).map(|(_, d)| d));
         if let Some(dev) = device {
-            ([
-                dev.values.get("ax").copied().unwrap_or(0.0),
-                dev.values.get("ay").copied().unwrap_or(0.0),
-                dev.values.get("az").copied().unwrap_or(0.0),
-                dev.values.get("gx").copied().unwrap_or(0.0),
-                dev.values.get("gy").copied().unwrap_or(0.0),
-                dev.values.get("gz").copied().unwrap_or(0.0),
-            ], dev.is_active)
+            (
+                [
+                    dev.values.get("ax").copied().unwrap_or(0.0),
+                    dev.values.get("ay").copied().unwrap_or(0.0),
+                    dev.values.get("az").copied().unwrap_or(0.0),
+                    dev.values.get("gx").copied().unwrap_or(0.0),
+                    dev.values.get("gy").copied().unwrap_or(0.0),
+                    dev.values.get("gz").copied().unwrap_or(0.0),
+                ],
+                dev.is_active,
+            )
         } else {
             ([0.0; 6], false)
         }
@@ -50,6 +57,10 @@ pub fn render(
 
     let labels = ["AX", "AY", "AZ", "GX", "GY", "GZ"];
     for (i, lbl) in labels.iter().enumerate() {
-        ui.label(egui::RichText::new(format!("{} {:.2}", lbl, vals[i])).small().monospace());
+        ui.label(
+            egui::RichText::new(format!("{} {:.2}", lbl, vals[i]))
+                .small()
+                .monospace(),
+        );
     }
 }

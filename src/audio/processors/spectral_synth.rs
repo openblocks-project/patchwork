@@ -6,7 +6,7 @@
 //! phase is reset to the image's stored phase. This preserves the phase
 //! coherence that makes voice sound vocal rather than saw-like.
 
-use crate::audio::processor::{AudioProcessor, ProcessorKind, ProcessContext};
+use crate::audio::processor::{AudioProcessor, ProcessContext, ProcessorKind};
 
 const NUM_BINS: usize = 256;
 const PARAM_PHASE_OFFSET: usize = 256;
@@ -83,8 +83,7 @@ impl SpectralSynthProcessor {
         // midpoint of each bin's frequency range. `refined_freqs` starts at
         // the center and gets pulled toward the true tone frequency at each
         // frame reset via phase-vocoder estimation.
-        let bin_width = crate::audio::analysis::SPECTRUM_FREQ_MAX as f64
-                      / NUM_BINS as f64;
+        let bin_width = crate::audio::analysis::SPECTRUM_FREQ_MAX as f64 / NUM_BINS as f64;
         for b in 0..NUM_BINS {
             self.freqs[b] = (b as f64 + 0.5) * bin_width;
             self.refined_freqs[b] = self.freqs[b];
@@ -93,8 +92,12 @@ impl SpectralSynthProcessor {
 }
 
 impl AudioProcessor for SpectralSynthProcessor {
-    fn type_id(&self) -> &str { "spectral_synth" }
-    fn kind(&self) -> ProcessorKind { ProcessorKind::Source }
+    fn type_id(&self) -> &str {
+        "spectral_synth"
+    }
+    fn kind(&self) -> ProcessorKind {
+        ProcessorKind::Source
+    }
 
     fn process_block(&mut self, _input: &[f32], output: &mut [f32], ctx: &ProcessContext) {
         if !self.gate || self.volume < 0.0001 {
@@ -139,10 +142,14 @@ impl AudioProcessor for SpectralSynthProcessor {
                 // steady across the 21 ms between frame resets instead of
                 // letting the oscillator drift by up to ±30 Hz.
                 self.phases[bin] += self.refined_freqs[bin] / sr;
-                if self.phases[bin] >= 1.0 { self.phases[bin] -= 1.0; }
+                if self.phases[bin] >= 1.0 {
+                    self.phases[bin] -= 1.0;
+                }
                 if t < 1.0 {
                     self.phases_prev[bin] += self.refined_freqs[bin] / sr;
-                    if self.phases_prev[bin] >= 1.0 { self.phases_prev[bin] -= 1.0; }
+                    if self.phases_prev[bin] >= 1.0 {
+                        self.phases_prev[bin] -= 1.0;
+                    }
                 }
             }
             output[i] = (sample * norm as f64) as f32;
@@ -159,8 +166,12 @@ impl AudioProcessor for SpectralSynthProcessor {
                 self.target_phases[i] = p.clamp(0.0, 1.0);
             }
         }
-        if let Some(&v) = params.get(PARAM_VOLUME) { self.volume = v.clamp(0.0, 1.0); }
-        if let Some(&v) = params.get(PARAM_GATE) { self.gate = v > 0.5; }
+        if let Some(&v) = params.get(PARAM_VOLUME) {
+            self.volume = v.clamp(0.0, 1.0);
+        }
+        if let Some(&v) = params.get(PARAM_GATE) {
+            self.gate = v > 0.5;
+        }
         if let Some(&seq) = params.get(PARAM_FRAME_SEQ) {
             // New frame → rebase each oscillator's phase so reconstructed
             // harmonics line up with the image's recorded phase. To avoid
@@ -206,8 +217,8 @@ impl AudioProcessor for SpectralSynthProcessor {
                         // Clamp to ±half-bin so one bin can't steal another
                         // bin's tone — a hard pitch lock would sound worse
                         // than the drift it's trying to fix.
-                        let bin_width = crate::audio::analysis::SPECTRUM_FREQ_MAX as f64
-                                      / NUM_BINS as f64;
+                        let bin_width =
+                            crate::audio::analysis::SPECTRUM_FREQ_MAX as f64 / NUM_BINS as f64;
                         let max_delta = bin_width * 0.5;
                         let clamped = freq_delta_hz.clamp(-max_delta, max_delta);
                         self.refined_freqs[i] = self.freqs[i] + clamped;
@@ -226,7 +237,9 @@ impl AudioProcessor for SpectralSynthProcessor {
         }
     }
 
-    fn param_count(&self) -> usize { TOTAL_PARAMS }
+    fn param_count(&self) -> usize {
+        TOTAL_PARAMS
+    }
 
     fn prepare(&mut self, sample_rate: f32, _max_block_size: usize) {
         self.sample_rate = sample_rate as f64;

@@ -25,11 +25,11 @@ fn main() {
 // files via `#[path]` instead — no duplication, the production node
 // code and the spike share identical module content.
 #[cfg(target_os = "macos")]
-#[path = "../video_io/wgpu_metal.rs"]
-mod wgpu_metal;
-#[cfg(target_os = "macos")]
 #[path = "../video_io/syphon.rs"]
 mod syphon;
+#[cfg(target_os = "macos")]
+#[path = "../video_io/wgpu_metal.rs"]
+mod wgpu_metal;
 
 #[cfg(target_os = "macos")]
 use eframe::egui_wgpu::wgpu;
@@ -78,13 +78,18 @@ fn main() {
     // ── Magenta BGRA texture via a clear pass ───────────────────────
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("spike-magenta"),
-        size: wgpu::Extent3d { width: TEX_W, height: TEX_H, depth_or_array_layers: 1 },
+        size: wgpu::Extent3d {
+            width: TEX_W,
+            height: TEX_H,
+            depth_or_array_layers: 1,
+        },
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format: wgpu::TextureFormat::Bgra8Unorm,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING
-             | wgpu::TextureUsages::COPY_DST,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
     {
@@ -99,7 +104,12 @@ fn main() {
                     view: &view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color { r: 1.0, g: 0.0, b: 1.0, a: 1.0 }),
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: 1.0,
+                            g: 0.0,
+                            b: 1.0,
+                            a: 1.0,
+                        }),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -115,8 +125,8 @@ fn main() {
     // ── Bridge via the public video_io helpers ──────────────────────
     let mtl_texture = wgpu_metal::wgpu_texture_to_mtl(&texture)
         .expect("[spike] wgpu_texture_to_mtl returned None");
-    let mtl_device = wgpu_metal::wgpu_device_to_mtl(&device)
-        .expect("[spike] wgpu_device_to_mtl returned None");
+    let mtl_device =
+        wgpu_metal::wgpu_device_to_mtl(&device).expect("[spike] wgpu_device_to_mtl returned None");
     println!(
         "[spike] bridge OK  tex:{:p}  device:{:p}",
         mtl_texture.as_ptr() as *const u8,

@@ -3,7 +3,7 @@ use eframe::egui;
 use std::collections::HashMap;
 use std::io::{BufRead, Read};
 use std::process::{Child, Command, Stdio};
-use std::sync::{mpsc, Arc};
+use std::sync::{Arc, mpsc};
 use std::time::Instant;
 
 /// Background video decoder using ffmpeg subprocess.
@@ -52,17 +52,23 @@ impl VideoDecoder {
     pub fn open_file(path: &str, width: u32, height: u32, start_time: f32) -> Result<Self, String> {
         let mut args = vec![
             "-hide_banner".to_string(),
-            "-loglevel".into(), "error".into(),
+            "-loglevel".into(),
+            "error".into(),
         ];
         if start_time > 0.0 {
             args.extend(["-ss".into(), format!("{:.3}", start_time)]);
         }
         args.extend([
-            "-i".into(), path.to_string(),
-            "-f".into(), "rawvideo".into(),
-            "-pix_fmt".into(), "rgba".into(),
-            "-s".into(), format!("{}x{}", width, height),
-            "-r".into(), "30".into(),  // output at 30fps
+            "-i".into(),
+            path.to_string(),
+            "-f".into(),
+            "rawvideo".into(),
+            "-pix_fmt".into(),
+            "rgba".into(),
+            "-s".into(),
+            format!("{}x{}", width, height),
+            "-r".into(),
+            "30".into(), // output at 30fps
             "pipe:1".into(),
         ]);
 
@@ -95,14 +101,21 @@ impl VideoDecoder {
     /// reader thread doesn't have to deal with arbitrary network resolutions.
     pub fn open_url(url: &str, width: u32, height: u32, start_time: f32) -> Result<Self, String> {
         let mut args: Vec<String> = vec![
-            "-hide_banner".into(), "-loglevel".into(), "error".into(),
+            "-hide_banner".into(),
+            "-loglevel".into(),
+            "error".into(),
             // HTTP resilience for direct URLs / HLS — harmless for non-HTTP inputs.
-            "-reconnect".into(), "1".into(),
-            "-reconnect_streamed".into(), "1".into(),
-            "-reconnect_delay_max".into(), "2".into(),
+            "-reconnect".into(),
+            "1".into(),
+            "-reconnect_streamed".into(),
+            "1".into(),
+            "-reconnect_delay_max".into(),
+            "2".into(),
             // Lower probe latency for live streams.
-            "-fflags".into(), "nobuffer".into(),
-            "-flags".into(), "low_delay".into(),
+            "-fflags".into(),
+            "nobuffer".into(),
+            "-flags".into(),
+            "low_delay".into(),
         ];
         if start_time > 0.0 {
             // `-ss` BEFORE `-i` is the fast input-side seek (uses byte-range
@@ -110,12 +123,17 @@ impl VideoDecoder {
             args.extend(["-ss".into(), format!("{:.3}", start_time)]);
         }
         args.extend([
-            "-i".into(), url.to_string(),
-            "-an".into(),                       // discard audio in this pipe; audio uses AudioPipeDecoder
-            "-f".into(), "rawvideo".into(),
-            "-pix_fmt".into(), "rgba".into(),
-            "-s".into(), format!("{}x{}", width, height),
-            "-r".into(), "30".into(),
+            "-i".into(),
+            url.to_string(),
+            "-an".into(), // discard audio in this pipe; audio uses AudioPipeDecoder
+            "-f".into(),
+            "rawvideo".into(),
+            "-pix_fmt".into(),
+            "rgba".into(),
+            "-s".into(),
+            format!("{}x{}", width, height),
+            "-r".into(),
+            "30".into(),
             "pipe:1".into(),
         ]);
 
@@ -172,19 +190,32 @@ impl VideoDecoder {
 
         let process = Command::new(crate::nodes::video_player::ffmpeg_bin())
             .args([
-                "-hide_banner", "-loglevel", "error",
+                "-hide_banner",
+                "-loglevel",
+                "error",
                 // Low-latency flags: skip probing/buffering for real-time capture
-                "-fflags", "nobuffer",
-                "-flags", "low_delay",
-                "-probesize", "32",
-                "-analyzeduration", "0",
-                "-f", capture_fmt,
-                "-framerate", "30",
-                "-video_size", &format!("{}x{}", width, height),
-                "-i", &device_input,
-                "-f", "rawvideo",
-                "-pix_fmt", "rgba",
-                "-r", "30",
+                "-fflags",
+                "nobuffer",
+                "-flags",
+                "low_delay",
+                "-probesize",
+                "32",
+                "-analyzeduration",
+                "0",
+                "-f",
+                capture_fmt,
+                "-framerate",
+                "30",
+                "-video_size",
+                &format!("{}x{}", width, height),
+                "-i",
+                &device_input,
+                "-f",
+                "rawvideo",
+                "-pix_fmt",
+                "rgba",
+                "-r",
+                "30",
                 "pipe:1",
             ])
             .stdout(Stdio::piped())
@@ -219,8 +250,10 @@ impl VideoDecoder {
     /// caller via `origin_x`/`origin_y`.
     pub fn open_screen(
         device_index: u32,
-        width: u32, height: u32,
-        origin_x: i32, origin_y: i32,
+        width: u32,
+        height: u32,
+        origin_x: i32,
+        origin_y: i32,
     ) -> Result<Self, String> {
         #[cfg(target_os = "macos")]
         {
@@ -234,26 +267,42 @@ impl VideoDecoder {
             let input = format!("{}+{},{}", display_env, origin_x, origin_y);
             let process = Command::new(crate::nodes::video_player::ffmpeg_bin())
                 .args([
-                    "-hide_banner", "-loglevel", "error",
-                    "-fflags", "nobuffer",
-                    "-flags", "low_delay",
-                    "-probesize", "32",
-                    "-analyzeduration", "0",
-                    "-f", "x11grab",
-                    "-framerate", "30",
-                    "-video_size", &format!("{}x{}", width, height),
-                    "-i", &input,
-                    "-f", "rawvideo",
-                    "-pix_fmt", "rgba",
-                    "-r", "30",
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-fflags",
+                    "nobuffer",
+                    "-flags",
+                    "low_delay",
+                    "-probesize",
+                    "32",
+                    "-analyzeduration",
+                    "0",
+                    "-f",
+                    "x11grab",
+                    "-framerate",
+                    "30",
+                    "-video_size",
+                    &format!("{}x{}", width, height),
+                    "-i",
+                    &input,
+                    "-f",
+                    "rawvideo",
+                    "-pix_fmt",
+                    "rgba",
+                    "-r",
+                    "30",
                     "pipe:1",
                 ])
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn()
                 .map_err(|e| {
-                    if e.kind() == std::io::ErrorKind::NotFound { ffmpeg_install_hint() }
-                    else { format!("Failed to start screen capture: {}", e) }
+                    if e.kind() == std::io::ErrorKind::NotFound {
+                        ffmpeg_install_hint()
+                    } else {
+                        format!("Failed to start screen capture: {}", e)
+                    }
                 })?;
             return Self::start_reader(process, width, height);
         }
@@ -262,26 +311,42 @@ impl VideoDecoder {
             let _ = (device_index, origin_x, origin_y);
             let process = Command::new(crate::nodes::video_player::ffmpeg_bin())
                 .args([
-                    "-hide_banner", "-loglevel", "error",
-                    "-fflags", "nobuffer",
-                    "-flags", "low_delay",
-                    "-probesize", "32",
-                    "-analyzeduration", "0",
-                    "-f", "gdigrab",
-                    "-framerate", "30",
-                    "-video_size", &format!("{}x{}", width, height),
-                    "-i", "desktop",
-                    "-f", "rawvideo",
-                    "-pix_fmt", "rgba",
-                    "-r", "30",
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-fflags",
+                    "nobuffer",
+                    "-flags",
+                    "low_delay",
+                    "-probesize",
+                    "32",
+                    "-analyzeduration",
+                    "0",
+                    "-f",
+                    "gdigrab",
+                    "-framerate",
+                    "30",
+                    "-video_size",
+                    &format!("{}x{}", width, height),
+                    "-i",
+                    "desktop",
+                    "-f",
+                    "rawvideo",
+                    "-pix_fmt",
+                    "rgba",
+                    "-r",
+                    "30",
                     "pipe:1",
                 ])
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn()
                 .map_err(|e| {
-                    if e.kind() == std::io::ErrorKind::NotFound { ffmpeg_install_hint() }
-                    else { format!("Failed to start screen capture: {}", e) }
+                    if e.kind() == std::io::ErrorKind::NotFound {
+                        ffmpeg_install_hint()
+                    } else {
+                        format!("Failed to start screen capture: {}", e)
+                    }
                 })?;
             return Self::start_reader(process, width, height);
         }
@@ -314,7 +379,11 @@ impl VideoDecoder {
                         // Zero-copy: swap the filled buffer into the frame and replace
                         // with a fresh buffer.  Avoids cloning ~8MB per frame at 1080p.
                         let pixels = std::mem::replace(&mut buf, vec![0u8; frame_size]);
-                        let frame = Arc::new(ImageData { width, height, pixels });
+                        let frame = Arc::new(ImageData {
+                            width,
+                            height,
+                            pixels,
+                        });
                         if tx.send(frame).is_err() {
                             break; // Receiver dropped (node deleted)
                         }
@@ -333,7 +402,9 @@ impl VideoDecoder {
             let reader = std::io::BufReader::new(stderr);
             for line in reader.lines().map_while(|l| l.ok()) {
                 // Send may fail if Decoder was dropped; fine, just stop.
-                if err_tx.send(line).is_err() { break; }
+                if err_tx.send(line).is_err() {
+                    break;
+                }
             }
         });
 
@@ -355,8 +426,12 @@ impl VideoDecoder {
     /// frame from the node's render loop; cheap on the happy path.
     pub fn pump_stderr(&mut self) {
         while let Ok(line) = self.stderr_rx.try_recv() {
-            if self.stderr_log.len() > 1024 { break; }
-            if !self.stderr_log.is_empty() { self.stderr_log.push('\n'); }
+            if self.stderr_log.len() > 1024 {
+                break;
+            }
+            if !self.stderr_log.is_empty() {
+                self.stderr_log.push('\n');
+            }
             self.stderr_log.push_str(&line);
         }
     }
@@ -365,8 +440,10 @@ impl VideoDecoder {
         let mut latest = None;
         loop {
             match self.frame_rx.try_recv() {
-                Ok(frame) => { latest = Some(frame); }
-                Err(mpsc::TryRecvError::Empty) => break,       // No new frame, keep last
+                Ok(frame) => {
+                    latest = Some(frame);
+                }
+                Err(mpsc::TryRecvError::Empty) => break, // No new frame, keep last
                 Err(mpsc::TryRecvError::Disconnected) => {
                     // Reader thread died (camera unplugged, ffmpeg crashed, EOF)
                     self.disconnected = true;
@@ -420,22 +497,33 @@ impl AudioPipeDecoder {
     /// pushes ~10 ms chunks into `samples_rx`.
     pub fn open_url(source: &str, sample_rate: f32, start_time: f32) -> Result<Self, String> {
         let mut args: Vec<String> = vec![
-            "-hide_banner".into(), "-loglevel".into(), "error".into(),
-            "-reconnect".into(), "1".into(),
-            "-reconnect_streamed".into(), "1".into(),
-            "-reconnect_delay_max".into(), "2".into(),
-            "-fflags".into(), "nobuffer".into(),
-            "-flags".into(), "low_delay".into(),
+            "-hide_banner".into(),
+            "-loglevel".into(),
+            "error".into(),
+            "-reconnect".into(),
+            "1".into(),
+            "-reconnect_streamed".into(),
+            "1".into(),
+            "-reconnect_delay_max".into(),
+            "2".into(),
+            "-fflags".into(),
+            "nobuffer".into(),
+            "-flags".into(),
+            "low_delay".into(),
         ];
         if start_time > 0.0 {
             args.extend(["-ss".into(), format!("{:.3}", start_time)]);
         }
         args.extend([
-            "-i".into(), source.to_string(),
-            "-vn".into(),                                       // drop video
-            "-ac".into(), "1".into(),                           // mono
-            "-ar".into(), format!("{}", sample_rate as u32),    // resample server-side
-            "-f".into(), "f32le".into(),                        // raw little-endian f32
+            "-i".into(),
+            source.to_string(),
+            "-vn".into(), // drop video
+            "-ac".into(),
+            "1".into(), // mono
+            "-ar".into(),
+            format!("{}", sample_rate as u32), // resample server-side
+            "-f".into(),
+            "f32le".into(), // raw little-endian f32
             "pipe:1".into(),
         ]);
         let process = Command::new(crate::nodes::video_player::ffmpeg_bin())
@@ -463,23 +551,30 @@ impl AudioPipeDecoder {
     /// - macOS:   format="avfoundation", input=":<audio_idx>" (`:0` = default mic)
     /// - Linux:   format="alsa",         input="default" (or "pulse"/"default")
     /// - Windows: format="dshow",        input="audio=<friendly-name>"
-    pub fn open_capture_input(
-        format: &str,
-        input: &str,
-        sample_rate: f32,
-    ) -> Result<Self, String> {
+    pub fn open_capture_input(format: &str, input: &str, sample_rate: f32) -> Result<Self, String> {
         let args: Vec<String> = vec![
-            "-hide_banner".into(), "-loglevel".into(), "error".into(),
-            "-fflags".into(), "nobuffer".into(),
-            "-flags".into(), "low_delay".into(),
-            "-probesize".into(), "32".into(),
-            "-analyzeduration".into(), "0".into(),
-            "-f".into(), format.to_string(),
-            "-i".into(), input.to_string(),
+            "-hide_banner".into(),
+            "-loglevel".into(),
+            "error".into(),
+            "-fflags".into(),
+            "nobuffer".into(),
+            "-flags".into(),
+            "low_delay".into(),
+            "-probesize".into(),
+            "32".into(),
+            "-analyzeduration".into(),
+            "0".into(),
+            "-f".into(),
+            format.to_string(),
+            "-i".into(),
+            input.to_string(),
             "-vn".into(),
-            "-ac".into(), "1".into(),
-            "-ar".into(), format!("{}", sample_rate as u32),
-            "-f".into(), "f32le".into(),
+            "-ac".into(),
+            "1".into(),
+            "-ar".into(),
+            format!("{}", sample_rate as u32),
+            "-f".into(),
+            "f32le".into(),
             "pipe:1".into(),
         ];
         let process = Command::new(crate::nodes::video_player::ffmpeg_bin())
@@ -518,7 +613,9 @@ impl AudioPipeDecoder {
                             let s = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
                             samples.push(s);
                         }
-                        if tx.send(samples).is_err() { break; }
+                        if tx.send(samples).is_err() {
+                            break;
+                        }
                     }
                     Err(_) => break, // EOF or error
                 }
@@ -529,7 +626,9 @@ impl AudioPipeDecoder {
         std::thread::spawn(move || {
             let reader = std::io::BufReader::new(stderr);
             for line in reader.lines().map_while(|l| l.ok()) {
-                if err_tx.send(line).is_err() { break; }
+                if err_tx.send(line).is_err() {
+                    break;
+                }
             }
         });
 
@@ -545,8 +644,12 @@ impl AudioPipeDecoder {
 
     pub fn pump_stderr(&mut self) {
         while let Ok(line) = self.stderr_rx.try_recv() {
-            if self.stderr_log.len() > 1024 { break; }
-            if !self.stderr_log.is_empty() { self.stderr_log.push('\n'); }
+            if self.stderr_log.len() > 1024 {
+                break;
+            }
+            if !self.stderr_log.is_empty() {
+                self.stderr_log.push('\n');
+            }
             self.stderr_log.push_str(&line);
         }
     }
@@ -572,9 +675,17 @@ thread_local! {
 /// when ffprobe isn't installed.
 pub(crate) fn get_duration(path: &str) -> Option<f32> {
     let output = Command::new("ffprobe")
-        .args(["-v", "error", "-show_entries", "format=duration",
-               "-of", "default=noprint_wrappers=1:nokey=1", path])
-        .output().ok()?;
+        .args([
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            path,
+        ])
+        .output()
+        .ok()?;
     let s = String::from_utf8_lossy(&output.stdout);
     s.trim().parse::<f32>().ok()
 }
@@ -602,8 +713,13 @@ pub fn ffmpeg_bin() -> &'static std::path::Path {
     use std::sync::OnceLock;
     static BIN: OnceLock<std::path::PathBuf> = OnceLock::new();
     BIN.get_or_init(|| {
-        let name = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
-        std::env::current_exe().ok()
+        let name = if cfg!(windows) {
+            "ffmpeg.exe"
+        } else {
+            "ffmpeg"
+        };
+        std::env::current_exe()
+            .ok()
             .and_then(|p| p.parent().map(|d| d.join(name)))
             .filter(|p| p.exists())
             .unwrap_or_else(|| std::path::PathBuf::from("ffmpeg"))
@@ -634,8 +750,13 @@ fn list_cameras_avfoundation() -> Vec<(u32, String)> {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let mut in_video = false;
         for line in stderr.lines() {
-            if line.contains("AVFoundation video devices") { in_video = true; continue; }
-            if line.contains("AVFoundation audio devices") { break; }
+            if line.contains("AVFoundation video devices") {
+                in_video = true;
+                continue;
+            }
+            if line.contains("AVFoundation audio devices") {
+                break;
+            }
             if in_video {
                 if let Some(bracket_start) = line.find("] [") {
                     let rest = &line[bracket_start + 3..];
@@ -689,7 +810,17 @@ fn enumerate_dshow_devices() -> (Vec<(u32, String)>, Vec<(u32, String)>, String)
     eprintln!("[DEBUG] enumerate_dshow_devices() starting ffmpeg...");
     let output = Command::new(crate::nodes::video_player::ffmpeg_bin())
         // .args(["-f", "dshow", "-list_devices", "true", "-i", "dummy"])
-        .args(["-hide_banner", "-loglevel", "info", "-f", "dshow", "-list_devices", "true", "-i", "dummy"])
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "info",
+            "-f",
+            "dshow",
+            "-list_devices",
+            "true",
+            "-i",
+            "dummy",
+        ])
         .stderr(Stdio::piped())
         .stdout(Stdio::null())
         .output();
@@ -697,14 +828,19 @@ fn enumerate_dshow_devices() -> (Vec<(u32, String)>, Vec<(u32, String)>, String)
         Ok(o) => String::from_utf8_lossy(&o.stderr).into_owned(),
         Err(e) => format!("ffmpeg invocation failed: {}", e),
     };
-     eprintln!("[DEBUG] ffmpeg returned {} bytes of stderr", stderr.len());
+    eprintln!("[DEBUG] ffmpeg returned {} bytes of stderr", stderr.len());
     let (videos, audios) = parse_dshow_devices(&stderr);
-    let cameras: Vec<(u32, String)> = videos.into_iter().enumerate()
-        .map(|(i, n)| (i as u32, n)).collect();
-    let audio_inputs: Vec<(u32, String)> = audios.into_iter().enumerate()
-        .map(|(i, n)| (i as u32, n)).collect();
+    let cameras: Vec<(u32, String)> = videos
+        .into_iter()
+        .enumerate()
+        .map(|(i, n)| (i as u32, n))
+        .collect();
+    let audio_inputs: Vec<(u32, String)> = audios
+        .into_iter()
+        .enumerate()
+        .map(|(i, n)| (i as u32, n))
+        .collect();
     (cameras, audio_inputs, stderr)
-   
 }
 
 /// Parse ffmpeg dshow `-list_devices` stderr into (video_names,
@@ -747,15 +883,18 @@ fn enumerate_dshow_devices() -> (Vec<(u32, String)>, Vec<(u32, String)>, String)
 fn parse_dshow_devices(stderr: &str) -> (Vec<String>, Vec<String>) {
     let mut videos = Vec::new();
     let mut audios = Vec::new();
-    
-    eprintln!("[DEBUG] parse_dshow_devices() parsing {} chars", stderr.len());
-    
+
+    eprintln!(
+        "[DEBUG] parse_dshow_devices() parsing {} chars",
+        stderr.len()
+    );
+
     for line in stderr.lines() {
         // Skip alternative names and error messages
         if line.contains("Alternative name") || line.contains("Error opening") {
             continue;
         }
-        
+
         // Look for lines with quoted device names
         // Format: [in#0 @ ...] "Device Name" (video|audio)
         if let Some(quoted) = extract_first_quoted(line) {
@@ -768,8 +907,12 @@ fn parse_dshow_devices(stderr: &str) -> (Vec<String>, Vec<String>) {
             }
         }
     }
-    
-    eprintln!("[DEBUG] parse_dshow_devices() found {} videos, {} audios", videos.len(), audios.len());
+
+    eprintln!(
+        "[DEBUG] parse_dshow_devices() found {} videos, {} audios",
+        videos.len(),
+        audios.len()
+    );
     (videos, audios)
 }
 
@@ -787,24 +930,30 @@ fn extract_first_quoted(line: &str) -> Option<String> {
 //     enumerate_dshow_devices().0
 // }
 
-
 #[cfg(target_os = "windows")]
 fn list_cameras_dshow() -> Vec<(u32, String)> {
     eprintln!("[DEBUG] list_cameras_dshow() called");
     let (cameras, _, stderr) = enumerate_dshow_devices();
-    
-    eprintln!("[DEBUG] enumerate_dshow_devices returned {} cameras", cameras.len());
+
+    eprintln!(
+        "[DEBUG] enumerate_dshow_devices returned {} cameras",
+        cameras.len()
+    );
     for (i, name) in &cameras {
         eprintln!("[DEBUG]   Camera {}: {}", i, name);
     }
-    
+
     if cameras.is_empty() {
         eprintln!("[DEBUG] No cameras found!");
         eprintln!("[DEBUG] FFmpeg stderr first 500 chars:");
-        let truncated = if stderr.len() > 500 { &stderr[..500] } else { &stderr };
+        let truncated = if stderr.len() > 500 {
+            &stderr[..500]
+        } else {
+            &stderr
+        };
         eprintln!("{}", truncated);
     }
-    
+
     cameras
 }
 // ── Video Player Node ────────────────────────────────────────────────────────
@@ -816,11 +965,31 @@ pub fn render_video(
     _values: &HashMap<(NodeId, usize), PortValue>,
     _connections: &[Connection],
 ) {
-    let (path, playing, looping, res_w, res_h, current_frame, duration, speed, status) = match node_type {
-        NodeType::VideoPlayer { path, playing, looping, res_w, res_h, current_frame, duration, speed, status } =>
-            (path, playing, looping, res_w, res_h, current_frame, duration, speed, status),
-        _ => return,
-    };
+    let (path, playing, looping, res_w, res_h, current_frame, duration, speed, status) =
+        match node_type {
+            NodeType::VideoPlayer {
+                path,
+                playing,
+                looping,
+                res_w,
+                res_h,
+                current_frame,
+                duration,
+                speed,
+                status,
+            } => (
+                path,
+                playing,
+                looping,
+                res_w,
+                res_h,
+                current_frame,
+                duration,
+                speed,
+                status,
+            ),
+            _ => return,
+        };
 
     // Open button
     ui.horizontal(|ui| {
@@ -845,15 +1014,29 @@ pub fn render_video(
     });
 
     if !path.is_empty() {
-        let short = if path.len() > 35 { format!("...{}", &path[path.len()-35..]) } else { path.clone() };
+        let short = if path.len() > 35 {
+            format!("...{}", &path[path.len() - 35..])
+        } else {
+            path.clone()
+        };
         ui.label(egui::RichText::new(short).small().monospace());
     }
 
     // Resolution
     ui.horizontal(|ui| {
         ui.label("Res:");
-        ui.add(egui::DragValue::new(res_w).range(120..=1920).speed(10).prefix("W:"));
-        ui.add(egui::DragValue::new(res_h).range(90..=1080).speed(10).prefix("H:"));
+        ui.add(
+            egui::DragValue::new(res_w)
+                .range(120..=1920)
+                .speed(10)
+                .prefix("W:"),
+        );
+        ui.add(
+            egui::DragValue::new(res_h)
+                .range(90..=1080)
+                .speed(10)
+                .prefix("H:"),
+        );
     });
 
     // Play / Pause / Stop
@@ -934,7 +1117,10 @@ pub fn render_video(
 
         VIDEO_TEXTURES.with(|textures| {
             let mut textures = textures.borrow_mut();
-            let cached_same = textures.get(&node_id).map(|(_, p)| *p == frame_ptr).unwrap_or(false);
+            let cached_same = textures
+                .get(&node_id)
+                .map(|(_, p)| *p == frame_ptr)
+                .unwrap_or(false);
             if !cached_same {
                 let pw = max_w as u32;
                 let ph = preview_h as u32;
@@ -959,7 +1145,10 @@ pub fn render_video(
                 }
             }
             if let Some((tex, _)) = textures.get(&node_id) {
-                ui.image(egui::load::SizedTexture::new(tex.id(), egui::vec2(max_w, preview_h)));
+                ui.image(egui::load::SizedTexture::new(
+                    tex.id(),
+                    egui::vec2(max_w, preview_h),
+                ));
             }
         });
     }
@@ -985,18 +1174,18 @@ struct DshowCache {
 /// One shared cache for the ffmpeg device list. Both the legacy Camera
 /// enum‑variant render path and the new `VideoInNode` read from here, so
 /// a refresh in either UI benefits both.
-fn camera_list_cache_handle()
-    -> &'static std::sync::Mutex<DshowCache>
-{
+fn camera_list_cache_handle() -> &'static std::sync::Mutex<DshowCache> {
     use std::sync::{Mutex, OnceLock};
     static CACHE: OnceLock<Mutex<DshowCache>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(DshowCache {
-        refreshed_at: std::time::Instant::now() - std::time::Duration::from_secs(100),
-        cameras: Vec::new(),
-        audio_inputs: Vec::new(),
-        last_stderr: String::new(),
-        refreshing: false,
-    }))
+    CACHE.get_or_init(|| {
+        Mutex::new(DshowCache {
+            refreshed_at: std::time::Instant::now() - std::time::Duration::from_secs(100),
+            cameras: Vec::new(),
+            audio_inputs: Vec::new(),
+            last_stderr: String::new(),
+            refreshing: false,
+        })
+    })
 }
 
 /// Run a fresh enumeration. On Windows, calls `enumerate_dshow_devices`
@@ -1043,7 +1232,10 @@ pub fn cached_camera_list() -> Vec<(u32, String)> {
 #[cfg(target_os = "windows")]
 pub fn cached_audio_input_list_dshow() -> Vec<(u32, String)> {
     let cache = camera_list_cache_handle();
-    let guard = match cache.lock() { Ok(g) => g, Err(_) => return Vec::new() };
+    let guard = match cache.lock() {
+        Ok(g) => g,
+        Err(_) => return Vec::new(),
+    };
     guard.audio_inputs.clone()
 }
 
@@ -1053,7 +1245,10 @@ pub fn cached_audio_input_list_dshow() -> Vec<(u32, String)> {
 #[cfg(target_os = "windows")]
 pub fn last_dshow_stderr() -> String {
     let cache = camera_list_cache_handle();
-    let guard = match cache.lock() { Ok(g) => g, Err(_) => return String::new() };
+    let guard = match cache.lock() {
+        Ok(g) => g,
+        Err(_) => return String::new(),
+    };
     guard.last_stderr.clone()
 }
 
@@ -1067,8 +1262,13 @@ pub fn last_dshow_stderr() -> String {
 /// set). Safe to call from the UI thread.
 pub fn refresh_camera_list_now() {
     let cache = camera_list_cache_handle();
-    let mut guard = match cache.lock() { Ok(g) => g, Err(_) => return };
-    if guard.refreshing { return; }
+    let mut guard = match cache.lock() {
+        Ok(g) => g,
+        Err(_) => return,
+    };
+    if guard.refreshing {
+        return;
+    }
     guard.refreshing = true;
     drop(guard);
     std::thread::spawn(move || {
@@ -1109,9 +1309,13 @@ pub fn list_screens() -> Vec<(u32, String)> {
             .collect()
     }
     #[cfg(target_os = "windows")]
-    { vec![(0, "Desktop".into())] }
+    {
+        vec![(0, "Desktop".into())]
+    }
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    { Vec::new() }
+    {
+        Vec::new()
+    }
 }
 
 // ── Camera Node ──────────────────────────────────────────────────────────────
@@ -1124,8 +1328,14 @@ pub fn render_camera(
     _connections: &[Connection],
 ) {
     let (device_index, res_w, res_h, active, current_frame, status) = match node_type {
-        NodeType::Camera { device_index, res_w, res_h, active, current_frame, status } =>
-            (device_index, res_w, res_h, active, current_frame, status),
+        NodeType::Camera {
+            device_index,
+            res_w,
+            res_h,
+            active,
+            current_frame,
+            status,
+        } => (device_index, res_w, res_h, active, current_frame, status),
         _ => return,
     };
 
@@ -1135,14 +1345,18 @@ pub fn render_camera(
         ui.label("Device:");
         egui::ComboBox::from_id_salt(egui::Id::new(("cam_device", node_id)))
             .selected_text(
-                cameras.iter().find(|(i, _)| *i == *device_index)
+                cameras
+                    .iter()
+                    .find(|(i, _)| *i == *device_index)
                     .map(|(_, name)| name.as_str())
-                    .unwrap_or("Select...")
+                    .unwrap_or("Select..."),
             )
             .width(150.0)
             .show_ui(ui, |ui| {
                 for (idx, name) in &cameras {
-                    if ui.selectable_label(*device_index == *idx, name).clicked() && *device_index != *idx {
+                    if ui.selectable_label(*device_index == *idx, name).clicked()
+                        && *device_index != *idx
+                    {
                         // Switching device — tear down the old decoder, drop
                         // the cached frame so downstream nodes can't see it
                         // for a single frame, and invalidate any GPU textures
@@ -1177,8 +1391,18 @@ pub fn render_camera(
     // Resolution
     ui.horizontal(|ui| {
         ui.label("Res:");
-        ui.add(egui::DragValue::new(res_w).range(160..=1920).speed(10).prefix("W:"));
-        ui.add(egui::DragValue::new(res_h).range(120..=1080).speed(10).prefix("H:"));
+        ui.add(
+            egui::DragValue::new(res_w)
+                .range(160..=1920)
+                .speed(10)
+                .prefix("W:"),
+        );
+        ui.add(
+            egui::DragValue::new(res_h)
+                .range(120..=1080)
+                .speed(10)
+                .prefix("H:"),
+        );
     });
 
     // Start / Stop
@@ -1234,7 +1458,9 @@ pub fn render_camera(
             decoder.pump_stderr();
             if let Some(frame) = decoder.try_recv_frame() {
                 *current_frame = Some(frame);
-                if status != "Capturing" { *status = "Capturing".into(); }
+                if status != "Capturing" {
+                    *status = "Capturing".into();
+                }
             } else if current_frame.is_none() {
                 let elapsed = decoder.started_at.elapsed().as_secs_f32();
                 if elapsed > 1.5 && !decoder.stderr_log.is_empty() {
@@ -1268,7 +1494,10 @@ pub fn render_camera(
 
         VIDEO_TEXTURES.with(|textures| {
             let mut textures = textures.borrow_mut();
-            let cached_same = textures.get(&node_id).map(|(_, p)| *p == frame_ptr).unwrap_or(false);
+            let cached_same = textures
+                .get(&node_id)
+                .map(|(_, p)| *p == frame_ptr)
+                .unwrap_or(false);
             if !cached_same {
                 let pw = max_w as u32;
                 let ph = preview_h as u32;
@@ -1293,7 +1522,10 @@ pub fn render_camera(
                 }
             }
             if let Some((tex, _)) = textures.get(&node_id) {
-                ui.image(egui::load::SizedTexture::new(tex.id(), egui::vec2(max_w, preview_h)));
+                ui.image(egui::load::SizedTexture::new(
+                    tex.id(),
+                    egui::vec2(max_w, preview_h),
+                ));
             }
         });
     }
@@ -1305,7 +1537,9 @@ pub fn render_camera(
 
 /// Fast nearest-neighbor downsample for preview display
 pub fn fast_downsample(img: &ImageData, target_w: u32, target_h: u32) -> Vec<u8> {
-    if target_w == 0 || target_h == 0 { return vec![]; }
+    if target_w == 0 || target_h == 0 {
+        return vec![];
+    }
 
     // NOTE: an earlier fast path returned `img.pixels.clone()` directly
     // when `target_w >= img.width && target_h >= img.height` to skip
@@ -1328,7 +1562,9 @@ pub fn fast_downsample(img: &ImageData, target_w: u32, target_h: u32) -> Vec<u8>
     let mut out: Vec<u8> = Vec::with_capacity(out_bytes);
     // SAFETY: every output pixel is written below; the u32-store loop
     // fills all `target_w * target_h` u32s.
-    unsafe { out.set_len(out_bytes); }
+    unsafe {
+        out.set_len(out_bytes);
+    }
 
     let x_ratio = img.width as f32 / target_w as f32;
     let y_ratio = img.height as f32 / target_h as f32;

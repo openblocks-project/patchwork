@@ -5,9 +5,9 @@
 //! During playback: reads from SamplerBuffer into output.
 //! Both modes are mutually exclusive (recording stops playback and vice versa).
 
-use std::sync::Arc;
-use crate::audio::processor::{AudioProcessor, ProcessorKind, ProcessContext};
 use crate::audio::buffers::SamplerBuffer;
+use crate::audio::processor::{AudioProcessor, ProcessContext, ProcessorKind};
+use std::sync::Arc;
 
 pub struct SamplerProcessor {
     pub buffer: Arc<SamplerBuffer>,
@@ -30,28 +30,44 @@ impl SamplerProcessor {
 }
 
 impl AudioProcessor for SamplerProcessor {
-    fn type_id(&self) -> &str { "sampler" }
-    fn kind(&self) -> ProcessorKind { ProcessorKind::Source }
+    fn type_id(&self) -> &str {
+        "sampler"
+    }
+    fn kind(&self) -> ProcessorKind {
+        ProcessorKind::Source
+    }
 
     fn process_block(&mut self, input: &[f32], output: &mut [f32], ctx: &ProcessContext) {
-        let is_recording = self.buffer.recording.load(std::sync::atomic::Ordering::Relaxed);
-        let is_playing = self.buffer.playing.load(std::sync::atomic::Ordering::Relaxed);
+        let is_recording = self
+            .buffer
+            .recording
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let is_playing = self
+            .buffer
+            .playing
+            .load(std::sync::atomic::Ordering::Relaxed);
 
         if is_recording {
             // Record input samples into buffer
             self.buffer.record_from(&input[..ctx.block_size]);
             // Output silence during recording
-            for s in output[..ctx.block_size].iter_mut() { *s = 0.0; }
+            for s in output[..ctx.block_size].iter_mut() {
+                *s = 0.0;
+            }
         } else if is_playing {
             // Play back from buffer
             self.buffer.play_into(output, ctx.block_size);
             // Apply volume
             if (self.volume - 1.0).abs() > 0.001 {
-                for s in output[..ctx.block_size].iter_mut() { *s *= self.volume; }
+                for s in output[..ctx.block_size].iter_mut() {
+                    *s *= self.volume;
+                }
             }
         } else {
             // Idle — output silence
-            for s in output[..ctx.block_size].iter_mut() { *s = 0.0; }
+            for s in output[..ctx.block_size].iter_mut() {
+                *s = 0.0;
+            }
         }
     }
 
@@ -61,7 +77,9 @@ impl AudioProcessor for SamplerProcessor {
         // params[2] = play trigger (>0.5 = play)
         // params[3] = speed multiplier (1.0 = normal, 0.5 = half, 2.0 = double)
         // params[4] = seek normalized (0.0–1.0); negative = no seek this frame
-        if let Some(&v) = params.first() { self.volume = v.max(0.0); }
+        if let Some(&v) = params.first() {
+            self.volume = v.max(0.0);
+        }
 
         if params.len() >= 2 {
             let record_on = params[1] > 0.5;
@@ -97,7 +115,9 @@ impl AudioProcessor for SamplerProcessor {
         }
     }
 
-    fn param_count(&self) -> usize { 5 }
+    fn param_count(&self) -> usize {
+        5
+    }
     fn prepare(&mut self, _sample_rate: f32, _max_block_size: usize) {}
     fn reset(&mut self) {
         self.prev_record = false;

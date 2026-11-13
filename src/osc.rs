@@ -5,9 +5,20 @@ use std::net::UdpSocket;
 use std::sync::mpsc;
 
 pub enum OscAction {
-    Send { node_id: NodeId, host: String, port: u16, address: String, args: Vec<f32> },
-    StartListening { node_id: NodeId, port: u16 },
-    StopListening { node_id: NodeId },
+    Send {
+        node_id: NodeId,
+        host: String,
+        port: u16,
+        address: String,
+        args: Vec<f32>,
+    },
+    StartListening {
+        node_id: NodeId,
+        port: u16,
+    },
+    StopListening {
+        node_id: NodeId,
+    },
 }
 
 /// A received OSC message with both float and string representations of args.
@@ -41,9 +52,18 @@ impl OscManager {
     pub fn process(&mut self, actions: Vec<OscAction>) {
         for action in actions {
             match action {
-                OscAction::Send { node_id, host, port, address, args } => {
+                OscAction::Send {
+                    node_id,
+                    host,
+                    port,
+                    address,
+                    args,
+                } => {
                     let osc_args: Vec<OscType> = args.iter().map(|&v| OscType::Float(v)).collect();
-                    let msg = OscMessage { addr: address, args: osc_args };
+                    let msg = OscMessage {
+                        addr: address,
+                        args: osc_args,
+                    };
                     let packet = OscPacket::Message(msg);
                     if let Ok(buf) = rosc::encoder::encode(&packet) {
                         // Change detection
@@ -70,7 +90,9 @@ impl OscManager {
                         }
                     };
                     socket.set_nonblocking(false).ok();
-                    socket.set_read_timeout(Some(std::time::Duration::from_millis(10))).ok();
+                    socket
+                        .set_read_timeout(Some(std::time::Duration::from_millis(10)))
+                        .ok();
 
                     let (tx, rx) = mpsc::channel();
                     let handle = std::thread::spawn(move || {
@@ -78,7 +100,8 @@ impl OscManager {
                         loop {
                             match socket.recv_from(&mut buf) {
                                 Ok((size, _)) => {
-                                    if let Ok((_, packet)) = rosc::decoder::decode_udp(&buf[..size]) {
+                                    if let Ok((_, packet)) = rosc::decoder::decode_udp(&buf[..size])
+                                    {
                                         Self::extract_messages(&packet, &tx);
                                     }
                                 }
@@ -89,7 +112,13 @@ impl OscManager {
                             }
                         }
                     });
-                    self.listeners.insert(node_id, Listener { _thread: handle, rx });
+                    self.listeners.insert(
+                        node_id,
+                        Listener {
+                            _thread: handle,
+                            rx,
+                        },
+                    );
                 }
                 OscAction::StopListening { node_id } => {
                     self.listeners.remove(&node_id);

@@ -74,7 +74,13 @@ pub fn report_for(node_id: NodeId, message: impl Into<String>) {
     // so a node that fails every frame doesn't spam the console.
     let is_new_or_changed = with_map(|m| {
         let changed = m.get(&node_id).map(|e| e.message != msg).unwrap_or(true);
-        m.insert(node_id, NodeError { message: msg.clone(), timestamp_ms });
+        m.insert(
+            node_id,
+            NodeError {
+                message: msg.clone(),
+                timestamp_ms,
+            },
+        );
         changed
     });
     if is_new_or_changed {
@@ -85,13 +91,17 @@ pub fn report_for(node_id: NodeId, message: impl Into<String>) {
 /// Clear the error (if any) for `node_id`. Called at the start of every
 /// `evaluate_node` so a recovered node loses its red badge.
 pub fn clear(node_id: NodeId) {
-    with_map(|m| { m.remove(&node_id); });
+    with_map(|m| {
+        m.remove(&node_id);
+    });
 }
 
 /// Clear errors for a deleted node so the badge doesn't linger if the
 /// id is reused later.
 pub fn remove_for(node_id: NodeId) {
-    with_map(|m| { m.remove(&node_id); });
+    with_map(|m| {
+        m.remove(&node_id);
+    });
 }
 
 /// Look up the current error for a node, if any.

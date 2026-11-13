@@ -1,10 +1,10 @@
 use crate::graph::NodeId;
 use bytes::Bytes;
 use futures_lite::StreamExt;
-use iroh::{Endpoint, EndpointAddr, PublicKey, SecretKey};
 use iroh::endpoint::presets;
+use iroh::{Endpoint, EndpointAddr, PublicKey, SecretKey};
 use iroh_gossip::api::Event;
-use iroh_gossip::net::{Gossip, GOSSIP_ALPN};
+use iroh_gossip::net::{GOSSIP_ALPN, Gossip};
 use iroh_gossip::proto::TopicId;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -75,16 +75,29 @@ fn decode_link_with_addresses(s: &str) -> Result<(PatchworkLink, Vec<EndpointAdd
     // misinterpreting an old PeerInfo as a v2 EndpointAddr.
     match bytes.first().copied() {
         Some(2) => {
-            let v2: PatchworkLinkV2 = postcard::from_bytes(&bytes)
-                .map_err(|e| format!("Invalid v2 link data: {e}"))?;
-            let peers = v2.peers.iter().map(|a| PeerInfo { id: *a.id.as_bytes() }).collect();
-            Ok((PatchworkLink {
-                version: 2, topic: v2.topic, peers, schema: v2.schema, label: v2.label,
-            }, v2.peers))
+            let v2: PatchworkLinkV2 =
+                postcard::from_bytes(&bytes).map_err(|e| format!("Invalid v2 link data: {e}"))?;
+            let peers = v2
+                .peers
+                .iter()
+                .map(|a| PeerInfo {
+                    id: *a.id.as_bytes(),
+                })
+                .collect();
+            Ok((
+                PatchworkLink {
+                    version: 2,
+                    topic: v2.topic,
+                    peers,
+                    schema: v2.schema,
+                    label: v2.label,
+                },
+                v2.peers,
+            ))
         }
         Some(1) => {
-            let old: PatchworkLink = postcard::from_bytes(&bytes)
-                .map_err(|e| format!("Invalid v1 link data: {e}"))?;
+            let old: PatchworkLink =
+                postcard::from_bytes(&bytes).map_err(|e| format!("Invalid v1 link data: {e}"))?;
             Ok((old, Vec::new()))
         }
         _ => Err("Unsupported Patchwork link version".to_string()),
@@ -214,7 +227,8 @@ impl NetworkManager {
             Ok(handle) => Some(handle),
             Err(e) => {
                 eprintln!(
-                    "[patchwork-network] thread spawn failed: {} — networking disabled", e
+                    "[patchwork-network] thread spawn failed: {} — networking disabled",
+                    e
                 );
                 // action_rx and event_tx were captured by the failed
                 // closure and dropped with it; action_tx.send() will
@@ -258,7 +272,9 @@ impl NetworkManager {
     }
 
     pub fn cleanup_node(&self, node_id: NodeId) {
-        let _ = self.action_tx.try_send(NetworkAction::DestroyNode { node_id });
+        let _ = self
+            .action_tx
+            .try_send(NetworkAction::DestroyNode { node_id });
     }
 }
 
@@ -307,7 +323,8 @@ async fn network_loop(
                 &mut send_states,
                 &mut recv_states,
                 &event_tx,
-            ).await;
+            )
+            .await;
         }
 
         // Then send the latest value for each node (deduplicated)
@@ -320,7 +337,8 @@ async fn network_loop(
                 &mut send_states,
                 &mut recv_states,
                 &event_tx,
-            ).await;
+            )
+            .await;
         }
 
         // Yield to let spawned receiver tasks process incoming gossip messages
@@ -357,7 +375,12 @@ async fn handle_action(
     event_tx: &std_mpsc::SyncSender<NetworkEvent>,
 ) {
     match action {
-        NetworkAction::CreateSend { node_id, schema, secret_key_hex, label } => {
+        NetworkAction::CreateSend {
+            node_id,
+            schema,
+            secret_key_hex,
+            label,
+        } => {
             if let Err(e) = ensure_iroh(endpoint, gossip, router).await {
                 let _ = event_tx.try_send(NetworkEvent::Error { node_id, error: e });
                 return;
@@ -369,7 +392,9 @@ async fn handle_action(
             let ep = endpoint.as_ref().unwrap();
             let gos = gossip.as_ref().unwrap();
 
-            let _sk = secret_key_hex.as_ref().and_then(|hex| hex.parse::<SecretKey>().ok());
+            let _sk = secret_key_hex
+                .as_ref()
+                .and_then(|hex| hex.parse::<SecretKey>().ok());
 
             let topic_bytes: [u8; 32] = rand::random();
             let topic = TopicId::from_bytes(topic_bytes);
@@ -408,12 +433,15 @@ async fn handle_action(
                         secret_hex,
                     });
 
-                    send_states.insert(node_id, SendState {
-                        _topic: topic,
-                        sender,
-                        seq: 0,
-                        short_id,
-                    });
+                    send_states.insert(
+                        node_id,
+                        SendState {
+                            _topic: topic,
+                            sender,
+                            seq: 0,
+                            short_id,
+                        },
+                    );
 
                     // Spawn task to track neighbor count
                     let ev_tx = event_tx.clone();
@@ -448,7 +476,9 @@ async fn handle_action(
         }
 
         NetworkAction::CreateReceive { node_id, link } => {
-            if let Some(old) = recv_states.remove(&node_id) { old.task.abort(); }
+            if let Some(old) = recv_states.remove(&node_id) {
+                old.task.abort();
+            }
             let (parsed, addresses) = match decode_link_with_addresses(&link) {
                 Ok(value) => value,
                 Err(e) => {
@@ -464,7 +494,9 @@ async fn handle_action(
             let gos = gossip.as_ref().unwrap().clone();
             let ev_tx = event_tx.clone();
             let topic = TopicId::from_bytes(parsed.topic);
-            let bootstrap: Vec<PublicKey> = parsed.peers.iter()
+            let bootstrap: Vec<PublicKey> = parsed
+                .peers
+                .iter()
                 .filter_map(|p| PublicKey::from_bytes(&p.id).ok())
                 .collect();
             // Keep the manager action loop responsive while the peer connects.
@@ -475,9 +507,13 @@ async fn handle_action(
                     match tokio::time::timeout(
                         std::time::Duration::from_secs(15),
                         ep.connect(addr, GOSSIP_ALPN),
-                    ).await {
+                    )
+                    .await
+                    {
                         Ok(Ok(_connection)) => {
-                            eprintln!("[patchwork-network] receiver node {node_id}: connected to bootstrap");
+                            eprintln!(
+                                "[patchwork-network] receiver node {node_id}: connected to bootstrap"
+                            );
                             break;
                         }
                         Ok(Err(e)) => eprintln!("[patchwork-network] bootstrap dial error: {e}"),
@@ -488,20 +524,26 @@ async fn handle_action(
                 match tokio::time::timeout(
                     std::time::Duration::from_secs(20),
                     gos.subscribe_and_join(topic, bootstrap),
-                ).await {
+                )
+                .await
+                {
                     Ok(Ok(gossip_topic)) => {
-                        eprintln!("[patchwork-network] receiver node {node_id}: joined gossip topic");
+                        eprintln!(
+                            "[patchwork-network] receiver node {node_id}: joined gossip topic"
+                        );
                         let (_sender, receiver) = gossip_topic.split();
                         recv_loop(node_id, receiver, ev_tx).await;
                     }
                     Ok(Err(e)) => {
                         let _ = ev_tx.try_send(NetworkEvent::Error {
-                            node_id, error: format!("Failed to join topic: {e}"),
+                            node_id,
+                            error: format!("Failed to join topic: {e}"),
                         });
                     }
                     Err(_) => {
                         let _ = ev_tx.try_send(NetworkEvent::Error {
-                            node_id, error: "Timed out joining gossip topic".to_string(),
+                            node_id,
+                            error: "Timed out joining gossip topic".to_string(),
                         });
                     }
                 }
@@ -511,7 +553,9 @@ async fn handle_action(
 
         NetworkAction::DestroyNode { node_id } => {
             send_states.remove(&node_id);
-            if let Some(old) = recv_states.remove(&node_id) { old.task.abort(); }
+            if let Some(old) = recv_states.remove(&node_id) {
+                old.task.abort();
+            }
         }
     }
 }
@@ -528,11 +572,17 @@ async fn peer_tracker(
             Event::NeighborUp(_) => {
                 eprintln!("[patchwork-network] sender node {node_id}: neighbor connected");
                 peer_count += 1;
-                let _ = event_tx.try_send(NetworkEvent::SendStatus { node_id, peers: peer_count });
+                let _ = event_tx.try_send(NetworkEvent::SendStatus {
+                    node_id,
+                    peers: peer_count,
+                });
             }
             Event::NeighborDown(_) => {
                 peer_count = peer_count.saturating_sub(1);
-                let _ = event_tx.try_send(NetworkEvent::SendStatus { node_id, peers: peer_count });
+                let _ = event_tx.try_send(NetworkEvent::SendStatus {
+                    node_id,
+                    peers: peer_count,
+                });
             }
             _ => {}
         }
@@ -558,10 +608,9 @@ async fn recv_loop(
     }
 }
 
-async fn init_iroh() -> Result<(Endpoint, Gossip, iroh::protocol::Router), Box<dyn std::error::Error>> {
-    let endpoint = Endpoint::builder(presets::N0)
-        .bind()
-        .await?;
+async fn init_iroh()
+-> Result<(Endpoint, Gossip, iroh::protocol::Router), Box<dyn std::error::Error>> {
+    let endpoint = Endpoint::builder(presets::N0).bind().await?;
 
     let gossip = Gossip::builder().spawn(endpoint.clone());
 
@@ -570,12 +619,11 @@ async fn init_iroh() -> Result<(Endpoint, Gossip, iroh::protocol::Router), Box<d
         .spawn();
 
     // Wait for relay connection with a timeout — don't block link generation
-    match tokio::time::timeout(
-        std::time::Duration::from_secs(10),
-        endpoint.online(),
-    ).await {
+    match tokio::time::timeout(std::time::Duration::from_secs(10), endpoint.online()).await {
         Ok(()) => eprintln!("[patchwork-network] endpoint online"),
-        Err(_) => eprintln!("[patchwork-network] endpoint online wait timed out; peer connectivity may be unavailable"),
+        Err(_) => eprintln!(
+            "[patchwork-network] endpoint online wait timed out; peer connectivity may be unavailable"
+        ),
     }
 
     Ok((endpoint, gossip, router))
@@ -592,9 +640,18 @@ mod tests {
             topic: [42u8; 32],
             peers: vec![PeerInfo { id: [7u8; 32] }],
             schema: vec![
-                PortSchema { name: "x".into(), kind: PortSchemaKind::Float },
-                PortSchema { name: "msg".into(), kind: PortSchemaKind::Text },
-                PortSchema { name: "img".into(), kind: PortSchemaKind::Image },
+                PortSchema {
+                    name: "x".into(),
+                    kind: PortSchemaKind::Float,
+                },
+                PortSchema {
+                    name: "msg".into(),
+                    kind: PortSchemaKind::Text,
+                },
+                PortSchema {
+                    name: "img".into(),
+                    kind: PortSchemaKind::Image,
+                },
             ],
             label: "test node".into(),
         };
@@ -617,15 +674,18 @@ mod tests {
         assert_eq!(decoded.label, "test node");
     }
 
-
     #[test]
     fn link_v2_roundtrip_with_addresses() {
         let secret = SecretKey::from_bytes(&rand::random::<[u8; 32]>());
         let addr = EndpointAddr::new(secret.public());
         let link = PatchworkLink {
-            version: 2, topic: [9; 32],
-            peers: vec![PeerInfo { id: *addr.id.as_bytes() }],
-            schema: vec![], label: "v2".into(),
+            version: 2,
+            topic: [9; 32],
+            peers: vec![PeerInfo {
+                id: *addr.id.as_bytes(),
+            }],
+            schema: vec![],
+            label: "v2".into(),
         };
         let encoded = encode_link_v2(&link, vec![addr.clone()]);
         let (decoded, addresses) = decode_link_with_addresses(&encoded).unwrap();
@@ -647,7 +707,10 @@ mod tests {
             version: 1,
             topic: [0u8; 32],
             peers: vec![],
-            schema: vec![PortSchema { name: "val".into(), kind: PortSchemaKind::Float }],
+            schema: vec![PortSchema {
+                name: "val".into(),
+                kind: PortSchemaKind::Float,
+            }],
             label: String::new(),
         };
         let encoded = encode_link(&link);
@@ -665,7 +728,10 @@ mod tests {
                 NetPort::Float(3.14),
                 NetPort::Text("hello".into()),
                 NetPort::None,
-                NetPort::Image { format: 0, data: vec![0xFF, 0xD8] },
+                NetPort::Image {
+                    format: 0,
+                    data: vec![0xFF, 0xD8],
+                },
             ],
         };
 
@@ -701,7 +767,10 @@ mod tests {
         // Send a CreateSend action
         manager.process(vec![NetworkAction::CreateSend {
             node_id: 42,
-            schema: vec![PortSchema { name: "x".into(), kind: PortSchemaKind::Float }],
+            schema: vec![PortSchema {
+                name: "x".into(),
+                kind: PortSchemaKind::Float,
+            }],
             secret_key_hex: None,
             label: "test".into(),
         }]);
@@ -716,7 +785,11 @@ mod tests {
             for event in events {
                 match event {
                     NetworkEvent::LinkReady { node_id, link, .. } => {
-                        eprintln!("Got LinkReady for node {}: {}", node_id, &link[..50.min(link.len())]);
+                        eprintln!(
+                            "Got LinkReady for node {}: {}",
+                            node_id,
+                            &link[..50.min(link.len())]
+                        );
                         assert_eq!(node_id, 42);
                         assert!(link.starts_with("patchwork://"));
                         got_link = true;
@@ -735,7 +808,11 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
 
-        assert!(got_link, "Should have received LinkReady (got_error={}, msg={})", got_error, error_msg);
+        assert!(
+            got_link,
+            "Should have received LinkReady (got_error={}, msg={})",
+            got_error, error_msg
+        );
     }
 
     #[test]
@@ -744,7 +821,10 @@ mod tests {
         let sender_mgr = NetworkManager::new();
         sender_mgr.process(vec![NetworkAction::CreateSend {
             node_id: 1,
-            schema: vec![PortSchema { name: "x".into(), kind: PortSchemaKind::Float }],
+            schema: vec![PortSchema {
+                name: "x".into(),
+                kind: PortSchemaKind::Float,
+            }],
             secret_key_hex: None,
             label: "test".into(),
         }]);
@@ -758,11 +838,17 @@ mod tests {
                     link = l;
                 }
             }
-            if !link.is_empty() { break; }
+            if !link.is_empty() {
+                break;
+            }
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
         assert!(!link.is_empty(), "Sender should produce a link");
-        eprintln!("[test] Got link: {}...{}", &link[..30], &link[link.len()-10..]);
+        eprintln!(
+            "[test] Got link: {}...{}",
+            &link[..30],
+            &link[link.len() - 10..]
+        );
 
         // Receiver
         let receiver_mgr = NetworkManager::new();
@@ -777,13 +863,20 @@ mod tests {
 
         // Drain events to see if receiver got anything
         let recv_events: Vec<_> = receiver_mgr.poll().into_iter().collect();
-        eprintln!("[test] Receiver events after connect wait: {}", recv_events.len());
+        eprintln!(
+            "[test] Receiver events after connect wait: {}",
+            recv_events.len()
+        );
         for ev in &recv_events {
             match ev {
                 NetworkEvent::Error { error, .. } => eprintln!("[test]   Error: {}", error),
-                NetworkEvent::Received { values, .. } => eprintln!("[test]   Received {} values", values.len()),
+                NetworkEvent::Received { values, .. } => {
+                    eprintln!("[test]   Received {} values", values.len())
+                }
                 NetworkEvent::LinkReady { .. } => eprintln!("[test]   LinkReady"),
-                NetworkEvent::SendStatus { peers, .. } => eprintln!("[test]   SendStatus: {} peers", peers),
+                NetworkEvent::SendStatus { peers, .. } => {
+                    eprintln!("[test]   SendStatus: {} peers", peers)
+                }
             }
         }
 
@@ -792,7 +885,9 @@ mod tests {
         eprintln!("[test] Sender events: {}", sender_events.len());
         for ev in &sender_events {
             match ev {
-                NetworkEvent::SendStatus { peers, .. } => eprintln!("[test]   SendStatus: {} peers", peers),
+                NetworkEvent::SendStatus { peers, .. } => {
+                    eprintln!("[test]   SendStatus: {} peers", peers)
+                }
                 NetworkEvent::Error { error, .. } => eprintln!("[test]   Error: {}", error),
                 _ => {}
             }
@@ -825,7 +920,10 @@ mod tests {
             }
         }
 
-        assert!(received_any, "Receiver should have gotten at least one value");
+        assert!(
+            received_any,
+            "Receiver should have gotten at least one value"
+        );
     }
 
     #[test]
@@ -834,7 +932,10 @@ mod tests {
         let sender_mgr = NetworkManager::new();
         sender_mgr.process(vec![NetworkAction::CreateSend {
             node_id: 1,
-            schema: vec![PortSchema { name: "x".into(), kind: PortSchemaKind::Float }],
+            schema: vec![PortSchema {
+                name: "x".into(),
+                kind: PortSchemaKind::Float,
+            }],
             secret_key_hex: None,
             label: "test".into(),
         }]);
@@ -844,9 +945,13 @@ mod tests {
         let start = std::time::Instant::now();
         while start.elapsed() < std::time::Duration::from_secs(15) {
             for ev in sender_mgr.poll() {
-                if let NetworkEvent::LinkReady { link: l, .. } = ev { link = l; }
+                if let NetworkEvent::LinkReady { link: l, .. } = ev {
+                    link = l;
+                }
             }
-            if !link.is_empty() { break; }
+            if !link.is_empty() {
+                break;
+            }
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
         assert!(!link.is_empty(), "Need link");
@@ -876,15 +981,25 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_secs(2));
 
         let recv_events: Vec<_> = receiver_mgr.poll().into_iter().collect();
-        let received: Vec<_> = recv_events.iter().filter_map(|ev| {
-            if let NetworkEvent::Received { values, .. } = ev { Some(values) } else { None }
-        }).collect();
+        let received: Vec<_> = recv_events
+            .iter()
+            .filter_map(|ev| {
+                if let NetworkEvent::Received { values, .. } = ev {
+                    Some(values)
+                } else {
+                    None
+                }
+            })
+            .collect();
 
         eprintln!("[rapid] received {} messages total", received.len());
         if let Some(last) = received.last() {
             eprintln!("[rapid] last value: {:?}", last);
         }
 
-        assert!(!received.is_empty(), "Should receive values during rapid send");
+        assert!(
+            !received.is_empty(),
+            "Should receive values during rapid send"
+        );
     }
 }

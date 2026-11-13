@@ -8,14 +8,18 @@ impl super::PatchworkApp {
         let middle_down = ctx.input(|i| i.pointer.button_down(egui::PointerButton::Middle));
         let modifiers = ctx.input(|i| i.modifiers);
 
-        let on_node = ctx.pointer_latest_pos().map(|p| {
-            self.node_rects.values().any(|r| r.contains(p))
-        }).unwrap_or(false);
+        let on_node = ctx
+            .pointer_latest_pos()
+            .map(|p| self.node_rects.values().any(|r| r.contains(p)))
+            .unwrap_or(false);
 
-        let dragging_node = ctx.pointer_latest_pos().map(|p| {
-            ctx.input(|i| i.pointer.button_down(egui::PointerButton::Primary))
-                && self.node_rects.values().any(|r| r.contains(p))
-        }).unwrap_or(false);
+        let dragging_node = ctx
+            .pointer_latest_pos()
+            .map(|p| {
+                ctx.input(|i| i.pointer.button_down(egui::PointerButton::Primary))
+                    && self.node_rects.values().any(|r| r.contains(p))
+            })
+            .unwrap_or(false);
 
         if self.show_context_menu {
             self.panning = false;
@@ -39,31 +43,36 @@ impl super::PatchworkApp {
         //       (not per-node) so panning still works on the rest of a
         //       node's body — header, padding, port labels around the
         //       scroll region.
-        let pointer_over_scroll_surface = ctx.pointer_latest_pos().map(|p| {
-            // (1) + (2): layer-order heuristic for popups / menus. The
-            // Add Node menu uses egui::Window (Middle), so we distinguish
-            // it via `show_node_menu` — while the menu is visible ANY
-            // non-background layer hover is treated as "on menu" (user is
-            // in menu-interaction mode; panning the canvas underneath
-            // would be actively confusing).
-            if let Some(layer) = ctx.layer_id_at(p) {
-                if self.show_node_menu && layer.order != egui::Order::Background {
-                    return true;
+        let pointer_over_scroll_surface = ctx
+            .pointer_latest_pos()
+            .map(|p| {
+                // (1) + (2): layer-order heuristic for popups / menus. The
+                // Add Node menu uses egui::Window (Middle), so we distinguish
+                // it via `show_node_menu` — while the menu is visible ANY
+                // non-background layer hover is treated as "on menu" (user is
+                // in menu-interaction mode; panning the canvas underneath
+                // would be actively confusing).
+                if let Some(layer) = ctx.layer_id_at(p) {
+                    if self.show_node_menu && layer.order != egui::Order::Background {
+                        return true;
+                    }
+                    if matches!(
+                        layer.order,
+                        egui::Order::Foreground | egui::Order::Tooltip | egui::Order::Debug
+                    ) {
+                        return true;
+                    }
                 }
-                if matches!(
-                    layer.order,
-                    egui::Order::Foreground | egui::Order::Tooltip | egui::Order::Debug
-                ) {
-                    return true;
-                }
-            }
 
-            // (3): inside a registered ScrollArea inner-rect.
-            crate::nodes::pointer_in_scroll_rect(p)
-        }).unwrap_or(false);
+                // (3): inside a registered ScrollArea inner-rect.
+                crate::nodes::pointer_in_scroll_rect(p)
+            })
+            .unwrap_or(false);
 
         // Pan: delta is logical, multiply by zoom to get screen pixels for offset
-        if middle_down || (space_held && ctx.input(|i| i.pointer.button_down(egui::PointerButton::Primary))) {
+        if middle_down
+            || (space_held && ctx.input(|i| i.pointer.button_down(egui::PointerButton::Primary)))
+        {
             self.panning = true;
             let delta = ctx.input(|i| i.pointer.delta());
             self.canvas_offset += delta * z;
@@ -139,9 +148,12 @@ impl super::PatchworkApp {
         // No conversion needed — screen rect is already in screen pixels
         let real_w = screen.width();
         let real_h = screen.height();
-        let (mut min_cx, mut min_cy, mut max_cx, mut max_cy): (f32, f32, f32, f32) = (-boundary, -boundary, boundary, boundary);
+        let (mut min_cx, mut min_cy, mut max_cx, mut max_cy): (f32, f32, f32, f32) =
+            (-boundary, -boundary, boundary, boundary);
         for node in self.graph.nodes.values() {
-            if self.pinned_nodes.contains(&node.id) { continue; }
+            if self.pinned_nodes.contains(&node.id) {
+                continue;
+            }
             min_cx = min_cx.min(node.pos[0] - 200.0);
             min_cy = min_cy.min(node.pos[1] - 200.0);
             max_cx = max_cx.max(node.pos[0] + 400.0);
@@ -189,15 +201,16 @@ impl super::PatchworkApp {
             }
             // Cmd+Shift+S → Save As (always shows dialog)
             // Cmd+Shift+S → Open Save As naming popup
-        if modifiers.shift && ctx.input(|i| i.key_pressed(egui::Key::S)) {
-             self.save_as_name = self.project_path
-            .as_ref()
-            .and_then(|p| std::path::Path::new(p).file_name())
-            .map(|name| name.to_string_lossy().to_string())
-            .unwrap_or_else(|| "my-project".to_string());
+            if modifiers.shift && ctx.input(|i| i.key_pressed(egui::Key::S)) {
+                self.save_as_name = self
+                    .project_path
+                    .as_ref()
+                    .and_then(|p| std::path::Path::new(p).file_name())
+                    .map(|name| name.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "my-project".to_string());
 
-            self.save_as_open = true;
-        }
+                self.save_as_open = true;
+            }
             // // Cmd+Z → Undo
             // if !modifiers.shift && ctx.input(|i| i.key_pressed(egui::Key::Z)) {
             //     self.perform_undo();
@@ -209,7 +222,10 @@ impl super::PatchworkApp {
         }
 
         // Delete / Backspace → delete selected nodes (when no text field focused)
-        if no_focus && ctx.input(|i| i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace)) {
+        if no_focus
+            && ctx
+                .input(|i| i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace))
+        {
             if !self.selected_nodes.is_empty() {
                 self.push_undo();
                 let to_delete: Vec<_> = self.selected_nodes.iter().copied().collect();
@@ -236,10 +252,13 @@ impl super::PatchworkApp {
 
     /// Node interaction — pointer and node_rects are in screen pixel space.
     pub(super) fn handle_canvas_interaction(&mut self, ctx: &egui::Context) {
-    // Double-click to add node only when Save As is closed
-    if !self.save_as_open
-        && ctx.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary))
-    {
+        // Double-click to add node only when Save As is closed
+        if !self.save_as_open
+            && ctx.input(|i| {
+                i.pointer
+                    .button_double_clicked(egui::PointerButton::Primary)
+            })
+        {
             if let Some(pos) = ctx.pointer_latest_pos() {
                 if !self.node_rects.values().any(|r| r.contains(pos)) {
                     self.show_node_menu = true;
@@ -252,8 +271,8 @@ impl super::PatchworkApp {
         // Right-click on empty canvas → canvas context menu
         // Disabled while Save As modal is open
         if !self.save_as_open
-        && ctx.input(|i| i.pointer.button_clicked(egui::PointerButton::Secondary))
-            {
+            && ctx.input(|i| i.pointer.button_clicked(egui::PointerButton::Secondary))
+        {
             if let Some(pos) = ctx.pointer_latest_pos() {
                 if !self.node_rects.values().any(|r| r.contains(pos)) && !self.show_context_menu {
                     self.context_menu_node = None; // No node → canvas menu
@@ -268,7 +287,10 @@ impl super::PatchworkApp {
         let primary_down = ctx.input(|i| i.pointer.button_down(egui::PointerButton::Primary));
         let primary_pressed = ctx.input(|i| i.pointer.button_pressed(egui::PointerButton::Primary));
         let primary_released = ctx.input(|i| i.pointer.any_released());
-        let on_empty = ctx.pointer_latest_pos().map(|p| !self.node_rects.values().any(|r| r.contains(p))).unwrap_or(false);
+        let on_empty = ctx
+            .pointer_latest_pos()
+            .map(|p| !self.node_rects.values().any(|r| r.contains(p)))
+            .unwrap_or(false);
         let not_dragging_wire = self.dragging_from.is_none();
         let not_panning = !self.panning;
         let not_menu = !self.show_node_menu && !self.show_context_menu;
@@ -297,12 +319,16 @@ impl super::PatchworkApp {
                     let shift = ctx.input(|i| i.modifiers.shift);
                     // Only select if drag was meaningful (> 4px), otherwise treat as click-deselect
                     if sel_rect.width() > 4.0 || sel_rect.height() > 4.0 {
-                        let hits: std::collections::HashSet<NodeId> = self.node_rects.iter()
+                        let hits: std::collections::HashSet<NodeId> = self
+                            .node_rects
+                            .iter()
                             .filter(|(_, rect)| sel_rect.intersects(**rect))
                             .map(|(id, _)| *id)
                             .collect();
                         if shift {
-                            for id in hits { self.selected_nodes.insert(id); }
+                            for id in hits {
+                                self.selected_nodes.insert(id);
+                            }
                         } else {
                             self.selected_nodes = hits;
                         }
@@ -322,10 +348,19 @@ impl super::PatchworkApp {
         if self.dragging_from.is_some() && ctx.input(|i| i.key_pressed(egui::Key::Tab)) {
             if let Some((nid, port, is_output)) = self.dragging_from {
                 // Get the port kind for filtering
-                let port_kind = self.graph.nodes.get(&nid).and_then(|node| {
-                    let defs = if is_output { node.node_type.outputs() } else { node.node_type.inputs() };
-                    defs.get(port).map(|d| d.kind)
-                }).unwrap_or(PortKind::Generic);
+                let port_kind = self
+                    .graph
+                    .nodes
+                    .get(&nid)
+                    .and_then(|node| {
+                        let defs = if is_output {
+                            node.node_type.outputs()
+                        } else {
+                            node.node_type.inputs()
+                        };
+                        defs.get(port).map(|d| d.kind)
+                    })
+                    .unwrap_or(PortKind::Generic);
 
                 self.wire_menu_context = Some((nid, port, is_output, port_kind));
                 self.show_node_menu = true;
@@ -338,17 +373,17 @@ impl super::PatchworkApp {
         // menu just above), when a text field has focus (so typing in a search
         // box / DragValue doesn't pop the picker), and when any menu is already
         // showing (so the menu's own Enter-to-select still works).
-       if !self.save_as_open
+        if !self.save_as_open
             && !self.show_node_menu
             && !self.show_context_menu
             && self.dragging_from.is_none()
             && !ctx.wants_keyboard_input()
         {
-            let kb_open = ctx.input(|i| {
-                i.key_pressed(egui::Key::Enter) || i.key_pressed(egui::Key::Tab)
-            });
+            let kb_open =
+                ctx.input(|i| i.key_pressed(egui::Key::Enter) || i.key_pressed(egui::Key::Tab));
             if kb_open {
-                let pos = ctx.pointer_latest_pos()
+                let pos = ctx
+                    .pointer_latest_pos()
                     .unwrap_or_else(|| ctx.screen_rect().center());
                 self.show_node_menu = true;
                 self.node_menu_pos = pos;
@@ -360,7 +395,9 @@ impl super::PatchworkApp {
             self.node_menu_search.clear();
             self.wire_menu_context = None;
         }
-        if self.show_node_menu && ctx.input(|i| i.pointer.button_clicked(egui::PointerButton::Secondary)) {
+        if self.show_node_menu
+            && ctx.input(|i| i.pointer.button_clicked(egui::PointerButton::Secondary))
+        {
             self.show_node_menu = false;
             self.node_menu_search.clear();
             self.wire_menu_context = None;
@@ -386,10 +423,11 @@ impl super::PatchworkApp {
             self.perform_undo();
         }
         // Redo: Ctrl+Y or Ctrl+Shift+Z
-        if cmd && !text_focused && (
-            ctx.input(|i| i.key_pressed(egui::Key::Y))
-             || (modifiers.shift && ctx.input(|i| i.key_pressed(egui::Key::Z)))
-        ) {
+        if cmd
+            && !text_focused
+            && (ctx.input(|i| i.key_pressed(egui::Key::Y))
+                || (modifiers.shift && ctx.input(|i| i.key_pressed(egui::Key::Z))))
+        {
             self.perform_redo();
         }
 
@@ -430,7 +468,10 @@ impl super::PatchworkApp {
             self.duplicate_selected();
         }
         // Delete / Backspace = delete selected (only if no text input is focused)
-        if !text_focused && ctx.input(|i| i.key_pressed(egui::Key::Backspace) || i.key_pressed(egui::Key::Delete)) {
+        if !text_focused
+            && ctx
+                .input(|i| i.key_pressed(egui::Key::Backspace) || i.key_pressed(egui::Key::Delete))
+        {
             if let Some(conn_id) = self.selected_connection.take() {
                 if let Some(conn_idx) = self.find_connection_index(&conn_id) {
                     self.push_undo();
@@ -456,29 +497,29 @@ impl super::PatchworkApp {
         }
     }
 
-//     pub(super) fn handle_opt_drag(&mut self, ctx: &egui::Context) {
-//         if let Some(source_id) = self.opt_drag_source {
-//             if self.opt_drag_created.is_none() {
-//                 // Create duplicate at same position
-//                 if let Some(node) = self.graph.nodes.get(&source_id) {
-//                     let nt = node.node_type.clone();
-//                     let pos = node.pos;
-//                     self.push_undo();
-//                     let new_id = self.add_node_selected(ctx, nt, [pos[0] + 30.0, pos[1] + 30.0]);
-//                     crate::system_log::log(&format!(
-//     "opt_drag: created {:?} from {:?}, selected_nodes now = {:?}",
-//     new_id, source_id, self.selected_nodes
-// ));
-//                     self.opt_drag_created = Some(new_id);
-//                 }
-//             }
-//             if ctx.input(|i| i.pointer.any_released()) {
-//                 self.opt_drag_source = None;
-//                 self.opt_drag_created = None;
-//             }
-//         }
-//     }
-pub(super) fn handle_opt_drag(&mut self, ctx: &egui::Context) {
+    //     pub(super) fn handle_opt_drag(&mut self, ctx: &egui::Context) {
+    //         if let Some(source_id) = self.opt_drag_source {
+    //             if self.opt_drag_created.is_none() {
+    //                 // Create duplicate at same position
+    //                 if let Some(node) = self.graph.nodes.get(&source_id) {
+    //                     let nt = node.node_type.clone();
+    //                     let pos = node.pos;
+    //                     self.push_undo();
+    //                     let new_id = self.add_node_selected(ctx, nt, [pos[0] + 30.0, pos[1] + 30.0]);
+    //                     crate::system_log::log(&format!(
+    //     "opt_drag: created {:?} from {:?}, selected_nodes now = {:?}",
+    //     new_id, source_id, self.selected_nodes
+    // ));
+    //                     self.opt_drag_created = Some(new_id);
+    //                 }
+    //             }
+    //             if ctx.input(|i| i.pointer.any_released()) {
+    //                 self.opt_drag_source = None;
+    //                 self.opt_drag_created = None;
+    //             }
+    //         }
+    //     }
+    pub(super) fn handle_opt_drag(&mut self, ctx: &egui::Context) {
         if let Some(source_id) = self.opt_drag_source {
             if self.opt_drag_created.is_none() {
                 // Create the duplicate at the source's exact position; the
@@ -493,17 +534,15 @@ pub(super) fn handle_opt_drag(&mut self, ctx: &egui::Context) {
                     // Anchor the source position and the pointer start so the
                     // duplicate follows the drag 1:1.
                     self.opt_drag_anchor_pos = pos;
-                    self.opt_drag_anchor_ptr = ctx.pointer_latest_pos()
-                        .map(|p| [p.x, p.y]).unwrap_or(pos);
+                    self.opt_drag_anchor_ptr =
+                        ctx.pointer_latest_pos().map(|p| [p.x, p.y]).unwrap_or(pos);
                 }
             }
             // Move the DUPLICATE (not the source) with the pointer. egui keeps
             // the drag bound to the source's widget, so the source stays put
             // and the copy tracks the cursor — leaving the copy as the active,
             // selected node (which add_node_selected already made it).
-            if let (Some(new_id), Some(ptr)) =
-                (self.opt_drag_created, ctx.pointer_latest_pos())
-            {
+            if let (Some(new_id), Some(ptr)) = (self.opt_drag_created, ctx.pointer_latest_pos()) {
                 let zoom = self.canvas_zoom;
                 let dx = (ptr.x - self.opt_drag_anchor_ptr[0]) / zoom;
                 let dy = (ptr.y - self.opt_drag_anchor_ptr[1]) / zoom;
@@ -522,7 +561,9 @@ pub(super) fn handle_opt_drag(&mut self, ctx: &egui::Context) {
     }
     pub(super) fn duplicate_selected(&mut self) {
         let ids: Vec<NodeId> = self.selected_nodes.iter().copied().collect();
-        if ids.is_empty() { return; }
+        if ids.is_empty() {
+            return;
+        }
         self.push_undo();
         let mut new_ids = std::collections::HashSet::new();
         for id in ids {
@@ -537,14 +578,19 @@ pub(super) fn handle_opt_drag(&mut self, ctx: &egui::Context) {
     }
 
     pub(super) fn context_menu(&mut self, ctx: &egui::Context) {
-        if !self.show_context_menu { return; }
+        if !self.show_context_menu {
+            return;
+        }
 
         // Auto-dismiss after 3 seconds if pointer is not over menu
         let now = ctx.input(|i| i.time);
         let elapsed = now - self.context_menu_opened_at;
         let pos = self.context_menu_pos;
         let menu_rect = egui::Rect::from_min_size(pos, egui::vec2(180.0, 280.0));
-        let pointer_on_menu = ctx.pointer_latest_pos().map(|p| menu_rect.contains(p)).unwrap_or(false);
+        let pointer_on_menu = ctx
+            .pointer_latest_pos()
+            .map(|p| menu_rect.contains(p))
+            .unwrap_or(false);
 
         if elapsed > 3.0 && !pointer_on_menu {
             self.show_context_menu = false;
@@ -577,9 +623,15 @@ pub(super) fn handle_opt_drag(&mut self, ctx: &egui::Context) {
                                 let [cr, cg, cb] = node.node_type.color_hint();
                                 let accent = egui::Color32::from_rgb(cr, cg, cb);
                                 ui.horizontal(|ui| {
-                                    ui.label(egui::RichText::new(node.node_type.title()).strong().color(accent));
+                                    ui.label(
+                                        egui::RichText::new(node.node_type.title())
+                                            .strong()
+                                            .color(accent),
+                                    );
                                     let dim = ui.visuals().widgets.noninteractive.fg_stroke.color;
-                                    ui.label(egui::RichText::new(format!("#{}", id)).small().color(dim));
+                                    ui.label(
+                                        egui::RichText::new(format!("#{}", id)).small().color(dim),
+                                    );
                                 });
                                 ui.separator();
                             }
@@ -598,7 +650,8 @@ pub(super) fn handle_opt_drag(&mut self, ctx: &egui::Context) {
                                     let nt = node.node_type.clone();
                                     let p = node.pos;
                                     self.push_undo();
-                                    let _ = self.add_node_selected(ctx, nt, [p[0] + 30.0, p[1] + 30.0]);
+                                    let _ =
+                                        self.add_node_selected(ctx, nt, [p[0] + 30.0, p[1] + 30.0]);
                                 }
                             }
                             keep_open = false;
@@ -615,15 +668,19 @@ pub(super) fn handle_opt_drag(&mut self, ctx: &egui::Context) {
                                 self.push_undo();
                                 if is_pinned {
                                     if let Some(node) = self.graph.nodes.get_mut(&id) {
-                                        let cx = (node.pos[0] - self.canvas_offset.x) / self.canvas_zoom;
-                                        let cy = (node.pos[1] - self.canvas_offset.y) / self.canvas_zoom;
+                                        let cx =
+                                            (node.pos[0] - self.canvas_offset.x) / self.canvas_zoom;
+                                        let cy =
+                                            (node.pos[1] - self.canvas_offset.y) / self.canvas_zoom;
                                         node.pos = [cx, cy];
                                     }
                                     self.pinned_nodes.remove(&id);
                                 } else {
                                     if let Some(node) = self.graph.nodes.get_mut(&id) {
-                                        let sx = node.pos[0] * self.canvas_zoom + self.canvas_offset.x;
-                                        let sy = node.pos[1] * self.canvas_zoom + self.canvas_offset.y;
+                                        let sx =
+                                            node.pos[0] * self.canvas_zoom + self.canvas_offset.x;
+                                        let sy =
+                                            node.pos[1] * self.canvas_zoom + self.canvas_offset.y;
                                         node.pos = [sx, sy];
                                     }
                                     self.pinned_nodes.insert(id);
@@ -634,7 +691,10 @@ pub(super) fn handle_opt_drag(&mut self, ctx: &egui::Context) {
                         ui.separator();
                         // ── Bypass / Enable toggle ─────────────────────
                         if let Some(id) = self.context_menu_node {
-                            let is_bypassed = self.graph.nodes.get(&id)
+                            let is_bypassed = self
+                                .graph
+                                .nodes
+                                .get(&id)
                                 .map(|n| n.bypassed)
                                 .unwrap_or(false);
                             let (icon, label) = if is_bypassed {
@@ -667,10 +727,16 @@ pub(super) fn handle_opt_drag(&mut self, ctx: &egui::Context) {
                         } else {
                             "Delete".to_string()
                         };
-                        if ui.add(egui::Button::new(
-                            egui::RichText::new(format!("{} {}", icons::TRASH, del_label))
-                                .color(egui::Color32::from_rgb(255, 100, 100))
-                        ).frame(false)).clicked() {
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    egui::RichText::new(format!("{} {}", icons::TRASH, del_label))
+                                        .color(egui::Color32::from_rgb(255, 100, 100)),
+                                )
+                                .frame(false),
+                            )
+                            .clicked()
+                        {
                             self.push_undo();
                             let to_delete: Vec<NodeId> = if self.selected_nodes.len() > 1 {
                                 self.selected_nodes.drain().collect()
@@ -722,7 +788,11 @@ pub(super) fn handle_opt_drag(&mut self, ctx: &egui::Context) {
                                 if let Some(nt) = self.clipboard.clone() {
                                     self.push_undo();
                                     let off_e = self.canvas_offset / self.canvas_zoom;
-                                    let _ = self.add_node_selected(ctx, nt, [pos.x - off_e.x + 20.0, pos.y - off_e.y + 20.0]);
+                                    let _ = self.add_node_selected(
+                                        ctx,
+                                        nt,
+                                        [pos.x - off_e.x + 20.0, pos.y - off_e.y + 20.0],
+                                    );
                                 }
                                 keep_open = false;
                             }
@@ -740,15 +810,20 @@ pub(super) fn handle_opt_drag(&mut self, ctx: &egui::Context) {
                         ui.separator();
                         if icon_menu_item(ui, icons::PALETTE, "Theme").clicked() {
                             // If a Theme node exists, scroll to it; otherwise create one
-                            let existing = self.graph.nodes.iter()
+                            let existing = self
+                                .graph
+                                .nodes
+                                .iter()
                                 .find(|(_, n)| matches!(n.node_type, NodeType::Theme { .. }))
                                 .map(|(&id, _)| id);
                             if let Some(theme_id) = existing {
                                 // Scroll canvas to center on the existing Theme node
                                 if let Some(node) = self.graph.nodes.get(&theme_id) {
                                     let screen_center = ctx.screen_rect().center();
-                                    self.canvas_offset.x = screen_center.x - node.pos[0] * self.canvas_zoom;
-                                    self.canvas_offset.y = screen_center.y - node.pos[1] * self.canvas_zoom;
+                                    self.canvas_offset.x =
+                                        screen_center.x - node.pos[0] * self.canvas_zoom;
+                                    self.canvas_offset.y =
+                                        screen_center.y - node.pos[1] * self.canvas_zoom;
                                 }
                                 self.selected_nodes.clear();
                                 self.selected_nodes.insert(theme_id);
@@ -756,15 +831,31 @@ pub(super) fn handle_opt_drag(&mut self, ctx: &egui::Context) {
                                 // Create new Theme node at click position
                                 let off_e = self.canvas_offset / self.canvas_zoom;
                                 let accent = crate::nodes::theme::random_accent();
-                                let _ = self.add_node_selected(ctx, NodeType::Theme {
-                                    dark_mode: true, accent, font_size: 14.0,
-                                    bg_color: [20, 20, 20], text_color: [220, 220, 220],
-                                    window_bg: [24, 24, 24], window_alpha: 240,
-                                    grid_color: [28, 28, 28], grid_style: 2, wire_style: 0,
-                                    wiggle_gravity: 0.0, wiggle_range: 1.0, wiggle_speed: 1.0, wiggle_signal: 0.0,
-                                    rounding: 16.0, spacing: 4.0, use_hsl: false,
-                                    wire_thickness: 6.0, background_path: String::new(),
-                                }, [pos.x - off_e.x, pos.y - off_e.y]);
+                                let _ = self.add_node_selected(
+                                    ctx,
+                                    NodeType::Theme {
+                                        dark_mode: true,
+                                        accent,
+                                        font_size: 14.0,
+                                        bg_color: [20, 20, 20],
+                                        text_color: [220, 220, 220],
+                                        window_bg: [24, 24, 24],
+                                        window_alpha: 240,
+                                        grid_color: [28, 28, 28],
+                                        grid_style: 2,
+                                        wire_style: 0,
+                                        wiggle_gravity: 0.0,
+                                        wiggle_range: 1.0,
+                                        wiggle_speed: 1.0,
+                                        wiggle_signal: 0.0,
+                                        rounding: 16.0,
+                                        spacing: 4.0,
+                                        use_hsl: false,
+                                        wire_thickness: 6.0,
+                                        background_path: String::new(),
+                                    },
+                                    [pos.x - off_e.x, pos.y - off_e.y],
+                                );
                             }
                             keep_open = false;
                         }
@@ -777,9 +868,10 @@ pub(super) fn handle_opt_drag(&mut self, ctx: &egui::Context) {
             self.context_menu_node = None;
         }
         // Click elsewhere to close
-        if ctx.input(|i| i.pointer.button_clicked(egui::PointerButton::Primary)
-            || i.pointer.button_clicked(egui::PointerButton::Secondary))
-        {
+        if ctx.input(|i| {
+            i.pointer.button_clicked(egui::PointerButton::Primary)
+                || i.pointer.button_clicked(egui::PointerButton::Secondary)
+        }) {
             if let Some(ptr) = ctx.pointer_latest_pos() {
                 if !menu_rect.contains(ptr) {
                     self.show_context_menu = false;
@@ -791,17 +883,25 @@ pub(super) fn handle_opt_drag(&mut self, ctx: &egui::Context) {
     }
 
     pub(super) fn fit_all_nodes(&mut self, ctx: &egui::Context) {
-        if self.graph.nodes.is_empty() { return; }
-        let mut min_x = f32::MAX; let mut min_y = f32::MAX;
-        let mut max_x = f32::MIN; let mut max_y = f32::MIN;
+        if self.graph.nodes.is_empty() {
+            return;
+        }
+        let mut min_x = f32::MAX;
+        let mut min_y = f32::MAX;
+        let mut max_x = f32::MIN;
+        let mut max_y = f32::MIN;
         for node in self.graph.nodes.values() {
-            if self.pinned_nodes.contains(&node.id) { continue; }
+            if self.pinned_nodes.contains(&node.id) {
+                continue;
+            }
             min_x = min_x.min(node.pos[0]);
             min_y = min_y.min(node.pos[1]);
             max_x = max_x.max(node.pos[0] + 200.0);
             max_y = max_y.max(node.pos[1] + 150.0);
         }
-        if min_x >= max_x { return; }
+        if min_x >= max_x {
+            return;
+        }
         let screen = ctx.screen_rect();
         let margin = 80.0;
         // Screen rect is now in real pixels (no zoom factor applied)
@@ -821,7 +921,5 @@ pub(super) fn handle_opt_drag(&mut self, ctx: &egui::Context) {
 
 /// Menu item with Phosphor icon + label
 fn icon_menu_item(ui: &mut egui::Ui, icon: &str, label: &str) -> egui::Response {
-    ui.add(egui::Button::new(
-        egui::RichText::new(format!("{}  {}", icon, label))
-    ).frame(false))
+    ui.add(egui::Button::new(egui::RichText::new(format!("{}  {}", icon, label))).frame(false))
 }

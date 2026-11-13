@@ -1,13 +1,15 @@
-use crate::graph::{PortDef, PortKind, PortValue, Graph};
+use crate::graph::{Graph, PortDef, PortKind, PortValue};
 use crate::node_trait::{NodeBehavior, RenderContext};
-use serde::{Serialize, Deserialize};
 use eframe::egui;
+use serde::{Deserialize, Serialize};
 
 // ── Case-insensitive replace helper ──────────────────────────────────────────
 
 fn case_insensitive_replace(text: &str, search: &str, replace: &str) -> String {
-    if search.is_empty() { return text.to_string(); }
-    let lo_text   = text.to_lowercase();
+    if search.is_empty() {
+        return text.to_string();
+    }
+    let lo_text = text.to_lowercase();
     let lo_search = search.to_lowercase();
     let mut result = String::with_capacity(text.len());
     let mut start = 0;
@@ -28,30 +30,35 @@ fn get_text_input(inputs: &[PortValue], port: usize, default: &str) -> String {
     }
 }
 
-
 // ── Node struct ───────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TextOpsNode {
-    #[serde(default)] pub search_buf:     String,
-    #[serde(default)] pub replace_buf:    String,
-    #[serde(default)] pub case_sensitive: bool,
+    #[serde(default)]
+    pub search_buf: String,
+    #[serde(default)]
+    pub replace_buf: String,
+    #[serde(default)]
+    pub case_sensitive: bool,
 
     // Runtime only (for port preview in render)
-    #[serde(skip)] pub last_count:  usize,
-    #[serde(skip)] pub last_result: String,
-    #[serde(skip)] pub last_found:  bool,
+    #[serde(skip)]
+    pub last_count: usize,
+    #[serde(skip)]
+    pub last_result: String,
+    #[serde(skip)]
+    pub last_found: bool,
 }
 
 impl Default for TextOpsNode {
     fn default() -> Self {
         Self {
-            search_buf:     String::new(),
-            replace_buf:    String::new(),
+            search_buf: String::new(),
+            replace_buf: String::new(),
             case_sensitive: false,
-            last_count:     0,
-            last_result:    String::new(),
-            last_found:     false,
+            last_count: 0,
+            last_result: String::new(),
+            last_found: false,
         }
     }
 }
@@ -59,16 +66,26 @@ impl Default for TextOpsNode {
 // ── NodeBehavior ──────────────────────────────────────────────────────────────
 
 impl NodeBehavior for TextOpsNode {
-    fn title(&self)        -> &str        { "Text Ops" }
-    fn type_tag(&self)     -> &str        { "text_ops" }
-    fn color_hint(&self)   -> [u8; 3]     { [140, 100, 220] }
-    fn inline_ports(&self) -> bool        { true }
-    fn min_width(&self)    -> Option<f32> { Some(260.0) }
+    fn title(&self) -> &str {
+        "Text Ops"
+    }
+    fn type_tag(&self) -> &str {
+        "text_ops"
+    }
+    fn color_hint(&self) -> [u8; 3] {
+        [140, 100, 220]
+    }
+    fn inline_ports(&self) -> bool {
+        true
+    }
+    fn min_width(&self) -> Option<f32> {
+        Some(260.0)
+    }
 
     fn inputs(&self) -> Vec<PortDef> {
         vec![
-            PortDef::new("Text",    PortKind::Text),
-            PortDef::new("Search",  PortKind::Text),
+            PortDef::new("Text", PortKind::Text),
+            PortDef::new("Search", PortKind::Text),
             PortDef::new("Replace", PortKind::Text),
         ]
     }
@@ -76,14 +93,14 @@ impl NodeBehavior for TextOpsNode {
     fn outputs(&self) -> Vec<PortDef> {
         vec![
             PortDef::new("Result", PortKind::Text),
-            PortDef::new("Found",  PortKind::Trigger),
-            PortDef::new("Count",  PortKind::Number),
+            PortDef::new("Found", PortKind::Trigger),
+            PortDef::new("Count", PortKind::Number),
         ]
     }
 
     fn evaluate(&mut self, inputs: &[PortValue]) -> Vec<(usize, PortValue)> {
-        let text    = get_text_input(inputs, 0, "");
-        let search  = get_text_input(inputs, 1, &self.search_buf.clone());
+        let text = get_text_input(inputs, 0, "");
+        let search = get_text_input(inputs, 1, &self.search_buf.clone());
         let replace = get_text_input(inputs, 2, &self.replace_buf.clone());
 
         let (count, result) = if search.is_empty() {
@@ -93,15 +110,15 @@ impl NodeBehavior for TextOpsNode {
             let r = text.replace(search.as_str(), &replace);
             (c, r)
         } else {
-            let lo_text   = text.to_lowercase();
+            let lo_text = text.to_lowercase();
             let lo_search = search.to_lowercase();
             let c = lo_text.matches(lo_search.as_str()).count();
             let r = case_insensitive_replace(&text, &search, &replace);
             (c, r)
         };
 
-        self.last_count  = count;
-        self.last_found  = count > 0;
+        self.last_count = count;
+        self.last_found = count > 0;
         self.last_result = result.clone();
 
         vec![
@@ -132,17 +149,35 @@ impl NodeBehavior for TextOpsNode {
     }
 
     fn render_with_context(&mut self, ui: &mut egui::Ui, ctx: &mut RenderContext) {
-        let dim   = ui.visuals().widgets.noninteractive.fg_stroke.color;
-        let blue  = egui::Color32::from_rgb(80, 170, 255);
+        let dim = ui.visuals().widgets.noninteractive.fg_stroke.color;
+        let blue = egui::Color32::from_rgb(80, 170, 255);
 
-        let text_wired    = ctx.connections.iter().any(|c| c.to_node == ctx.node_id && c.to_port == 0);
-        let search_wired  = ctx.connections.iter().any(|c| c.to_node == ctx.node_id && c.to_port == 1);
-        let replace_wired = ctx.connections.iter().any(|c| c.to_node == ctx.node_id && c.to_port == 2);
+        let text_wired = ctx
+            .connections
+            .iter()
+            .any(|c| c.to_node == ctx.node_id && c.to_port == 0);
+        let search_wired = ctx
+            .connections
+            .iter()
+            .any(|c| c.to_node == ctx.node_id && c.to_port == 1);
+        let replace_wired = ctx
+            .connections
+            .iter()
+            .any(|c| c.to_node == ctx.node_id && c.to_port == 2);
 
         // ── Text input port ───────────────────────────────────────────────
         ui.horizontal(|ui| {
-            crate::nodes::inline_port_circle(ui, ctx.node_id, 0, true, ctx.connections,
-                ctx.port_positions, ctx.dragging_from, ctx.pending_disconnects, PortKind::Text);
+            crate::nodes::inline_port_circle(
+                ui,
+                ctx.node_id,
+                0,
+                true,
+                ctx.connections,
+                ctx.port_positions,
+                ctx.dragging_from,
+                ctx.pending_disconnects,
+                PortKind::Text,
+            );
             ui.label(egui::RichText::new("Text").small().strong());
             if text_wired {
                 let v = Graph::static_input_value(ctx.connections, ctx.values, ctx.node_id, 0);
@@ -159,8 +194,17 @@ impl NodeBehavior for TextOpsNode {
 
         // ── Search port + case checkbox ───────────────────────────────────
         ui.horizontal(|ui| {
-            crate::nodes::inline_port_circle(ui, ctx.node_id, 1, true, ctx.connections,
-                ctx.port_positions, ctx.dragging_from, ctx.pending_disconnects, PortKind::Text);
+            crate::nodes::inline_port_circle(
+                ui,
+                ctx.node_id,
+                1,
+                true,
+                ctx.connections,
+                ctx.port_positions,
+                ctx.dragging_from,
+                ctx.pending_disconnects,
+                PortKind::Text,
+            );
             ui.label(egui::RichText::new("Search").small().strong());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.checkbox(&mut self.case_sensitive, egui::RichText::new("Aa").small());
@@ -171,7 +215,12 @@ impl NodeBehavior for TextOpsNode {
             let v = Graph::static_input_value(ctx.connections, ctx.values, ctx.node_id, 1);
             if let PortValue::Text(ref t) = v {
                 let preview = crate::nodes::truncate_chars(t, 28);
-                ui.label(egui::RichText::new(format!("  {}", preview)).small().monospace().color(blue));
+                ui.label(
+                    egui::RichText::new(format!("  {}", preview))
+                        .small()
+                        .monospace()
+                        .color(blue),
+                );
             }
         } else {
             ui.add(
@@ -184,8 +233,17 @@ impl NodeBehavior for TextOpsNode {
 
         // ── Replace port ──────────────────────────────────────────────────
         ui.horizontal(|ui| {
-            crate::nodes::inline_port_circle(ui, ctx.node_id, 2, true, ctx.connections,
-                ctx.port_positions, ctx.dragging_from, ctx.pending_disconnects, PortKind::Text);
+            crate::nodes::inline_port_circle(
+                ui,
+                ctx.node_id,
+                2,
+                true,
+                ctx.connections,
+                ctx.port_positions,
+                ctx.dragging_from,
+                ctx.pending_disconnects,
+                PortKind::Text,
+            );
             ui.label(egui::RichText::new("Replace").small().strong());
         });
 
@@ -193,7 +251,12 @@ impl NodeBehavior for TextOpsNode {
             let v = Graph::static_input_value(ctx.connections, ctx.values, ctx.node_id, 2);
             if let PortValue::Text(ref t) = v {
                 let preview = crate::nodes::truncate_chars(t, 28);
-                ui.label(egui::RichText::new(format!("  {}", preview)).small().monospace().color(blue));
+                ui.label(
+                    egui::RichText::new(format!("  {}", preview))
+                        .small()
+                        .monospace()
+                        .color(blue),
+                );
             }
         } else {
             ui.add(
@@ -212,19 +275,44 @@ impl NodeBehavior for TextOpsNode {
         } else {
             crate::nodes::truncate_chars(&self.last_result, 18)
         };
-        crate::nodes::output_port_row(ui, "Result", &result_preview,
-            ctx.node_id, 0, ctx.port_positions, ctx.dragging_from,
-            ctx.connections, ctx.pending_disconnects, PortKind::Text);
+        crate::nodes::output_port_row(
+            ui,
+            "Result",
+            &result_preview,
+            ctx.node_id,
+            0,
+            ctx.port_positions,
+            ctx.dragging_from,
+            ctx.connections,
+            ctx.pending_disconnects,
+            PortKind::Text,
+        );
 
-        crate::nodes::output_port_row(ui, "Found",
+        crate::nodes::output_port_row(
+            ui,
+            "Found",
             if self.last_found { "1" } else { "0" },
-            ctx.node_id, 1, ctx.port_positions, ctx.dragging_from,
-            ctx.connections, ctx.pending_disconnects, PortKind::Trigger);
+            ctx.node_id,
+            1,
+            ctx.port_positions,
+            ctx.dragging_from,
+            ctx.connections,
+            ctx.pending_disconnects,
+            PortKind::Trigger,
+        );
 
-        crate::nodes::output_port_row(ui, "Count",
+        crate::nodes::output_port_row(
+            ui,
+            "Count",
             &self.last_count.to_string(),
-            ctx.node_id, 2, ctx.port_positions, ctx.dragging_from,
-            ctx.connections, ctx.pending_disconnects, PortKind::Number);
+            ctx.node_id,
+            2,
+            ctx.port_positions,
+            ctx.dragging_from,
+            ctx.connections,
+            ctx.pending_disconnects,
+            PortKind::Number,
+        );
     }
 }
 

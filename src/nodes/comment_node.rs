@@ -6,9 +6,9 @@
 
 use crate::graph::{PortDef, PortValue};
 use crate::node_trait::NodeBehavior;
-use serde::{Serialize, Deserialize};
-use eframe::egui;
 use crate::nodes::ScrollAreaExt;
+use eframe::egui;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommentNode {
@@ -18,7 +18,9 @@ pub struct CommentNode {
     pub font_size: f32,
 }
 
-fn default_font_size() -> f32 { 14.0 }
+fn default_font_size() -> f32 {
+    14.0
+}
 
 impl Default for CommentNode {
     fn default() -> Self {
@@ -31,10 +33,18 @@ impl Default for CommentNode {
 }
 
 impl NodeBehavior for CommentNode {
-    fn title(&self) -> &str { "Comment" }
-    fn inputs(&self) -> Vec<PortDef> { vec![] }
-    fn outputs(&self) -> Vec<PortDef> { vec![] }
-    fn color_hint(&self) -> [u8; 3] { self.bg_color }
+    fn title(&self) -> &str {
+        "Comment"
+    }
+    fn inputs(&self) -> Vec<PortDef> {
+        vec![]
+    }
+    fn outputs(&self) -> Vec<PortDef> {
+        vec![]
+    }
+    fn color_hint(&self) -> [u8; 3] {
+        self.bg_color
+    }
 
     fn apply_theme_defaults(&mut self, ctx: &egui::Context) {
         // Only override the catalog default — never a user pick. Default a
@@ -46,11 +56,21 @@ impl NodeBehavior for CommentNode {
         }
     }
 
-    fn custom_render(&self) -> bool { true }
-    fn no_title(&self) -> bool { true }
-    fn min_width(&self) -> Option<f32> { Some(130.0) }
+    fn custom_render(&self) -> bool {
+        true
+    }
+    fn no_title(&self) -> bool {
+        true
+    }
+    fn min_width(&self) -> Option<f32> {
+        Some(130.0)
+    }
 
-    fn render_background(&self, _painter: &egui::Painter, _rect: egui::Rect) -> Option<egui::Frame> {
+    fn render_background(
+        &self,
+        _painter: &egui::Painter,
+        _rect: egui::Rect,
+    ) -> Option<egui::Frame> {
         // The card fill is delegated to the returned Frame so it always
         // covers the *actual* window rect — the framework only knows an
         // approximate 100px height at the time render_background runs, so
@@ -66,9 +86,13 @@ impl NodeBehavior for CommentNode {
         )
     }
 
-    fn evaluate(&mut self, _inputs: &[PortValue]) -> Vec<(usize, PortValue)> { vec![] }
+    fn evaluate(&mut self, _inputs: &[PortValue]) -> Vec<(usize, PortValue)> {
+        vec![]
+    }
 
-    fn type_tag(&self) -> &str { "comment" }
+    fn type_tag(&self) -> &str {
+        "comment"
+    }
 
     fn save_state(&self) -> serde_json::Value {
         serde_json::to_value(self).unwrap_or_default()
@@ -89,7 +113,9 @@ impl NodeBehavior for CommentNode {
         let just_entered_id = egui::Id::new(("comment_just_entered_d", node_id));
         let now = ui.ctx().input(|i| i.time);
 
-        let is_editing = ui.ctx().data_mut(|d| d.get_temp::<bool>(editing_id).unwrap_or(false));
+        let is_editing = ui
+            .ctx()
+            .data_mut(|d| d.get_temp::<bool>(editing_id).unwrap_or(false));
 
         // ── Width ────────────────────────────────────────────────────
         // Tight to longest line (so empty notes stay compact), capped at
@@ -98,12 +124,19 @@ impl NodeBehavior for CommentNode {
         let font = egui::FontId::proportional(self.font_size);
         let placeholder = "Write a note...";
         let measure_line = |ui: &egui::Ui, s: &str| -> f32 {
-            ui.fonts(|f| f.layout_no_wrap(s.to_string(), font.clone(), egui::Color32::WHITE).size().x)
+            ui.fonts(|f| {
+                f.layout_no_wrap(s.to_string(), font.clone(), egui::Color32::WHITE)
+                    .size()
+                    .x
+            })
         };
         let longest = if self.text.is_empty() {
             measure_line(ui, placeholder)
         } else {
-            self.text.lines().map(|l| measure_line(ui, l)).fold(0.0_f32, f32::max)
+            self.text
+                .lines()
+                .map(|l| measure_line(ui, l))
+                .fold(0.0_f32, f32::max)
         };
         let min_body_w = if is_editing { 180.0 } else { 120.0 };
         let max_body_w = 360.0;
@@ -118,7 +151,11 @@ impl NodeBehavior for CommentNode {
         // gets a vertical scrollbar via the ScrollArea below.
         const MIN_BODY_H: f32 = 80.0;
         const MAX_BODY_H: f32 = 220.0;
-        let display_text = if self.text.is_empty() { placeholder } else { self.text.as_str() };
+        let display_text = if self.text.is_empty() {
+            placeholder
+        } else {
+            self.text.as_str()
+        };
         let display_color = if self.text.is_empty() {
             ui.visuals().widgets.noninteractive.fg_stroke.color
         } else {
@@ -135,12 +172,12 @@ impl NodeBehavior for CommentNode {
         let content_h = inactive_galley.size().y + 16.0;
         let body_h = content_h.clamp(MIN_BODY_H, MAX_BODY_H);
 
-        let (body_rect, body_response) = ui.allocate_exact_size(
-            egui::vec2(avail_w, body_h),
-            egui::Sense::click(),
-        );
+        let (body_rect, body_response) =
+            ui.allocate_exact_size(egui::vec2(avail_w, body_h), egui::Sense::click());
         let text_rect = body_rect.shrink2(egui::vec2(4.0, 4.0));
-        let just_entered = ui.ctx().data_mut(|d| d.get_temp::<bool>(just_entered_id).unwrap_or(false));
+        let just_entered = ui
+            .ctx()
+            .data_mut(|d| d.get_temp::<bool>(just_entered_id).unwrap_or(false));
 
         // ── Render text in a ScrollArea (kicks in when content > body_h) ──
         let mut start_editing_from_label = false;
@@ -196,7 +233,9 @@ impl NodeBehavior for CommentNode {
                 d.insert_temp(editing_id, true);
                 d.insert_temp(just_entered_id, true);
             });
-            let is_open = ui.ctx().data_mut(|d| d.get_temp::<bool>(popup_id).unwrap_or(false));
+            let is_open = ui
+                .ctx()
+                .data_mut(|d| d.get_temp::<bool>(popup_id).unwrap_or(false));
             if !is_open {
                 ui.ctx().data_mut(|d| {
                     d.insert_temp(popup_id, true);
@@ -276,45 +315,63 @@ impl NodeBehavior for CommentNode {
 
         // No local edit-state ring — see the Scope/Slider notes; the
         // framework already draws the selection highlight.
-        let popup_open = ui.ctx().data_mut(|d| d.get_temp::<bool>(popup_id).unwrap_or(false));
+        let popup_open = ui
+            .ctx()
+            .data_mut(|d| d.get_temp::<bool>(popup_id).unwrap_or(false));
 
         // Options popup
         if popup_open {
             let popup_pos = egui::pos2(node_rect.right() + 6.0, node_rect.top());
-            let opened_time = ui.ctx().data_mut(|d| d.get_temp::<f64>(popup_time_id).unwrap_or(0.0));
+            let opened_time = ui
+                .ctx()
+                .data_mut(|d| d.get_temp::<f64>(popup_time_id).unwrap_or(0.0));
 
             let area_resp = egui::Area::new(egui::Id::new(("comment_opts_d", node_id)))
                 .fixed_pos(popup_pos)
                 .order(egui::Order::Tooltip)
                 .show(ui.ctx(), |ui| {
-                    egui::Frame::popup(ui.style()).corner_radius(10.0).inner_margin(8.0).show(ui, |ui| {
-                        ui.set_min_width(130.0);
-                        ui.horizontal(|ui| {
-                            let mut color = egui::Color32::from_rgb(self.bg_color[0], self.bg_color[1], self.bg_color[2]);
-                            if ui.color_edit_button_srgba(&mut color).changed() {
-                                let a = color.to_array();
-                                self.bg_color = [a[0], a[1], a[2]];
-                            }
-                            ui.label("Color");
-                        });
-                        ui.horizontal(|ui| {
-                            ui.label("Size");
-                            for (label, size) in [("S", 11.0), ("M", 14.0), ("L", 18.0)] {
-                                let selected = (self.font_size - size).abs() < 0.5;
-                                if ui.selectable_label(selected, label).clicked() {
-                                    self.font_size = size;
+                    egui::Frame::popup(ui.style())
+                        .corner_radius(10.0)
+                        .inner_margin(8.0)
+                        .show(ui, |ui| {
+                            ui.set_min_width(130.0);
+                            ui.horizontal(|ui| {
+                                let mut color = egui::Color32::from_rgb(
+                                    self.bg_color[0],
+                                    self.bg_color[1],
+                                    self.bg_color[2],
+                                );
+                                if ui.color_edit_button_srgba(&mut color).changed() {
+                                    let a = color.to_array();
+                                    self.bg_color = [a[0], a[1], a[2]];
                                 }
-                            }
+                                ui.label("Color");
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("Size");
+                                for (label, size) in [("S", 11.0), ("M", 14.0), ("L", 18.0)] {
+                                    let selected = (self.font_size - size).abs() < 0.5;
+                                    if ui.selectable_label(selected, label).clicked() {
+                                        self.font_size = size;
+                                    }
+                                }
+                            });
                         });
-                    });
                 });
 
             let popup_rect = area_resp.response.rect;
             let esc = ui.ctx().input(|i| i.key_pressed(egui::Key::Escape));
             let click_outside = if now - opened_time > 0.3 {
-                ui.ctx().input(|i| i.pointer.button_clicked(egui::PointerButton::Primary))
-                    && ui.ctx().pointer_latest_pos().map(|p| !popup_rect.contains(p) && !node_rect.contains(p)).unwrap_or(false)
-            } else { false };
+                ui.ctx()
+                    .input(|i| i.pointer.button_clicked(egui::PointerButton::Primary))
+                    && ui
+                        .ctx()
+                        .pointer_latest_pos()
+                        .map(|p| !popup_rect.contains(p) && !node_rect.contains(p))
+                        .unwrap_or(false)
+            } else {
+                false
+            };
 
             if esc || click_outside {
                 ui.ctx().data_mut(|d| {

@@ -4,12 +4,19 @@
 /// Coefficients from Robert Bristow-Johnson's Audio EQ Cookbook.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct BiquadFilter {
-    pub b0: f32, pub b1: f32, pub b2: f32,
-    pub a1: f32, pub a2: f32,
-    #[serde(skip)] x1: f32,
-    #[serde(skip)] x2: f32,
-    #[serde(skip)] y1: f32,
-    #[serde(skip)] y2: f32,
+    pub b0: f32,
+    pub b1: f32,
+    pub b2: f32,
+    pub a1: f32,
+    pub a2: f32,
+    #[serde(skip)]
+    x1: f32,
+    #[serde(skip)]
+    x2: f32,
+    #[serde(skip)]
+    y1: f32,
+    #[serde(skip)]
+    y2: f32,
 }
 
 impl BiquadFilter {
@@ -30,9 +37,15 @@ impl BiquadFilter {
         let a2 = 1.0 - alpha / a;
 
         Self {
-            b0: b0 / a0, b1: b1 / a0, b2: b2 / a0,
-            a1: a1 / a0, a2: a2 / a0,
-            x1: 0.0, x2: 0.0, y1: 0.0, y2: 0.0,
+            b0: b0 / a0,
+            b1: b1 / a0,
+            b2: b2 / a0,
+            a1: a1 / a0,
+            a2: a2 / a0,
+            x1: 0.0,
+            x2: 0.0,
+            y1: 0.0,
+            y2: 0.0,
         }
     }
 
@@ -53,9 +66,15 @@ impl BiquadFilter {
         let a2 = (a + 1.0) + (a - 1.0) * cos_w0 - two_sqrt_a_alpha;
 
         Self {
-            b0: b0 / a0, b1: b1 / a0, b2: b2 / a0,
-            a1: a1 / a0, a2: a2 / a0,
-            x1: 0.0, x2: 0.0, y1: 0.0, y2: 0.0,
+            b0: b0 / a0,
+            b1: b1 / a0,
+            b2: b2 / a0,
+            a1: a1 / a0,
+            a2: a2 / a0,
+            x1: 0.0,
+            x2: 0.0,
+            y1: 0.0,
+            y2: 0.0,
         }
     }
 
@@ -76,16 +95,32 @@ impl BiquadFilter {
         let a2 = (a + 1.0) - (a - 1.0) * cos_w0 - two_sqrt_a_alpha;
 
         Self {
-            b0: b0 / a0, b1: b1 / a0, b2: b2 / a0,
-            a1: a1 / a0, a2: a2 / a0,
-            x1: 0.0, x2: 0.0, y1: 0.0, y2: 0.0,
+            b0: b0 / a0,
+            b1: b1 / a0,
+            b2: b2 / a0,
+            a1: a1 / a0,
+            a2: a2 / a0,
+            x1: 0.0,
+            x2: 0.0,
+            y1: 0.0,
+            y2: 0.0,
         }
     }
 
     /// Bypass filter (unity pass-through).
     #[allow(dead_code)]
     pub fn bypass() -> Self {
-        Self { b0: 1.0, b1: 0.0, b2: 0.0, a1: 0.0, a2: 0.0, x1: 0.0, x2: 0.0, y1: 0.0, y2: 0.0 }
+        Self {
+            b0: 1.0,
+            b1: 0.0,
+            b2: 0.0,
+            a1: 0.0,
+            a2: 0.0,
+            x1: 0.0,
+            x2: 0.0,
+            y1: 0.0,
+            y2: 0.0,
+        }
     }
 
     /// 2nd-order high-pass biquad (RBJ cookbook). Q=0.707 gives Butterworth
@@ -104,22 +139,31 @@ impl BiquadFilter {
         let a2 = 1.0 - alpha;
 
         Self {
-            b0: b0 / a0, b1: b1 / a0, b2: b2 / a0,
-            a1: a1 / a0, a2: a2 / a0,
-            x1: 0.0, x2: 0.0, y1: 0.0, y2: 0.0,
+            b0: b0 / a0,
+            b1: b1 / a0,
+            b2: b2 / a0,
+            a1: a1 / a0,
+            a2: a2 / a0,
+            x1: 0.0,
+            x2: 0.0,
+            y1: 0.0,
+            y2: 0.0,
         }
     }
 
     /// Process a single sample through this biquad.
     #[inline]
     pub fn reset(&mut self) {
-        self.x1 = 0.0; self.x2 = 0.0;
-        self.y1 = 0.0; self.y2 = 0.0;
+        self.x1 = 0.0;
+        self.x2 = 0.0;
+        self.y1 = 0.0;
+        self.y2 = 0.0;
     }
 
     pub fn process(&mut self, x: f32) -> f32 {
         let y = self.b0 * x + self.b1 * self.x1 + self.b2 * self.x2
-                            - self.a1 * self.y1 - self.a2 * self.y2;
+            - self.a1 * self.y1
+            - self.a2 * self.y2;
         self.x2 = self.x1;
         self.x1 = x;
         self.y2 = self.y1;
@@ -133,7 +177,9 @@ impl BiquadFilter {
 /// Samples the curve at 10 log-spaced frequency bands.
 pub fn curve_to_eq_bands(points: &[[f32; 2]], sample_rate: f32) -> Vec<BiquadFilter> {
     // 10 frequency bands on log scale (Hz)
-    let freqs: [f32; 10] = [31.0, 62.0, 125.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0, 16000.0];
+    let freqs: [f32; 10] = [
+        31.0, 62.0, 125.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0, 16000.0,
+    ];
     let q = 1.4; // moderate bandwidth
 
     let mut bands = Vec::new();
@@ -166,7 +212,7 @@ pub fn curve_to_eq_bands(points: &[[f32; 2]], sample_rate: f32) -> Vec<BiquadFil
 /// f32 → bits cast is fine: NaN/±0 don't occur for UI-driven points clamped to [0,1].
 pub fn eq_curve_hash(points: &[[f32; 2]]) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325; // FNV offset basis
-    let prime: u64 = 0x100_0000_01b3;        // FNV prime
+    let prime: u64 = 0x100_0000_01b3; // FNV prime
     let mut mix = |word: u32, h: &mut u64| {
         for byte in word.to_le_bytes() {
             *h ^= byte as u64;
@@ -183,17 +229,31 @@ pub fn eq_curve_hash(points: &[[f32; 2]]) -> u64 {
 
 /// Simple cubic Hermite interpolation of a curve defined by sorted [x,y] points.
 fn evaluate_curve_at(points: &[[f32; 2]], x: f32) -> f32 {
-    if points.is_empty() { return 0.5; } // flat (0dB)
-    if points.len() == 1 { return points[0][1]; }
-    if x <= points[0][0] { return points[0][1]; }
-    if let Some(last) = points.last() { if x >= last[0] { return last[1]; } }
+    if points.is_empty() {
+        return 0.5;
+    } // flat (0dB)
+    if points.len() == 1 {
+        return points[0][1];
+    }
+    if x <= points[0][0] {
+        return points[0][1];
+    }
+    if let Some(last) = points.last() {
+        if x >= last[0] {
+            return last[1];
+        }
+    }
 
     // Find the segment
     for i in 0..points.len() - 1 {
         let x0 = points[i][0];
         let x1 = points[i + 1][0];
         if x >= x0 && x <= x1 {
-            let t = if (x1 - x0).abs() < 1e-6 { 0.0 } else { (x - x0) / (x1 - x0) };
+            let t = if (x1 - x0).abs() < 1e-6 {
+                0.0
+            } else {
+                (x - x0) / (x1 - x0)
+            };
             let y0 = points[i][1];
             let y1 = points[i + 1][1];
             // Cubic Hermite smooth interpolation
@@ -205,4 +265,3 @@ fn evaluate_curve_at(points: &[[f32; 2]], x: f32) -> f32 {
     }
     0.5
 }
-

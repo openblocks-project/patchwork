@@ -2413,7 +2413,6 @@
 // //     out
 // // }
 
-
 // use crate::graph::*;
 // use eframe::egui;
 // use std::collections::HashMap;
@@ -4856,7 +4855,6 @@
 //     out
 // }
 
-
 // use crate::graph::*;
 // use eframe::egui;
 // use std::collections::HashMap;
@@ -7272,7 +7270,6 @@
 //     out
 // }
 
-
 use crate::graph::*;
 use eframe::egui;
 use std::collections::HashMap;
@@ -7291,11 +7288,39 @@ pub fn render(
     values: &HashMap<(NodeId, usize), PortValue>,
     connections: &[Connection],
 ) {
-    let (model_path, labels_path, confidence, preset, result_text, status, last_input_hash, interval_secs, last_inference_secs) = match node_type {
-        NodeType::MlModel { model_path, labels_path, confidence, preset, result_text, status,
-            last_input_hash, interval_secs, last_inference_secs, .. } => {
-            (model_path, labels_path, confidence, preset, result_text, status, last_input_hash, interval_secs, last_inference_secs)
-        }
+    let (
+        model_path,
+        labels_path,
+        confidence,
+        preset,
+        result_text,
+        status,
+        last_input_hash,
+        interval_secs,
+        last_inference_secs,
+    ) = match node_type {
+        NodeType::MlModel {
+            model_path,
+            labels_path,
+            confidence,
+            preset,
+            result_text,
+            status,
+            last_input_hash,
+            interval_secs,
+            last_inference_secs,
+            ..
+        } => (
+            model_path,
+            labels_path,
+            confidence,
+            preset,
+            result_text,
+            status,
+            last_input_hash,
+            interval_secs,
+            last_inference_secs,
+        ),
         _ => return,
     };
 
@@ -7329,7 +7354,7 @@ pub fn render(
     });
     if !model_path.is_empty() {
         let short = if model_path.len() > 30 {
-            format!("...{}", &model_path[model_path.len()-30..])
+            format!("...{}", &model_path[model_path.len() - 30..])
         } else {
             model_path.clone()
         };
@@ -7337,7 +7362,10 @@ pub fn render(
     }
 
     // Labels file (optional, mainly for Classification)
-    if matches!(*preset, MlPreset::Classification | MlPreset::ObjectDetection | MlPreset::Custom) {
+    if matches!(
+        *preset,
+        MlPreset::Classification | MlPreset::ObjectDetection | MlPreset::Custom
+    ) {
         ui.horizontal(|ui| {
             ui.label("Labels:");
             if ui.button("Load .txt").clicked() {
@@ -7351,7 +7379,7 @@ pub fn render(
         });
         if !labels_path.is_empty() {
             let short = if labels_path.len() > 30 {
-                format!("...{}", &labels_path[labels_path.len()-30..])
+                format!("...{}", &labels_path[labels_path.len() - 30..])
             } else {
                 labels_path.clone()
             };
@@ -7368,17 +7396,30 @@ pub fn render(
     // Run interval (FPS control)
     ui.horizontal(|ui| {
         ui.label("Every:");
-        ui.add(egui::Slider::new(interval_secs, 0.05..=5.0)
-            .step_by(0.05)
-            .suffix("s")
-            .logarithmic(true));
+        ui.add(
+            egui::Slider::new(interval_secs, 0.05..=5.0)
+                .step_by(0.05)
+                .suffix("s")
+                .logarithmic(true),
+        );
         let fps = 1.0 / *interval_secs;
-        ui.label(egui::RichText::new(format!("({:.1} fps)", fps)).small()
-            .color(ui.visuals().widgets.noninteractive.fg_stroke.color));
+        ui.label(
+            egui::RichText::new(format!("({:.1} fps)", fps))
+                .small()
+                .color(ui.visuals().widgets.noninteractive.fg_stroke.color),
+        );
     });
 
     // Input size info
-    ui.label(egui::RichText::new(format!("Input: {}×{}", preset.input_size(), preset.input_size())).small().color(egui::Color32::from_rgb(140, 140, 160)));
+    ui.label(
+        egui::RichText::new(format!(
+            "Input: {}×{}",
+            preset.input_size(),
+            preset.input_size()
+        ))
+        .small()
+        .color(egui::Color32::from_rgb(140, 140, 160)),
+    );
 
     // Status
     if !status.is_empty() {
@@ -7411,7 +7452,7 @@ pub fn render(
         img.height.hash(&mut h);
         if img.pixels.len() >= 32 {
             img.pixels[..16].hash(&mut h);
-            img.pixels[img.pixels.len()-16..].hash(&mut h);
+            img.pixels[img.pixels.len() - 16..].hash(&mut h);
         }
         let hash = h.finish();
         let now = ui.ctx().input(|i| i.time);
@@ -7424,15 +7465,20 @@ pub fn render(
             *status = "Running inference...".into();
 
             let inference_id = egui::Id::new(("ml_inference", node_id));
-            ui.ctx().data_mut(|d| d.insert_temp(inference_id, MlInferenceRequest {
-                model_path: model_path.clone(),
-                labels_path: labels_path.clone(),
-                confidence: *confidence,
-                preset: preset.clone(),
-                image: img.clone(),
-                node_id,
-            }));
-        }else if model_path.is_empty() {
+            ui.ctx().data_mut(|d| {
+                d.insert_temp(
+                    inference_id,
+                    MlInferenceRequest {
+                        model_path: model_path.clone(),
+                        labels_path: labels_path.clone(),
+                        confidence: *confidence,
+                        preset: preset.clone(),
+                        image: img.clone(),
+                        node_id,
+                    },
+                )
+            });
+        } else if model_path.is_empty() {
             // Image is connected but no model loaded — tell the user why
             // nothing is happening instead of silently doing nothing.
             *status = "No model loaded — click \"Load .onnx\"".into();
@@ -7496,14 +7542,24 @@ fn build_input_tensor(
     let resized = resize_image(&req.image, target_size, target_size);
 
     let use_imagenet = req.preset.imagenet_norm();
-    let mean = if use_imagenet { [0.485f32, 0.456, 0.406] } else { [0.0; 3] };
-    let std_dev = if use_imagenet { [0.229f32, 0.224, 0.225] } else { [1.0; 3] };
+    let mean = if use_imagenet {
+        [0.485f32, 0.456, 0.406]
+    } else {
+        [0.0; 3]
+    };
+    let std_dev = if use_imagenet {
+        [0.229f32, 0.224, 0.225]
+    } else {
+        [1.0; 3]
+    };
 
     let mut input_data = vec![0.0f32; 3 * ts * ts];
     for y in 0..ts {
         for x in 0..ts {
             let idx = (y * ts + x) * 4;
-            if idx + 2 >= resized.len() { continue; }
+            if idx + 2 >= resized.len() {
+                continue;
+            }
             let r = resized[idx] as f32 / 255.0;
             let g = resized[idx + 1] as f32 / 255.0;
             let b = resized[idx + 2] as f32 / 255.0;
@@ -7538,8 +7594,11 @@ fn build_input_tensor(
                 Err(e2) => {
                     // ORT runtime is fundamentally broken — create the simplest possible tensor
                     crate::system_log::error(format!("ML fallback tensor also failed: {}", e2));
-                    let t = ort::value::Tensor::from_array(([1usize, 1, 1, 1], vec![0.0f32].into_boxed_slice()))
-                        .expect("1-element tensor must succeed");
+                    let t = ort::value::Tensor::from_array((
+                        [1usize, 1, 1, 1],
+                        vec![0.0f32].into_boxed_slice(),
+                    ))
+                    .expect("1-element tensor must succeed");
                     return (t, boxed);
                 }
             }
@@ -7571,7 +7630,10 @@ fn parse_expected_shape(err: &str) -> Option<(usize, bool)> {
             // Search backward from abs_pos for "index: "
             if let Some(idx_pos) = err_lower[..abs_pos].rfind("index: ") {
                 let idx_after = &err_lower[idx_pos + 7..]; // skip "index: "
-                let idx_str: String = idx_after.chars().take_while(|c| c.is_ascii_digit()).collect();
+                let idx_str: String = idx_after
+                    .chars()
+                    .take_while(|c| c.is_ascii_digit())
+                    .collect();
                 if let Ok(idx) = idx_str.parse::<usize>() {
                     if !expected_dims.iter().any(|(i, _)| *i == idx) {
                         expected_dims.push((idx, expected_val));
@@ -7582,7 +7644,9 @@ fn parse_expected_shape(err: &str) -> Option<(usize, bool)> {
         search_from = abs_pos + 10 + num_str.len().max(1);
     }
 
-    if expected_dims.len() < 2 { return None; }
+    if expected_dims.len() < 2 {
+        return None;
+    }
 
     expected_dims.sort_by_key(|(i, _)| *i);
 
@@ -7591,11 +7655,11 @@ fn parse_expected_shape(err: &str) -> Option<(usize, bool)> {
     let dim3 = expected_dims.iter().find(|(i, _)| *i == 3).map(|(_, v)| *v);
 
     match (dim1, dim2, dim3) {
-        (Some(3), Some(h), Some(w)) if h == w => Some((h, true)),   // NCHW [1,3,H,W]
-        (Some(3), Some(h), _) => Some((h, true)),                    // NCHW [1,3,H,W]
-        (Some(h), Some(w), Some(3)) if h == w => Some((h, false)),  // NHWC [1,H,W,3]
-        (Some(h), _, Some(3)) => Some((h, false)),                   // NHWC [1,H,W,3]
-        (_, Some(h), Some(w)) if h == w => Some((h, true)),         // guess NCHW
+        (Some(3), Some(h), Some(w)) if h == w => Some((h, true)), // NCHW [1,3,H,W]
+        (Some(3), Some(h), _) => Some((h, true)),                 // NCHW [1,3,H,W]
+        (Some(h), Some(w), Some(3)) if h == w => Some((h, false)), // NHWC [1,H,W,3]
+        (Some(h), _, Some(3)) => Some((h, false)),                // NHWC [1,H,W,3]
+        (_, Some(h), Some(w)) if h == w => Some((h, true)),       // guess NCHW
         _ => None,
     }
 }
@@ -7620,7 +7684,9 @@ fn run_inference_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult, St
     // the session guard so finish_inference must complete inside this scope.
     let (tensor, _data) = build_input_tensor(req, target_size, is_nchw);
     let first_err = {
-        let mut sess = session.lock().map_err(|_| "Session lock poisoned".to_string())?;
+        let mut sess = session
+            .lock()
+            .map_err(|_| "Session lock poisoned".to_string())?;
         match sess.run(ort::inputs![&input_name => tensor]) {
             Ok(out) => {
                 return finish_inference(req, &out, target_size);
@@ -7639,15 +7705,29 @@ fn run_inference_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult, St
     }
 
     let (tensor2, _data2) = build_input_tensor(req, target_size, is_nchw);
-    let mut sess = session.lock().map_err(|_| "Session lock poisoned".to_string())?;
-    let outputs = sess.run(ort::inputs![&input_name => tensor2])
-        .map_err(|e| format!("Run (retry {}x{} {}): {}",
-            target_size, target_size, if is_nchw { "NCHW" } else { "NHWC" }, e))?;
+    let mut sess = session
+        .lock()
+        .map_err(|_| "Session lock poisoned".to_string())?;
+    let outputs = sess
+        .run(ort::inputs![&input_name => tensor2])
+        .map_err(|e| {
+            format!(
+                "Run (retry {}x{} {}): {}",
+                target_size,
+                target_size,
+                if is_nchw { "NCHW" } else { "NHWC" },
+                e
+            )
+        })?;
 
     finish_inference(req, &outputs, target_size)
 }
 
-fn finish_inference(req: &MlInferenceRequest, outputs: &ort::session::SessionOutputs, _input_size: u32) -> Result<MlInferenceResult, String> {
+fn finish_inference(
+    req: &MlInferenceRequest,
+    outputs: &ort::session::SessionOutputs,
+    _input_size: u32,
+) -> Result<MlInferenceResult, String> {
     match req.preset {
         MlPreset::Classification => parse_classification(req, outputs),
         MlPreset::ObjectDetection => parse_object_detection(req, outputs),
@@ -7660,9 +7740,13 @@ fn finish_inference(req: &MlInferenceRequest, outputs: &ort::session::SessionOut
 
 // ── Classification ──────────────────────────────────────────────────────────
 
-fn parse_classification(req: &MlInferenceRequest, outputs: &ort::session::SessionOutputs) -> Result<MlInferenceResult, String> {
+fn parse_classification(
+    req: &MlInferenceRequest,
+    outputs: &ort::session::SessionOutputs,
+) -> Result<MlInferenceResult, String> {
     let output = &outputs[0];
-    let (_shape, data) = output.try_extract_tensor::<f32>()
+    let (_shape, data) = output
+        .try_extract_tensor::<f32>()
         .map_err(|e| format!("Extract: {}", e))?;
     let scores: Vec<f32> = data.to_vec();
 
@@ -7680,10 +7764,15 @@ fn parse_classification(req: &MlInferenceRequest, outputs: &ort::session::Sessio
     let mut result = String::new();
     let mut json_items: Vec<String> = Vec::new();
     for (i, prob) in indexed.iter().take(5) {
-        if *prob < req.confidence { break; }
+        if *prob < req.confidence {
+            break;
+        }
         let label = labels.get(*i).map(|s| s.as_str()).unwrap_or("unknown");
         result.push_str(&format!("{}: {:.1}%\n", label, prob * 100.0));
-        json_items.push(format!("{{\"label\":\"{}\",\"confidence\":{:.4}}}", label, prob));
+        json_items.push(format!(
+            "{{\"label\":\"{}\",\"confidence\":{:.4}}}",
+            label, prob
+        ));
     }
     if result.is_empty() {
         result = format!("No results above {:.0}% threshold", req.confidence * 100.0);
@@ -7701,9 +7790,13 @@ fn parse_classification(req: &MlInferenceRequest, outputs: &ort::session::Sessio
 
 // ── Object Detection (YOLO-style) ───────────────────────────────────────────
 
-fn parse_object_detection(req: &MlInferenceRequest, outputs: &ort::session::SessionOutputs) -> Result<MlInferenceResult, String> {
+fn parse_object_detection(
+    req: &MlInferenceRequest,
+    outputs: &ort::session::SessionOutputs,
+) -> Result<MlInferenceResult, String> {
     let output = &outputs[0];
-    let (shape, data) = output.try_extract_tensor::<f32>()
+    let (shape, data) = output
+        .try_extract_tensor::<f32>()
         .map_err(|e| format!("Extract: {}", e))?;
     let raw: Vec<f32> = data.to_vec();
     let dims: Vec<usize> = shape.iter().map(|&d| d as usize).collect();
@@ -7722,7 +7815,10 @@ fn parse_object_detection(req: &MlInferenceRequest, outputs: &ort::session::Sess
     } else if dims.len() == 2 {
         (dims[0], dims[1])
     } else {
-        return Err(format!("Unexpected output shape: {:?}. Expected 2D or 3D tensor.", dims));
+        return Err(format!(
+            "Unexpected output shape: {:?}. Expected 2D or 3D tensor.",
+            dims
+        ));
     };
 
     let transposed = dims.len() == 3 && dims[1] < dims[2];
@@ -7732,7 +7828,7 @@ fn parse_object_detection(req: &MlInferenceRequest, outputs: &ort::session::Sess
     // Otherwise: if num_values matches 4+common_count, assume v8.
     let num_labels = labels.len();
     let is_v8 = if num_labels > 0 {
-        (num_values as i64 - 4) == num_labels as i64  // v8: 4+C
+        (num_values as i64 - 4) == num_labels as i64 // v8: 4+C
     } else {
         // Common COCO sizes: v8 → 84 (4+80), v5 → 85 (5+80)
         num_values == 84 || (num_values >= 4 && num_values % 2 == 0)
@@ -7750,7 +7846,11 @@ fn parse_object_detection(req: &MlInferenceRequest, outputs: &ort::session::Sess
     let sample_count = num_detections.min(20);
     let mut max_cx: f32 = 0.0;
     for i in 0..sample_count {
-        let cx_sample = if transposed { raw[0 * num_detections + i] } else { raw[i * num_values] };
+        let cx_sample = if transposed {
+            raw[0 * num_detections + i]
+        } else {
+            raw[i * num_values]
+        };
         max_cx = max_cx.max(cx_sample.abs());
     }
     let coord_scale = if max_cx <= 1.5 { input_size } else { 1.0 };
@@ -7759,11 +7859,19 @@ fn parse_object_detection(req: &MlInferenceRequest, outputs: &ort::session::Sess
 
     for i in 0..num_detections {
         let get = |j: usize| -> f32 {
-            if transposed { raw[j * num_detections + i] } else { raw[i * num_values + j] }
+            if transposed {
+                raw[j * num_detections + i]
+            } else {
+                raw[i * num_values + j]
+            }
         };
 
-        let (cx, cy, w, h) = (get(0) * coord_scale, get(1) * coord_scale,
-                               get(2) * coord_scale, get(3) * coord_scale);
+        let (cx, cy, w, h) = (
+            get(0) * coord_scale,
+            get(1) * coord_scale,
+            get(2) * coord_scale,
+            get(3) * coord_scale,
+        );
 
         // v5 has objectness at index 4; v8 has no objectness (class score IS confidence)
         let obj_conf = if is_v8 { 1.0 } else { get(4) };
@@ -7778,7 +7886,9 @@ fn parse_object_detection(req: &MlInferenceRequest, outputs: &ort::session::Sess
             }
         }
 
-        if best_score < req.confidence { continue; }
+        if best_score < req.confidence {
+            continue;
+        }
 
         // Convert from model pixel space (0..input_size) to original image pixel coords
         let x1 = ((cx - w / 2.0) / input_size * img_w).max(0.0);
@@ -7787,14 +7897,21 @@ fn parse_object_detection(req: &MlInferenceRequest, outputs: &ort::session::Sess
         let y2 = ((cy + h / 2.0) / input_size * img_h).min(img_h);
 
         detections.push(Detection {
-            x1, y1, x2, y2,
+            x1,
+            y1,
+            x2,
+            y2,
             class: best_class,
             confidence: best_score,
         });
     }
 
     // NMS: simple greedy non-max suppression
-    detections.sort_by(|a, b| b.confidence.partial_cmp(&a.confidence).unwrap_or(std::cmp::Ordering::Equal));
+    detections.sort_by(|a, b| {
+        b.confidence
+            .partial_cmp(&a.confidence)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     let detections = nms(&detections, 0.45);
 
     // Build annotated image
@@ -7803,24 +7920,49 @@ fn parse_object_detection(req: &MlInferenceRequest, outputs: &ort::session::Sess
     let mut json_items: Vec<String> = Vec::new();
 
     let colors: &[[u8; 3]] = &[
-        [255, 0, 0], [0, 255, 0], [0, 0, 255], [255, 255, 0], [255, 0, 255],
-        [0, 255, 255], [255, 128, 0], [128, 0, 255], [0, 255, 128], [255, 64, 64],
+        [255, 0, 0],
+        [0, 255, 0],
+        [0, 0, 255],
+        [255, 255, 0],
+        [255, 0, 255],
+        [0, 255, 255],
+        [255, 128, 0],
+        [128, 0, 255],
+        [0, 255, 128],
+        [255, 64, 64],
     ];
 
     for det in &detections {
         let label = labels.get(det.class).map(|s| s.as_str()).unwrap_or("?");
         let color = colors[det.class % colors.len()];
-        result.push_str(&format!("{}: {:.1}% [{:.0},{:.0},{:.0},{:.0}]\n",
-            label, det.confidence * 100.0, det.x1, det.y1, det.x2, det.y2));
+        result.push_str(&format!(
+            "{}: {:.1}% [{:.0},{:.0},{:.0},{:.0}]\n",
+            label,
+            det.confidence * 100.0,
+            det.x1,
+            det.y1,
+            det.x2,
+            det.y2
+        ));
         json_items.push(format!(
             "{{\"label\":\"{}\",\"confidence\":{:.4},\"bbox\":[{:.1},{:.1},{:.1},{:.1}]}}",
             label, det.confidence, det.x1, det.y1, det.x2, det.y2
         ));
 
         // Draw bounding box (3px thick)
-        draw_rect(&mut annotated, req.image.width, req.image.height,
-                   det.x1 as i32, det.y1 as i32, det.x2 as i32, det.y2 as i32,
-                   color[0], color[1], color[2], 3);
+        draw_rect(
+            &mut annotated,
+            req.image.width,
+            req.image.height,
+            det.x1 as i32,
+            det.y1 as i32,
+            det.x2 as i32,
+            det.y2 as i32,
+            color[0],
+            color[1],
+            color[2],
+            3,
+        );
 
         // Draw label text with background strip above the box
         let tag = format!("{} {:.0}%", label, det.confidence * 100.0);
@@ -7830,14 +7972,36 @@ fn parse_object_detection(req: &MlInferenceRequest, outputs: &ort::session::Sess
         let tx = det.x1 as i32;
         let ty = (det.y1 as i32 - char_h - 2).max(0);
         // Filled background rect
-        draw_filled_rect(&mut annotated, req.image.width, req.image.height,
-            tx, ty, tx + text_w, ty + char_h + 2,
-            color[0], color[1], color[2]);
+        draw_filled_rect(
+            &mut annotated,
+            req.image.width,
+            req.image.height,
+            tx,
+            ty,
+            tx + text_w,
+            ty + char_h + 2,
+            color[0],
+            color[1],
+            color[2],
+        );
         // Text in white (or dark if color is bright)
         let brightness = color[0] as u16 + color[1] as u16 + color[2] as u16;
-        let (tr, tg, tb) = if brightness > 400 { (0u8, 0u8, 0u8) } else { (255u8, 255u8, 255u8) };
-        draw_text(&mut annotated, req.image.width, req.image.height,
-            tx + 1, ty + 1, &tag, tr, tg, tb);
+        let (tr, tg, tb) = if brightness > 400 {
+            (0u8, 0u8, 0u8)
+        } else {
+            (255u8, 255u8, 255u8)
+        };
+        draw_text(
+            &mut annotated,
+            req.image.width,
+            req.image.height,
+            tx + 1,
+            ty + 1,
+            &tag,
+            tr,
+            tg,
+            tb,
+        );
     }
 
     if result.is_empty() {
@@ -7860,7 +8024,10 @@ fn parse_object_detection(req: &MlInferenceRequest, outputs: &ort::session::Sess
 
 // ── Pose Estimation ─────────────────────────────────────────────────────────
 
-fn parse_pose_estimation(req: &MlInferenceRequest, outputs: &ort::session::SessionOutputs) -> Result<MlInferenceResult, String> {
+fn parse_pose_estimation(
+    req: &MlInferenceRequest,
+    outputs: &ort::session::SessionOutputs,
+) -> Result<MlInferenceResult, String> {
     let img_w = req.image.width as f32;
     let img_h = req.image.height as f32;
 
@@ -7893,7 +8060,9 @@ fn parse_pose_estimation(req: &MlInferenceRequest, outputs: &ort::session::Sessi
     // Find the output tensor that looks most like keypoints
     for (dims, raw) in &all_outputs {
         let total = raw.len();
-        if total < 4 { continue; }
+        if total < 4 {
+            continue;
+        }
 
         let (num_kp, vpk, flat_offset) = if dims.len() == 4 && dims[2] > 0 && dims[3] >= 2 {
             // [1, 1, K, V] e.g. MoveNet
@@ -7903,7 +8072,13 @@ fn parse_pose_estimation(req: &MlInferenceRequest, outputs: &ort::session::Sessi
             (dims[1], dims[2], 0)
         } else if dims.len() == 2 && dims[1] > 6 {
             // [1, N] flat — try groups of 5 (MediaPipe: x,y,z,vis,presence) or 3
-            let vpk = if dims[1] % 5 == 0 { 5 } else if dims[1] % 3 == 0 { 3 } else { 3 };
+            let vpk = if dims[1] % 5 == 0 {
+                5
+            } else if dims[1] % 3 == 0 {
+                3
+            } else {
+                3
+            };
             (dims[1] / vpk, vpk, 0)
         } else if dims.len() == 1 && total > 6 {
             let vpk = if total % 5 == 0 { 5 } else { 3 };
@@ -7912,11 +8087,15 @@ fn parse_pose_estimation(req: &MlInferenceRequest, outputs: &ort::session::Sessi
             continue;
         };
 
-        if num_kp < 4 || num_kp > 200 { continue; } // sanity check
+        if num_kp < 4 || num_kp > 200 {
+            continue;
+        } // sanity check
 
         for k in 0..num_kp {
             let off = flat_offset + k * vpk;
-            if off + 1 >= raw.len() { break; }
+            if off + 1 >= raw.len() {
+                break;
+            }
             let (mut x, mut y) = (raw[off], raw[off + 1]);
             let conf = if vpk >= 4 && off + 3 < raw.len() {
                 raw[off + 3] // visibility for MediaPipe (index 3)
@@ -7935,21 +8114,48 @@ fn parse_pose_estimation(req: &MlInferenceRequest, outputs: &ort::session::Sessi
             keypoints.push((x, y, conf));
         }
 
-        if !keypoints.is_empty() { break; } // Use first matching output
+        if !keypoints.is_empty() {
+            break;
+        } // Use first matching output
     }
 
     // Standard keypoint names (COCO 17-point format)
     let coco_names = [
-        "nose", "left_eye", "right_eye", "left_ear", "right_ear",
-        "left_shoulder", "right_shoulder", "left_elbow", "right_elbow",
-        "left_wrist", "right_wrist", "left_hip", "right_hip",
-        "left_knee", "right_knee", "left_ankle", "right_ankle",
+        "nose",
+        "left_eye",
+        "right_eye",
+        "left_ear",
+        "right_ear",
+        "left_shoulder",
+        "right_shoulder",
+        "left_elbow",
+        "right_elbow",
+        "left_wrist",
+        "right_wrist",
+        "left_hip",
+        "right_hip",
+        "left_knee",
+        "right_knee",
+        "left_ankle",
+        "right_ankle",
     ];
     let skeleton: &[(usize, usize)] = &[
-        (0, 1), (0, 2), (1, 3), (2, 4),     // head
-        (5, 6), (5, 7), (7, 9), (6, 8), (8, 10), // arms
-        (5, 11), (6, 12), (11, 12),          // torso
-        (11, 13), (13, 15), (12, 14), (14, 16), // legs
+        (0, 1),
+        (0, 2),
+        (1, 3),
+        (2, 4), // head
+        (5, 6),
+        (5, 7),
+        (7, 9),
+        (6, 8),
+        (8, 10), // arms
+        (5, 11),
+        (6, 12),
+        (11, 12), // torso
+        (11, 13),
+        (13, 15),
+        (12, 14),
+        (14, 16), // legs
     ];
 
     let mut result = String::new();
@@ -7957,8 +8163,18 @@ fn parse_pose_estimation(req: &MlInferenceRequest, outputs: &ort::session::Sessi
 
     for (k, &(x, y, conf)) in keypoints.iter().enumerate() {
         if conf >= req.confidence {
-            let name = if k < coco_names.len() { coco_names[k] } else { &format!("kp_{}", k) };
-            result.push_str(&format!("{}: ({:.0}, {:.0}) {:.0}%\n", name, x, y, conf * 100.0));
+            let name = if k < coco_names.len() {
+                coco_names[k]
+            } else {
+                &format!("kp_{}", k)
+            };
+            result.push_str(&format!(
+                "{}: ({:.0}, {:.0}) {:.0}%\n",
+                name,
+                x,
+                y,
+                conf * 100.0
+            ));
             json_items.push(format!(
                 "{{\"name\":\"{}\",\"x\":{:.1},\"y\":{:.1},\"confidence\":{:.4}}}",
                 name, x, y, conf
@@ -7975,9 +8191,19 @@ fn parse_pose_estimation(req: &MlInferenceRequest, outputs: &ort::session::Sessi
             let (ax, ay, ac) = keypoints[a];
             let (bx, by, bc) = keypoints[b];
             if ac >= req.confidence && bc >= req.confidence {
-                draw_line(&mut annotated, req.image.width, req.image.height,
-                          ax as i32, ay as i32, bx as i32, by as i32,
-                          0, 255, 128, 2);
+                draw_line(
+                    &mut annotated,
+                    req.image.width,
+                    req.image.height,
+                    ax as i32,
+                    ay as i32,
+                    bx as i32,
+                    by as i32,
+                    0,
+                    255,
+                    128,
+                    2,
+                );
             }
         }
     }
@@ -7985,18 +8211,33 @@ fn parse_pose_estimation(req: &MlInferenceRequest, outputs: &ort::session::Sessi
     // Draw keypoint circles
     for (x, y, conf) in &keypoints {
         if *conf >= req.confidence {
-            draw_circle(&mut annotated, req.image.width, req.image.height,
-                        *x as i32, *y as i32, 4,
-                        255, 80, 80);
+            draw_circle(
+                &mut annotated,
+                req.image.width,
+                req.image.height,
+                *x as i32,
+                *y as i32,
+                4,
+                255,
+                80,
+                80,
+            );
         }
     }
 
     if result.is_empty() {
-        result = format!("No keypoints above {:.0}%\nOutputs: {}", req.confidence * 100.0, output_info.trim());
+        result = format!(
+            "No keypoints above {:.0}%\nOutputs: {}",
+            req.confidence * 100.0,
+            output_info.trim()
+        );
     }
     let json = format!("[{}]", json_items.join(","));
 
-    let visible_count = keypoints.iter().filter(|(_, _, c)| *c >= req.confidence).count();
+    let visible_count = keypoints
+        .iter()
+        .filter(|(_, _, c)| *c >= req.confidence)
+        .count();
     Ok(MlInferenceResult {
         node_id: req.node_id,
         result_text: result,
@@ -8028,29 +8269,61 @@ fn parse_pose_estimation(req: &MlInferenceRequest, outputs: &ort::session::Sessi
 
 const HAND_LANDMARK_NAMES: [&str; 21] = [
     "wrist",
-    "thumb_cmc", "thumb_mcp", "thumb_ip", "thumb_tip",
-    "index_mcp", "index_pip", "index_dip", "index_tip",
-    "middle_mcp", "middle_pip", "middle_dip", "middle_tip",
-    "ring_mcp", "ring_pip", "ring_dip", "ring_tip",
-    "pinky_mcp", "pinky_pip", "pinky_dip", "pinky_tip",
+    "thumb_cmc",
+    "thumb_mcp",
+    "thumb_ip",
+    "thumb_tip",
+    "index_mcp",
+    "index_pip",
+    "index_dip",
+    "index_tip",
+    "middle_mcp",
+    "middle_pip",
+    "middle_dip",
+    "middle_tip",
+    "ring_mcp",
+    "ring_pip",
+    "ring_dip",
+    "ring_tip",
+    "pinky_mcp",
+    "pinky_pip",
+    "pinky_dip",
+    "pinky_tip",
 ];
 
 // Finger skeleton: pairs of keypoint indices to draw lines between
 const HAND_SKELETON: [(usize, usize); 24] = [
     // Thumb
-    (0,1),(1,2),(2,3),(3,4),
+    (0, 1),
+    (1, 2),
+    (2, 3),
+    (3, 4),
     // Index
-    (0,5),(5,6),(6,7),(7,8),
+    (0, 5),
+    (5, 6),
+    (6, 7),
+    (7, 8),
     // Middle
-    (0,9),(9,10),(10,11),(11,12),
+    (0, 9),
+    (9, 10),
+    (10, 11),
+    (11, 12),
     // Ring
-    (0,13),(13,14),(14,15),(15,16),
+    (0, 13),
+    (13, 14),
+    (14, 15),
+    (15, 16),
     // Pinky
-    (0,17),(17,18),(18,19),(19,20),
+    (0, 17),
+    (17, 18),
+    (18, 19),
+    (19, 20),
     // Palm knuckle line
-    (5,9),(9,13),(13,17),
+    (5, 9),
+    (9, 13),
+    (13, 17),
     // Extra palm
-    (0,17),
+    (0, 17),
 ];
 
 /// Crop an RGBA image to the given pixel rect and resize to new_w × new_h.
@@ -8061,14 +8334,24 @@ const HAND_SKELETON: [(usize, usize); 24] = [
 /// + store. Alpha is forced to 255 via `| 0xFF000000` (little-endian
 /// layout — RGBA bytes map to u32 as `A<<24 | B<<16 | G<<8 | R`, so the
 /// top byte is alpha).
-fn crop_and_resize(src: &crate::graph::ImageData, x1: u32, y1: u32, x2: u32, y2: u32, new_w: u32, new_h: u32) -> Vec<u8> {
+fn crop_and_resize(
+    src: &crate::graph::ImageData,
+    x1: u32,
+    y1: u32,
+    x2: u32,
+    y2: u32,
+    new_w: u32,
+    new_h: u32,
+) -> Vec<u8> {
     let cx = x2 - x1;
     let cy = y2 - y1;
     let out_bytes = (new_w * new_h * 4) as usize;
     let mut out: Vec<u8> = Vec::with_capacity(out_bytes);
     // SAFETY: every output pixel is written below (in-bounds via the
     // u32 loop, with alpha forced to 255 via bitmask).
-    unsafe { out.set_len(out_bytes); }
+    unsafe {
+        out.set_len(out_bytes);
+    }
 
     let x_ratio = cx as f32 / new_w as f32;
     let y_ratio = cy as f32 / new_h as f32;
@@ -8106,8 +8389,12 @@ fn crop_and_resize(src: &crate::graph::ImageData, x1: u32, y1: u32, x2: u32, y2:
 /// when only the upper body is in shot, so this path matters.
 fn crop_and_resize_padded(
     src: &crate::graph::ImageData,
-    x1: f32, y1: f32, x2: f32, y2: f32,
-    new_w: u32, new_h: u32,
+    x1: f32,
+    y1: f32,
+    x2: f32,
+    y2: f32,
+    new_w: u32,
+    new_h: u32,
 ) -> Vec<u8> {
     let mut out: Vec<u8> = vec![0; (new_w * new_h * 4) as usize];
     let x_ratio = (x2 - x1) / new_w as f32;
@@ -8127,7 +8414,9 @@ fn crop_and_resize_padded(
         let sy = (y1 + dy as f32 * y_ratio) as i32;
         let dst_row = dy as usize * new_w as usize;
         if sy < 0 || sy > max_y {
-            for dx in 0..new_w as usize { dst_u32[dst_row + dx] = BLACK; }
+            for dx in 0..new_w as usize {
+                dst_u32[dst_row + dx] = BLACK;
+            }
             continue;
         }
         let src_row = sy as usize * w_in;
@@ -8170,9 +8459,8 @@ fn run_hand_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult
     let palm_sz_f = palm_sz as f32;
 
     // Cached session: built once on first inference, reused thereafter.
-    let palm_sess = crate::ml::session_cache::get_bundled_session(
-        "hand_palm_detect", BUNDLED_HAND_MODEL,
-    )?;
+    let palm_sess =
+        crate::ml::session_cache::get_bundled_session("hand_palm_detect", BUNDLED_HAND_MODEL)?;
 
     let palm_resized = resize_image(&req.image, palm_sz, palm_sz);
     let ts = palm_sz as usize;
@@ -8180,22 +8468,30 @@ fn run_hand_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult
     for y in 0..ts {
         for x in 0..ts {
             let si = (y * ts + x) * 4;
-            palm_data[0 * ts * ts + y * ts + x] = palm_resized[si]   as f32 / 127.5 - 1.0;
-            palm_data[1 * ts * ts + y * ts + x] = palm_resized[si+1] as f32 / 127.5 - 1.0;
-            palm_data[2 * ts * ts + y * ts + x] = palm_resized[si+2] as f32 / 127.5 - 1.0;
+            palm_data[0 * ts * ts + y * ts + x] = palm_resized[si] as f32 / 127.5 - 1.0;
+            palm_data[1 * ts * ts + y * ts + x] = palm_resized[si + 1] as f32 / 127.5 - 1.0;
+            palm_data[2 * ts * ts + y * ts + x] = palm_resized[si + 2] as f32 / 127.5 - 1.0;
         }
     }
-    let palm_tensor = ort::value::Tensor::from_array(
-        ([1usize, 3, ts, ts], palm_data.into_boxed_slice())
-    ).map_err(|e| format!("Palm tensor: {}", e))?;
+    let palm_tensor =
+        ort::value::Tensor::from_array(([1usize, 3, ts, ts], palm_data.into_boxed_slice()))
+            .map_err(|e| format!("Palm tensor: {}", e))?;
 
     // Lock the cached session for the entire run + output-extract scope; outputs
     // borrow from the session guard, so the extraction (to owned f32 vecs) must
     // happen here before the guard is dropped.
     let tensors: Vec<(Vec<usize>, Vec<f32>)> = {
-        let mut sess = palm_sess.lock().map_err(|_| "Palm session lock poisoned".to_string())?;
-        let palm_input_name = sess.inputs().first().ok_or("No palm inputs")?.name().to_string();
-        let palm_outputs = sess.run(ort::inputs![&palm_input_name => palm_tensor])
+        let mut sess = palm_sess
+            .lock()
+            .map_err(|_| "Palm session lock poisoned".to_string())?;
+        let palm_input_name = sess
+            .inputs()
+            .first()
+            .ok_or("No palm inputs")?
+            .name()
+            .to_string();
+        let palm_outputs = sess
+            .run(ort::inputs![&palm_input_name => palm_tensor])
             .map_err(|e| format!("Palm run: {}", e))?;
         let mut tensors = Vec::new();
         for output in palm_outputs.iter() {
@@ -8205,15 +8501,17 @@ fn run_hand_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult
         }
         tensors
     };
-    let boxes_t = tensors.iter().find(|(d,_)| d.len()==3 && d[2]==18);
-    let scores_t = tensors.iter().find(|(d,_)| d.len()==3 && d[2]==1)
-        .or_else(|| tensors.iter().find(|(d,_)| d.len()==2 && d[1]==1));
+    let boxes_t = tensors.iter().find(|(d, _)| d.len() == 3 && d[2] == 18);
+    let scores_t = tensors
+        .iter()
+        .find(|(d, _)| d.len() == 3 && d[2] == 1)
+        .or_else(|| tensors.iter().find(|(d, _)| d.len() == 2 && d[1] == 1));
     let (boxes, scores) = match (boxes_t, scores_t) {
         (Some(b), Some(s)) => (b, s),
         _ => return Err("Palm detector output format unrecognized".into()),
     };
 
-    let num_anchors = boxes.0[1].min(scores.0[if scores.0.len()>=2 { 1 } else { 0 }]);
+    let num_anchors = boxes.0[1].min(scores.0[if scores.0.len() >= 2 { 1 } else { 0 }]);
     let anchors = generate_mediapipe_anchors(palm_sz);
 
     // Collect all detections above threshold, sort by score descending
@@ -8224,7 +8522,9 @@ fn run_hand_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult
     candidates.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
 
     if candidates.is_empty() {
-        let best = (0..num_anchors).map(|i| sigmoid(scores.1[i])).fold(0.0f32, f32::max);
+        let best = (0..num_anchors)
+            .map(|i| sigmoid(scores.1[i]))
+            .fold(0.0f32, f32::max);
         return Ok(MlInferenceResult {
             node_id: req.node_id,
             result_text: format!("No hands ({:.1}%)", best * 100.0),
@@ -8241,20 +8541,25 @@ fn run_hand_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult
     let decode_box = |idx: usize| -> (f32, f32, f32, f32) {
         let b = idx * 18;
         let (ax, ay) = anchors.get(idx).copied().unwrap_or((0.5, 0.5));
-        let cy = (ay + boxes.1[b]   / palm_sz_f) * img_h;
-        let cx = (ax + boxes.1[b+1] / palm_sz_f) * img_w;
-        let h  = (boxes.1[b+2].abs() / palm_sz_f * img_h).max(1.0);
-        let w  = (boxes.1[b+3].abs() / palm_sz_f * img_w).max(1.0);
-        (cx - w/2.0, cy - h/2.0, cx + w/2.0, cy + h/2.0)
+        let cy = (ay + boxes.1[b] / palm_sz_f) * img_h;
+        let cx = (ax + boxes.1[b + 1] / palm_sz_f) * img_w;
+        let h = (boxes.1[b + 2].abs() / palm_sz_f * img_h).max(1.0);
+        let w = (boxes.1[b + 3].abs() / palm_sz_f * img_w).max(1.0);
+        (cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0)
     };
-    let box_center = |(x1,y1,x2,y2): (f32,f32,f32,f32)| -> (f32,f32) {
-        ((x1+x2)/2.0, (y1+y2)/2.0)
+    let box_center = |(x1, y1, x2, y2): (f32, f32, f32, f32)| -> (f32, f32) {
+        ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
     };
-    let box_iou = |(ax1,ay1,ax2,ay2): (f32,f32,f32,f32), (bx1,by1,bx2,by2): (f32,f32,f32,f32)| -> f32 {
-        let ix1 = ax1.max(bx1); let iy1 = ay1.max(by1);
-        let ix2 = ax2.min(bx2); let iy2 = ay2.min(by2);
-        let inter = (ix2-ix1).max(0.0) * (iy2-iy1).max(0.0);
-        let a = (ax2-ax1)*(ay2-ay1); let b = (bx2-bx1)*(by2-by1);
+    let box_iou = |(ax1, ay1, ax2, ay2): (f32, f32, f32, f32),
+                   (bx1, by1, bx2, by2): (f32, f32, f32, f32)|
+     -> f32 {
+        let ix1 = ax1.max(bx1);
+        let iy1 = ay1.max(by1);
+        let ix2 = ax2.min(bx2);
+        let iy2 = ay2.min(by2);
+        let inter = (ix2 - ix1).max(0.0) * (iy2 - iy1).max(0.0);
+        let a = (ax2 - ax1) * (ay2 - ay1);
+        let b = (bx2 - bx1) * (by2 - by1);
         inter / (a + b - inter + 1e-6)
     };
     // Two hands must be at least 25% of the shorter image dimension apart
@@ -8268,13 +8573,20 @@ fn run_hand_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult
         let suppressed = selected.iter().any(|(_, sel)| {
             let box_b = decode_box(*sel);
             // Suppress if either heavily overlapping OR centers too close
-            if box_iou(box_a, box_b) > 0.3 { return true; }
+            if box_iou(box_a, box_b) > 0.3 {
+                return true;
+            }
             let (cb_x, cb_y) = box_center(box_b);
-            let dx = ca_x - cb_x; let dy = ca_y - cb_y;
-            (dx*dx + dy*dy).sqrt() < center_dist_threshold
+            let dx = ca_x - cb_x;
+            let dy = ca_y - cb_y;
+            (dx * dx + dy * dy).sqrt() < center_dist_threshold
         });
-        if !suppressed { selected.push((*score, *idx)); }
-        if selected.len() >= 2 { break; }
+        if !suppressed {
+            selected.push((*score, *idx));
+        }
+        if selected.len() >= 2 {
+            break;
+        }
     }
 
     // ────────────────────────────────────────────────────────────────────────
@@ -8286,12 +8598,13 @@ fn run_hand_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult
 
     // Cached landmark session: built once on first inference, reused thereafter.
     let lm_sess = crate::ml::session_cache::get_bundled_session(
-        "hand_landmark", BUNDLED_HAND_LANDMARK_MODEL,
+        "hand_landmark",
+        BUNDLED_HAND_LANDMARK_MODEL,
     )?;
     let lm_input_name = crate::ml::session_cache::input_name_of(&lm_sess)?;
 
     // Per-hand colour palettes for annotation
-    let hand_colors: [(u8,u8,u8); 2] = [(80,200,120), (100,160,255)]; // green, blue
+    let hand_colors: [(u8, u8, u8); 2] = [(80, 200, 120), (100, 160, 255)]; // green, blue
 
     let mut annotated = req.image.pixels.clone();
     let mut all_json: Vec<String> = Vec::new();
@@ -8302,34 +8615,42 @@ fn run_hand_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult
         let (ax, ay) = anchors.get(*anchor_idx).copied().unwrap_or((0.5, 0.5));
 
         // Decode 7 palm keypoints for crop centering
-        let mut kp_sum_x = 0.0f32; let mut kp_sum_y = 0.0f32;
-        let mut kp_min_x = f32::INFINITY; let mut kp_min_y = f32::INFINITY;
-        let mut kp_max_x = -f32::INFINITY; let mut kp_max_y = -f32::INFINITY;
+        let mut kp_sum_x = 0.0f32;
+        let mut kp_sum_y = 0.0f32;
+        let mut kp_min_x = f32::INFINITY;
+        let mut kp_min_y = f32::INFINITY;
+        let mut kp_max_x = -f32::INFINITY;
+        let mut kp_max_y = -f32::INFINITY;
         for k in 0..7usize {
             let ry = boxes.1[base + 4 + k * 2];
             let rx = boxes.1[base + 4 + k * 2 + 1];
             let kx = ((ax + rx / palm_sz_f) * img_w).clamp(0.0, img_w);
             let ky = ((ay + ry / palm_sz_f) * img_h).clamp(0.0, img_h);
-            kp_sum_x += kx; kp_sum_y += ky;
-            kp_min_x = kp_min_x.min(kx); kp_min_y = kp_min_y.min(ky);
-            kp_max_x = kp_max_x.max(kx); kp_max_y = kp_max_y.max(ky);
+            kp_sum_x += kx;
+            kp_sum_y += ky;
+            kp_min_x = kp_min_x.min(kx);
+            kp_min_y = kp_min_y.min(ky);
+            kp_max_x = kp_max_x.max(kx);
+            kp_max_y = kp_max_y.max(ky);
         }
         let kp_cx = kp_sum_x / 7.0;
         let kp_cy = kp_sum_y / 7.0;
-        let raw_bw = (boxes.1[base+3].abs() / palm_sz_f * img_w).max(30.0);
-        let raw_bh = (boxes.1[base+2].abs() / palm_sz_f * img_h).max(40.0);
+        let raw_bw = (boxes.1[base + 3].abs() / palm_sz_f * img_w).max(30.0);
+        let raw_bh = (boxes.1[base + 2].abs() / palm_sz_f * img_h).max(40.0);
 
         let half_w = (raw_bw * 0.6).max((kp_max_x - kp_min_x) * 0.8).max(40.0);
         let half_h = (raw_bh * 1.2).max((kp_max_y - kp_min_y) * 1.5).max(60.0);
         let half = half_w.max(half_h);
-        let crop_cx = kp_cx.max((ax + boxes.1[base+1] / palm_sz_f) * img_w);
-        let crop_cy = kp_cy.min((ay + boxes.1[base]   / palm_sz_f) * img_h) - half * 0.15;
+        let crop_cx = kp_cx.max((ax + boxes.1[base + 1] / palm_sz_f) * img_w);
+        let crop_cy = kp_cy.min((ay + boxes.1[base] / palm_sz_f) * img_h) - half * 0.15;
 
         let cx1 = (crop_cx - half * 1.1).max(0.0) as u32;
         let cy1 = (crop_cy - half * 1.2).max(0.0) as u32;
         let cx2 = (crop_cx + half * 1.1).min(img_w) as u32;
         let cy2 = (crop_cy + half * 0.8).min(img_h) as u32;
-        if cx2 <= cx1 || cy2 <= cy1 { continue; }
+        if cx2 <= cx1 || cy2 <= cy1 {
+            continue;
+        }
 
         // Build landmark input tensor
         let cropped = crop_and_resize(&req.image, cx1, cy1, cx2, cy2, lm_sz, lm_sz);
@@ -8337,27 +8658,32 @@ fn run_hand_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult
         for y in 0..lm_ts {
             for x in 0..lm_ts {
                 let si = (y * lm_ts + x) * 4;
-                lm_data[(y * lm_ts + x) * 3 + 0] = cropped[si]   as f32 / 255.0;
-                lm_data[(y * lm_ts + x) * 3 + 1] = cropped[si+1] as f32 / 255.0;
-                lm_data[(y * lm_ts + x) * 3 + 2] = cropped[si+2] as f32 / 255.0;
+                lm_data[(y * lm_ts + x) * 3 + 0] = cropped[si] as f32 / 255.0;
+                lm_data[(y * lm_ts + x) * 3 + 1] = cropped[si + 1] as f32 / 255.0;
+                lm_data[(y * lm_ts + x) * 3 + 2] = cropped[si + 2] as f32 / 255.0;
             }
         }
-        let lm_tensor = ort::value::Tensor::from_array(
-            ([1usize, lm_ts, lm_ts, 3], lm_data.into_boxed_slice())
-        ).map_err(|e| format!("Landmark tensor: {}", e))?;
+        let lm_tensor =
+            ort::value::Tensor::from_array(([1usize, lm_ts, lm_ts, 3], lm_data.into_boxed_slice()))
+                .map_err(|e| format!("Landmark tensor: {}", e))?;
 
         // Lock scope around run + extract; per-hand iteration locks briefly.
         let lm: Vec<f32> = {
-            let mut sess = lm_sess.lock()
+            let mut sess = lm_sess
+                .lock()
                 .map_err(|_| "Hand landmark session lock poisoned".to_string())?;
-            let lm_outputs = sess.run(ort::inputs![&lm_input_name => lm_tensor])
+            let lm_outputs = sess
+                .run(ort::inputs![&lm_input_name => lm_tensor])
                 .map_err(|e| format!("Landmark run: {}", e))?;
             let lm_out = &lm_outputs["Identity"];
-            let (_, lm_vals) = lm_out.try_extract_tensor::<f32>()
+            let (_, lm_vals) = lm_out
+                .try_extract_tensor::<f32>()
                 .map_err(|e| format!("Landmark extract: {}", e))?;
             lm_vals.to_vec()
         };
-        if lm.len() < 63 { continue; }
+        if lm.len() < 63 {
+            continue;
+        }
 
         let crop_w = (cx2 - cx1) as f32;
         let crop_h = (cy2 - cy1) as f32;
@@ -8366,16 +8692,28 @@ fn run_hand_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult
 
         let mut keypoints: Vec<(f32, f32, &'static str)> = Vec::with_capacity(21);
         for i in 0..21usize {
-            let kx = (lm[i*3]     * lm_scale * crop_w + cx1 as f32).clamp(0.0, img_w);
-            let ky = (lm[i*3 + 1] * lm_scale * crop_h + cy1 as f32).clamp(0.0, img_h);
+            let kx = (lm[i * 3] * lm_scale * crop_w + cx1 as f32).clamp(0.0, img_w);
+            let ky = (lm[i * 3 + 1] * lm_scale * crop_h + cy1 as f32).clamp(0.0, img_h);
             keypoints.push((kx, ky, HAND_LANDMARK_NAMES[i]));
         }
 
         // Bbox from 21 landmarks
-        let lm_min_x = keypoints.iter().map(|(x,_,_)| *x).fold(f32::INFINITY,  f32::min);
-        let lm_min_y = keypoints.iter().map(|(_,y,_)| *y).fold(f32::INFINITY,  f32::min);
-        let lm_max_x = keypoints.iter().map(|(x,_,_)| *x).fold(-f32::INFINITY, f32::max);
-        let lm_max_y = keypoints.iter().map(|(_,y,_)| *y).fold(-f32::INFINITY, f32::max);
+        let lm_min_x = keypoints
+            .iter()
+            .map(|(x, _, _)| *x)
+            .fold(f32::INFINITY, f32::min);
+        let lm_min_y = keypoints
+            .iter()
+            .map(|(_, y, _)| *y)
+            .fold(f32::INFINITY, f32::min);
+        let lm_max_x = keypoints
+            .iter()
+            .map(|(x, _, _)| *x)
+            .fold(-f32::INFINITY, f32::max);
+        let lm_max_y = keypoints
+            .iter()
+            .map(|(_, y, _)| *y)
+            .fold(-f32::INFINITY, f32::max);
         let pad = ((lm_max_x - lm_min_x).max(lm_max_y - lm_min_y) * 0.08).max(8.0);
         let bx1 = (lm_min_x - pad).max(0.0);
         let by1 = (lm_min_y - pad).max(0.0);
@@ -8388,8 +8726,19 @@ fn run_hand_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult
             if a < keypoints.len() && b < keypoints.len() {
                 let (ax, ay, _) = keypoints[a];
                 let (bx, by, _) = keypoints[b];
-                draw_line(&mut annotated, req.image.width, req.image.height,
-                    ax as i32, ay as i32, bx as i32, by as i32, lr, lg, lb, 2);
+                draw_line(
+                    &mut annotated,
+                    req.image.width,
+                    req.image.height,
+                    ax as i32,
+                    ay as i32,
+                    bx as i32,
+                    by as i32,
+                    lr,
+                    lg,
+                    lb,
+                    2,
+                );
             }
         }
         let fingertips = [4usize, 8, 12, 16, 20];
@@ -8402,22 +8751,100 @@ fn run_hand_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult
             } else {
                 (7, 4, lr, lg, lb)
             };
-            draw_circle(&mut annotated, req.image.width, req.image.height, *kx as i32, *ky as i32, outer_r, 20, 20, 20);
-            draw_circle(&mut annotated, req.image.width, req.image.height, *kx as i32, *ky as i32, inner_r, r, g, b);
-            draw_circle(&mut annotated, req.image.width, req.image.height, *kx as i32, *ky as i32, 2, 255, 255, 255);
+            draw_circle(
+                &mut annotated,
+                req.image.width,
+                req.image.height,
+                *kx as i32,
+                *ky as i32,
+                outer_r,
+                20,
+                20,
+                20,
+            );
+            draw_circle(
+                &mut annotated,
+                req.image.width,
+                req.image.height,
+                *kx as i32,
+                *ky as i32,
+                inner_r,
+                r,
+                g,
+                b,
+            );
+            draw_circle(
+                &mut annotated,
+                req.image.width,
+                req.image.height,
+                *kx as i32,
+                *ky as i32,
+                2,
+                255,
+                255,
+                255,
+            );
         }
         // Bbox with hand-coloured border
         let (bx1i, by1i, bx2i, by2i) = (bx1 as i32, by1 as i32, bx2 as i32, by2 as i32);
         for t in 0..2i32 {
-            draw_line(&mut annotated, req.image.width, req.image.height, bx1i, by1i+t, bx2i, by1i+t, lr, lg, lb, 1);
-            draw_line(&mut annotated, req.image.width, req.image.height, bx2i-t, by1i, bx2i-t, by2i, lr, lg, lb, 1);
-            draw_line(&mut annotated, req.image.width, req.image.height, bx2i, by2i-t, bx1i, by2i-t, lr, lg, lb, 1);
-            draw_line(&mut annotated, req.image.width, req.image.height, bx1i+t, by2i, bx1i+t, by1i, lr, lg, lb, 1);
+            draw_line(
+                &mut annotated,
+                req.image.width,
+                req.image.height,
+                bx1i,
+                by1i + t,
+                bx2i,
+                by1i + t,
+                lr,
+                lg,
+                lb,
+                1,
+            );
+            draw_line(
+                &mut annotated,
+                req.image.width,
+                req.image.height,
+                bx2i - t,
+                by1i,
+                bx2i - t,
+                by2i,
+                lr,
+                lg,
+                lb,
+                1,
+            );
+            draw_line(
+                &mut annotated,
+                req.image.width,
+                req.image.height,
+                bx2i,
+                by2i - t,
+                bx1i,
+                by2i - t,
+                lr,
+                lg,
+                lb,
+                1,
+            );
+            draw_line(
+                &mut annotated,
+                req.image.width,
+                req.image.height,
+                bx1i + t,
+                by2i,
+                bx1i + t,
+                by1i,
+                lr,
+                lg,
+                lb,
+                1,
+            );
         }
 
         // JSON — tag each item with hand index
         let h = hand_idx;
-        result_text.push_str(&format!("Hand {} ({:.1}%)\n", h+1, hand_score * 100.0));
+        result_text.push_str(&format!("Hand {} ({:.1}%)\n", h + 1, hand_score * 100.0));
         all_json.push(format!(
             r#"{{"type":"hand_bbox","hand":{h},"x1":{:.1},"y1":{:.1},"x2":{:.1},"y2":{:.1},"confidence":{:.4}}}"#,
             bx1, by1, bx2, by2, hand_score
@@ -8431,7 +8858,7 @@ fn run_hand_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult
     }
 
     let hand_count = selected.len();
-    let best_score = selected.first().map(|(s,_)| *s).unwrap_or(0.0);
+    let best_score = selected.first().map(|(s, _)| *s).unwrap_or(0.0);
     let status = match hand_count {
         0 => "No hands".to_string(),
         1 => format!("1 hand ({:.1}%)", best_score * 100.0),
@@ -8459,7 +8886,9 @@ fn run_hand_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult
 //
 // Used by the legacy ML Model node preset. Hand Tracking uses run_hand_tracking().
 
-fn sigmoid(x: f32) -> f32 { 1.0 / (1.0 + (-x).exp()) }
+fn sigmoid(x: f32) -> f32 {
+    1.0 / (1.0 + (-x).exp())
+}
 
 /// Generate MediaPipe SSD anchor centers in [0,1] normalized space.
 /// For input_sz=256, strides [8,16,32,32,32], 2 anchors/cell → exactly 2944 anchors.
@@ -8482,7 +8911,10 @@ pub fn generate_mediapipe_anchors(input_sz: u32) -> Vec<(f32, f32)> {
     anchors
 }
 
-fn parse_hand_detection(req: &MlInferenceRequest, outputs: &ort::session::SessionOutputs) -> Result<MlInferenceResult, String> {
+fn parse_hand_detection(
+    req: &MlInferenceRequest,
+    outputs: &ort::session::SessionOutputs,
+) -> Result<MlInferenceResult, String> {
     let img_w = req.image.width as f32;
     let img_h = req.image.height as f32;
     // Collect raw tensors
@@ -8519,7 +8951,10 @@ fn parse_hand_detection(req: &MlInferenceRequest, outputs: &ort::session::Sessio
             // Generic fallback — show raw output info
             return Ok(MlInferenceResult {
                 node_id: req.node_id,
-                result_text: format!("Hand Detection: unexpected output format\n{}", output_info.trim()),
+                result_text: format!(
+                    "Hand Detection: unexpected output format\n{}",
+                    output_info.trim()
+                ),
                 result_json: "[]".into(),
                 annotated_frame: None,
                 status: "No detections (format unknown)".into(),
@@ -8540,12 +8975,25 @@ fn parse_hand_detection(req: &MlInferenceRequest, outputs: &ort::session::Sessio
         }
     }
 
-    let palm_kp_names = ["wrist", "index_mcp", "middle_mcp", "ring_mcp", "pinky_mcp", "index_tip", "thumb_tip"];
+    let palm_kp_names = [
+        "wrist",
+        "index_mcp",
+        "middle_mcp",
+        "ring_mcp",
+        "pinky_mcp",
+        "index_tip",
+        "thumb_tip",
+    ];
 
     if best_score < req.confidence {
         return Ok(MlInferenceResult {
             node_id: req.node_id,
-            result_text: format!("No hand detected (best score {:.1}%, threshold {:.0}%)\nOutputs: {}", best_score * 100.0, req.confidence * 100.0, output_info.trim()),
+            result_text: format!(
+                "No hand detected (best score {:.1}%, threshold {:.0}%)\nOutputs: {}",
+                best_score * 100.0,
+                req.confidence * 100.0,
+                output_info.trim()
+            ),
             result_json: "[]".into(),
             annotated_frame: None,
             status: format!("No hand ({:.1}%)", best_score * 100.0),
@@ -8574,8 +9022,8 @@ fn parse_hand_detection(req: &MlInferenceRequest, outputs: &ort::session::Sessio
     // Decode 7 palm keypoints — MediaPipe stores (y, x) per pair
     let mut keypoints: Vec<(f32, f32, &'static str)> = Vec::new();
     for k in 0..7usize {
-        let raw_kp_y = boxes.1[base + 4 + k * 2];       // y offset comes first
-        let raw_kp_x = boxes.1[base + 4 + k * 2 + 1];   // x offset comes second
+        let raw_kp_y = boxes.1[base + 4 + k * 2]; // y offset comes first
+        let raw_kp_x = boxes.1[base + 4 + k * 2 + 1]; // x offset comes second
         let kp_x = ((ax + raw_kp_x / input_sz_f) * img_w).clamp(0.0, img_w);
         let kp_y = ((ay + raw_kp_y / input_sz_f) * img_h).clamp(0.0, img_h);
         keypoints.push((kp_x, kp_y, palm_kp_names[k]));
@@ -8584,8 +9032,8 @@ fn parse_hand_detection(req: &MlInferenceRequest, outputs: &ort::session::Sessio
     // Decode bbox center — [cy, cx, h, w] order
     let raw_cy = boxes.1[base];
     let raw_cx = boxes.1[base + 1];
-    let raw_h  = boxes.1[base + 2];
-    let raw_w  = boxes.1[base + 3];
+    let raw_h = boxes.1[base + 2];
+    let raw_w = boxes.1[base + 3];
     let cx = ((ax + raw_cx / input_sz_f) * img_w).clamp(0.0, img_w);
     let cy = ((ay + raw_cy / input_sz_f) * img_h).clamp(0.0, img_h);
     let bw = (raw_w / input_sz_f * img_w).abs();
@@ -8593,10 +9041,22 @@ fn parse_hand_detection(req: &MlInferenceRequest, outputs: &ort::session::Sessio
 
     // Bounding box: derive from keypoint extents (covers full detected region)
     // and cross-check against decoded center — use whichever is larger.
-    let kp_min_x = keypoints.iter().map(|(x, _, _)| *x).fold(f32::INFINITY, f32::min);
-    let kp_min_y = keypoints.iter().map(|(_, y, _)| *y).fold(f32::INFINITY, f32::min);
-    let kp_max_x = keypoints.iter().map(|(x, _, _)| *x).fold(-f32::INFINITY, f32::max);
-    let kp_max_y = keypoints.iter().map(|(_, y, _)| *y).fold(-f32::INFINITY, f32::max);
+    let kp_min_x = keypoints
+        .iter()
+        .map(|(x, _, _)| *x)
+        .fold(f32::INFINITY, f32::min);
+    let kp_min_y = keypoints
+        .iter()
+        .map(|(_, y, _)| *y)
+        .fold(f32::INFINITY, f32::min);
+    let kp_max_x = keypoints
+        .iter()
+        .map(|(x, _, _)| *x)
+        .fold(-f32::INFINITY, f32::max);
+    let kp_max_y = keypoints
+        .iter()
+        .map(|(_, y, _)| *y)
+        .fold(-f32::INFINITY, f32::max);
     // Padding = 25% of the keypoint span, at least 30px
     let pad = (((kp_max_x - kp_min_x).max(kp_max_y - kp_min_y)) * 0.25).max(30.0);
     let kp_x1 = (kp_min_x - pad).max(0.0);
@@ -8609,7 +9069,12 @@ fn parse_hand_detection(req: &MlInferenceRequest, outputs: &ort::session::Sessio
         let dy1 = (cy - bh / 2.0).max(0.0);
         let dx2 = (cx + bw / 2.0).min(img_w);
         let dy2 = (cy + bh / 2.0).min(img_h);
-        (kp_x1.min(dx1), kp_y1.min(dy1), kp_x2.max(dx2), kp_y2.max(dy2))
+        (
+            kp_x1.min(dx1),
+            kp_y1.min(dy1),
+            kp_x2.max(dx2),
+            kp_y2.max(dy2),
+        )
     } else {
         (kp_x1, kp_y1, kp_x2, kp_y2)
     };
@@ -8617,7 +9082,11 @@ fn parse_hand_detection(req: &MlInferenceRequest, outputs: &ort::session::Sessio
     // Build result text + JSON
     let mut result = format!(
         "Hand detected {:.1}%\nBBox: ({:.0},{:.0})→({:.0},{:.0})\n",
-        best_score * 100.0, x1, y1, x2, y2
+        best_score * 100.0,
+        x1,
+        y1,
+        x2,
+        y2
     );
     let mut json_items: Vec<String> = Vec::new();
 
@@ -8638,37 +9107,133 @@ fn parse_hand_detection(req: &MlInferenceRequest, outputs: &ort::session::Sessio
     let mut annotated = req.image.pixels.clone();
 
     // Draw bounding box (bright green, thick)
-    let x1i = x1 as i32; let y1i = y1 as i32;
-    let x2i = x2 as i32; let y2i = y2 as i32;
+    let x1i = x1 as i32;
+    let y1i = y1 as i32;
+    let x2i = x2 as i32;
+    let y2i = y2 as i32;
     for t in 0..3i32 {
-        draw_line(&mut annotated, req.image.width, req.image.height, x1i, y1i+t, x2i, y1i+t, 0, 230, 80, 1);
-        draw_line(&mut annotated, req.image.width, req.image.height, x2i-t, y1i, x2i-t, y2i, 0, 230, 80, 1);
-        draw_line(&mut annotated, req.image.width, req.image.height, x2i, y2i-t, x1i, y2i-t, 0, 230, 80, 1);
-        draw_line(&mut annotated, req.image.width, req.image.height, x1i+t, y2i, x1i+t, y1i, 0, 230, 80, 1);
+        draw_line(
+            &mut annotated,
+            req.image.width,
+            req.image.height,
+            x1i,
+            y1i + t,
+            x2i,
+            y1i + t,
+            0,
+            230,
+            80,
+            1,
+        );
+        draw_line(
+            &mut annotated,
+            req.image.width,
+            req.image.height,
+            x2i - t,
+            y1i,
+            x2i - t,
+            y2i,
+            0,
+            230,
+            80,
+            1,
+        );
+        draw_line(
+            &mut annotated,
+            req.image.width,
+            req.image.height,
+            x2i,
+            y2i - t,
+            x1i,
+            y2i - t,
+            0,
+            230,
+            80,
+            1,
+        );
+        draw_line(
+            &mut annotated,
+            req.image.width,
+            req.image.height,
+            x1i + t,
+            y2i,
+            x1i + t,
+            y1i,
+            0,
+            230,
+            80,
+            1,
+        );
     }
 
     // Draw palm keypoints (larger bright circles for visibility)
     for (kx, ky, _) in &keypoints {
         // Outer ring (dark border for contrast)
-        draw_circle(&mut annotated, req.image.width, req.image.height,
-                    *kx as i32, *ky as i32, 10, 30, 30, 30);
+        draw_circle(
+            &mut annotated,
+            req.image.width,
+            req.image.height,
+            *kx as i32,
+            *ky as i32,
+            10,
+            30,
+            30,
+            30,
+        );
         // Filled orange circle
-        draw_circle(&mut annotated, req.image.width, req.image.height,
-                    *kx as i32, *ky as i32, 8, 255, 160, 0);
+        draw_circle(
+            &mut annotated,
+            req.image.width,
+            req.image.height,
+            *kx as i32,
+            *ky as i32,
+            8,
+            255,
+            160,
+            0,
+        );
         // Bright white center dot
-        draw_circle(&mut annotated, req.image.width, req.image.height,
-                    *kx as i32, *ky as i32, 3, 255, 255, 255);
+        draw_circle(
+            &mut annotated,
+            req.image.width,
+            req.image.height,
+            *kx as i32,
+            *ky as i32,
+            3,
+            255,
+            255,
+            255,
+        );
     }
 
     // Draw skeleton lines between keypoints (wrist→each mcp, and mcp→tip)
-    let skeleton = [(0,1),(0,2),(0,3),(0,4),(0,5),(1,5),(2,5),(4,6)];
+    let skeleton = [
+        (0, 1),
+        (0, 2),
+        (0, 3),
+        (0, 4),
+        (0, 5),
+        (1, 5),
+        (2, 5),
+        (4, 6),
+    ];
     for (a, b) in skeleton {
         if a < keypoints.len() && b < keypoints.len() {
             let (ax, ay, _) = keypoints[a];
             let (bx, by, _) = keypoints[b];
-            draw_line(&mut annotated, req.image.width, req.image.height,
-                      ax as i32, ay as i32, bx as i32, by as i32,
-                      255, 200, 50, 1);
+            draw_line(
+                &mut annotated,
+                req.image.width,
+                req.image.height,
+                ax as i32,
+                ay as i32,
+                bx as i32,
+                by as i32,
+                255,
+                200,
+                50,
+                1,
+            );
         }
     }
 
@@ -8690,7 +9255,10 @@ fn parse_hand_detection(req: &MlInferenceRequest, outputs: &ort::session::Sessio
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 struct Detection {
-    x1: f32, y1: f32, x2: f32, y2: f32,
+    x1: f32,
+    y1: f32,
+    x2: f32,
+    y2: f32,
     class: usize,
     confidence: f32,
 }
@@ -8703,7 +9271,9 @@ fn load_labels(path: &str, fallback_count: usize) -> Vec<String> {
             .map(|l| l.trim().to_string())
             .collect()
     } else {
-        (0..fallback_count).map(|i| format!("class_{}", i)).collect()
+        (0..fallback_count)
+            .map(|i| format!("class_{}", i))
+            .collect()
     }
 }
 
@@ -8733,16 +9303,16 @@ fn generate_blazeface_anchors(input_sz: u32) -> Vec<(f32, f32)> {
 
 // Named face landmarks — map MediaPipe indices to human-readable names.
 const FACE_NAMED_LANDMARKS: [(usize, &str); 15] = [
-    (1,   "nose_tip"),
-    (10,  "forehead"),
-    (33,  "left_eye_inner"),
+    (1, "nose_tip"),
+    (10, "forehead"),
+    (33, "left_eye_inner"),
     (133, "left_eye_outer"),
     (362, "right_eye_inner"),
     (263, "right_eye_outer"),
-    (61,  "mouth_left"),
+    (61, "mouth_left"),
     (291, "mouth_right"),
-    (0,   "upper_lip"),
-    (17,  "lower_lip"),
+    (0, "upper_lip"),
+    (17, "lower_lip"),
     (152, "chin"),
     (234, "left_cheek"),
     (454, "right_cheek"),
@@ -8752,45 +9322,140 @@ const FACE_NAMED_LANDMARKS: [(usize, &str); 15] = [
 
 // Face mesh contour connections — subsets of MediaPipe face mesh topology.
 // These draw the face outline, eyes, eyebrows, lips, nose, and iris.
-const FACE_OVAL: [(usize,usize); 36] = [
-    (10,338),(338,297),(297,332),(332,284),(284,251),(251,389),(389,356),(356,454),
-    (454,323),(323,361),(361,288),(288,397),(397,365),(365,379),(379,378),(378,400),
-    (400,377),(377,152),(152,148),(148,176),(176,149),(149,150),(150,136),(136,172),
-    (172,58),(58,132),(132,93),(93,234),(234,127),(127,162),(162,21),(21,54),
-    (54,103),(103,67),(67,109),(109,10),
+const FACE_OVAL: [(usize, usize); 36] = [
+    (10, 338),
+    (338, 297),
+    (297, 332),
+    (332, 284),
+    (284, 251),
+    (251, 389),
+    (389, 356),
+    (356, 454),
+    (454, 323),
+    (323, 361),
+    (361, 288),
+    (288, 397),
+    (397, 365),
+    (365, 379),
+    (379, 378),
+    (378, 400),
+    (400, 377),
+    (377, 152),
+    (152, 148),
+    (148, 176),
+    (176, 149),
+    (149, 150),
+    (150, 136),
+    (136, 172),
+    (172, 58),
+    (58, 132),
+    (132, 93),
+    (93, 234),
+    (234, 127),
+    (127, 162),
+    (162, 21),
+    (21, 54),
+    (54, 103),
+    (103, 67),
+    (67, 109),
+    (109, 10),
 ];
 
-const FACE_LIPS_OUTER: [(usize,usize); 20] = [
-    (61,146),(146,91),(91,181),(181,84),(84,17),(17,314),(314,405),(405,321),
-    (321,375),(375,291),(291,409),(409,270),(270,269),(269,267),(267,0),(0,37),
-    (37,39),(39,40),(40,185),(185,61),
+const FACE_LIPS_OUTER: [(usize, usize); 20] = [
+    (61, 146),
+    (146, 91),
+    (91, 181),
+    (181, 84),
+    (84, 17),
+    (17, 314),
+    (314, 405),
+    (405, 321),
+    (321, 375),
+    (375, 291),
+    (291, 409),
+    (409, 270),
+    (270, 269),
+    (269, 267),
+    (267, 0),
+    (0, 37),
+    (37, 39),
+    (39, 40),
+    (40, 185),
+    (185, 61),
 ];
 
-const FACE_LIPS_INNER: [(usize,usize); 8] = [
-    (78,95),(95,88),(88,178),(178,87),(87,14),(14,317),(317,402),(402,78),
+const FACE_LIPS_INNER: [(usize, usize); 8] = [
+    (78, 95),
+    (95, 88),
+    (88, 178),
+    (178, 87),
+    (87, 14),
+    (14, 317),
+    (317, 402),
+    (402, 78),
 ];
 
-const FACE_LEFT_EYE: [(usize,usize); 16] = [
-    (33,7),(7,163),(163,144),(144,145),(145,153),(153,154),(154,155),(155,133),
-    (33,246),(246,161),(161,160),(160,159),(159,158),(158,157),(157,173),(173,133),
+const FACE_LEFT_EYE: [(usize, usize); 16] = [
+    (33, 7),
+    (7, 163),
+    (163, 144),
+    (144, 145),
+    (145, 153),
+    (153, 154),
+    (154, 155),
+    (155, 133),
+    (33, 246),
+    (246, 161),
+    (161, 160),
+    (160, 159),
+    (159, 158),
+    (158, 157),
+    (157, 173),
+    (173, 133),
 ];
 
-const FACE_RIGHT_EYE: [(usize,usize); 16] = [
-    (362,382),(382,381),(381,380),(380,374),(374,373),(373,390),(390,249),(249,263),
-    (362,398),(398,384),(384,385),(385,386),(386,387),(387,388),(388,466),(466,263),
+const FACE_RIGHT_EYE: [(usize, usize); 16] = [
+    (362, 382),
+    (382, 381),
+    (381, 380),
+    (380, 374),
+    (374, 373),
+    (373, 390),
+    (390, 249),
+    (249, 263),
+    (362, 398),
+    (398, 384),
+    (384, 385),
+    (385, 386),
+    (386, 387),
+    (387, 388),
+    (388, 466),
+    (466, 263),
 ];
 
-const FACE_LEFT_EYEBROW: [(usize,usize); 8] = [
-    (46,53),(53,52),(52,65),(65,55),(70,63),(63,105),(105,66),(66,107),
+const FACE_LEFT_EYEBROW: [(usize, usize); 8] = [
+    (46, 53),
+    (53, 52),
+    (52, 65),
+    (65, 55),
+    (70, 63),
+    (63, 105),
+    (105, 66),
+    (66, 107),
 ];
 
-const FACE_RIGHT_EYEBROW: [(usize,usize); 8] = [
-    (276,283),(283,282),(282,295),(295,285),(300,293),(293,334),(334,296),(296,336),
+const FACE_RIGHT_EYEBROW: [(usize, usize); 8] = [
+    (276, 283),
+    (283, 282),
+    (282, 295),
+    (295, 285),
+    (300, 293),
+    (293, 334),
+    (334, 296),
+    (296, 336),
 ];
 
-const FACE_NOSE_BRIDGE: [(usize,usize); 4] = [
-    (168,6),(6,197),(197,195),(195,5),
-];
+const FACE_NOSE_BRIDGE: [(usize, usize); 4] = [(168, 6), (6, 197), (197, 195), (195, 5)];
 
 pub fn run_face_tracking(req: &MlInferenceRequest) -> MlInferenceResult {
     match run_face_tracking_inner(req) {
@@ -8806,8 +9471,7 @@ pub fn run_face_tracking(req: &MlInferenceRequest) -> MlInferenceResult {
 }
 
 fn run_face_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult, String> {
-
-    let img_w = req.image.width  as f32;
+    let img_w = req.image.width as f32;
     let img_h = req.image.height as f32;
 
     // ────────────────────────────────────────────────────────────────────────
@@ -8817,9 +9481,8 @@ fn run_face_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult
     let ts = face_sz as usize;
     let face_sz_f = face_sz as f32;
 
-    let face_sess = crate::ml::session_cache::get_bundled_session(
-        "face_detect", BUNDLED_FACE_MODEL,
-    )?;
+    let face_sess =
+        crate::ml::session_cache::get_bundled_session("face_detect", BUNDLED_FACE_MODEL)?;
 
     // Resize input image to 128×128
     let face_resized = resize_image(&req.image, face_sz, face_sz);
@@ -8830,22 +9493,24 @@ fn run_face_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult
         for x in 0..ts {
             let si = (y * ts + x) * 4;
             let di = (y * ts + x) * 3;
-            face_data[di]     = face_resized[si]   as f32 / 127.5 - 1.0;
-            face_data[di + 1] = face_resized[si+1] as f32 / 127.5 - 1.0;
-            face_data[di + 2] = face_resized[si+2] as f32 / 127.5 - 1.0;
+            face_data[di] = face_resized[si] as f32 / 127.5 - 1.0;
+            face_data[di + 1] = face_resized[si + 1] as f32 / 127.5 - 1.0;
+            face_data[di + 2] = face_resized[si + 2] as f32 / 127.5 - 1.0;
         }
     }
-    let face_tensor = ort::value::Tensor::from_array(
-        ([1usize, ts, ts, 3], face_data.into_boxed_slice())
-    ).map_err(|e| format!("Face tensor: {}", e))?;
+    let face_tensor =
+        ort::value::Tensor::from_array(([1usize, ts, ts, 3], face_data.into_boxed_slice()))
+            .map_err(|e| format!("Face tensor: {}", e))?;
 
     let face_input_name = crate::ml::session_cache::input_name_of(&face_sess)?;
     // Lock scope around run + extraction; drops guard before the downstream
     // landmark loop so the face-detect model isn't held against concurrent use.
     let tensors: Vec<(Vec<usize>, Vec<f32>)> = {
-        let mut sess = face_sess.lock()
+        let mut sess = face_sess
+            .lock()
             .map_err(|_| "Face session lock poisoned".to_string())?;
-        let face_outputs = sess.run(ort::inputs![&face_input_name => face_tensor])
+        let face_outputs = sess
+            .run(ort::inputs![&face_input_name => face_tensor])
             .map_err(|e| format!("Face run: {}", e))?;
         let mut tensors = Vec::new();
         for output in face_outputs.iter() {
@@ -8856,15 +9521,17 @@ fn run_face_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult
         tensors
     };
 
-    let boxes_t = tensors.iter().find(|(d,_)| d.len()==3 && d[2]==16);
-    let scores_t = tensors.iter().find(|(d,_)| d.len()==3 && d[2]==1)
-        .or_else(|| tensors.iter().find(|(d,_)| d.len()==2 && d[1]==1));
+    let boxes_t = tensors.iter().find(|(d, _)| d.len() == 3 && d[2] == 16);
+    let scores_t = tensors
+        .iter()
+        .find(|(d, _)| d.len() == 3 && d[2] == 1)
+        .or_else(|| tensors.iter().find(|(d, _)| d.len() == 2 && d[1] == 1));
     let (boxes, scores) = match (boxes_t, scores_t) {
         (Some(b), Some(s)) => (b, s),
         _ => return Err("Face detector output format unrecognized".into()),
     };
 
-    let num_anchors = boxes.0[1].min(scores.0[if scores.0.len()>=2 { 1 } else { 0 }]);
+    let num_anchors = boxes.0[1].min(scores.0[if scores.0.len() >= 2 { 1 } else { 0 }]);
     let anchors = generate_blazeface_anchors(face_sz);
 
     // Collect detections above threshold
@@ -8875,7 +9542,9 @@ fn run_face_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult
     candidates.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
 
     if candidates.is_empty() {
-        let best = (0..num_anchors).map(|i| sigmoid(scores.1[i])).fold(0.0f32, f32::max);
+        let best = (0..num_anchors)
+            .map(|i| sigmoid(scores.1[i]))
+            .fold(0.0f32, f32::max);
         return Ok(MlInferenceResult {
             node_id: req.node_id,
             result_text: format!("No faces ({:.1}%)", best * 100.0),
@@ -8890,20 +9559,25 @@ fn run_face_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult
     let decode_box = |idx: usize| -> (f32, f32, f32, f32) {
         let b = idx * 16;
         let (ax, ay) = anchors.get(idx).copied().unwrap_or((0.5, 0.5));
-        let cy = (ay + boxes.1[b]   / face_sz_f) * img_h;
-        let cx = (ax + boxes.1[b+1] / face_sz_f) * img_w;
-        let h  = (boxes.1[b+2].abs() / face_sz_f * img_h).max(1.0);
-        let w  = (boxes.1[b+3].abs() / face_sz_f * img_w).max(1.0);
-        (cx - w/2.0, cy - h/2.0, cx + w/2.0, cy + h/2.0)
+        let cy = (ay + boxes.1[b] / face_sz_f) * img_h;
+        let cx = (ax + boxes.1[b + 1] / face_sz_f) * img_w;
+        let h = (boxes.1[b + 2].abs() / face_sz_f * img_h).max(1.0);
+        let w = (boxes.1[b + 3].abs() / face_sz_f * img_w).max(1.0);
+        (cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0)
     };
-    let box_center = |(x1,y1,x2,y2): (f32,f32,f32,f32)| -> (f32,f32) {
-        ((x1+x2)/2.0, (y1+y2)/2.0)
+    let box_center = |(x1, y1, x2, y2): (f32, f32, f32, f32)| -> (f32, f32) {
+        ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
     };
-    let box_iou = |(ax1,ay1,ax2,ay2): (f32,f32,f32,f32), (bx1,by1,bx2,by2): (f32,f32,f32,f32)| -> f32 {
-        let ix1 = ax1.max(bx1); let iy1 = ay1.max(by1);
-        let ix2 = ax2.min(bx2); let iy2 = ay2.min(by2);
-        let inter = (ix2-ix1).max(0.0) * (iy2-iy1).max(0.0);
-        let a = (ax2-ax1)*(ay2-ay1); let b = (bx2-bx1)*(by2-by1);
+    let box_iou = |(ax1, ay1, ax2, ay2): (f32, f32, f32, f32),
+                   (bx1, by1, bx2, by2): (f32, f32, f32, f32)|
+     -> f32 {
+        let ix1 = ax1.max(bx1);
+        let iy1 = ay1.max(by1);
+        let ix2 = ax2.min(bx2);
+        let iy2 = ay2.min(by2);
+        let inter = (ix2 - ix1).max(0.0) * (iy2 - iy1).max(0.0);
+        let a = (ax2 - ax1) * (ay2 - ay1);
+        let b = (bx2 - bx1) * (by2 - by1);
         inter / (a + b - inter + 1e-6)
     };
     let min_dim = img_w.min(img_h);
@@ -8915,13 +9589,20 @@ fn run_face_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult
         let (ca_x, ca_y) = box_center(box_a);
         let suppressed = selected.iter().any(|(_, sel)| {
             let box_b = decode_box(*sel);
-            if box_iou(box_a, box_b) > 0.3 { return true; }
+            if box_iou(box_a, box_b) > 0.3 {
+                return true;
+            }
             let (cb_x, cb_y) = box_center(box_b);
-            let dx = ca_x - cb_x; let dy = ca_y - cb_y;
-            (dx*dx + dy*dy).sqrt() < center_dist_threshold
+            let dx = ca_x - cb_x;
+            let dy = ca_y - cb_y;
+            (dx * dx + dy * dy).sqrt() < center_dist_threshold
         });
-        if !suppressed { selected.push((*score, *idx)); }
-        if selected.len() >= 1 { break; } // single face only
+        if !suppressed {
+            selected.push((*score, *idx));
+        }
+        if selected.len() >= 1 {
+            break;
+        } // single face only
     }
 
     // ────────────────────────────────────────────────────────────────────────
@@ -8932,12 +9613,13 @@ fn run_face_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult
     let lm_sz_f = lm_sz as f32;
 
     let lm_sess = crate::ml::session_cache::get_bundled_session(
-        "face_landmark", BUNDLED_FACE_LANDMARK_MODEL,
+        "face_landmark",
+        BUNDLED_FACE_LANDMARK_MODEL,
     )?;
     let lm_input_name = crate::ml::session_cache::input_name_of(&lm_sess)?;
 
     // Per-face colour palettes
-    let face_colors: [(u8,u8,u8); 2] = [(100,220,200), (220,120,200)]; // cyan, pink
+    let face_colors: [(u8, u8, u8); 2] = [(100, 220, 200), (220, 120, 200)]; // cyan, pink
 
     let mut annotated = req.image.pixels.clone();
     let mut all_json: Vec<String> = Vec::new();
@@ -8948,22 +9630,28 @@ fn run_face_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult
         let (ax, ay) = anchors.get(*anchor_idx).copied().unwrap_or((0.5, 0.5));
 
         // Decode 6 face keypoints for crop centering
-        let mut kp_sum_x = 0.0f32; let mut kp_sum_y = 0.0f32;
-        let mut kp_min_x = f32::INFINITY; let mut kp_min_y = f32::INFINITY;
-        let mut kp_max_x = -f32::INFINITY; let mut kp_max_y = -f32::INFINITY;
+        let mut kp_sum_x = 0.0f32;
+        let mut kp_sum_y = 0.0f32;
+        let mut kp_min_x = f32::INFINITY;
+        let mut kp_min_y = f32::INFINITY;
+        let mut kp_max_x = -f32::INFINITY;
+        let mut kp_max_y = -f32::INFINITY;
         for k in 0..6usize {
             let ry = boxes.1[base + 4 + k * 2];
             let rx = boxes.1[base + 4 + k * 2 + 1];
             let kx = ((ax + rx / face_sz_f) * img_w).clamp(0.0, img_w);
             let ky = ((ay + ry / face_sz_f) * img_h).clamp(0.0, img_h);
-            kp_sum_x += kx; kp_sum_y += ky;
-            kp_min_x = kp_min_x.min(kx); kp_min_y = kp_min_y.min(ky);
-            kp_max_x = kp_max_x.max(kx); kp_max_y = kp_max_y.max(ky);
+            kp_sum_x += kx;
+            kp_sum_y += ky;
+            kp_min_x = kp_min_x.min(kx);
+            kp_min_y = kp_min_y.min(ky);
+            kp_max_x = kp_max_x.max(kx);
+            kp_max_y = kp_max_y.max(ky);
         }
         let kp_cx = kp_sum_x / 6.0;
         let kp_cy = kp_sum_y / 6.0;
-        let raw_bw = (boxes.1[base+3].abs() / face_sz_f * img_w).max(30.0);
-        let raw_bh = (boxes.1[base+2].abs() / face_sz_f * img_h).max(30.0);
+        let raw_bw = (boxes.1[base + 3].abs() / face_sz_f * img_w).max(30.0);
+        let raw_bh = (boxes.1[base + 2].abs() / face_sz_f * img_h).max(30.0);
 
         // Face crop — square, padded generously to include full face
         let half_w = (raw_bw * 0.7).max((kp_max_x - kp_min_x) * 0.8).max(40.0);
@@ -8973,10 +9661,12 @@ fn run_face_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult
         let crop_cy = kp_cy;
 
         let cx1 = (crop_cx - half * 1.3).max(0.0) as u32;
-        let cy1 = (crop_cy - half * 1.5).max(0.0) as u32;  // more space above for forehead
+        let cy1 = (crop_cy - half * 1.5).max(0.0) as u32; // more space above for forehead
         let cx2 = (crop_cx + half * 1.3).min(img_w) as u32;
         let cy2 = (crop_cy + half * 1.1).min(img_h) as u32;
-        if cx2 <= cx1 || cy2 <= cy1 { continue; }
+        if cx2 <= cx1 || cy2 <= cy1 {
+            continue;
+        }
 
         // Build landmark input tensor (NCHW for this model)
         let cropped = crop_and_resize(&req.image, cx1, cy1, cx2, cy2, lm_sz, lm_sz);
@@ -8985,33 +9675,40 @@ fn run_face_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult
             for x in 0..lm_ts {
                 let si = (y * lm_ts + x) * 4;
                 // NCHW: channel-first layout
-                lm_data[0 * lm_ts * lm_ts + y * lm_ts + x] = cropped[si]   as f32 / 255.0;
-                lm_data[1 * lm_ts * lm_ts + y * lm_ts + x] = cropped[si+1] as f32 / 255.0;
-                lm_data[2 * lm_ts * lm_ts + y * lm_ts + x] = cropped[si+2] as f32 / 255.0;
+                lm_data[0 * lm_ts * lm_ts + y * lm_ts + x] = cropped[si] as f32 / 255.0;
+                lm_data[1 * lm_ts * lm_ts + y * lm_ts + x] = cropped[si + 1] as f32 / 255.0;
+                lm_data[2 * lm_ts * lm_ts + y * lm_ts + x] = cropped[si + 2] as f32 / 255.0;
             }
         }
-        let lm_tensor = ort::value::Tensor::from_array(
-            ([1usize, 3, lm_ts, lm_ts], lm_data.into_boxed_slice())
-        ).map_err(|e| format!("Landmark tensor: {}", e))?;
+        let lm_tensor =
+            ort::value::Tensor::from_array(([1usize, 3, lm_ts, lm_ts], lm_data.into_boxed_slice()))
+                .map_err(|e| format!("Landmark tensor: {}", e))?;
 
         // Lock scope around run + extract; per-face iteration locks briefly.
         // Output: "landmarks" [1, 468, 3] and "scores" [1]
         let lm_vals: Vec<f32> = {
-            let mut sess = lm_sess.lock()
+            let mut sess = lm_sess
+                .lock()
                 .map_err(|_| "Face landmark session lock poisoned".to_string())?;
-            let lm_outputs = sess.run(ort::inputs![&lm_input_name => lm_tensor])
+            let lm_outputs = sess
+                .run(ort::inputs![&lm_input_name => lm_tensor])
                 .map_err(|e| format!("Face landmark run: {}", e))?;
-            let lm_out = lm_outputs.iter()
+            let lm_out = lm_outputs
+                .iter()
                 .find(|(name, _)| *name == "landmarks")
                 .or_else(|| lm_outputs.iter().next())
                 .ok_or("No landmark output")?;
-            let (_, data) = lm_out.1.try_extract_tensor::<f32>()
+            let (_, data) = lm_out
+                .1
+                .try_extract_tensor::<f32>()
                 .map_err(|e| format!("Landmark extract: {}", e))?;
             data.to_vec()
         };
 
         let num_landmarks = lm_vals.len() / 3;
-        if num_landmarks < 468 { continue; }
+        if num_landmarks < 468 {
+            continue;
+        }
 
         let crop_w = (cx2 - cx1) as f32;
         let crop_h = (cy2 - cy1) as f32;
@@ -9023,17 +9720,29 @@ fn run_face_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult
         // Map all 468 landmarks to image space
         let mut landmarks: Vec<(f32, f32, f32)> = Vec::with_capacity(num_landmarks);
         for i in 0..num_landmarks {
-            let lx = (lm_vals[i*3]     * lm_scale * crop_w + cx1 as f32).clamp(0.0, img_w);
-            let ly = (lm_vals[i*3 + 1] * lm_scale * crop_h + cy1 as f32).clamp(0.0, img_h);
-            let lz =  lm_vals[i*3 + 2] * lm_scale; // depth, keep relative
+            let lx = (lm_vals[i * 3] * lm_scale * crop_w + cx1 as f32).clamp(0.0, img_w);
+            let ly = (lm_vals[i * 3 + 1] * lm_scale * crop_h + cy1 as f32).clamp(0.0, img_h);
+            let lz = lm_vals[i * 3 + 2] * lm_scale; // depth, keep relative
             landmarks.push((lx, ly, lz));
         }
 
         // Bbox from landmarks
-        let lm_min_x = landmarks.iter().map(|(x,_,_)| *x).fold(f32::INFINITY,  f32::min);
-        let lm_min_y = landmarks.iter().map(|(_,y,_)| *y).fold(f32::INFINITY,  f32::min);
-        let lm_max_x = landmarks.iter().map(|(x,_,_)| *x).fold(-f32::INFINITY, f32::max);
-        let lm_max_y = landmarks.iter().map(|(_,y,_)| *y).fold(-f32::INFINITY, f32::max);
+        let lm_min_x = landmarks
+            .iter()
+            .map(|(x, _, _)| *x)
+            .fold(f32::INFINITY, f32::min);
+        let lm_min_y = landmarks
+            .iter()
+            .map(|(_, y, _)| *y)
+            .fold(f32::INFINITY, f32::min);
+        let lm_max_x = landmarks
+            .iter()
+            .map(|(x, _, _)| *x)
+            .fold(-f32::INFINITY, f32::max);
+        let lm_max_y = landmarks
+            .iter()
+            .map(|(_, y, _)| *y)
+            .fold(-f32::INFINITY, f32::max);
         let pad = ((lm_max_x - lm_min_x).max(lm_max_y - lm_min_y) * 0.05).max(4.0);
         let bx1 = (lm_min_x - pad).max(0.0);
         let by1 = (lm_min_y - pad).max(0.0);
@@ -9042,22 +9751,46 @@ fn run_face_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult
 
         // Annotate: face mesh contours
         let (lr, lg, lb) = face_colors[face_idx % 2];
-        let draw_contour = |ann: &mut Vec<u8>, connections: &[(usize,usize)], r: u8, g: u8, b: u8| {
-            for &(a, b_idx) in connections {
-                if a < landmarks.len() && b_idx < landmarks.len() {
-                    let (ax, ay, _) = landmarks[a];
-                    let (bx, by, _) = landmarks[b_idx];
-                    draw_line(ann, req.image.width, req.image.height,
-                        ax as i32, ay as i32, bx as i32, by as i32, r, g, b, 1);
+        let draw_contour =
+            |ann: &mut Vec<u8>, connections: &[(usize, usize)], r: u8, g: u8, b: u8| {
+                for &(a, b_idx) in connections {
+                    if a < landmarks.len() && b_idx < landmarks.len() {
+                        let (ax, ay, _) = landmarks[a];
+                        let (bx, by, _) = landmarks[b_idx];
+                        draw_line(
+                            ann,
+                            req.image.width,
+                            req.image.height,
+                            ax as i32,
+                            ay as i32,
+                            bx as i32,
+                            by as i32,
+                            r,
+                            g,
+                            b,
+                            1,
+                        );
+                    }
                 }
-            }
-        };
+            };
 
         // Draw face oval (jawline)
         draw_contour(&mut annotated, &FACE_OVAL, lr, lg, lb);
         // Lips
-        draw_contour(&mut annotated, &FACE_LIPS_OUTER, lr/2+80, lg/2+60, lb/2+60);
-        draw_contour(&mut annotated, &FACE_LIPS_INNER, lr/2+80, lg/2+60, lb/2+60);
+        draw_contour(
+            &mut annotated,
+            &FACE_LIPS_OUTER,
+            lr / 2 + 80,
+            lg / 2 + 60,
+            lb / 2 + 60,
+        );
+        draw_contour(
+            &mut annotated,
+            &FACE_LIPS_INNER,
+            lr / 2 + 80,
+            lg / 2 + 60,
+            lb / 2 + 60,
+        );
         // Eyes
         draw_contour(&mut annotated, &FACE_LEFT_EYE, 80, 220, 255);
         draw_contour(&mut annotated, &FACE_RIGHT_EYE, 80, 220, 255);
@@ -9071,23 +9804,91 @@ fn run_face_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult
         for &(idx, _name) in &FACE_NAMED_LANDMARKS {
             if idx < landmarks.len() {
                 let (kx, ky, _) = landmarks[idx];
-                draw_circle(&mut annotated, req.image.width, req.image.height, kx as i32, ky as i32, 3, lr, lg, lb);
-                draw_circle(&mut annotated, req.image.width, req.image.height, kx as i32, ky as i32, 1, 255, 255, 255);
+                draw_circle(
+                    &mut annotated,
+                    req.image.width,
+                    req.image.height,
+                    kx as i32,
+                    ky as i32,
+                    3,
+                    lr,
+                    lg,
+                    lb,
+                );
+                draw_circle(
+                    &mut annotated,
+                    req.image.width,
+                    req.image.height,
+                    kx as i32,
+                    ky as i32,
+                    1,
+                    255,
+                    255,
+                    255,
+                );
             }
         }
 
         // Bbox
         let (bx1i, by1i, bx2i, by2i) = (bx1 as i32, by1 as i32, bx2 as i32, by2 as i32);
         for t in 0..2i32 {
-            draw_line(&mut annotated, req.image.width, req.image.height, bx1i, by1i+t, bx2i, by1i+t, lr, lg, lb, 1);
-            draw_line(&mut annotated, req.image.width, req.image.height, bx2i-t, by1i, bx2i-t, by2i, lr, lg, lb, 1);
-            draw_line(&mut annotated, req.image.width, req.image.height, bx2i, by2i-t, bx1i, by2i-t, lr, lg, lb, 1);
-            draw_line(&mut annotated, req.image.width, req.image.height, bx1i+t, by2i, bx1i+t, by1i, lr, lg, lb, 1);
+            draw_line(
+                &mut annotated,
+                req.image.width,
+                req.image.height,
+                bx1i,
+                by1i + t,
+                bx2i,
+                by1i + t,
+                lr,
+                lg,
+                lb,
+                1,
+            );
+            draw_line(
+                &mut annotated,
+                req.image.width,
+                req.image.height,
+                bx2i - t,
+                by1i,
+                bx2i - t,
+                by2i,
+                lr,
+                lg,
+                lb,
+                1,
+            );
+            draw_line(
+                &mut annotated,
+                req.image.width,
+                req.image.height,
+                bx2i,
+                by2i - t,
+                bx1i,
+                by2i - t,
+                lr,
+                lg,
+                lb,
+                1,
+            );
+            draw_line(
+                &mut annotated,
+                req.image.width,
+                req.image.height,
+                bx1i + t,
+                by2i,
+                bx1i + t,
+                by1i,
+                lr,
+                lg,
+                lb,
+                1,
+            );
         }
 
         // JSON output
         let f = face_idx;
-        result_text.push_str(&format!("Face {} ({:.1}%)\n", f+1, face_score * 100.0));
+        result_text.push_str(&format!("Face {} ({:.1}%)\n", f + 1, face_score * 100.0));
 
         all_json.push(format!(
             r#"{{"type":"face_bbox","face":{f},"x1":{:.1},"y1":{:.1},"x2":{:.1},"y2":{:.1},"confidence":{:.4}}}"#,
@@ -9114,7 +9915,7 @@ fn run_face_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult
     }
 
     let face_count = selected.len();
-    let best_score = selected.first().map(|(s,_)| *s).unwrap_or(0.0);
+    let best_score = selected.first().map(|(s, _)| *s).unwrap_or(0.0);
     let status = match face_count {
         0 => "No faces".to_string(),
         1 => format!("1 face ({:.1}%)", best_score * 100.0),
@@ -9141,41 +9942,85 @@ fn run_face_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult
 // 33 MediaPipe pose landmark names (canonical order, indices 0-32)
 const POSE_LANDMARK_NAMES: [&str; 33] = [
     "nose",
-    "left_eye_inner", "left_eye", "left_eye_outer",
-    "right_eye_inner", "right_eye", "right_eye_outer",
-    "left_ear", "right_ear",
-    "mouth_left", "mouth_right",
-    "left_shoulder", "right_shoulder",
-    "left_elbow", "right_elbow",
-    "left_wrist", "right_wrist",
-    "left_pinky", "right_pinky",
-    "left_index", "right_index",
-    "left_thumb", "right_thumb",
-    "left_hip", "right_hip",
-    "left_knee", "right_knee",
-    "left_ankle", "right_ankle",
-    "left_heel", "right_heel",
-    "left_foot_index", "right_foot_index",
+    "left_eye_inner",
+    "left_eye",
+    "left_eye_outer",
+    "right_eye_inner",
+    "right_eye",
+    "right_eye_outer",
+    "left_ear",
+    "right_ear",
+    "mouth_left",
+    "mouth_right",
+    "left_shoulder",
+    "right_shoulder",
+    "left_elbow",
+    "right_elbow",
+    "left_wrist",
+    "right_wrist",
+    "left_pinky",
+    "right_pinky",
+    "left_index",
+    "right_index",
+    "left_thumb",
+    "right_thumb",
+    "left_hip",
+    "right_hip",
+    "left_knee",
+    "right_knee",
+    "left_ankle",
+    "right_ankle",
+    "left_heel",
+    "right_heel",
+    "left_foot_index",
+    "right_foot_index",
 ];
 
 // 35 skeleton connections for body pose
-const POSE_SKELETON: [(usize,usize); 35] = [
+const POSE_SKELETON: [(usize, usize); 35] = [
     // Face
-    (0,1),(1,2),(2,3),(3,7), (0,4),(4,5),(5,6),(6,8),
+    (0, 1),
+    (1, 2),
+    (2, 3),
+    (3, 7),
+    (0, 4),
+    (4, 5),
+    (5, 6),
+    (6, 8),
     // Mouth
-    (9,10),
+    (9, 10),
     // Shoulders
-    (11,12),
+    (11, 12),
     // Left arm
-    (11,13),(13,15),(15,17),(15,19),(15,21),(17,19),
+    (11, 13),
+    (13, 15),
+    (15, 17),
+    (15, 19),
+    (15, 21),
+    (17, 19),
     // Right arm
-    (12,14),(14,16),(16,18),(16,20),(16,22),(18,20),
+    (12, 14),
+    (14, 16),
+    (16, 18),
+    (16, 20),
+    (16, 22),
+    (18, 20),
     // Torso
-    (11,23),(12,24),(23,24),
+    (11, 23),
+    (12, 24),
+    (23, 24),
     // Left leg
-    (23,25),(25,27),(27,29),(27,31),(29,31),
+    (23, 25),
+    (25, 27),
+    (27, 29),
+    (27, 31),
+    (29, 31),
     // Right leg
-    (24,26),(26,28),(28,30),(28,32),(30,32),
+    (24, 26),
+    (26, 28),
+    (28, 30),
+    (28, 32),
+    (30, 32),
 ];
 
 pub fn run_pose_tracking(req: &MlInferenceRequest) -> MlInferenceResult {
@@ -9192,8 +10037,7 @@ pub fn run_pose_tracking(req: &MlInferenceRequest) -> MlInferenceResult {
 }
 
 fn run_pose_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult, String> {
-
-    let img_w = req.image.width  as f32;
+    let img_w = req.image.width as f32;
     let img_h = req.image.height as f32;
 
     // ────────────────────────────────────────────────────────────────────────
@@ -9203,9 +10047,8 @@ fn run_pose_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult
     let ts = pose_sz as usize;
     let pose_sz_f = pose_sz as f32;
 
-    let pose_sess = crate::ml::session_cache::get_bundled_session(
-        "pose_detect", BUNDLED_POSE_MODEL,
-    )?;
+    let pose_sess =
+        crate::ml::session_cache::get_bundled_session("pose_detect", BUNDLED_POSE_MODEL)?;
 
     let pose_resized = resize_image(&req.image, pose_sz, pose_sz);
 
@@ -9214,22 +10057,24 @@ fn run_pose_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult
     for y in 0..ts {
         for x in 0..ts {
             let si = (y * ts + x) * 4;
-            pose_data[0 * ts * ts + y * ts + x] = pose_resized[si]   as f32 / 127.5 - 1.0;
-            pose_data[1 * ts * ts + y * ts + x] = pose_resized[si+1] as f32 / 127.5 - 1.0;
-            pose_data[2 * ts * ts + y * ts + x] = pose_resized[si+2] as f32 / 127.5 - 1.0;
+            pose_data[0 * ts * ts + y * ts + x] = pose_resized[si] as f32 / 127.5 - 1.0;
+            pose_data[1 * ts * ts + y * ts + x] = pose_resized[si + 1] as f32 / 127.5 - 1.0;
+            pose_data[2 * ts * ts + y * ts + x] = pose_resized[si + 2] as f32 / 127.5 - 1.0;
         }
     }
-    let pose_tensor = ort::value::Tensor::from_array(
-        ([1usize, 3, ts, ts], pose_data.into_boxed_slice())
-    ).map_err(|e| format!("Pose tensor: {}", e))?;
+    let pose_tensor =
+        ort::value::Tensor::from_array(([1usize, 3, ts, ts], pose_data.into_boxed_slice()))
+            .map_err(|e| format!("Pose tensor: {}", e))?;
 
     let pose_input_name = crate::ml::session_cache::input_name_of(&pose_sess)?;
     // Lock scope around run + extraction; drops guard before the downstream
     // landmark loop.
     let tensors: Vec<(Vec<usize>, Vec<f32>)> = {
-        let mut sess = pose_sess.lock()
+        let mut sess = pose_sess
+            .lock()
             .map_err(|_| "Pose session lock poisoned".to_string())?;
-        let pose_outputs = sess.run(ort::inputs![&pose_input_name => pose_tensor])
+        let pose_outputs = sess
+            .run(ort::inputs![&pose_input_name => pose_tensor])
             .map_err(|e| format!("Pose run: {}", e))?;
         let mut tensors = Vec::new();
         for output in pose_outputs.iter() {
@@ -9241,15 +10086,17 @@ fn run_pose_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult
     };
 
     // boxes: [1, 896, 12] — per-anchor: [cy,cx,h,w, kp0y,kp0x, kp1y,kp1x, kp2y,kp2x, kp3y,kp3x]
-    let boxes_t = tensors.iter().find(|(d,_)| d.len()==3 && d[2]==12);
-    let scores_t = tensors.iter().find(|(d,_)| d.len()==3 && d[2]==1)
-        .or_else(|| tensors.iter().find(|(d,_)| d.len()==2 && d[1]==1));
+    let boxes_t = tensors.iter().find(|(d, _)| d.len() == 3 && d[2] == 12);
+    let scores_t = tensors
+        .iter()
+        .find(|(d, _)| d.len() == 3 && d[2] == 1)
+        .or_else(|| tensors.iter().find(|(d, _)| d.len() == 2 && d[1] == 1));
     let (boxes, scores) = match (boxes_t, scores_t) {
         (Some(b), Some(s)) => (b, s),
         _ => return Err("Pose detector output format unrecognized".into()),
     };
 
-    let num_anchors = boxes.0[1].min(scores.0[if scores.0.len()>=2 { 1 } else { 0 }]);
+    let num_anchors = boxes.0[1].min(scores.0[if scores.0.len() >= 2 { 1 } else { 0 }]);
     // Reuse BlazeFace anchor generation — same 896 config for 128×128
     let anchors = generate_blazeface_anchors(pose_sz);
 
@@ -9257,9 +10104,15 @@ fn run_pose_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult
     static DIAG_N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let diag = DIAG_N.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 15 == 0;
     if diag {
-        eprintln!("[pose] img={}x{} boxes={:?} scores={:?} num_anchors={} anchors={}",
-                  req.image.width, req.image.height,
-                  boxes.0, scores.0, num_anchors, anchors.len());
+        eprintln!(
+            "[pose] img={}x{} boxes={:?} scores={:?} num_anchors={} anchors={}",
+            req.image.width,
+            req.image.height,
+            boxes.0,
+            scores.0,
+            num_anchors,
+            anchors.len()
+        );
         if anchors.len() != num_anchors {
             eprintln!("[pose] !! ANCHOR COUNT MISMATCH — decode is falling back to (0.5,0.5)");
         }
@@ -9272,7 +10125,9 @@ fn run_pose_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult
     candidates.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
 
     if candidates.is_empty() {
-        let best = (0..num_anchors).map(|i| sigmoid(scores.1[i])).fold(0.0f32, f32::max);
+        let best = (0..num_anchors)
+            .map(|i| sigmoid(scores.1[i]))
+            .fold(0.0f32, f32::max);
         return Ok(MlInferenceResult {
             node_id: req.node_id,
             result_text: format!("No bodies ({:.1}%)", best * 100.0),
@@ -9286,20 +10141,25 @@ fn run_pose_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult
     let decode_box = |idx: usize| -> (f32, f32, f32, f32) {
         let b = idx * 12;
         let (ax, ay) = anchors.get(idx).copied().unwrap_or((0.5, 0.5));
-        let cy = (ay + boxes.1[b]   / pose_sz_f) * img_h;
-        let cx = (ax + boxes.1[b+1] / pose_sz_f) * img_w;
-        let h  = (boxes.1[b+2].abs() / pose_sz_f * img_h).max(1.0);
-        let w  = (boxes.1[b+3].abs() / pose_sz_f * img_w).max(1.0);
-        (cx - w/2.0, cy - h/2.0, cx + w/2.0, cy + h/2.0)
+        let cy = (ay + boxes.1[b] / pose_sz_f) * img_h;
+        let cx = (ax + boxes.1[b + 1] / pose_sz_f) * img_w;
+        let h = (boxes.1[b + 2].abs() / pose_sz_f * img_h).max(1.0);
+        let w = (boxes.1[b + 3].abs() / pose_sz_f * img_w).max(1.0);
+        (cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0)
     };
-    let box_center = |(x1,y1,x2,y2): (f32,f32,f32,f32)| -> (f32,f32) {
-        ((x1+x2)/2.0, (y1+y2)/2.0)
+    let box_center = |(x1, y1, x2, y2): (f32, f32, f32, f32)| -> (f32, f32) {
+        ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
     };
-    let box_iou = |(ax1,ay1,ax2,ay2): (f32,f32,f32,f32), (bx1,by1,bx2,by2): (f32,f32,f32,f32)| -> f32 {
-        let ix1 = ax1.max(bx1); let iy1 = ay1.max(by1);
-        let ix2 = ax2.min(bx2); let iy2 = ay2.min(by2);
-        let inter = (ix2-ix1).max(0.0) * (iy2-iy1).max(0.0);
-        let a = (ax2-ax1)*(ay2-ay1); let b = (bx2-bx1)*(by2-by1);
+    let box_iou = |(ax1, ay1, ax2, ay2): (f32, f32, f32, f32),
+                   (bx1, by1, bx2, by2): (f32, f32, f32, f32)|
+     -> f32 {
+        let ix1 = ax1.max(bx1);
+        let iy1 = ay1.max(by1);
+        let ix2 = ax2.min(bx2);
+        let iy2 = ay2.min(by2);
+        let inter = (ix2 - ix1).max(0.0) * (iy2 - iy1).max(0.0);
+        let a = (ax2 - ax1) * (ay2 - ay1);
+        let b = (bx2 - bx1) * (by2 - by1);
         inter / (a + b - inter + 1e-6)
     };
     let min_dim = img_w.min(img_h);
@@ -9311,13 +10171,20 @@ fn run_pose_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult
         let (ca_x, ca_y) = box_center(box_a);
         let suppressed = selected.iter().any(|(_, sel)| {
             let box_b = decode_box(*sel);
-            if box_iou(box_a, box_b) > 0.3 { return true; }
+            if box_iou(box_a, box_b) > 0.3 {
+                return true;
+            }
             let (cb_x, cb_y) = box_center(box_b);
-            let dx = ca_x - cb_x; let dy = ca_y - cb_y;
-            (dx*dx + dy*dy).sqrt() < center_dist_threshold
+            let dx = ca_x - cb_x;
+            let dy = ca_y - cb_y;
+            (dx * dx + dy * dy).sqrt() < center_dist_threshold
         });
-        if !suppressed { selected.push((*score, *idx)); }
-        if selected.len() >= 1 { break; } // single body only
+        if !suppressed {
+            selected.push((*score, *idx));
+        }
+        if selected.len() >= 1 {
+            break;
+        } // single body only
     }
 
     // ────────────────────────────────────────────────────────────────────────
@@ -9328,11 +10195,12 @@ fn run_pose_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult
     let lm_sz_f = lm_sz as f32;
 
     let lm_sess = crate::ml::session_cache::get_bundled_session(
-        "pose_landmark", BUNDLED_POSE_LANDMARK_MODEL,
+        "pose_landmark",
+        BUNDLED_POSE_LANDMARK_MODEL,
     )?;
     let lm_input_name = crate::ml::session_cache::input_name_of(&lm_sess)?;
 
-    let body_colors: [(u8,u8,u8); 2] = [(180,220,60), (255,160,60)]; // green-yellow, orange
+    let body_colors: [(u8, u8, u8); 2] = [(180, 220, 60), (255, 160, 60)]; // green-yellow, orange
 
     let mut annotated = req.image.pixels.clone();
     let mut all_json: Vec<String> = Vec::new();
@@ -9354,15 +10222,16 @@ fn run_pose_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult
             ((ax + rx / pose_sz_f) * img_w, (ay + ry / pose_sz_f) * img_h)
         };
         let (hip_x, hip_y) = kp(0);
-        let (sc_x, sc_y)   = kp(1);
+        let (sc_x, sc_y) = kp(1);
 
         // Square ROI centred on the hip; radius = 1.25 × hip→scale-point
         // distance. Deliberately NOT clamped to the frame: padding in
         // crop_and_resize_padded keeps the subject centred and the aspect 1:1.
         let (kdx, kdy) = (sc_x - hip_x, sc_y - hip_y);
-        let radius = ((kdx * kdx + kdy * kdy).sqrt() * 1.25)
-            .max(img_w.min(img_h) * 0.15);
-        if !radius.is_finite() || radius < 1.0 { continue; }
+        let radius = ((kdx * kdx + kdy * kdy).sqrt() * 1.25).max(img_w.min(img_h) * 0.15);
+        if !radius.is_finite() || radius < 1.0 {
+            continue;
+        }
 
         let cx1 = hip_x - radius;
         let cy1 = hip_y - radius;
@@ -9377,21 +10246,23 @@ fn run_pose_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult
             for x in 0..lm_ts {
                 let si = (y * lm_ts + x) * 4;
                 let di = (y * lm_ts + x) * 3;
-                lm_data[di]     = cropped[si]   as f32 / 255.0;
-                lm_data[di + 1] = cropped[si+1] as f32 / 255.0;
-                lm_data[di + 2] = cropped[si+2] as f32 / 255.0;
+                lm_data[di] = cropped[si] as f32 / 255.0;
+                lm_data[di + 1] = cropped[si + 1] as f32 / 255.0;
+                lm_data[di + 2] = cropped[si + 2] as f32 / 255.0;
             }
         }
-        let lm_tensor = ort::value::Tensor::from_array(
-            ([1usize, lm_ts, lm_ts, 3], lm_data.into_boxed_slice())
-        ).map_err(|e| format!("Pose landmark tensor: {}", e))?;
+        let lm_tensor =
+            ort::value::Tensor::from_array(([1usize, lm_ts, lm_ts, 3], lm_data.into_boxed_slice()))
+                .map_err(|e| format!("Pose landmark tensor: {}", e))?;
 
         // Lock scope around run + extract; per-pose iteration locks briefly.
         // Output Identity: [1, 195] = 39 landmarks × 5 (x, y, z, visibility, presence)
         let lm_vals: Vec<f32> = {
-            let mut sess = lm_sess.lock()
+            let mut sess = lm_sess
+                .lock()
                 .map_err(|_| "Pose landmark session lock poisoned".to_string())?;
-            let lm_outputs = sess.run(ort::inputs![&lm_input_name => lm_tensor])
+            let lm_outputs = sess
+                .run(ort::inputs![&lm_input_name => lm_tensor])
                 .map_err(|e| format!("Pose landmark run: {}", e))?;
             if diag {
                 for (name, val) in lm_outputs.iter() {
@@ -9400,12 +10271,17 @@ fn run_pose_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult
                     }
                 }
             }
-            let lm_out = lm_outputs.iter()
+            let lm_out = lm_outputs
+                .iter()
                 .find(|(name, _)| *name == "Identity")
                 .or_else(|| lm_outputs.iter().next())
                 .ok_or("No pose landmark output")?;
-            if diag { eprintln!("[pose-lm] using output {:?}", lm_out.0); }
-            let (_, data) = lm_out.1.try_extract_tensor::<f32>()
+            if diag {
+                eprintln!("[pose-lm] using output {:?}", lm_out.0);
+            }
+            let (_, data) = lm_out
+                .1
+                .try_extract_tensor::<f32>()
                 .map_err(|e| format!("Pose landmark extract: {}", e))?;
             data.to_vec()
         };
@@ -9413,51 +10289,79 @@ fn run_pose_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult
         // Use first 33 landmarks (skip 6 auxiliary at end)
         let num_raw = lm_vals.len() / 5;
         let num_landmarks = num_raw.min(33);
-        if num_landmarks < 33 { continue; }
+        if num_landmarks < 33 {
+            continue;
+        }
 
         // Coordinate scale: landmarks might be in [0, lm_sz] or [0, 1]
-        let max_lm = lm_vals.iter()
+        let max_lm = lm_vals
+            .iter()
             .take(33 * 5)
             .enumerate()
-            .filter(|(i, _)| i % 5 < 2)  // only x,y values
+            .filter(|(i, _)| i % 5 < 2) // only x,y values
             .map(|(_, v)| *v)
             .fold(0.0f32, f32::max);
         let lm_scale = if max_lm <= 1.5 { 1.0 } else { 1.0 / lm_sz_f };
 
         if diag {
-            eprintln!("[pose-lm] score={:.2} hip=({:.0},{:.0}) scalept=({:.0},{:.0}) r={:.0}",
-                      body_score, hip_x, hip_y, sc_x, sc_y, radius);
-            eprintln!("[pose-lm] roi=({:.0},{:.0})-({:.0},{:.0}) size={:.0} max_lm={:.3} lm_scale={:.5}",
-                      cx1, cy1, cx2, cy2, crop_size, max_lm, lm_scale);
+            eprintln!(
+                "[pose-lm] score={:.2} hip=({:.0},{:.0}) scalept=({:.0},{:.0}) r={:.0}",
+                body_score, hip_x, hip_y, sc_x, sc_y, radius
+            );
+            eprintln!(
+                "[pose-lm] roi=({:.0},{:.0})-({:.0},{:.0}) size={:.0} max_lm={:.3} lm_scale={:.5}",
+                cx1, cy1, cx2, cy2, crop_size, max_lm, lm_scale
+            );
             for i in [0usize, 11, 12, 23, 24] {
-                eprintln!("[pose-lm]   {:<16} raw=({:7.1},{:7.1}) vis={:.2}",
-                          POSE_LANDMARK_NAMES[i], lm_vals[i*5], lm_vals[i*5+1],
-                          sigmoid(lm_vals[i*5+3]));
+                eprintln!(
+                    "[pose-lm]   {:<16} raw=({:7.1},{:7.1}) vis={:.2}",
+                    POSE_LANDMARK_NAMES[i],
+                    lm_vals[i * 5],
+                    lm_vals[i * 5 + 1],
+                    sigmoid(lm_vals[i * 5 + 3])
+                );
             }
         }
 
         // Map 33 landmarks to image space
         let mut keypoints: Vec<(f32, f32, f32, f32, &'static str)> = Vec::with_capacity(33);
         for i in 0..33usize {
-            let lx = (lm_vals[i*5]     * lm_scale * crop_size + cx1).clamp(0.0, img_w);
-            let ly = (lm_vals[i*5 + 1] * lm_scale * crop_size + cy1).clamp(0.0, img_h);
-            let lz =  lm_vals[i*5 + 2] * lm_scale;
-            let vis = sigmoid(lm_vals[i*5 + 3]);
+            let lx = (lm_vals[i * 5] * lm_scale * crop_size + cx1).clamp(0.0, img_w);
+            let ly = (lm_vals[i * 5 + 1] * lm_scale * crop_size + cy1).clamp(0.0, img_h);
+            let lz = lm_vals[i * 5 + 2] * lm_scale;
+            let vis = sigmoid(lm_vals[i * 5 + 3]);
             keypoints.push((lx, ly, lz, vis, POSE_LANDMARK_NAMES[i]));
         }
 
         // Bbox from landmarks (only visible ones)
-        let visible: Vec<&(f32,f32,f32,f32,&str)> = keypoints.iter()
+        let visible: Vec<&(f32, f32, f32, f32, &str)> = keypoints
+            .iter()
             .filter(|(_, _, _, vis, _)| *vis > 0.3)
             .collect();
         let (bx1, by1, bx2, by2) = if visible.len() >= 4 {
-            let min_x = visible.iter().map(|(x,_,_,_,_)| *x).fold(f32::INFINITY,  f32::min);
-            let min_y = visible.iter().map(|(_,y,_,_,_)| *y).fold(f32::INFINITY,  f32::min);
-            let max_x = visible.iter().map(|(x,_,_,_,_)| *x).fold(-f32::INFINITY, f32::max);
-            let max_y = visible.iter().map(|(_,y,_,_,_)| *y).fold(-f32::INFINITY, f32::max);
+            let min_x = visible
+                .iter()
+                .map(|(x, _, _, _, _)| *x)
+                .fold(f32::INFINITY, f32::min);
+            let min_y = visible
+                .iter()
+                .map(|(_, y, _, _, _)| *y)
+                .fold(f32::INFINITY, f32::min);
+            let max_x = visible
+                .iter()
+                .map(|(x, _, _, _, _)| *x)
+                .fold(-f32::INFINITY, f32::max);
+            let max_y = visible
+                .iter()
+                .map(|(_, y, _, _, _)| *y)
+                .fold(-f32::INFINITY, f32::max);
             let pad = ((max_x - min_x).max(max_y - min_y) * 0.05).max(4.0);
-            ((min_x - pad).max(0.0), (min_y - pad).max(0.0),
-             (max_x + pad).min(img_w), (max_y + pad).min(img_h))
+            (
+                (min_x - pad).max(0.0),
+                (min_y - pad).max(0.0),
+                (max_x + pad).min(img_w),
+                (max_y + pad).min(img_h),
+            )
         } else {
             (cx1.max(0.0), cy1.max(0.0), cx2.min(img_w), cy2.min(img_h))
         };
@@ -9475,35 +10379,130 @@ fn run_pose_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult
                 let (ax, ay, _, a_vis, _) = keypoints[a];
                 let (bx, by, _, b_vis, _) = keypoints[b];
                 if a_vis > 0.3 && b_vis > 0.3 {
-                    draw_line(&mut annotated, req.image.width, req.image.height,
-                        ax as i32, ay as i32, bx as i32, by as i32, lr, lg, lb, 2);
+                    draw_line(
+                        &mut annotated,
+                        req.image.width,
+                        req.image.height,
+                        ax as i32,
+                        ay as i32,
+                        bx as i32,
+                        by as i32,
+                        lr,
+                        lg,
+                        lb,
+                        2,
+                    );
                 }
             }
         }
 
         // Draw joint dots
-        let major_joints: [usize; 12] = [11,12,13,14,15,16,23,24,25,26,27,28];
+        let major_joints: [usize; 12] = [11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28];
         for (i, (kx, ky, _, vis, _)) in keypoints.iter().enumerate() {
-            if *vis < 0.3 { continue; }
+            if *vis < 0.3 {
+                continue;
+            }
             let is_major = major_joints.contains(&i);
             let (outer, inner) = if is_major { (8, 5) } else { (5, 3) };
-            draw_circle(&mut annotated, req.image.width, req.image.height, *kx as i32, *ky as i32, outer, 20, 20, 20);
-            draw_circle(&mut annotated, req.image.width, req.image.height, *kx as i32, *ky as i32, inner, lr, lg, lb);
-            draw_circle(&mut annotated, req.image.width, req.image.height, *kx as i32, *ky as i32, 2, 255, 255, 255);
+            draw_circle(
+                &mut annotated,
+                req.image.width,
+                req.image.height,
+                *kx as i32,
+                *ky as i32,
+                outer,
+                20,
+                20,
+                20,
+            );
+            draw_circle(
+                &mut annotated,
+                req.image.width,
+                req.image.height,
+                *kx as i32,
+                *ky as i32,
+                inner,
+                lr,
+                lg,
+                lb,
+            );
+            draw_circle(
+                &mut annotated,
+                req.image.width,
+                req.image.height,
+                *kx as i32,
+                *ky as i32,
+                2,
+                255,
+                255,
+                255,
+            );
         }
 
         // Bbox
         let (bx1i, by1i, bx2i, by2i) = (bx1 as i32, by1 as i32, bx2 as i32, by2 as i32);
         for t in 0..2i32 {
-            draw_line(&mut annotated, req.image.width, req.image.height, bx1i, by1i+t, bx2i, by1i+t, lr, lg, lb, 1);
-            draw_line(&mut annotated, req.image.width, req.image.height, bx2i-t, by1i, bx2i-t, by2i, lr, lg, lb, 1);
-            draw_line(&mut annotated, req.image.width, req.image.height, bx2i, by2i-t, bx1i, by2i-t, lr, lg, lb, 1);
-            draw_line(&mut annotated, req.image.width, req.image.height, bx1i+t, by2i, bx1i+t, by1i, lr, lg, lb, 1);
+            draw_line(
+                &mut annotated,
+                req.image.width,
+                req.image.height,
+                bx1i,
+                by1i + t,
+                bx2i,
+                by1i + t,
+                lr,
+                lg,
+                lb,
+                1,
+            );
+            draw_line(
+                &mut annotated,
+                req.image.width,
+                req.image.height,
+                bx2i - t,
+                by1i,
+                bx2i - t,
+                by2i,
+                lr,
+                lg,
+                lb,
+                1,
+            );
+            draw_line(
+                &mut annotated,
+                req.image.width,
+                req.image.height,
+                bx2i,
+                by2i - t,
+                bx1i,
+                by2i - t,
+                lr,
+                lg,
+                lb,
+                1,
+            );
+            draw_line(
+                &mut annotated,
+                req.image.width,
+                req.image.height,
+                bx1i + t,
+                by2i,
+                bx1i + t,
+                by1i,
+                lr,
+                lg,
+                lb,
+                1,
+            );
         }
 
         // JSON output
         let b_idx = body_idx;
-        result_text.push_str(&format!("Body {} ({:.1}%)\n", b_idx+1, body_score * 100.0));
+        result_text.push_str(&format!(
+            "Body {} ({:.1}%)\n",
+            b_idx + 1,
+            body_score * 100.0
+        ));
 
         all_json.push(format!(
             r#"{{"type":"body_bbox","body":{b_idx},"x1":{:.1},"y1":{:.1},"x2":{:.1},"y2":{:.1},"confidence":{:.4}}}"#,
@@ -9519,7 +10518,7 @@ fn run_pose_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult
     }
 
     let body_count = selected.len();
-    let best_score = selected.first().map(|(s,_)| *s).unwrap_or(0.0);
+    let best_score = selected.first().map(|(s, _)| *s).unwrap_or(0.0);
     let status = match body_count {
         0 => "No bodies".to_string(),
         1 => format!("1 body ({:.1}%)", best_score * 100.0),
@@ -9554,7 +10553,9 @@ fn nms(dets: &[Detection], iou_threshold: f32) -> Vec<&Detection> {
     let mut keep: Vec<&Detection> = Vec::new();
     let mut suppressed = vec![false; dets.len()];
     for i in 0..dets.len() {
-        if suppressed[i] { continue; }
+        if suppressed[i] {
+            continue;
+        }
         keep.push(&dets[i]);
         for j in (i + 1)..dets.len() {
             if !suppressed[j] && iou(&dets[i], &dets[j]) > iou_threshold {
@@ -9566,7 +10567,18 @@ fn nms(dets: &[Detection], iou_threshold: f32) -> Vec<&Detection> {
 }
 
 /// Draw a filled rectangle on RGBA pixels
-fn draw_filled_rect(pixels: &mut [u8], w: u32, h: u32, x1: i32, y1: i32, x2: i32, y2: i32, r: u8, g: u8, b: u8) {
+fn draw_filled_rect(
+    pixels: &mut [u8],
+    w: u32,
+    h: u32,
+    x1: i32,
+    y1: i32,
+    x2: i32,
+    y2: i32,
+    r: u8,
+    g: u8,
+    b: u8,
+) {
     for y in y1..=y2 {
         for x in x1..=x2 {
             set_pixel(pixels, w, h, x, y, r, g, b);
@@ -9593,80 +10605,230 @@ fn draw_text(pixels: &mut [u8], w: u32, h: u32, x: i32, y: i32, text: &str, r: u
 /// Minimal 5×7 bitmap font — returns 7 rows of 5-bit masks
 fn get_glyph(ch: char) -> [u8; 7] {
     match ch {
-        'A' => [0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b00000],
-        'B' => [0b11110, 0b10001, 0b11110, 0b10001, 0b10001, 0b11110, 0b00000],
-        'C' => [0b01111, 0b10000, 0b10000, 0b10000, 0b10000, 0b01111, 0b00000],
-        'D' => [0b11110, 0b10001, 0b10001, 0b10001, 0b10001, 0b11110, 0b00000],
-        'E' => [0b11111, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111, 0b00000],
-        'F' => [0b11111, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000, 0b00000],
-        'G' => [0b01111, 0b10000, 0b10011, 0b10001, 0b10001, 0b01111, 0b00000],
-        'H' => [0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001, 0b00000],
-        'I' => [0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b11111, 0b00000],
-        'J' => [0b11111, 0b00010, 0b00010, 0b00010, 0b10010, 0b01100, 0b00000],
-        'K' => [0b10001, 0b10010, 0b11100, 0b10010, 0b10001, 0b10001, 0b00000],
-        'L' => [0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111, 0b00000],
-        'M' => [0b10001, 0b11011, 0b10101, 0b10001, 0b10001, 0b10001, 0b00000],
-        'N' => [0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001, 0b00000],
-        'O' => [0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110, 0b00000],
-        'P' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b00000],
-        'Q' => [0b01110, 0b10001, 0b10001, 0b10101, 0b10010, 0b01101, 0b00000],
-        'R' => [0b11110, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001, 0b00000],
-        'S' => [0b01111, 0b10000, 0b01110, 0b00001, 0b00001, 0b11110, 0b00000],
-        'T' => [0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00000],
-        'U' => [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110, 0b00000],
-        'V' => [0b10001, 0b10001, 0b10001, 0b01010, 0b01010, 0b00100, 0b00000],
-        'W' => [0b10001, 0b10001, 0b10001, 0b10101, 0b11011, 0b10001, 0b00000],
-        'X' => [0b10001, 0b01010, 0b00100, 0b00100, 0b01010, 0b10001, 0b00000],
-        'Y' => [0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100, 0b00000],
-        'Z' => [0b11111, 0b00010, 0b00100, 0b01000, 0b10000, 0b11111, 0b00000],
-        'a' => [0b00000, 0b01110, 0b00001, 0b01111, 0b10001, 0b01111, 0b00000],
-        'b' => [0b10000, 0b10000, 0b11110, 0b10001, 0b10001, 0b11110, 0b00000],
-        'c' => [0b00000, 0b01111, 0b10000, 0b10000, 0b10000, 0b01111, 0b00000],
-        'd' => [0b00001, 0b00001, 0b01111, 0b10001, 0b10001, 0b01111, 0b00000],
-        'e' => [0b00000, 0b01110, 0b10001, 0b11111, 0b10000, 0b01111, 0b00000],
-        'f' => [0b00110, 0b01000, 0b11100, 0b01000, 0b01000, 0b01000, 0b00000],
-        'g' => [0b00000, 0b01111, 0b10001, 0b01111, 0b00001, 0b01110, 0b00000],
-        'h' => [0b10000, 0b10000, 0b11110, 0b10001, 0b10001, 0b10001, 0b00000],
-        'i' => [0b00100, 0b00000, 0b00100, 0b00100, 0b00100, 0b00110, 0b00000],
-        'j' => [0b00010, 0b00000, 0b00010, 0b00010, 0b10010, 0b01100, 0b00000],
-        'k' => [0b10000, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0b00000],
-        'l' => [0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110, 0b00000],
-        'm' => [0b00000, 0b11010, 0b10101, 0b10101, 0b10001, 0b10001, 0b00000],
-        'n' => [0b00000, 0b11110, 0b10001, 0b10001, 0b10001, 0b10001, 0b00000],
-        'o' => [0b00000, 0b01110, 0b10001, 0b10001, 0b10001, 0b01110, 0b00000],
-        'p' => [0b00000, 0b11110, 0b10001, 0b11110, 0b10000, 0b10000, 0b00000],
-        'q' => [0b00000, 0b01111, 0b10001, 0b01111, 0b00001, 0b00001, 0b00000],
-        'r' => [0b00000, 0b01110, 0b10001, 0b10000, 0b10000, 0b10000, 0b00000],
-        's' => [0b00000, 0b01111, 0b10000, 0b01110, 0b00001, 0b11110, 0b00000],
-        't' => [0b01000, 0b11100, 0b01000, 0b01000, 0b01001, 0b00110, 0b00000],
-        'u' => [0b00000, 0b10001, 0b10001, 0b10001, 0b10001, 0b01111, 0b00000],
-        'v' => [0b00000, 0b10001, 0b10001, 0b01010, 0b01010, 0b00100, 0b00000],
-        'w' => [0b00000, 0b10001, 0b10001, 0b10101, 0b10101, 0b01010, 0b00000],
-        'x' => [0b00000, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001, 0b00000],
-        'y' => [0b00000, 0b10001, 0b01010, 0b00100, 0b01000, 0b10000, 0b00000],
-        'z' => [0b00000, 0b11111, 0b00010, 0b00100, 0b01000, 0b11111, 0b00000],
-        '0' => [0b01110, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110, 0b00000],
-        '1' => [0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b01110, 0b00000],
-        '2' => [0b01110, 0b10001, 0b00010, 0b00100, 0b01000, 0b11111, 0b00000],
-        '3' => [0b11110, 0b00001, 0b01110, 0b00001, 0b00001, 0b11110, 0b00000],
-        '4' => [0b00010, 0b00110, 0b01010, 0b11111, 0b00010, 0b00010, 0b00000],
-        '5' => [0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b11110, 0b00000],
-        '6' => [0b00110, 0b01000, 0b11110, 0b10001, 0b10001, 0b01110, 0b00000],
-        '7' => [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b00000],
-        '8' => [0b01110, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110, 0b00000],
-        '9' => [0b01110, 0b10001, 0b01111, 0b00001, 0b00010, 0b01100, 0b00000],
-        '%' => [0b11000, 0b11001, 0b00010, 0b00100, 0b01001, 0b00011, 0b00000],
-        ' ' => [0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000],
-        '_' => [0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b11111, 0b00000],
-        '-' => [0b00000, 0b00000, 0b11111, 0b00000, 0b00000, 0b00000, 0b00000],
-        '.' => [0b00000, 0b00000, 0b00000, 0b00000, 0b00110, 0b00110, 0b00000],
-        ':' => [0b00110, 0b00110, 0b00000, 0b00110, 0b00110, 0b00000, 0b00000],
-        _ =>  [0b11111, 0b10001, 0b10001, 0b10001, 0b10001, 0b11111, 0b00000],
+        'A' => [
+            0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b00000,
+        ],
+        'B' => [
+            0b11110, 0b10001, 0b11110, 0b10001, 0b10001, 0b11110, 0b00000,
+        ],
+        'C' => [
+            0b01111, 0b10000, 0b10000, 0b10000, 0b10000, 0b01111, 0b00000,
+        ],
+        'D' => [
+            0b11110, 0b10001, 0b10001, 0b10001, 0b10001, 0b11110, 0b00000,
+        ],
+        'E' => [
+            0b11111, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111, 0b00000,
+        ],
+        'F' => [
+            0b11111, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000, 0b00000,
+        ],
+        'G' => [
+            0b01111, 0b10000, 0b10011, 0b10001, 0b10001, 0b01111, 0b00000,
+        ],
+        'H' => [
+            0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001, 0b00000,
+        ],
+        'I' => [
+            0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b11111, 0b00000,
+        ],
+        'J' => [
+            0b11111, 0b00010, 0b00010, 0b00010, 0b10010, 0b01100, 0b00000,
+        ],
+        'K' => [
+            0b10001, 0b10010, 0b11100, 0b10010, 0b10001, 0b10001, 0b00000,
+        ],
+        'L' => [
+            0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111, 0b00000,
+        ],
+        'M' => [
+            0b10001, 0b11011, 0b10101, 0b10001, 0b10001, 0b10001, 0b00000,
+        ],
+        'N' => [
+            0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001, 0b00000,
+        ],
+        'O' => [
+            0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110, 0b00000,
+        ],
+        'P' => [
+            0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b00000,
+        ],
+        'Q' => [
+            0b01110, 0b10001, 0b10001, 0b10101, 0b10010, 0b01101, 0b00000,
+        ],
+        'R' => [
+            0b11110, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001, 0b00000,
+        ],
+        'S' => [
+            0b01111, 0b10000, 0b01110, 0b00001, 0b00001, 0b11110, 0b00000,
+        ],
+        'T' => [
+            0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00000,
+        ],
+        'U' => [
+            0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110, 0b00000,
+        ],
+        'V' => [
+            0b10001, 0b10001, 0b10001, 0b01010, 0b01010, 0b00100, 0b00000,
+        ],
+        'W' => [
+            0b10001, 0b10001, 0b10001, 0b10101, 0b11011, 0b10001, 0b00000,
+        ],
+        'X' => [
+            0b10001, 0b01010, 0b00100, 0b00100, 0b01010, 0b10001, 0b00000,
+        ],
+        'Y' => [
+            0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100, 0b00000,
+        ],
+        'Z' => [
+            0b11111, 0b00010, 0b00100, 0b01000, 0b10000, 0b11111, 0b00000,
+        ],
+        'a' => [
+            0b00000, 0b01110, 0b00001, 0b01111, 0b10001, 0b01111, 0b00000,
+        ],
+        'b' => [
+            0b10000, 0b10000, 0b11110, 0b10001, 0b10001, 0b11110, 0b00000,
+        ],
+        'c' => [
+            0b00000, 0b01111, 0b10000, 0b10000, 0b10000, 0b01111, 0b00000,
+        ],
+        'd' => [
+            0b00001, 0b00001, 0b01111, 0b10001, 0b10001, 0b01111, 0b00000,
+        ],
+        'e' => [
+            0b00000, 0b01110, 0b10001, 0b11111, 0b10000, 0b01111, 0b00000,
+        ],
+        'f' => [
+            0b00110, 0b01000, 0b11100, 0b01000, 0b01000, 0b01000, 0b00000,
+        ],
+        'g' => [
+            0b00000, 0b01111, 0b10001, 0b01111, 0b00001, 0b01110, 0b00000,
+        ],
+        'h' => [
+            0b10000, 0b10000, 0b11110, 0b10001, 0b10001, 0b10001, 0b00000,
+        ],
+        'i' => [
+            0b00100, 0b00000, 0b00100, 0b00100, 0b00100, 0b00110, 0b00000,
+        ],
+        'j' => [
+            0b00010, 0b00000, 0b00010, 0b00010, 0b10010, 0b01100, 0b00000,
+        ],
+        'k' => [
+            0b10000, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0b00000,
+        ],
+        'l' => [
+            0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110, 0b00000,
+        ],
+        'm' => [
+            0b00000, 0b11010, 0b10101, 0b10101, 0b10001, 0b10001, 0b00000,
+        ],
+        'n' => [
+            0b00000, 0b11110, 0b10001, 0b10001, 0b10001, 0b10001, 0b00000,
+        ],
+        'o' => [
+            0b00000, 0b01110, 0b10001, 0b10001, 0b10001, 0b01110, 0b00000,
+        ],
+        'p' => [
+            0b00000, 0b11110, 0b10001, 0b11110, 0b10000, 0b10000, 0b00000,
+        ],
+        'q' => [
+            0b00000, 0b01111, 0b10001, 0b01111, 0b00001, 0b00001, 0b00000,
+        ],
+        'r' => [
+            0b00000, 0b01110, 0b10001, 0b10000, 0b10000, 0b10000, 0b00000,
+        ],
+        's' => [
+            0b00000, 0b01111, 0b10000, 0b01110, 0b00001, 0b11110, 0b00000,
+        ],
+        't' => [
+            0b01000, 0b11100, 0b01000, 0b01000, 0b01001, 0b00110, 0b00000,
+        ],
+        'u' => [
+            0b00000, 0b10001, 0b10001, 0b10001, 0b10001, 0b01111, 0b00000,
+        ],
+        'v' => [
+            0b00000, 0b10001, 0b10001, 0b01010, 0b01010, 0b00100, 0b00000,
+        ],
+        'w' => [
+            0b00000, 0b10001, 0b10001, 0b10101, 0b10101, 0b01010, 0b00000,
+        ],
+        'x' => [
+            0b00000, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001, 0b00000,
+        ],
+        'y' => [
+            0b00000, 0b10001, 0b01010, 0b00100, 0b01000, 0b10000, 0b00000,
+        ],
+        'z' => [
+            0b00000, 0b11111, 0b00010, 0b00100, 0b01000, 0b11111, 0b00000,
+        ],
+        '0' => [
+            0b01110, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110, 0b00000,
+        ],
+        '1' => [
+            0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b01110, 0b00000,
+        ],
+        '2' => [
+            0b01110, 0b10001, 0b00010, 0b00100, 0b01000, 0b11111, 0b00000,
+        ],
+        '3' => [
+            0b11110, 0b00001, 0b01110, 0b00001, 0b00001, 0b11110, 0b00000,
+        ],
+        '4' => [
+            0b00010, 0b00110, 0b01010, 0b11111, 0b00010, 0b00010, 0b00000,
+        ],
+        '5' => [
+            0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b11110, 0b00000,
+        ],
+        '6' => [
+            0b00110, 0b01000, 0b11110, 0b10001, 0b10001, 0b01110, 0b00000,
+        ],
+        '7' => [
+            0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b00000,
+        ],
+        '8' => [
+            0b01110, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110, 0b00000,
+        ],
+        '9' => [
+            0b01110, 0b10001, 0b01111, 0b00001, 0b00010, 0b01100, 0b00000,
+        ],
+        '%' => [
+            0b11000, 0b11001, 0b00010, 0b00100, 0b01001, 0b00011, 0b00000,
+        ],
+        ' ' => [
+            0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000,
+        ],
+        '_' => [
+            0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b11111, 0b00000,
+        ],
+        '-' => [
+            0b00000, 0b00000, 0b11111, 0b00000, 0b00000, 0b00000, 0b00000,
+        ],
+        '.' => [
+            0b00000, 0b00000, 0b00000, 0b00000, 0b00110, 0b00110, 0b00000,
+        ],
+        ':' => [
+            0b00110, 0b00110, 0b00000, 0b00110, 0b00110, 0b00000, 0b00000,
+        ],
+        _ => [
+            0b11111, 0b10001, 0b10001, 0b10001, 0b10001, 0b11111, 0b00000,
+        ],
     }
 }
 
 /// Draw a rectangle outline on RGBA pixels
-fn draw_rect(pixels: &mut [u8], w: u32, h: u32, x1: i32, y1: i32, x2: i32, y2: i32, r: u8, g: u8, b: u8, thickness: i32) {
+fn draw_rect(
+    pixels: &mut [u8],
+    w: u32,
+    h: u32,
+    x1: i32,
+    y1: i32,
+    x2: i32,
+    y2: i32,
+    r: u8,
+    g: u8,
+    b: u8,
+    thickness: i32,
+) {
     for t in 0..thickness {
         // Top & bottom edges
         for x in x1..=x2 {
@@ -9682,7 +10844,17 @@ fn draw_rect(pixels: &mut [u8], w: u32, h: u32, x1: i32, y1: i32, x2: i32, y2: i
 }
 
 /// Draw a filled circle on RGBA pixels
-fn draw_circle(pixels: &mut [u8], w: u32, h: u32, cx: i32, cy: i32, radius: i32, r: u8, g: u8, b: u8) {
+fn draw_circle(
+    pixels: &mut [u8],
+    w: u32,
+    h: u32,
+    cx: i32,
+    cy: i32,
+    radius: i32,
+    r: u8,
+    g: u8,
+    b: u8,
+) {
     for dy in -radius..=radius {
         for dx in -radius..=radius {
             if dx * dx + dy * dy <= radius * radius {
@@ -9693,7 +10865,19 @@ fn draw_circle(pixels: &mut [u8], w: u32, h: u32, cx: i32, cy: i32, radius: i32,
 }
 
 /// Draw a line using Bresenham's algorithm
-fn draw_line(pixels: &mut [u8], w: u32, h: u32, x0: i32, y0: i32, x1: i32, y1: i32, r: u8, g: u8, b: u8, thickness: i32) {
+fn draw_line(
+    pixels: &mut [u8],
+    w: u32,
+    h: u32,
+    x0: i32,
+    y0: i32,
+    x1: i32,
+    y1: i32,
+    r: u8,
+    g: u8,
+    b: u8,
+    thickness: i32,
+) {
     let dx = (x1 - x0).abs();
     let dy = -(y1 - y0).abs();
     let sx = if x0 < x1 { 1 } else { -1 };
@@ -9707,15 +10891,25 @@ fn draw_line(pixels: &mut [u8], w: u32, h: u32, x0: i32, y0: i32, x1: i32, y1: i
             set_pixel(pixels, w, h, x + t, y, r, g, b);
             set_pixel(pixels, w, h, x, y + t, r, g, b);
         }
-        if x == x1 && y == y1 { break; }
+        if x == x1 && y == y1 {
+            break;
+        }
         let e2 = 2 * err;
-        if e2 >= dy { err += dy; x += sx; }
-        if e2 <= dx { err += dx; y += sy; }
+        if e2 >= dy {
+            err += dy;
+            x += sx;
+        }
+        if e2 <= dx {
+            err += dx;
+            y += sy;
+        }
     }
 }
 
 fn set_pixel(pixels: &mut [u8], w: u32, h: u32, x: i32, y: i32, r: u8, g: u8, b: u8) {
-    if x < 0 || y < 0 || x >= w as i32 || y >= h as i32 { return; }
+    if x < 0 || y < 0 || x >= w as i32 || y >= h as i32 {
+        return;
+    }
     let idx = ((y as u32 * w + x as u32) * 4) as usize;
     if idx + 3 < pixels.len() {
         pixels[idx] = r;
@@ -9736,7 +10930,9 @@ fn resize_image(img: &ImageData, new_w: u32, new_h: u32) -> Vec<u8> {
     let out_bytes = (new_w * new_h * 4) as usize;
     let mut out: Vec<u8> = Vec::with_capacity(out_bytes);
     // SAFETY: every pixel is written in the u32 loop below.
-    unsafe { out.set_len(out_bytes); }
+    unsafe {
+        out.set_len(out_bytes);
+    }
 
     let x_ratio = img.width as f32 / new_w as f32;
     let y_ratio = img.height as f32 / new_h as f32;

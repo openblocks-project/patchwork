@@ -13,16 +13,40 @@ pub fn render(
     pending_disconnects: &mut Vec<(NodeId, usize)>,
 ) {
     // Audio input
-    crate::nodes::audio_port_row(ui, "Audio", node_id, 0, true, port_positions, dragging_from, connections, pending_disconnects, PortKind::Audio);
+    crate::nodes::audio_port_row(
+        ui,
+        "Audio",
+        node_id,
+        0,
+        true,
+        port_positions,
+        dragging_from,
+        connections,
+        pending_disconnects,
+        PortKind::Audio,
+    );
 
     // Semitones — port + slider + drag value
-    let wired = connections.iter().any(|c| c.to_node == node_id && c.to_port == 1);
+    let wired = connections
+        .iter()
+        .any(|c| c.to_node == node_id && c.to_port == 1);
     if wired {
         *semitones = Graph::static_input_value(connections, values, node_id, 1)
-            .as_float().clamp(-12.0, 12.0);
+            .as_float()
+            .clamp(-12.0, 12.0);
     }
     ui.horizontal(|ui| {
-        crate::nodes::inline_port_circle(ui, node_id, 1, true, connections, port_positions, dragging_from, pending_disconnects, PortKind::Number);
+        crate::nodes::inline_port_circle(
+            ui,
+            node_id,
+            1,
+            true,
+            connections,
+            port_positions,
+            dragging_from,
+            pending_disconnects,
+            PortKind::Number,
+        );
         ui.label("Semitones:");
     });
     ui.horizontal(|ui| {
@@ -40,5 +64,16 @@ pub fn render(
     });
 
     // Audio output
-    crate::nodes::audio_port_row(ui, "Audio", node_id, 0, false, port_positions, dragging_from, connections, pending_disconnects, PortKind::Audio);
+    crate::nodes::audio_port_row(
+        ui,
+        "Audio",
+        node_id,
+        0,
+        false,
+        port_positions,
+        dragging_from,
+        connections,
+        pending_disconnects,
+        PortKind::Audio,
+    );
 }

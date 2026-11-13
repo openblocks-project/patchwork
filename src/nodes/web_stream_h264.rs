@@ -70,12 +70,18 @@ impl H264Encoder {
         let mut cmd = Command::new("ffmpeg");
         cmd.args([
             "-hide_banner",
-            "-loglevel", "error",
-            "-f", "rawvideo",
-            "-pix_fmt", "rgba",
-            "-s", &dims,
-            "-framerate", &fps_str,
-            "-i", "pipe:0",
+            "-loglevel",
+            "error",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgba",
+            "-s",
+            &dims,
+            "-framerate",
+            &fps_str,
+            "-i",
+            "pipe:0",
         ]);
         // Codec args differ per platform.
         // Bitrate cap. WebRTC over LAN Wi-Fi tolerates ~2 Mbps reliably;
@@ -85,36 +91,60 @@ impl H264Encoder {
         // good headroom margin for 720p baseline H.264.
         #[cfg(target_os = "macos")]
         cmd.args([
-            "-c:v", "h264_videotoolbox",
-            "-realtime", "1",
-            "-allow_sw", "1",
-            "-profile:v", "baseline",
-            "-pix_fmt", "yuv420p",
-            "-b:v", "1500k",
-            "-maxrate", "2000k",
-            "-g", &gop_str,
-            "-bf", "0",
+            "-c:v",
+            "h264_videotoolbox",
+            "-realtime",
+            "1",
+            "-allow_sw",
+            "1",
+            "-profile:v",
+            "baseline",
+            "-pix_fmt",
+            "yuv420p",
+            "-b:v",
+            "1500k",
+            "-maxrate",
+            "2000k",
+            "-g",
+            &gop_str,
+            "-bf",
+            "0",
         ]);
         #[cfg(not(target_os = "macos"))]
         cmd.args([
-            "-c:v", "libx264",
-            "-tune", "zerolatency",
-            "-preset", "ultrafast",
-            "-profile:v", "baseline",
-            "-pix_fmt", "yuv420p",
-            "-b:v", "1500k",
-            "-maxrate", "2000k",
-            "-bufsize", "1500k",
-            "-g", &gop_str,
-            "-bf", "0",
+            "-c:v",
+            "libx264",
+            "-tune",
+            "zerolatency",
+            "-preset",
+            "ultrafast",
+            "-profile:v",
+            "baseline",
+            "-pix_fmt",
+            "yuv420p",
+            "-b:v",
+            "1500k",
+            "-maxrate",
+            "2000k",
+            "-bufsize",
+            "1500k",
+            "-g",
+            &gop_str,
+            "-bf",
+            "0",
         ]);
         cmd.args([
-            "-bsf:v", "h264_mp4toannexb",
-            "-flush_packets", "1",
-            "-f", "h264",
+            "-bsf:v",
+            "h264_mp4toannexb",
+            "-flush_packets",
+            "1",
+            "-f",
+            "h264",
             "pipe:1",
         ]);
-        cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        cmd.stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
 
         let mut process = match cmd.spawn() {
             Ok(p) => p,
@@ -124,11 +154,17 @@ impl H264Encoder {
             Err(e) => return Err(format!("failed to spawn ffmpeg: {e}")),
         };
 
-        let stdin = process.stdin.take()
+        let stdin = process
+            .stdin
+            .take()
             .ok_or_else(|| "ffmpeg stdin pipe missing".to_string())?;
-        let stdout = process.stdout.take()
+        let stdout = process
+            .stdout
+            .take()
             .ok_or_else(|| "ffmpeg stdout pipe missing".to_string())?;
-        let stderr = process.stderr.take()
+        let stderr = process
+            .stderr
+            .take()
             .ok_or_else(|| "ffmpeg stderr pipe missing".to_string())?;
 
         // Stderr drain — same shape as web_app_mjpeg.rs and
@@ -140,7 +176,9 @@ impl H264Encoder {
             for line in reader.lines().map_while(|l| l.ok()) {
                 if let Ok(mut log) = stderr_log_clone.lock() {
                     if log.len() < 1024 {
-                        if !log.is_empty() { log.push('\n'); }
+                        if !log.is_empty() {
+                            log.push('\n');
+                        }
                         log.push_str(&line);
                     }
                 }
@@ -197,12 +235,18 @@ impl H264Encoder {
                 Ok(())
             }
             Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {
-                let stderr = self.stderr_log.lock()
-                    .map(|s| s.clone()).unwrap_or_default();
+                let stderr = self
+                    .stderr_log
+                    .lock()
+                    .map(|s| s.clone())
+                    .unwrap_or_default();
                 Err(format!(
                     "ffmpeg exited{}",
-                    if stderr.is_empty() { String::new() }
-                    else { format!(": {}", stderr) }
+                    if stderr.is_empty() {
+                        String::new()
+                    } else {
+                        format!(": {}", stderr)
+                    }
                 ))
             }
             Err(e) => Err(format!("write_frame failed: {e}")),
@@ -241,14 +285,22 @@ fn nal_reader_loop<R: Read>(mut stdout: R, sink: NalSink) {
     let mut au: Vec<u8> = Vec::with_capacity(128 * 1024);
 
     let flush_nal = |buf: &[u8], au: &mut Vec<u8>, sink: &NalSink| {
-        if buf.is_empty() { return; }
+        if buf.is_empty() {
+            return;
+        }
         // Find NAL header (first byte after the start code). Start
         // code is the leading sequence of 0x00 followed by one 0x01.
         let mut i = 0;
-        while i < buf.len() && buf[i] == 0x00 { i += 1; }
-        if i >= buf.len() || buf[i] != 0x01 { return; }
+        while i < buf.len() && buf[i] == 0x00 {
+            i += 1;
+        }
+        if i >= buf.len() || buf[i] != 0x01 {
+            return;
+        }
         let header_idx = i + 1;
-        if header_idx >= buf.len() { return; }
+        if header_idx >= buf.len() {
+            return;
+        }
         let nal_type = buf[header_idx] & 0x1F;
 
         // VCL slice ends the AU. Append (slice + any preceding
@@ -271,8 +323,8 @@ fn nal_reader_loop<R: Read>(mut stdout: R, sink: NalSink) {
 
     loop {
         match stdout.read(&mut chunk) {
-            Ok(0) => break,    // EOF
-            Err(_) => break,   // pipe error
+            Ok(0) => break,  // EOF
+            Err(_) => break, // pipe error
             Ok(n) => {
                 buf.extend_from_slice(&chunk[..n]);
 
@@ -282,7 +334,10 @@ fn nal_reader_loop<R: Read>(mut stdout: R, sink: NalSink) {
                 while i + 2 < buf.len() {
                     let three = buf[i] == 0 && buf[i + 1] == 0 && buf[i + 2] == 1;
                     let four = i + 3 < buf.len()
-                        && buf[i] == 0 && buf[i + 1] == 0 && buf[i + 2] == 0 && buf[i + 3] == 1;
+                        && buf[i] == 0
+                        && buf[i + 1] == 0
+                        && buf[i + 2] == 0
+                        && buf[i + 3] == 1;
                     if four || three {
                         if let Some(start) = nal_start {
                             if i > start {

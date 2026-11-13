@@ -2,9 +2,9 @@
 //! Input processors — LiveInput (microphone) and FilePlayer (audio files).
 //! Both read from lock-free ring buffers filled by their respective threads.
 
+use crate::audio::buffers::{FilePlayerBuffer, LiveInputBuffer};
+use crate::audio::processor::{AudioProcessor, ProcessContext, ProcessorKind};
 use std::sync::Arc;
-use crate::audio::processor::{AudioProcessor, ProcessorKind, ProcessContext};
-use crate::audio::buffers::{LiveInputBuffer, FilePlayerBuffer};
 
 // ── Live Input (Microphone) ───────────────────────────────────────────────────
 
@@ -21,13 +21,13 @@ pub struct LiveInputProcessor {
     agc_gain: f32,
 }
 
-const AGC_TARGET_RMS: f32 = 0.15;      // ≈ -16 dBFS, leaves headroom
-const AGC_MIN_GAIN: f32 = 0.2;         // -14 dB — won't over-attenuate
-const AGC_MAX_GAIN: f32 = 50.0;        // +34 dB — handles -40 dBFS mics
-const AGC_ENV_ATTACK: f32 = 0.3;       // fast rise when signal surges
-const AGC_ENV_RELEASE: f32 = 0.02;     // slow fall through silences
-const AGC_GAIN_ATTACK: f32 = 0.02;     // slow rise so silence→speech doesn't jump
-const AGC_GAIN_RELEASE: f32 = 0.2;     // faster drop to prevent clipping
+const AGC_TARGET_RMS: f32 = 0.15; // ≈ -16 dBFS, leaves headroom
+const AGC_MIN_GAIN: f32 = 0.2; // -14 dB — won't over-attenuate
+const AGC_MAX_GAIN: f32 = 50.0; // +34 dB — handles -40 dBFS mics
+const AGC_ENV_ATTACK: f32 = 0.3; // fast rise when signal surges
+const AGC_ENV_RELEASE: f32 = 0.02; // slow fall through silences
+const AGC_GAIN_ATTACK: f32 = 0.02; // slow rise so silence→speech doesn't jump
+const AGC_GAIN_RELEASE: f32 = 0.2; // faster drop to prevent clipping
 /// Initial gain after prepare/reset. We start at unity so a freshly enabled
 /// AGC doesn't slam a loud signal with +18 dB for the first ~100 ms (which
 /// clips and leaves a half-second of distortion at the top of every recording).
@@ -52,8 +52,12 @@ impl LiveInputProcessor {
 }
 
 impl AudioProcessor for LiveInputProcessor {
-    fn type_id(&self) -> &str { "live_input" }
-    fn kind(&self) -> ProcessorKind { ProcessorKind::Source }
+    fn type_id(&self) -> &str {
+        "live_input"
+    }
+    fn kind(&self) -> ProcessorKind {
+        ProcessorKind::Source
+    }
 
     fn process_block(&mut self, _input: &[f32], output: &mut [f32], ctx: &ProcessContext) {
         self.buffer.read_into(output, ctx.block_size);
@@ -61,35 +65,57 @@ impl AudioProcessor for LiveInputProcessor {
         if self.agc_enabled && ctx.block_size > 0 {
             // Per-block RMS
             let mut sumsq = 0.0f32;
-            for &s in &output[..ctx.block_size] { sumsq += s * s; }
+            for &s in &output[..ctx.block_size] {
+                sumsq += s * s;
+            }
             let block_rms = (sumsq / ctx.block_size as f32).sqrt();
             // Envelope: fast attack to catch peaks, slow release so it doesn't
             // collapse during silences and then blast noise when speech resumes.
-            let env_coeff = if block_rms > self.agc_env { AGC_ENV_ATTACK } else { AGC_ENV_RELEASE };
+            let env_coeff = if block_rms > self.agc_env {
+                AGC_ENV_ATTACK
+            } else {
+                AGC_ENV_RELEASE
+            };
             self.agc_env += env_coeff * (block_rms - self.agc_env);
             // Target gain to hit AGC_TARGET_RMS; clamped to sane range.
             let target_gain = if self.agc_env > 1.0e-5 {
                 (AGC_TARGET_RMS / self.agc_env).clamp(AGC_MIN_GAIN, AGC_MAX_GAIN)
-            } else { 1.0 };
+            } else {
+                1.0
+            };
             // Slew the gain: slow when rising (prevents pumping up silence),
             // faster when falling (prevents clipping on a surge).
-            let gain_coeff = if target_gain < self.agc_gain { AGC_GAIN_RELEASE } else { AGC_GAIN_ATTACK };
+            let gain_coeff = if target_gain < self.agc_gain {
+                AGC_GAIN_RELEASE
+            } else {
+                AGC_GAIN_ATTACK
+            };
             self.agc_gain += gain_coeff * (target_gain - self.agc_gain);
-            for s in output.iter_mut() { *s *= self.agc_gain; }
+            for s in output.iter_mut() {
+                *s *= self.agc_gain;
+            }
         }
 
         // Manual gain trim on top (applies regardless of AGC state).
         if (self.gain - 1.0).abs() > 0.001 {
-            for s in output.iter_mut() { *s *= self.gain; }
+            for s in output.iter_mut() {
+                *s *= self.gain;
+            }
         }
     }
 
     fn set_params(&mut self, params: &[f32]) {
-        if let Some(&v) = params.first() { self.gain = v; }
-        if let Some(&v) = params.get(1) { self.agc_enabled = v > 0.5; }
+        if let Some(&v) = params.first() {
+            self.gain = v;
+        }
+        if let Some(&v) = params.get(1) {
+            self.agc_enabled = v > 0.5;
+        }
     }
 
-    fn param_count(&self) -> usize { 2 }
+    fn param_count(&self) -> usize {
+        2
+    }
     fn prepare(&mut self, _sample_rate: f32, _max_block_size: usize) {
         self.agc_env = AGC_TARGET_RMS;
         self.agc_gain = AGC_INIT_GAIN;
@@ -114,21 +140,31 @@ impl FilePlayerProcessor {
 }
 
 impl AudioProcessor for FilePlayerProcessor {
-    fn type_id(&self) -> &str { "file_player" }
-    fn kind(&self) -> ProcessorKind { ProcessorKind::Source }
+    fn type_id(&self) -> &str {
+        "file_player"
+    }
+    fn kind(&self) -> ProcessorKind {
+        ProcessorKind::Source
+    }
 
     fn process_block(&mut self, _input: &[f32], output: &mut [f32], ctx: &ProcessContext) {
         self.buffer.read_into(output, ctx.block_size);
         if (self.volume - 1.0).abs() > 0.001 {
-            for s in output.iter_mut() { *s *= self.volume; }
+            for s in output.iter_mut() {
+                *s *= self.volume;
+            }
         }
     }
 
     fn set_params(&mut self, params: &[f32]) {
-        if let Some(&v) = params.first() { self.volume = v; }
+        if let Some(&v) = params.first() {
+            self.volume = v;
+        }
     }
 
-    fn param_count(&self) -> usize { 1 }
+    fn param_count(&self) -> usize {
+        1
+    }
     fn prepare(&mut self, _sample_rate: f32, _max_block_size: usize) {}
     fn reset(&mut self) {}
 }

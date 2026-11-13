@@ -1,7 +1,7 @@
 use crate::graph::{NodeId, PortValue};
-use std::collections::HashMap;
-use eframe::egui;
 use crate::nodes::ScrollAreaExt;
+use eframe::egui;
+use std::collections::HashMap;
 
 pub fn render(
     ui: &mut egui::Ui,
@@ -85,7 +85,11 @@ pub fn render(
             ui.add(egui::TextEdit::singleline(&mut output_names[i]).desired_width(80.0));
             // Show last computed value next to output name
             if let Some(v) = last_values.get(i) {
-                ui.label(egui::RichText::new(format!("= {:.3}", v)).small().color(egui::Color32::from_rgb(120, 200, 120)));
+                ui.label(
+                    egui::RichText::new(format!("= {:.3}", v))
+                        .small()
+                        .color(egui::Color32::from_rgb(120, 200, 120)),
+                );
             }
         });
     }
@@ -95,7 +99,9 @@ pub fn render(
         // in app/mod.rs, which prunes any connection with out-of-range
         // from_port for Script nodes.
         output_names.remove(idx);
-        if idx < last_values.len() { last_values.remove(idx); }
+        if idx < last_values.len() {
+            last_values.remove(idx);
+        }
     }
 
     // If the user toggles continuous mode, the input port base shifts
@@ -111,13 +117,16 @@ pub fn render(
     // ── Code ──
     // Check if code is coming from input port
     let _code_port_idx: usize = if *continuous { 0 } else { 1 };
-    let _code_connected = _values.iter().any(|((nid, _), _)| *nid == node_id) ||
-        false; // simplified check
+    let _code_connected = _values.iter().any(|((nid, _), _)| *nid == node_id) || false; // simplified check
     // Check connections for the Code port
     ui.separator();
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new("Code").small().strong());
-        ui.label(egui::RichText::new("(or connect Text to Code port ↑)").small().color(egui::Color32::GRAY));
+        ui.label(
+            egui::RichText::new("(or connect Text to Code port ↑)")
+                .small()
+                .color(egui::Color32::GRAY),
+        );
     });
     egui::ScrollArea::vertical()
         .id_salt(egui::Id::new(("script_code_scroll", node_id)))
@@ -127,18 +136,23 @@ pub fn render(
                 egui::TextEdit::multiline(code)
                     .desired_rows(4)
                     .desired_width(f32::INFINITY)
-                    .font(egui::TextStyle::Monospace)
+                    .font(egui::TextStyle::Monospace),
             );
         });
 
     // Open in external editor
-    if ui.small_button(egui::RichText::new("Open in editor").small()).clicked() {
+    if ui
+        .small_button(egui::RichText::new("Open in editor").small())
+        .clicked()
+    {
         let tmp = std::env::temp_dir().join(format!("patchwork_script_{}.rhai", node_id));
         if std::fs::write(&tmp, code.as_str()).is_ok() {
             #[cfg(target_os = "macos")]
             let _ = std::process::Command::new("open").arg(&tmp).spawn();
             #[cfg(target_os = "windows")]
-            let _ = std::process::Command::new("cmd").args(["/C", "start", "", &tmp.display().to_string()]).spawn();
+            let _ = std::process::Command::new("cmd")
+                .args(["/C", "start", "", &tmp.display().to_string()])
+                .spawn();
             #[cfg(target_os = "linux")]
             let _ = std::process::Command::new("xdg-open").arg(&tmp).spawn();
         }
@@ -153,18 +167,31 @@ pub fn render(
     ui.separator();
     ui.horizontal(|ui| {
         if ui.small_button("Load...").clicked() {
-            if let Some(path) = rfd::FileDialog::new().add_filter("json", &["json"]).pick_file() {
+            if let Some(path) = rfd::FileDialog::new()
+                .add_filter("json", &["json"])
+                .pick_file()
+            {
                 if let Ok(content) = std::fs::read_to_string(&path) {
                     if let Ok(script) = serde_json::from_str::<serde_json::Value>(&content) {
                         if let Some(obj) = script.as_object() {
-                            if let Some(n) = obj.get("name").and_then(|v| v.as_str()) { *name = n.to_string(); }
+                            if let Some(n) = obj.get("name").and_then(|v| v.as_str()) {
+                                *name = n.to_string();
+                            }
                             if let Some(ins) = obj.get("inputs").and_then(|v| v.as_array()) {
-                                *input_names = ins.iter().filter_map(|v| v.as_str().map(String::from)).collect();
+                                *input_names = ins
+                                    .iter()
+                                    .filter_map(|v| v.as_str().map(String::from))
+                                    .collect();
                             }
                             if let Some(outs) = obj.get("outputs").and_then(|v| v.as_array()) {
-                                *output_names = outs.iter().filter_map(|v| v.as_str().map(String::from)).collect();
+                                *output_names = outs
+                                    .iter()
+                                    .filter_map(|v| v.as_str().map(String::from))
+                                    .collect();
                             }
-                            if let Some(c) = obj.get("code").and_then(|v| v.as_str()) { *code = c.to_string(); }
+                            if let Some(c) = obj.get("code").and_then(|v| v.as_str()) {
+                                *code = c.to_string();
+                            }
                         }
                     }
                 }
@@ -177,8 +204,14 @@ pub fn render(
                 "outputs": output_names,
                 "code": code,
             });
-            if let Some(path) = rfd::FileDialog::new().add_filter("json", &["json"]).save_file() {
-                let _ = std::fs::write(&path, serde_json::to_string_pretty(&script_obj).unwrap_or_default());
+            if let Some(path) = rfd::FileDialog::new()
+                .add_filter("json", &["json"])
+                .save_file()
+            {
+                let _ = std::fs::write(
+                    &path,
+                    serde_json::to_string_pretty(&script_obj).unwrap_or_default(),
+                );
             }
         }
     });

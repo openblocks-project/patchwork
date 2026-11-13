@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 use crate::graph::*;
-use eframe::egui;
 use crate::nodes::ScrollAreaExt;
+use eframe::egui;
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -29,7 +29,10 @@ fn compute_hash(s: &str) -> u64 {
 fn start_server(state: SharedHtmlState) -> u16 {
     let listener = match TcpListener::bind("127.0.0.1:0") {
         Ok(l) => l,
-        Err(e) => { crate::system_log::error(format!("HTML server bind failed: {}", e)); return 0; }
+        Err(e) => {
+            crate::system_log::error(format!("HTML server bind failed: {}", e));
+            return 0;
+        }
     };
     let port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
 
@@ -56,27 +59,30 @@ fn start_server(state: SharedHtmlState) -> u16 {
                 let body = format!("{}", content_hash);
                 let response = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nAccess-Control-Allow-Origin: *\r\nCache-Control: no-cache\r\nContent-Length: {}\r\n\r\n{}",
-                    body.len(), body
+                    body.len(),
+                    body
                 );
                 let _ = stream.write_all(response.as_bytes());
             } else if request.contains("GET /raw") {
                 // Return raw HTML content (for full-page mode reload)
                 let response = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nAccess-Control-Allow-Origin: *\r\nCache-Control: no-cache\r\nContent-Length: {}\r\n\r\n{}",
-                    html_content.len(), html_content
+                    html_content.len(),
+                    html_content
                 );
                 let _ = stream.write_all(response.as_bytes());
             } else {
                 // Main page: detect if content is a full HTML document or a fragment
-                let is_full_page = html_content.contains("<!DOCTYPE") ||
-                    html_content.contains("<html") ||
-                    html_content.contains("<canvas") ||
-                    html_content.contains("<script");
+                let is_full_page = html_content.contains("<!DOCTYPE")
+                    || html_content.contains("<html")
+                    || html_content.contains("<canvas")
+                    || html_content.contains("<script");
 
                 let page = if is_full_page {
                     // Full page mode: serve content directly with a tiny reload checker
                     // The checker only reloads the WHOLE page when hash changes
-                    format!(r#"<!DOCTYPE html>
+                    format!(
+                        r#"<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
@@ -110,10 +116,13 @@ fn start_server(state: SharedHtmlState) -> u16 {
 }})();
 </script>
 </body>
-</html>"#, html_content, content_hash)
+</html>"#,
+                        html_content, content_hash
+                    )
                 } else {
                     // Fragment mode: safe to use innerHTML swap
-                    format!(r#"<!DOCTYPE html>
+                    format!(
+                        r#"<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
@@ -146,12 +155,15 @@ async function _pwPoll() {{
 setTimeout(_pwPoll, 1000);
 </script>
 </body>
-</html>"#, html_content, content_hash)
+</html>"#,
+                        html_content, content_hash
+                    )
                 };
 
                 let response = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nCache-Control: no-cache\r\nContent-Length: {}\r\n\r\n{}",
-                    page.len(), page
+                    page.len(),
+                    page
                 );
                 let _ = stream.write_all(response.as_bytes());
             }
@@ -189,7 +201,8 @@ pub fn render(
             }));
             start_server(s.clone());
             s
-        }).clone()
+        })
+        .clone()
     });
 
     // Update HTML content + hash in server
@@ -209,7 +222,12 @@ pub fn render(
     ui.horizontal(|ui| {
         if is_running {
             ui.colored_label(egui::Color32::from_rgb(80, 200, 80), "● Live");
-            ui.label(egui::RichText::new(format!(":{}", port)).small().monospace().color(egui::Color32::GRAY));
+            ui.label(
+                egui::RichText::new(format!(":{}", port))
+                    .small()
+                    .monospace()
+                    .color(egui::Color32::GRAY),
+            );
         } else {
             ui.colored_label(egui::Color32::from_rgb(200, 80, 80), "○ Stopped");
         }
@@ -243,9 +261,11 @@ pub fn render(
         } else {
             html
         };
-        egui::ScrollArea::vertical().max_height(100.0).show_pannable(ui, |ui| {
-            let mut p = preview;
-            ui.code_editor(&mut p);
-        });
+        egui::ScrollArea::vertical()
+            .max_height(100.0)
+            .show_pannable(ui, |ui| {
+                let mut p = preview;
+                ui.code_editor(&mut p);
+            });
     }
 }

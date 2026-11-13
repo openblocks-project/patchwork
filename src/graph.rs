@@ -6,33 +6,87 @@ use crate::gpu_mesh::GpuMeshHandle;
 use crate::mesh::PlacedMesh;
 use crate::node_trait::NodeBehavior;
 
-fn default_true() -> bool { true }
-fn default_bg_color() -> [u8; 3] { [20, 20, 20] }
-fn default_text_color() -> [u8; 3] { [220, 220, 220] }
-fn default_window_bg() -> [u8; 3] { [24, 24, 24] }
-fn default_window_alpha() -> u8 { 240 }
-fn default_grid_color() -> [u8; 3] { [28, 28, 28] }
-fn default_slider_step() -> f32 { 0.01 }
-fn default_slider_color() -> [u8; 3] { [80, 160, 255] }
-fn default_grid_style() -> u8 { 2 } // Default: Dotted
-fn default_rounding() -> f32 { 16.0 }
-fn default_spacing() -> f32 { 4.0 }
-fn default_wire_thickness() -> f32 { 6.0 }
-fn default_canvas_w() -> f32 { 400.0 }
-fn default_canvas_h() -> f32 { 300.0 }
-fn default_wiggle_range() -> f32 { 1.0 }
-fn default_wiggle_speed() -> f32 { 1.0 }
-fn default_wiggle_signal() -> f32 { 0.0 }
-fn default_resolution() -> u32 { 120 }
-fn default_max_tokens() -> u32 { 1024 }
-fn default_provider() -> String { "anthropic".into() }
-fn default_model() -> String { "claude-sonnet-4-20250514".into() }
-fn default_temperature() -> f32 { 0.7 }
-fn default_dmx_frame_rate() -> u8 { 30 }
-fn default_dmx_channels() -> usize { 8 }
-fn default_dmx_start_at() -> u16 { 1 }
-fn default_artnet_host() -> String { "2.255.255.255".into() }
-fn default_artnet_port() -> u16 { 6454 }
+fn default_true() -> bool {
+    true
+}
+fn default_bg_color() -> [u8; 3] {
+    [20, 20, 20]
+}
+fn default_text_color() -> [u8; 3] {
+    [220, 220, 220]
+}
+fn default_window_bg() -> [u8; 3] {
+    [24, 24, 24]
+}
+fn default_window_alpha() -> u8 {
+    240
+}
+fn default_grid_color() -> [u8; 3] {
+    [28, 28, 28]
+}
+fn default_slider_step() -> f32 {
+    0.01
+}
+fn default_slider_color() -> [u8; 3] {
+    [80, 160, 255]
+}
+fn default_grid_style() -> u8 {
+    2
+} // Default: Dotted
+fn default_rounding() -> f32 {
+    16.0
+}
+fn default_spacing() -> f32 {
+    4.0
+}
+fn default_wire_thickness() -> f32 {
+    6.0
+}
+fn default_canvas_w() -> f32 {
+    400.0
+}
+fn default_canvas_h() -> f32 {
+    300.0
+}
+fn default_wiggle_range() -> f32 {
+    1.0
+}
+fn default_wiggle_speed() -> f32 {
+    1.0
+}
+fn default_wiggle_signal() -> f32 {
+    0.0
+}
+fn default_resolution() -> u32 {
+    120
+}
+fn default_max_tokens() -> u32 {
+    1024
+}
+fn default_provider() -> String {
+    "anthropic".into()
+}
+fn default_model() -> String {
+    "claude-sonnet-4-20250514".into()
+}
+fn default_temperature() -> f32 {
+    0.7
+}
+fn default_dmx_frame_rate() -> u8 {
+    30
+}
+fn default_dmx_channels() -> usize {
+    8
+}
+fn default_dmx_start_at() -> u16 {
+    1
+}
+fn default_artnet_host() -> String {
+    "2.255.255.255".into()
+}
+fn default_artnet_port() -> u16 {
+    6454
+}
 
 pub type NodeId = u64;
 
@@ -90,7 +144,11 @@ impl MlPreset {
     pub fn all() -> &'static [MlPreset] {
         // Only show presets relevant to the generic ML Model node.
         // Hand/Face/Pose have dedicated tracking nodes now.
-        &[MlPreset::Classification, MlPreset::ObjectDetection, MlPreset::Custom]
+        &[
+            MlPreset::Classification,
+            MlPreset::ObjectDetection,
+            MlPreset::Custom,
+        ]
     }
 
     pub fn name(&self) -> &'static str {
@@ -109,9 +167,9 @@ impl MlPreset {
         match self {
             MlPreset::Classification => 224,
             MlPreset::ObjectDetection => 640,
-            MlPreset::PoseEstimation => 128,  // MediaPipe pose detector uses 128
-            MlPreset::HandDetection => 256,   // MediaPipe palm detector uses 256×256
-            MlPreset::FaceDetection => 128,   // BlazeFace short-range uses 128×128
+            MlPreset::PoseEstimation => 128, // MediaPipe pose detector uses 128
+            MlPreset::HandDetection => 256,  // MediaPipe palm detector uses 256×256
+            MlPreset::FaceDetection => 128,  // BlazeFace short-range uses 128×128
             MlPreset::Custom => 224,
         }
     }
@@ -139,12 +197,20 @@ pub struct ImageData {
 
 impl ImageData {
     pub fn new(width: u32, height: u32, pixels: Vec<u8>) -> Self {
-        Self { width, height, pixels }
+        Self {
+            width,
+            height,
+            pixels,
+        }
     }
     #[allow(dead_code)]
     pub fn solid(width: u32, height: u32, r: u8, g: u8, b: u8, a: u8) -> Self {
         let pixels = vec![r, g, b, a].repeat((width * height) as usize);
-        Self { width, height, pixels }
+        Self {
+            width,
+            height,
+            pixels,
+        }
     }
 }
 
@@ -245,9 +311,7 @@ impl PartialEq for PortValue {
             }
             (PortValue::Mesh(a), PortValue::Mesh(b)) => Arc::ptr_eq(a, b),
             (PortValue::GpuMesh(a), PortValue::GpuMesh(b)) => {
-                a.node_id == b.node_id
-                    && a.port == b.port
-                    && a.frame_stamp == b.frame_stamp
+                a.node_id == b.node_id && a.port == b.port && a.frame_stamp == b.frame_stamp
             }
             (PortValue::None, PortValue::None) => true,
             _ => false,
@@ -263,14 +327,21 @@ impl std::fmt::Display for PortValue {
                 if s.chars().count() > 24 {
                     let head: String = s.chars().take(24).collect();
                     write!(f, "\"{}...\"", head)
+                } else {
+                    write!(f, "\"{}\"", s)
                 }
-                else { write!(f, "\"{}\"", s) }
             }
             PortValue::Image(img) => write!(f, "[Image {}x{}]", img.width, img.height),
             PortValue::GpuImage(h) => write!(f, "[GPU Image {}x{}]", h.width, h.height),
             PortValue::Mesh(p) => {
                 let n = p.mesh.name.as_deref().unwrap_or("Mesh");
-                write!(f, "[{} {}v/{}i]", n, p.mesh.vertices.len(), p.mesh.indices.len())
+                write!(
+                    f,
+                    "[{} {}v/{}i]",
+                    n,
+                    p.mesh.vertices.len(),
+                    p.mesh.indices.len()
+                )
             }
             PortValue::GpuMesh(h) => write!(f, "[GPU Mesh {}v/{}i]", h.vertex_count, h.index_count),
             PortValue::None => write!(f, "\u{2014}"),
@@ -283,21 +354,27 @@ impl PortValue {
     //     match self { PortValue::Float(v) => *v, _ => 0.0 }
     // }
     pub fn as_float(&self) -> f32 {
-    match self {
-        PortValue::Float(v) => *v,
-        // Text that looks like a number (e.g. a value pulled out of JSON
-        // by the JSON Extractor, which emits Text) coerces to Float so it
-        // can drive Math / 2D Pointer / any numeric input. Non-numeric
-        // text falls through to 0.0.
-        PortValue::Text(s) => s.trim().parse::<f32>().unwrap_or(0.0),
-        _ => 0.0,
+        match self {
+            PortValue::Float(v) => *v,
+            // Text that looks like a number (e.g. a value pulled out of JSON
+            // by the JSON Extractor, which emits Text) coerces to Float so it
+            // can drive Math / 2D Pointer / any numeric input. Non-numeric
+            // text falls through to 0.0.
+            PortValue::Text(s) => s.trim().parse::<f32>().unwrap_or(0.0),
+            _ => 0.0,
+        }
     }
-}
     pub fn as_image(&self) -> Option<&Arc<ImageData>> {
-        match self { PortValue::Image(img) => Some(img), _ => None }
+        match self {
+            PortValue::Image(img) => Some(img),
+            _ => None,
+        }
     }
     pub fn as_mesh(&self) -> Option<&Arc<PlacedMesh>> {
-        match self { PortValue::Mesh(m) => Some(m), _ => None }
+        match self {
+            PortValue::Mesh(m) => Some(m),
+            _ => None,
+        }
     }
 
     /// Returns `(width, height)` for any image port (CPU `Image` or GPU
@@ -372,32 +449,32 @@ impl PortKind {
     /// Base color for this port kind (used for port fill and wire color)
     pub fn base_color(&self) -> [u8; 3] {
         match self {
-            Self::Number      => [80, 100, 230],    // blue
-            Self::Normalized  => [80, 100, 230],    // blue (same family as Number)
-            Self::Trigger     => [255, 120, 40],    // orange
-            Self::Gate        => [255, 120, 40],    // orange (same family as Trigger)
-            Self::Text        => [60, 220, 80],     // green
-            Self::Image       => [200, 30, 255],    // purple
-            Self::Audio       => [255, 50, 50],     // red
-            Self::Color       => [80, 100, 230],    // blue (same family as Number)
-            Self::Mesh        => [80, 220, 220],    // cyan
-            Self::Generic     => [80, 100, 230],    // blue (same family as Number)
+            Self::Number => [80, 100, 230],     // blue
+            Self::Normalized => [80, 100, 230], // blue (same family as Number)
+            Self::Trigger => [255, 120, 40],    // orange
+            Self::Gate => [255, 120, 40],       // orange (same family as Trigger)
+            Self::Text => [60, 220, 80],        // green
+            Self::Image => [200, 30, 255],      // purple
+            Self::Audio => [255, 50, 50],       // red
+            Self::Color => [80, 100, 230],      // blue (same family as Number)
+            Self::Mesh => [80, 220, 220],       // cyan
+            Self::Generic => [80, 100, 230],    // blue (same family as Number)
         }
     }
 
     /// Phosphor icon glyph for this port kind
     pub fn icon_glyph(&self) -> &'static str {
         match self {
-            Self::Number      => crate::icons::MATH_OPERATIONS,
-            Self::Normalized  => crate::icons::SLIDERS,
-            Self::Trigger     => crate::icons::LIGHTNING,
-            Self::Gate        => crate::icons::TOGGLE_RIGHT,
-            Self::Text        => crate::icons::TEXT_T,
-            Self::Image       => crate::icons::IMAGE,
-            Self::Audio       => crate::icons::WAVEFORM,
-            Self::Color       => crate::icons::PALETTE,
-            Self::Mesh        => "",
-            Self::Generic     => "",
+            Self::Number => crate::icons::MATH_OPERATIONS,
+            Self::Normalized => crate::icons::SLIDERS,
+            Self::Trigger => crate::icons::LIGHTNING,
+            Self::Gate => crate::icons::TOGGLE_RIGHT,
+            Self::Text => crate::icons::TEXT_T,
+            Self::Image => crate::icons::IMAGE,
+            Self::Audio => crate::icons::WAVEFORM,
+            Self::Color => crate::icons::PALETTE,
+            Self::Mesh => "",
+            Self::Generic => "",
         }
     }
 
@@ -405,16 +482,16 @@ impl PortKind {
     /// 0=Circle, 1=RoundedSquare, 2=Triangle, 3=Diamond, 4=HalfMoon, 5=Square
     pub fn shape_id(&self) -> u8 {
         match self {
-            Self::Number      => 0, // circle
-            Self::Normalized  => 0, // circle (with inner dot)
-            Self::Trigger     => 2, // triangle
-            Self::Gate        => 5, // square
-            Self::Text        => 1, // rounded square
-            Self::Image       => 3, // diamond
-            Self::Audio       => 0, // circle (with inner dot)
-            Self::Color       => 0, // circle
-            Self::Mesh        => 5, // square (cyan stands in for "geometry")
-            Self::Generic     => 0, // circle
+            Self::Number => 0,     // circle
+            Self::Normalized => 0, // circle (with inner dot)
+            Self::Trigger => 2,    // triangle
+            Self::Gate => 5,       // square
+            Self::Text => 1,       // rounded square
+            Self::Image => 3,      // diamond
+            Self::Audio => 0,      // circle (with inner dot)
+            Self::Color => 0,      // circle
+            Self::Mesh => 5,       // square (cyan stands in for "geometry")
+            Self::Generic => 0,    // circle
         }
     }
 
@@ -435,10 +512,15 @@ impl PortKind {
     /// Generic is compatible with everything. Text only connects to Text or Generic.
     pub fn compatible(from: PortKind, to: PortKind) -> bool {
         use PortKind::*;
-        if from == Generic || to == Generic { return true; }
+        if from == Generic || to == Generic {
+            return true;
+        }
         match (from, to) {
             // Numeric family: all interchangeable (they're all f32 underneath)
-            (Number | Normalized | Trigger | Gate | Color, Number | Normalized | Trigger | Gate | Color) => true,
+            (
+                Number | Normalized | Trigger | Gate | Color,
+                Number | Normalized | Trigger | Gate | Color,
+            ) => true,
             // Audio only connects to Audio
             (Audio, Audio) => true,
             // Image only connects to Image
@@ -461,24 +543,33 @@ pub struct PortDef {
 impl PortDef {
     /// Create a PortDef with a static name (zero-cost, no allocation)
     pub fn new(name: &'static str, kind: PortKind) -> Self {
-        Self { name: std::borrow::Cow::Borrowed(name), kind }
+        Self {
+            name: std::borrow::Cow::Borrowed(name),
+            kind,
+        }
     }
     /// Create a PortDef with a dynamic name (owned String, freed on drop)
     pub fn dynamic(name: String, kind: PortKind) -> Self {
-        Self { name: std::borrow::Cow::Owned(name), kind }
+        Self {
+            name: std::borrow::Cow::Owned(name),
+            kind,
+        }
     }
 }
 
 // ── MIDI mode ───────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum MidiMode { Note, CC }
+pub enum MidiMode {
+    Note,
+    CC,
+}
 
 // ── Node types ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum NodeType {
-        /// Exposes an input port on the parent custom-node instance.
+    /// Exposes an input port on the parent custom-node instance.
     CustomInput {
         name: String,
         kind: PortKind,
@@ -490,16 +581,16 @@ pub enum NodeType {
         kind: PortKind,
     },
     /// A reusable node referencing an external .pwnode file.
-CustomNodeInstance {
-    /// Path to the referenced custom node.
-    file: String,
+    CustomNodeInstance {
+        /// Path to the referenced custom node.
+        file: String,
 
-    /// External input port definitions.
-    inputs: Vec<crate::document::CustomNodePort>,
+        /// External input port definitions.
+        inputs: Vec<crate::document::CustomNodePort>,
 
-    /// External output port definitions.
-    outputs: Vec<crate::document::CustomNodePort>,
-},
+        /// External output port definitions.
+        outputs: Vec<crate::document::CustomNodePort>,
+    },
     Slider {
         value: f32,
         min: f32,
@@ -763,13 +854,13 @@ CustomNodeInstance {
         #[serde(default)]
         url: String,
         #[serde(default)]
-        method: String,        // GET or POST
+        method: String, // GET or POST
         #[serde(default)]
-        headers: String,       // Custom headers, key: value per line
+        headers: String, // Custom headers, key: value per line
         #[serde(default)]
         response: String,
         #[serde(default)]
-        status: String,        // "idle" / "200 OK" / "error: ..."
+        status: String, // "idle" / "200 OK" / "error: ..."
         #[serde(default)]
         auto_send: bool,
         #[serde(default)]
@@ -777,7 +868,7 @@ CustomNodeInstance {
     },
     AiRequest {
         #[serde(default = "default_provider")]
-        provider: String,      // "anthropic" / "openai" / "google"
+        provider: String, // "anthropic" / "openai" / "google"
         #[serde(default = "default_model")]
         model: String,
         #[serde(default)]
@@ -795,11 +886,11 @@ CustomNodeInstance {
         #[serde(default)]
         api_key: String,
         #[serde(default)]
-        response_type: u8,     // Text mode: 0=Text, 1=JSON, 2=Code, 3=WGSL, 4=HTML
+        response_type: u8, // Text mode: 0=Text, 1=JSON, 2=Code, 3=WGSL, 4=HTML
         #[serde(default)]
-        mode: u8,              // 0 = Text, 1 = Image
+        mode: u8, // 0 = Text, 1 = Image
         #[serde(default)]
-        last_trigger: f32,     // for rising-edge detection on trigger port
+        last_trigger: f32, // for rising-edge detection on trigger port
         // Legacy fields kept for backward compatibility
         #[serde(default)]
         api_key_name: String,
@@ -1035,7 +1126,7 @@ CustomNodeInstance {
         drive: f32,
     },
     AudioPitchShift {
-        #[serde(default)]  // 0.0 semitones = no shift
+        #[serde(default)] // 0.0 semitones = no shift
         semitones: f32,
     },
     AudioLowPass {
@@ -1440,11 +1531,17 @@ impl Clone for DynNode {
         // Reconstruct from serialized state via the registry
         let tag = self.node.type_tag();
         let state = self.node.save_state();
-        if let Some(cloned) = crate::node_trait::NODE_REGISTRY.lock().ok().and_then(|r| r.create(tag, &state)) {
+        if let Some(cloned) = crate::node_trait::NODE_REGISTRY
+            .lock()
+            .ok()
+            .and_then(|r| r.create(tag, &state))
+        {
             DynNode { node: cloned }
         } else {
             // Fallback: create a placeholder
-            DynNode { node: Box::new(crate::nodes::add_node::AddNode::default()) }
+            DynNode {
+                node: Box::new(crate::nodes::add_node::AddNode::default()),
+            }
         }
     }
 }
@@ -1470,21 +1567,38 @@ impl<'de> serde::Deserialize<'de> for DynNode {
         let v = serde_json::Value::deserialize(d)?;
         let tag = v.get("type_tag").and_then(|t| t.as_str()).unwrap_or("add");
         let state = v.get("state").cloned().unwrap_or(serde_json::Value::Null);
-        let node_opt = crate::node_trait::NODE_REGISTRY.lock().ok().and_then(|r| r.create(tag, &state));
+        let node_opt = crate::node_trait::NODE_REGISTRY
+            .lock()
+            .ok()
+            .and_then(|r| r.create(tag, &state));
         if let Some(node) = node_opt {
             Ok(DynNode { node })
         } else {
-            Ok(DynNode { node: Box::new(crate::nodes::add_node::AddNode::default()) })
+            Ok(DynNode {
+                node: Box::new(crate::nodes::add_node::AddNode::default()),
+            })
         }
     }
 }
 
-fn default_pulse_width() -> f32 { 0.1 }
-fn default_confidence() -> f32 { 0.05 }
-fn default_ml_interval() -> f32 { 0.5 }
-fn default_video_w() -> u32 { 640 }
-fn default_video_h() -> u32 { 480 }
-fn default_speed() -> f32 { 1.0 }
+fn default_pulse_width() -> f32 {
+    0.1
+}
+fn default_confidence() -> f32 {
+    0.05
+}
+fn default_ml_interval() -> f32 {
+    0.5
+}
+fn default_video_w() -> u32 {
+    640
+}
+fn default_video_h() -> u32 {
+    480
+}
+fn default_speed() -> f32 {
+    1.0
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DrawStroke {
@@ -1493,35 +1607,91 @@ pub struct DrawStroke {
     pub width: f32,
 }
 
-fn default_device_id() -> u8 { 1 }
-fn default_orb_color() -> [u8; 3] { [255, 255, 255] }
-fn default_orb_brightness() -> f32 { 1.0 }
-fn default_one_u8() -> u8 { 1 }
-fn default_motor_speed() -> f32 { 400.0 }
-fn default_motor_amount() -> f32 { 90.0 }
-fn default_light_color() -> [u8; 3] { [255, 180, 100] }   // warm
-fn default_light_brightness() -> f32 { 0.20 }              // conservative — LEDs pull A's quickly
-fn default_preview_size() -> f32 { 150.0 }
-fn default_draw_size() -> f32 { 200.0 }
-fn default_draw_width() -> f32 { 2.0 }
-fn default_curve_points() -> Vec<[f32; 2]> { vec![[0.0, 0.0], [1.0, 1.0]] }
-fn default_neg_one() -> f32 { -1.0 }
-fn default_neg_one_i8() -> i8 { -1 }
+fn default_device_id() -> u8 {
+    1
+}
+fn default_orb_color() -> [u8; 3] {
+    [255, 255, 255]
+}
+fn default_orb_brightness() -> f32 {
+    1.0
+}
+fn default_one_u8() -> u8 {
+    1
+}
+fn default_motor_speed() -> f32 {
+    400.0
+}
+fn default_motor_amount() -> f32 {
+    90.0
+}
+fn default_light_color() -> [u8; 3] {
+    [255, 180, 100]
+} // warm
+fn default_light_brightness() -> f32 {
+    0.20
+} // conservative — LEDs pull A's quickly
+fn default_preview_size() -> f32 {
+    150.0
+}
+fn default_draw_size() -> f32 {
+    200.0
+}
+fn default_draw_width() -> f32 {
+    2.0
+}
+fn default_curve_points() -> Vec<[f32; 2]> {
+    vec![[0.0, 0.0], [1.0, 1.0]]
+}
+fn default_neg_one() -> f32 {
+    -1.0
+}
+fn default_neg_one_i8() -> i8 {
+    -1
+}
 /// Flat EQ: 5 points at 0dB (y=0.5) across the frequency range
-fn default_eq_points() -> Vec<[f32; 2]> { vec![[0.0, 0.5], [0.25, 0.5], [0.5, 0.5], [0.75, 0.5], [1.0, 0.5]] }
-fn default_sampler_duration() -> f32 { 5.0 }
-fn default_mixer_channels() -> usize { 2 }
-fn default_mixer_gains() -> Vec<f32> { vec![0.8, 0.8] }
-fn default_440() -> f32 { 440.0 }
-fn default_half() -> f32 { 0.5 }
-fn default_reverb_mix() -> f32 { 0.3 }
-fn default_one() -> f32 { 1.0 }
-fn default_mic_gain() -> f32 { 1.0 }
-fn default_point_eight() -> f32 { 0.8 }
-fn default_delay_ms() -> f32 { 250.0 }
-fn default_distortion_drive() -> f32 { 4.0 }
-fn default_lpf_cutoff() -> f32 { 1000.0 }
-fn default_hpf_cutoff() -> f32 { 200.0 }
+fn default_eq_points() -> Vec<[f32; 2]> {
+    vec![[0.0, 0.5], [0.25, 0.5], [0.5, 0.5], [0.75, 0.5], [1.0, 0.5]]
+}
+fn default_sampler_duration() -> f32 {
+    5.0
+}
+fn default_mixer_channels() -> usize {
+    2
+}
+fn default_mixer_gains() -> Vec<f32> {
+    vec![0.8, 0.8]
+}
+fn default_440() -> f32 {
+    440.0
+}
+fn default_half() -> f32 {
+    0.5
+}
+fn default_reverb_mix() -> f32 {
+    0.3
+}
+fn default_one() -> f32 {
+    1.0
+}
+fn default_mic_gain() -> f32 {
+    1.0
+}
+fn default_point_eight() -> f32 {
+    0.8
+}
+fn default_delay_ms() -> f32 {
+    250.0
+}
+fn default_distortion_drive() -> f32 {
+    4.0
+}
+fn default_lpf_cutoff() -> f32 {
+    1000.0
+}
+fn default_hpf_cutoff() -> f32 {
+    200.0
+}
 
 impl NodeBehavior for NodeType {
     fn title(&self) -> &str {
@@ -1578,7 +1748,13 @@ impl NodeBehavior for NodeType {
             NodeType::Speaker { .. } => "Speaker",
             NodeType::AudioMixer { .. } => "Mixer",
             NodeType::AudioSampler { .. } => "Audio Sampler",
-            NodeType::ClapPlugin { plugin_name, .. } => if plugin_name.is_empty() { "CLAP Plugin" } else { plugin_name.as_str() },
+            NodeType::ClapPlugin { plugin_name, .. } => {
+                if plugin_name.is_empty() {
+                    "CLAP Plugin"
+                } else {
+                    plugin_name.as_str()
+                }
+            }
             NodeType::RustPlugin { .. } => "Rust Plugin",
             NodeType::McpServer => "MCP Server",
             NodeType::HtmlViewer => "HTML Viewer",
@@ -1604,31 +1780,40 @@ impl NodeBehavior for NodeType {
     fn inputs(&self) -> Vec<PortDef> {
         use PortKind::*;
         match self {
-            NodeType::CustomNodeInstance { inputs, .. } => {
-    inputs.iter().map(|port| {
-        let kind = match port.kind.as_str() {
-            "Number" => PortKind::Number,
-            "Normalized" => PortKind::Normalized,
-            "Trigger" => PortKind::Trigger,
-            "Gate" => PortKind::Gate,
-            "Text" => PortKind::Text,
-            "Image" => PortKind::Image,
-            "Audio" => PortKind::Audio,
-            "Color" => PortKind::Color,
-            "Mesh" => PortKind::Mesh,
-            _ => PortKind::Generic,
-        };
-        PortDef::dynamic(port.name.clone(), kind)
-    }).collect()
-},
+            NodeType::CustomNodeInstance { inputs, .. } => inputs
+                .iter()
+                .map(|port| {
+                    let kind = match port.kind.as_str() {
+                        "Number" => PortKind::Number,
+                        "Normalized" => PortKind::Normalized,
+                        "Trigger" => PortKind::Trigger,
+                        "Gate" => PortKind::Gate,
+                        "Text" => PortKind::Text,
+                        "Image" => PortKind::Image,
+                        "Audio" => PortKind::Audio,
+                        "Color" => PortKind::Color,
+                        "Mesh" => PortKind::Mesh,
+                        _ => PortKind::Generic,
+                    };
+                    PortDef::dynamic(port.name.clone(), kind)
+                })
+                .collect(),
             NodeType::CustomInput { .. } => vec![],
 
             NodeType::CustomOutput { name, kind } => {
-            vec![PortDef::dynamic(name.clone(), *kind)]
-            },
-            NodeType::Slider { .. } => vec![PortDef::new("In", Number), PortDef::new("Min", Number), PortDef::new("Max", Number)],
+                vec![PortDef::dynamic(name.clone(), *kind)]
+            }
+            NodeType::Slider { .. } => vec![
+                PortDef::new("In", Number),
+                PortDef::new("Min", Number),
+                PortDef::new("Max", Number),
+            ],
             NodeType::FolderBrowser { .. } => vec![],
-            NodeType::WgslViewer { uniform_names, uniform_types, .. } => {
+            NodeType::WgslViewer {
+                uniform_names,
+                uniform_types,
+                ..
+            } => {
                 let mut ports = vec![PortDef::new("WGSL", Text)];
                 for (i, n) in uniform_names.iter().enumerate() {
                     let t = uniform_types.get(i).map(|s| s.as_str()).unwrap_or("float");
@@ -1647,16 +1832,34 @@ impl NodeBehavior for NodeType {
                 ports
             }
             NodeType::MidiOut { mode, .. } => match mode {
-                MidiMode::Note => vec![PortDef::new("Channel", Number), PortDef::new("Note", Number), PortDef::new("Velocity", Number)],
-                MidiMode::CC => vec![PortDef::new("Channel", Number), PortDef::new("CC#", Number), PortDef::new("Value", Number)],
+                MidiMode::Note => vec![
+                    PortDef::new("Channel", Number),
+                    PortDef::new("Note", Number),
+                    PortDef::new("Velocity", Number),
+                ],
+                MidiMode::CC => vec![
+                    PortDef::new("Channel", Number),
+                    PortDef::new("CC#", Number),
+                    PortDef::new("Value", Number),
+                ],
             },
             NodeType::MidiIn { .. } => vec![],
             NodeType::Theme { .. } => vec![
-                PortDef::new("BG R", Color), PortDef::new("BG G", Color), PortDef::new("BG B", Color),
-                PortDef::new("Text R", Color), PortDef::new("Text G", Color), PortDef::new("Text B", Color),
-                PortDef::new("Accent R", Color), PortDef::new("Accent G", Color), PortDef::new("Accent B", Color),
-                PortDef::new("Win R", Color), PortDef::new("Win G", Color), PortDef::new("Win B", Color),
-                PortDef::new("Grid R", Color), PortDef::new("Grid G", Color), PortDef::new("Grid B", Color),
+                PortDef::new("BG R", Color),
+                PortDef::new("BG G", Color),
+                PortDef::new("BG B", Color),
+                PortDef::new("Text R", Color),
+                PortDef::new("Text G", Color),
+                PortDef::new("Text B", Color),
+                PortDef::new("Accent R", Color),
+                PortDef::new("Accent G", Color),
+                PortDef::new("Accent B", Color),
+                PortDef::new("Win R", Color),
+                PortDef::new("Win G", Color),
+                PortDef::new("Win B", Color),
+                PortDef::new("Grid R", Color),
+                PortDef::new("Grid G", Color),
+                PortDef::new("Grid B", Color),
                 PortDef::new("Font Size", Number),
                 PortDef::new("Rounding", Number),
                 PortDef::new("Spacing", Number),
@@ -1671,12 +1874,20 @@ impl NodeBehavior for NodeType {
             ],
             NodeType::Serial { .. } => vec![PortDef::new("Send", Text)],
             NodeType::Console { .. } => vec![PortDef::new("Log", Generic)],
-            NodeType::OscOut { arg_count, .. } => {
-                (0..*arg_count).map(|i| PortDef::dynamic(format!("Arg {}", i), Generic)).collect()
-            }
+            NodeType::OscOut { arg_count, .. } => (0..*arg_count)
+                .map(|i| PortDef::dynamic(format!("Arg {}", i), Generic))
+                .collect(),
             NodeType::OscIn { .. } => vec![],
-            NodeType::DmxOut { channel_count, start_at, .. }
-            | NodeType::ArtNetOut { channel_count, start_at, .. } => {
+            NodeType::DmxOut {
+                channel_count,
+                start_at,
+                ..
+            }
+            | NodeType::ArtNetOut {
+                channel_count,
+                start_at,
+                ..
+            } => {
                 (0..*channel_count)
                     .map(|i| {
                         // 1-indexed DMX channel label so users see "Ch 1"
@@ -1688,7 +1899,11 @@ impl NodeBehavior for NodeType {
             }
             NodeType::DmxIn { .. } | NodeType::ArtNetIn { .. } => vec![],
             NodeType::Palette { .. } => vec![],
-            NodeType::HttpRequest { .. } => vec![PortDef::new("URL", Text), PortDef::new("Body", Text), PortDef::new("Headers", Text)],
+            NodeType::HttpRequest { .. } => vec![
+                PortDef::new("URL", Text),
+                PortDef::new("Body", Text),
+                PortDef::new("Headers", Text),
+            ],
             NodeType::AiRequest { .. } => vec![
                 PortDef::new("System", Text),
                 PortDef::new("Prompt", Text),
@@ -1707,40 +1922,75 @@ impl NodeBehavior for NodeType {
             NodeType::ObKnob { .. } => vec![],
             NodeType::ObOrb { .. } => {
                 vec![PortDef::new("Drive", Number)]
-            },
+            }
             NodeType::ObMotor { .. } => vec![PortDef::new("Trigger", Trigger)],
             NodeType::ObLight { .. } => vec![
-                PortDef::new("Position",   Number),    // Pointer mode
-                PortDef::new("Speed",      Number),    // Pulse mode
-                PortDef::new("R",          Color),     // or H in HSL mode
-                PortDef::new("G",          Color),     // or S in HSL mode
-                PortDef::new("B",          Color),     // or L in HSL mode
-                PortDef::new("Trigger",    Trigger),   // fires Send in Triggered mode
-                PortDef::new("Brightness", Number),    // 0..1 — overrides slider
+                PortDef::new("Position", Number),   // Pointer mode
+                PortDef::new("Speed", Number),      // Pulse mode
+                PortDef::new("R", Color),           // or H in HSL mode
+                PortDef::new("G", Color),           // or S in HSL mode
+                PortDef::new("B", Color),           // or L in HSL mode
+                PortDef::new("Trigger", Trigger),   // fires Send in Triggered mode
+                PortDef::new("Brightness", Number), // 0..1 — overrides slider
             ],
-            NodeType::Synth { .. } => vec![PortDef::new("Freq", Number), PortDef::new("Amp", Normalized), PortDef::new("Gate", Gate), PortDef::new("FM Wt", Normalized)],
-            NodeType::AudioPlayer { .. } => vec![PortDef::new("Play", Trigger), PortDef::new("Volume", Normalized), PortDef::new("Seek", Normalized), PortDef::new("Speed", Number)],
+            NodeType::Synth { .. } => vec![
+                PortDef::new("Freq", Number),
+                PortDef::new("Amp", Normalized),
+                PortDef::new("Gate", Gate),
+                PortDef::new("FM Wt", Normalized),
+            ],
+            NodeType::AudioPlayer { .. } => vec![
+                PortDef::new("Play", Trigger),
+                PortDef::new("Volume", Normalized),
+                PortDef::new("Seek", Normalized),
+                PortDef::new("Speed", Number),
+            ],
             NodeType::AudioPlaylist { .. } => vec![
-                PortDef::new("Play",   Trigger),
-                PortDef::new("Stop",   Trigger),
-                PortDef::new("Next",   Trigger),
-                PortDef::new("Prev",   Trigger),
-                PortDef::new("Index",  Number),
+                PortDef::new("Play", Trigger),
+                PortDef::new("Stop", Trigger),
+                PortDef::new("Next", Trigger),
+                PortDef::new("Prev", Trigger),
+                PortDef::new("Index", Number),
                 PortDef::new("Volume", Normalized),
             ],
             NodeType::AudioInput { .. } => vec![PortDef::new("Gain", Normalized)],
             NodeType::AudioAnalyzer => vec![PortDef::new("Audio", Audio)],
             NodeType::SpectrumAnalyzer => vec![PortDef::new("Audio", Audio)],
             NodeType::AudioDevice { .. } => vec![],
-            NodeType::AudioDelay { .. } => vec![PortDef::new("Audio", Audio), PortDef::new("Time", Number), PortDef::new("Feedback", Normalized)],
-            NodeType::AudioDistortion { .. } => vec![PortDef::new("Audio", Audio), PortDef::new("Drive", Number)],
-            NodeType::AudioPitchShift { .. } => vec![PortDef::new("Audio", Audio), PortDef::new("Semitones", Number)],
-            NodeType::AudioReverb { .. } => vec![PortDef::new("Audio", Audio), PortDef::new("Room", Normalized), PortDef::new("Damp", Normalized), PortDef::new("Mix", Normalized)],
-            NodeType::AudioLowPass { .. } => vec![PortDef::new("Audio", Audio), PortDef::new("Cutoff", Number)],
-            NodeType::AudioHighPass { .. } => vec![PortDef::new("Audio", Audio), PortDef::new("Cutoff", Number)],
-            NodeType::AudioGain { .. } => vec![PortDef::new("Audio", Audio), PortDef::new("Level", Number)],
+            NodeType::AudioDelay { .. } => vec![
+                PortDef::new("Audio", Audio),
+                PortDef::new("Time", Number),
+                PortDef::new("Feedback", Normalized),
+            ],
+            NodeType::AudioDistortion { .. } => {
+                vec![PortDef::new("Audio", Audio), PortDef::new("Drive", Number)]
+            }
+            NodeType::AudioPitchShift { .. } => vec![
+                PortDef::new("Audio", Audio),
+                PortDef::new("Semitones", Number),
+            ],
+            NodeType::AudioReverb { .. } => vec![
+                PortDef::new("Audio", Audio),
+                PortDef::new("Room", Normalized),
+                PortDef::new("Damp", Normalized),
+                PortDef::new("Mix", Normalized),
+            ],
+            NodeType::AudioLowPass { .. } => {
+                vec![PortDef::new("Audio", Audio), PortDef::new("Cutoff", Number)]
+            }
+            NodeType::AudioHighPass { .. } => {
+                vec![PortDef::new("Audio", Audio), PortDef::new("Cutoff", Number)]
+            }
+            NodeType::AudioGain { .. } => {
+                vec![PortDef::new("Audio", Audio), PortDef::new("Level", Number)]
+            }
             NodeType::AudioEq { .. } => vec![PortDef::new("Audio", Audio)],
-            NodeType::Speaker { .. } => vec![PortDef::new("L/Mono", Audio), PortDef::new("R", Audio), PortDef::new("Volume", Normalized), PortDef::new("Pan", Number)],
+            NodeType::Speaker { .. } => vec![
+                PortDef::new("L/Mono", Audio),
+                PortDef::new("R", Audio),
+                PortDef::new("Volume", Normalized),
+                PortDef::new("Pan", Number),
+            ],
             NodeType::AudioMixer { channel_count, .. } => {
                 // Per channel: Audio input + Gain control input
                 let mut ports = Vec::new();
@@ -1750,7 +2000,9 @@ impl NodeBehavior for NodeType {
                 }
                 ports
             }
-            NodeType::AudioSampler { range_as_duration, .. } => vec![
+            NodeType::AudioSampler {
+                range_as_duration, ..
+            } => vec![
                 PortDef::new("Audio", Audio),
                 PortDef::new("Rec", Trigger),
                 PortDef::new("Play", Trigger),
@@ -1764,7 +2016,11 @@ impl NodeBehavior for NodeType {
                 PortDef::new("Speed", Number),
                 PortDef::new("Seek", Normalized),
             ],
-            NodeType::ClapPlugin { param_names, is_instrument, .. } => {
+            NodeType::ClapPlugin {
+                param_names,
+                is_instrument,
+                ..
+            } => {
                 let mut ports = Vec::new();
                 if *is_instrument {
                     ports.push(PortDef::new("Note", Number));
@@ -1778,22 +2034,29 @@ impl NodeBehavior for NodeType {
                 }
                 ports
             }
-            NodeType::RustPlugin { input_names, .. } => {
-                input_names.iter().map(|n| PortDef::dynamic(n.clone(), Generic)).collect()
-            }
+            NodeType::RustPlugin { input_names, .. } => input_names
+                .iter()
+                .map(|n| PortDef::dynamic(n.clone(), Generic))
+                .collect(),
             NodeType::McpServer => vec![],
             NodeType::HtmlViewer => vec![PortDef::new("HTML", Text)],
-            NodeType::ImageNode { .. } => vec![
-                PortDef::new("Image In", Image),
-                PortDef::new("Src", Text),
-            ],
+            NodeType::ImageNode { .. } => {
+                vec![PortDef::new("Image In", Image), PortDef::new("Src", Text)]
+            }
             NodeType::ImageEffects { .. } => vec![
-                PortDef::new("Image", Image), PortDef::new("Brightness", Normalized), PortDef::new("Contrast", Normalized),
-                PortDef::new("Saturation", Normalized), PortDef::new("Hue", Number), PortDef::new("Exposure", Number), PortDef::new("Gamma", Number),
+                PortDef::new("Image", Image),
+                PortDef::new("Brightness", Normalized),
+                PortDef::new("Contrast", Normalized),
+                PortDef::new("Saturation", Normalized),
+                PortDef::new("Hue", Number),
+                PortDef::new("Exposure", Number),
+                PortDef::new("Gamma", Number),
             ],
             NodeType::Curve { .. } => vec![
-                PortDef::new("X", Normalized), PortDef::new("Trigger", Trigger),
-                PortDef::new("Speed", Number), PortDef::new("Gate", Gate),
+                PortDef::new("X", Normalized),
+                PortDef::new("Trigger", Trigger),
+                PortDef::new("Speed", Number),
+                PortDef::new("Gate", Gate),
             ],
             NodeType::Draw { .. } => vec![],
             NodeType::ColorCurves { .. } => vec![PortDef::new("Image", Image)],
@@ -1803,21 +2066,36 @@ impl NodeBehavior for NodeType {
             NodeType::Timer { .. } => vec![
                 PortDef::new("Interval", Number),
                 PortDef::new("BPM", Number),
-                PortDef::new("Phase", Normalized),   // sync: 0..1 from Clock or another Timer
-                PortDef::new("Offset", Normalized),   // overrides inline phase_offset when wired
+                PortDef::new("Phase", Normalized), // sync: 0..1 from Clock or another Timer
+                PortDef::new("Offset", Normalized), // overrides inline phase_offset when wired
             ],
-            NodeType::SampleHold { .. } => vec![PortDef::new("Value", Generic), PortDef::new("Trigger", Trigger)],
-            NodeType::NetworkSend { schema, .. } => {
-                schema.iter().map(|s| PortDef::dynamic(s.name.clone(), match s.kind {
-                    NetPortKind::Float => Number,
-                    NetPortKind::Text => Text,
-                    NetPortKind::Image => Image,
-                })).collect()
-            }
+            NodeType::SampleHold { .. } => vec![
+                PortDef::new("Value", Generic),
+                PortDef::new("Trigger", Trigger),
+            ],
+            NodeType::NetworkSend { schema, .. } => schema
+                .iter()
+                .map(|s| {
+                    PortDef::dynamic(
+                        s.name.clone(),
+                        match s.kind {
+                            NetPortKind::Float => Number,
+                            NetPortKind::Text => Text,
+                            NetPortKind::Image => Image,
+                        },
+                    )
+                })
+                .collect(),
             NodeType::NetworkReceive { .. } => vec![],
-            NodeType::Script { input_names, continuous, .. } => {
+            NodeType::Script {
+                input_names,
+                continuous,
+                ..
+            } => {
                 let mut ports: Vec<PortDef> = Vec::new();
-                if !continuous { ports.push(PortDef::new("Exec", Trigger)); }
+                if !continuous {
+                    ports.push(PortDef::new("Exec", Trigger));
+                }
                 ports.push(PortDef::new("Code", Text));
                 for n in input_names {
                     ports.push(PortDef::dynamic(n.clone(), Generic));
@@ -1831,66 +2109,96 @@ impl NodeBehavior for NodeType {
     fn outputs(&self) -> Vec<PortDef> {
         use PortKind::*;
         match self {
-            NodeType::CustomNodeInstance { outputs, .. } => {
-    outputs.iter().map(|port| {
-        let kind = match port.kind.as_str() {
-            "Number" => PortKind::Number,
-            "Normalized" => PortKind::Normalized,
-            "Trigger" => PortKind::Trigger,
-            "Gate" => PortKind::Gate,
-            "Text" => PortKind::Text,
-            "Image" => PortKind::Image,
-            "Audio" => PortKind::Audio,
-            "Color" => PortKind::Color,
-            "Mesh" => PortKind::Mesh,
-            _ => PortKind::Generic,
-        };
-        PortDef::dynamic(port.name.clone(), kind)
-    }).collect()
-},
+            NodeType::CustomNodeInstance { outputs, .. } => outputs
+                .iter()
+                .map(|port| {
+                    let kind = match port.kind.as_str() {
+                        "Number" => PortKind::Number,
+                        "Normalized" => PortKind::Normalized,
+                        "Trigger" => PortKind::Trigger,
+                        "Gate" => PortKind::Gate,
+                        "Text" => PortKind::Text,
+                        "Image" => PortKind::Image,
+                        "Audio" => PortKind::Audio,
+                        "Color" => PortKind::Color,
+                        "Mesh" => PortKind::Mesh,
+                        _ => PortKind::Generic,
+                    };
+                    PortDef::dynamic(port.name.clone(), kind)
+                })
+                .collect(),
             NodeType::CustomInput { name, kind } => {
-        vec![PortDef::dynamic(name.clone(), *kind)]
-    },
+                vec![PortDef::dynamic(name.clone(), *kind)]
+            }
 
             NodeType::CustomOutput { .. } => vec![],
             NodeType::Slider { .. } => vec![PortDef::new("Value", Number)],
-            NodeType::FolderBrowser { .. } => vec![PortDef::new("Path", Text), PortDef::new("Name", Text), PortDef::new("Content", Text)],
+            NodeType::FolderBrowser { .. } => vec![
+                PortDef::new("Path", Text),
+                PortDef::new("Name", Text),
+                PortDef::new("Content", Text),
+            ],
             NodeType::WgslViewer { .. } => vec![PortDef::new("Image", Image)],
             NodeType::MidiOut { .. } => vec![],
-            NodeType::MidiIn { .. } => vec![PortDef::new("Channel", Number), PortDef::new("Note", Number), PortDef::new("Velocity", Number)],
+            NodeType::MidiIn { .. } => vec![
+                PortDef::new("Channel", Number),
+                PortDef::new("Note", Number),
+                PortDef::new("Velocity", Number),
+            ],
             NodeType::Theme { .. } => vec![
-                PortDef::new("BG R", Color), PortDef::new("BG G", Color), PortDef::new("BG B", Color),
-                PortDef::new("Text R", Color), PortDef::new("Text G", Color), PortDef::new("Text B", Color),
-                PortDef::new("Accent R", Color), PortDef::new("Accent G", Color), PortDef::new("Accent B", Color),
+                PortDef::new("BG R", Color),
+                PortDef::new("BG G", Color),
+                PortDef::new("BG B", Color),
+                PortDef::new("Text R", Color),
+                PortDef::new("Text G", Color),
+                PortDef::new("Text B", Color),
+                PortDef::new("Accent R", Color),
+                PortDef::new("Accent G", Color),
+                PortDef::new("Accent B", Color),
             ],
             NodeType::Serial { .. } => vec![PortDef::new("Send", Text)],
             NodeType::Console { .. } => vec![],
             NodeType::OscOut { .. } => vec![],
             NodeType::OscIn { arg_count, .. } => {
-                let mut ports: Vec<PortDef> = (0..*arg_count).map(|i| PortDef::dynamic(format!("Arg {}", i), Generic)).collect();
+                let mut ports: Vec<PortDef> = (0..*arg_count)
+                    .map(|i| PortDef::dynamic(format!("Arg {}", i), Generic))
+                    .collect();
                 ports.push(PortDef::new("Raw", Text));
                 ports.push(PortDef::new("Address", Text));
                 ports
             }
             NodeType::DmxOut { .. } | NodeType::ArtNetOut { .. } => vec![],
-            NodeType::DmxIn { channel_count, start_at, .. }
-            | NodeType::ArtNetIn { channel_count, start_at, .. } => {
-                (0..*channel_count)
-                    .map(|i| {
-                        let ch = (*start_at as usize).saturating_add(i);
-                        PortDef::dynamic(format!("Ch {}", ch), Normalized)
-                    })
-                    .collect()
+            NodeType::DmxIn {
+                channel_count,
+                start_at,
+                ..
             }
-            NodeType::Script { output_names, .. } => {
-                output_names.iter().map(|n| PortDef::dynamic(n.clone(), Generic)).collect()
-            }
+            | NodeType::ArtNetIn {
+                channel_count,
+                start_at,
+                ..
+            } => (0..*channel_count)
+                .map(|i| {
+                    let ch = (*start_at as usize).saturating_add(i);
+                    PortDef::dynamic(format!("Ch {}", ch), Normalized)
+                })
+                .collect(),
+            NodeType::Script { output_names, .. } => output_names
+                .iter()
+                .map(|n| PortDef::dynamic(n.clone(), Generic))
+                .collect(),
             NodeType::Palette { .. } => vec![],
-            NodeType::HttpRequest { .. } => vec![PortDef::new("Response", Text), PortDef::new("Status", Text)],
-            NodeType::AiRequest { .. } => vec![PortDef::new("Response", Text), PortDef::new("Status", Text)],
+            NodeType::HttpRequest { .. } => {
+                vec![PortDef::new("Response", Text), PortDef::new("Status", Text)]
+            }
+            NodeType::AiRequest { .. } => {
+                vec![PortDef::new("Response", Text), PortDef::new("Status", Text)]
+            }
             NodeType::FileMenu => vec![],
             NodeType::ZoomControl { .. } => vec![PortDef::new("Zoom", Number)],
-            NodeType::ObHub { detected_devices, .. } => {
+            NodeType::ObHub {
+                detected_devices, ..
+            } => {
                 let mut ports = Vec::new();
                 let mut sorted = detected_devices.clone();
                 sorted.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
@@ -1935,7 +2243,10 @@ impl NodeBehavior for NodeType {
                             ports.push(PortDef::dynamic(format!("orb{}_gz", id), Number));
                         }
                         other => {
-                            ports.push(PortDef::dynamic(format!("{}{}_{}", &other[..1], id, "val"), Number));
+                            ports.push(PortDef::dynamic(
+                                format!("{}{}_{}", &other[..1], id, "val"),
+                                Number,
+                            ));
                         }
                     }
                 }
@@ -1943,25 +2254,52 @@ impl NodeBehavior for NodeType {
                     ports.push(PortDef::new("(no devices)", Generic));
                 }
                 ports
-            },
+            }
             NodeType::ObMove { .. } => vec![
-                PortDef::new("Accel X", Number), PortDef::new("Accel Y", Number), PortDef::new("Accel Z", Number),
-                PortDef::new("Gyro X", Number), PortDef::new("Gyro Y", Number), PortDef::new("Gyro Z", Number),
+                PortDef::new("Accel X", Number),
+                PortDef::new("Accel Y", Number),
+                PortDef::new("Accel Z", Number),
+                PortDef::new("Gyro X", Number),
+                PortDef::new("Gyro Y", Number),
+                PortDef::new("Gyro Z", Number),
                 PortDef::new("Changed", Trigger),
             ],
-            NodeType::ObBend { .. } => vec![PortDef::new("Value", Normalized), PortDef::new("Changed", Trigger)],
-            NodeType::ObPressure { .. } => vec![PortDef::new("Value", Normalized), PortDef::new("Changed", Trigger)],
+            NodeType::ObBend { .. } => vec![
+                PortDef::new("Value", Normalized),
+                PortDef::new("Changed", Trigger),
+            ],
+            NodeType::ObPressure { .. } => vec![
+                PortDef::new("Value", Normalized),
+                PortDef::new("Changed", Trigger),
+            ],
             NodeType::ObDistance { .. } => vec![
                 PortDef::new("Value", Normalized),
                 PortDef::new("Distance (mm)", Number),
                 PortDef::new("Changed", Trigger),
             ],
-            NodeType::ObKnob { .. } => vec![PortDef::new("Value", Normalized), PortDef::new("Changed", Trigger)],
-            NodeType::ObJoystick { .. } => vec![PortDef::new("X", Normalized), PortDef::new("Y", Normalized), PortDef::new("Button", Gate), PortDef::new("Changed", Trigger)],
-            NodeType::ObEncoder { .. } => vec![PortDef::new("Turn", Number), PortDef::new("Click", Gate), PortDef::new("Position", Number), PortDef::new("Changed", Trigger)],
+            NodeType::ObKnob { .. } => vec![
+                PortDef::new("Value", Normalized),
+                PortDef::new("Changed", Trigger),
+            ],
+            NodeType::ObJoystick { .. } => vec![
+                PortDef::new("X", Normalized),
+                PortDef::new("Y", Normalized),
+                PortDef::new("Button", Gate),
+                PortDef::new("Changed", Trigger),
+            ],
+            NodeType::ObEncoder { .. } => vec![
+                PortDef::new("Turn", Number),
+                PortDef::new("Click", Gate),
+                PortDef::new("Position", Number),
+                PortDef::new("Changed", Trigger),
+            ],
             NodeType::ObOrb { .. } => vec![
-                PortDef::new("Accel X", Number), PortDef::new("Accel Y", Number), PortDef::new("Accel Z", Number),
-                PortDef::new("Gyro X", Number), PortDef::new("Gyro Y", Number), PortDef::new("Gyro Z", Number),
+                PortDef::new("Accel X", Number),
+                PortDef::new("Accel Y", Number),
+                PortDef::new("Accel Z", Number),
+                PortDef::new("Gyro X", Number),
+                PortDef::new("Gyro Y", Number),
+                PortDef::new("Gyro Z", Number),
                 PortDef::new("Changed", Trigger),
             ],
             NodeType::ObMotor { .. } => vec![
@@ -1969,20 +2307,25 @@ impl NodeBehavior for NodeType {
                 PortDef::new("Moving", Gate),
                 PortDef::new("Done", Trigger),
             ],
-            NodeType::ObLight { .. } => vec![],   // pure output device
+            NodeType::ObLight { .. } => vec![], // pure output device
             NodeType::Synth { .. } => vec![PortDef::new("Audio", Audio)],
-            NodeType::AudioPlayer { .. } => vec![PortDef::new("Audio", Audio), PortDef::new("Progress", Normalized)],
-            NodeType::AudioPlaylist { .. } => vec![
-                PortDef::new("Audio",    Audio),
+            NodeType::AudioPlayer { .. } => vec![
+                PortDef::new("Audio", Audio),
                 PortDef::new("Progress", Normalized),
-                PortDef::new("Index",    Number),
-                PortDef::new("Name",     Text),
+            ],
+            NodeType::AudioPlaylist { .. } => vec![
+                PortDef::new("Audio", Audio),
+                PortDef::new("Progress", Normalized),
+                PortDef::new("Index", Number),
+                PortDef::new("Name", Text),
             ],
             NodeType::AudioInput { .. } => vec![PortDef::new("Audio", Audio)],
             NodeType::AudioAnalyzer => vec![
                 PortDef::new("Audio", Audio),
-                PortDef::new("Amp", Normalized), PortDef::new("Peak", Normalized),
-                PortDef::new("Bass", Normalized), PortDef::new("Mid", Normalized),
+                PortDef::new("Amp", Normalized),
+                PortDef::new("Peak", Normalized),
+                PortDef::new("Bass", Normalized),
+                PortDef::new("Mid", Normalized),
                 PortDef::new("Treble", Normalized),
             ],
             NodeType::SpectrumAnalyzer => vec![
@@ -2002,36 +2345,67 @@ impl NodeBehavior for NodeType {
             NodeType::AudioEq { .. } => vec![PortDef::new("Audio", Audio)],
             NodeType::Speaker { .. } => vec![],
             NodeType::AudioMixer { .. } => vec![PortDef::new("Mix", Audio)],
-            NodeType::AudioSampler { .. } => vec![PortDef::new("Audio", Audio), PortDef::new("Progress", Normalized)],
+            NodeType::AudioSampler { .. } => vec![
+                PortDef::new("Audio", Audio),
+                PortDef::new("Progress", Normalized),
+            ],
             NodeType::ClapPlugin { .. } => vec![PortDef::new("Audio", Audio)],
-            NodeType::RustPlugin { output_names, .. } => {
-                output_names.iter().map(|n| PortDef::dynamic(n.clone(), Generic)).collect()
-            }
+            NodeType::RustPlugin { output_names, .. } => output_names
+                .iter()
+                .map(|n| PortDef::dynamic(n.clone(), Generic))
+                .collect(),
             NodeType::McpServer => vec![],
             NodeType::HtmlViewer => vec![PortDef::new("URL", Text)],
             NodeType::ImageNode { .. } => vec![PortDef::new("Image", Image)],
             NodeType::ImageEffects { .. } => vec![PortDef::new("Image", Image)],
             NodeType::Curve { .. } => vec![
-                PortDef::new("Y", Normalized), PortDef::new("Phase", Normalized),
-                PortDef::new("End", Trigger), PortDef::new("Image", Image),
-                PortDef::new("Step Value", Normalized), PortDef::new("Step Trigger", Trigger),
+                PortDef::new("Y", Normalized),
+                PortDef::new("Phase", Normalized),
+                PortDef::new("End", Trigger),
+                PortDef::new("Image", Image),
+                PortDef::new("Step Value", Normalized),
+                PortDef::new("Step Trigger", Trigger),
             ],
-            NodeType::Draw { .. } => vec![PortDef::new("Image", Image), PortDef::new("Points", Text)],
+            NodeType::Draw { .. } => {
+                vec![PortDef::new("Image", Image), PortDef::new("Points", Text)]
+            }
             NodeType::ColorCurves { .. } => vec![PortDef::new("Image", Image)],
-            NodeType::VideoPlayer { .. } => vec![PortDef::new("Frame", Image), PortDef::new("Progress", Normalized)],
+            NodeType::VideoPlayer { .. } => vec![
+                PortDef::new("Frame", Image),
+                PortDef::new("Progress", Normalized),
+            ],
             NodeType::Camera { .. } => vec![PortDef::new("Frame", Image)],
-            NodeType::MlModel { .. } => vec![PortDef::new("Annotated", Image), PortDef::new("Result", Text), PortDef::new("JSON", Text)],
-            NodeType::Timer { .. } => vec![PortDef::new("Trigger", Trigger), PortDef::new("Phase", Normalized), PortDef::new("BPM", Number)],
-            NodeType::SampleHold { .. } => vec![PortDef::new("Out", Generic), PortDef::new("Trigger", Trigger)],
+            NodeType::MlModel { .. } => vec![
+                PortDef::new("Annotated", Image),
+                PortDef::new("Result", Text),
+                PortDef::new("JSON", Text),
+            ],
+            NodeType::Timer { .. } => vec![
+                PortDef::new("Trigger", Trigger),
+                PortDef::new("Phase", Normalized),
+                PortDef::new("BPM", Number),
+            ],
+            NodeType::SampleHold { .. } => vec![
+                PortDef::new("Out", Generic),
+                PortDef::new("Trigger", Trigger),
+            ],
             NodeType::NetworkSend { .. } => vec![],
-            NodeType::NetworkReceive { imported_schema, .. } => {
-                let mut ports: Vec<PortDef> = imported_schema.iter().map(|s| {
-                    PortDef::dynamic(s.name.clone(), match s.kind {
-                        NetPortKind::Float => Number,
-                        NetPortKind::Text => Text,
-                        NetPortKind::Image => Image,
+            NodeType::NetworkReceive {
+                imported_schema, ..
+            } => {
+                let mut ports: Vec<PortDef> = imported_schema
+                    .iter()
+                    .map(|s| {
+                        PortDef::dynamic(
+                            s.name.clone(),
+                            match s.kind {
+                                NetPortKind::Float => Number,
+                                NetPortKind::Text => Text,
+                                NetPortKind::Image => Image,
+                            },
+                        )
                     })
-                }).collect();
+                    .collect();
                 ports.push(PortDef::new("Status", Text));
                 ports
             }
@@ -2041,11 +2415,11 @@ impl NodeBehavior for NodeType {
 
     fn color_hint(&self) -> [u8; 3] {
         match self {
-        NodeType::CustomNodeInstance { .. } => [150, 110, 220],
-        NodeType::CustomInput { .. } => [70, 190, 150],
-        NodeType::CustomOutput { .. } => [230, 160, 80],
+            NodeType::CustomNodeInstance { .. } => [150, 110, 220],
+            NodeType::CustomInput { .. } => [70, 190, 150],
+            NodeType::CustomOutput { .. } => [230, 160, 80],
 
-        NodeType::Slider { .. } => [80, 160, 255],
+            NodeType::Slider { .. } => [80, 160, 255],
             NodeType::FolderBrowser { .. } => [140, 160, 200],
             NodeType::WgslViewer { .. } => [220, 140, 60],
             NodeType::MidiOut { .. } => [60, 180, 180],
@@ -2119,7 +2493,45 @@ impl NodeBehavior for NodeType {
     fn inline_ports(&self) -> bool {
         match self {
             NodeType::Dynamic { inner } => inner.node.inline_ports(),
-            _ => matches!(self, NodeType::Theme { .. } | NodeType::MidiOut { .. } | NodeType::Synth { .. } | NodeType::WgslViewer { .. } | NodeType::ImageEffects { .. } | NodeType::Slider { .. } | NodeType::HttpRequest { .. } | NodeType::AiRequest { .. } | NodeType::AudioDelay { .. } | NodeType::AudioDistortion { .. } | NodeType::AudioPitchShift { .. } | NodeType::AudioLowPass { .. } | NodeType::AudioHighPass { .. } | NodeType::AudioGain { .. } | NodeType::AudioReverb { .. } | NodeType::AudioEq { .. } | NodeType::AudioPlayer { .. } | NodeType::AudioPlaylist { .. } | NodeType::Timer { .. } | NodeType::SampleHold { .. } | NodeType::Curve { .. } | NodeType::AudioMixer { .. } | NodeType::Speaker { .. } | NodeType::AudioInput { .. } | NodeType::AudioSampler { .. } | NodeType::ClapPlugin { .. } | NodeType::Console { .. } | NodeType::ObOrb { .. } | NodeType::ObMotor { .. } | NodeType::ObLight { .. } | NodeType::AudioAnalyzer | NodeType::SpectrumAnalyzer | NodeType::DmxOut { .. } | NodeType::DmxIn { .. } | NodeType::ArtNetOut { .. } | NodeType::ArtNetIn { .. }),
+            _ => matches!(
+                self,
+                NodeType::Theme { .. }
+                    | NodeType::MidiOut { .. }
+                    | NodeType::Synth { .. }
+                    | NodeType::WgslViewer { .. }
+                    | NodeType::ImageEffects { .. }
+                    | NodeType::Slider { .. }
+                    | NodeType::HttpRequest { .. }
+                    | NodeType::AiRequest { .. }
+                    | NodeType::AudioDelay { .. }
+                    | NodeType::AudioDistortion { .. }
+                    | NodeType::AudioPitchShift { .. }
+                    | NodeType::AudioLowPass { .. }
+                    | NodeType::AudioHighPass { .. }
+                    | NodeType::AudioGain { .. }
+                    | NodeType::AudioReverb { .. }
+                    | NodeType::AudioEq { .. }
+                    | NodeType::AudioPlayer { .. }
+                    | NodeType::AudioPlaylist { .. }
+                    | NodeType::Timer { .. }
+                    | NodeType::SampleHold { .. }
+                    | NodeType::Curve { .. }
+                    | NodeType::AudioMixer { .. }
+                    | NodeType::Speaker { .. }
+                    | NodeType::AudioInput { .. }
+                    | NodeType::AudioSampler { .. }
+                    | NodeType::ClapPlugin { .. }
+                    | NodeType::Console { .. }
+                    | NodeType::ObOrb { .. }
+                    | NodeType::ObMotor { .. }
+                    | NodeType::ObLight { .. }
+                    | NodeType::AudioAnalyzer
+                    | NodeType::SpectrumAnalyzer
+                    | NodeType::DmxOut { .. }
+                    | NodeType::DmxIn { .. }
+                    | NodeType::ArtNetOut { .. }
+                    | NodeType::ArtNetIn { .. }
+            ),
         }
     }
 
@@ -2145,7 +2557,11 @@ impl NodeBehavior for NodeType {
         }
     }
 
-    fn render_background(&self, painter: &eframe::egui::Painter, rect: eframe::egui::Rect) -> Option<eframe::egui::Frame> {
+    fn render_background(
+        &self,
+        painter: &eframe::egui::Painter,
+        rect: eframe::egui::Rect,
+    ) -> Option<eframe::egui::Frame> {
         match self {
             NodeType::Dynamic { inner } => inner.node.render_background(painter, rect),
             _ => None,
@@ -2197,8 +2613,10 @@ pub struct Node {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Connection {
-    pub from_node: NodeId, pub from_port: usize,
-    pub to_node: NodeId, pub to_port: usize,
+    pub from_node: NodeId,
+    pub from_port: usize,
+    pub to_node: NodeId,
+    pub to_port: usize,
     /// Optional user label displayed on the wire
     #[serde(default)]
     pub label: String,
@@ -2212,7 +2630,7 @@ pub struct Graph {
     pub connections: Vec<Connection>,
     next_id: u64,
     /// Independent runtime graph for each custom-node instance.
-/// Not included in saved project files.
+    /// Not included in saved project files.
     #[serde(skip)]
     custom_runtimes: HashMap<NodeId, Box<Graph>>,
     /// Last known modification time for each custom-node source file.
@@ -2238,7 +2656,8 @@ pub struct Graph {
     /// True when audio parameters changed (slider moved, knob turned).
     /// Only requires ParamStore update, not full chain recompilation.
     #[serde(skip)]
-    #[allow(dead_code)] pub audio_params_dirty: bool,
+    #[allow(dead_code)]
+    pub audio_params_dirty: bool,
 }
 
 impl Graph {
@@ -2262,7 +2681,11 @@ impl Graph {
     /// `is_output`: true for output ports, false for input ports.
     pub fn port_kind(&self, node_id: NodeId, port_idx: usize, is_output: bool) -> Option<PortKind> {
         let node = self.nodes.get(&node_id)?;
-        let ports = if is_output { node.node_type.outputs() } else { node.node_type.inputs() };
+        let ports = if is_output {
+            node.node_type.outputs()
+        } else {
+            node.node_type.inputs()
+        };
         ports.get(port_idx).map(|p| p.kind)
     }
 
@@ -2273,9 +2696,18 @@ impl Graph {
     }
 
     pub fn add_node(&mut self, node_type: NodeType, pos: [f32; 2]) -> NodeId {
-        let id = self.next_id; self.next_id += 1;
+        let id = self.next_id;
+        self.next_id += 1;
         crate::system_log::log(format!("Added {} (id:{})", node_type.title(), id));
-        self.nodes.insert(id, Node { id, node_type, pos, bypassed: false });
+        self.nodes.insert(
+            id,
+            Node {
+                id,
+                node_type,
+                pos,
+                bypassed: false,
+            },
+        );
         self.topo_dirty = true;
         self.audio_topology_dirty = true;
         id
@@ -2299,13 +2731,15 @@ impl Graph {
         // Remove the cached runtime when a custom-node instance is deleted.
         self.custom_runtimes.remove(&id);
         self.custom_runtime_modified.remove(&id);
-        self.connections.retain(|c| c.from_node != id && c.to_node != id);
+        self.connections
+            .retain(|c| c.from_node != id && c.to_node != id);
         crate::node_errors::remove_for(id);
         self.topo_dirty = true;
         self.audio_topology_dirty = true;
     }
     pub fn remove_connections_to_port(&mut self, node_id: NodeId, port: usize) {
-        self.connections.retain(|c| !(c.to_node == node_id && c.to_port == port));
+        self.connections
+            .retain(|c| !(c.to_node == node_id && c.to_port == port));
         self.topo_dirty = true;
         self.audio_topology_dirty = true;
     }
@@ -2314,7 +2748,13 @@ impl Graph {
         self.topo_dirty = true;
         self.audio_topology_dirty = true;
     }
-    pub fn add_connection(&mut self, from_node: NodeId, from_port: usize, to_node: NodeId, to_port: usize) {
+    pub fn add_connection(
+        &mut self,
+        from_node: NodeId,
+        from_port: usize,
+        to_node: NodeId,
+        to_port: usize,
+    ) {
         // ── Self-loop guard for WGSL Viewer image input ports ──
         // Self-feedback is expressed via the per-port "Last frame" dropdown,
         // not via a wire to the viewer's own output (refinement A in the
@@ -2338,8 +2778,15 @@ impl Graph {
                 }
             }
         }
-        self.connections.retain(|c| !(c.to_node == to_node && c.to_port == to_port));
-        self.connections.push(Connection { from_node, from_port, to_node, to_port, label: String::new() });
+        self.connections
+            .retain(|c| !(c.to_node == to_node && c.to_port == to_port));
+        self.connections.push(Connection {
+            from_node,
+            from_port,
+            to_node,
+            to_port,
+            label: String::new(),
+        });
         self.topo_dirty = true;
         self.audio_topology_dirty = true;
     }
@@ -2350,7 +2797,7 @@ impl Graph {
     /// Result: acyclic nodes in dependency order, then any cyclic nodes appended.
     /// For a stable graph this runs at most once between topology changes (add/remove node/wire).
     fn rebuild_topo_order(&mut self) {
-        use std::collections::{VecDeque, HashSet};
+        use std::collections::{HashSet, VecDeque};
 
         let node_ids: Vec<NodeId> = self.nodes.keys().copied().collect();
 
@@ -2360,7 +2807,8 @@ impl Graph {
         for conn in &self.connections {
             if self.nodes.contains_key(&conn.from_node)
                 && self.nodes.contains_key(&conn.to_node)
-                && conn.from_node != conn.to_node   // ignore self-loops
+                && conn.from_node != conn.to_node
+            // ignore self-loops
             {
                 edge_set.insert((conn.from_node, conn.to_node));
             }
@@ -2368,14 +2816,23 @@ impl Graph {
 
         // Build per-node in_degree and successor list from the unique edges.
         let mut in_degree: HashMap<NodeId, usize> = node_ids.iter().map(|&id| (id, 0)).collect();
-        let mut successors: HashMap<NodeId, Vec<NodeId>> = node_ids.iter().map(|&id| (id, Vec::new())).collect();
+        let mut successors: HashMap<NodeId, Vec<NodeId>> =
+            node_ids.iter().map(|&id| (id, Vec::new())).collect();
         for &(from, to) in &edge_set {
-            if let Some(d) = in_degree.get_mut(&to) { *d += 1; }
-            if let Some(s) = successors.get_mut(&from) { s.push(to); }
+            if let Some(d) = in_degree.get_mut(&to) {
+                *d += 1;
+            }
+            if let Some(s) = successors.get_mut(&from) {
+                s.push(to);
+            }
         }
 
         // Seed with all zero-in-degree nodes, sorted for deterministic ordering.
-        let mut zero: Vec<NodeId> = node_ids.iter().filter(|&&id| in_degree[&id] == 0).copied().collect();
+        let mut zero: Vec<NodeId> = node_ids
+            .iter()
+            .filter(|&&id| in_degree[&id] == 0)
+            .copied()
+            .collect();
         zero.sort_unstable();
         let mut queue: VecDeque<NodeId> = zero.into_iter().collect();
 
@@ -2391,15 +2848,18 @@ impl Graph {
             for succ in succs {
                 if let Some(deg) = in_degree.get_mut(&succ) {
                     *deg = deg.saturating_sub(1);
-                    if *deg == 0 { newly_zero.push(succ); }
+                    if *deg == 0 {
+                        newly_zero.push(succ);
+                    }
                 }
             }
-            newly_zero.sort_unstable();   // keep deterministic
+            newly_zero.sort_unstable(); // keep deterministic
             queue.extend(newly_zero);
         }
 
         // Any node not emitted by Kahn is in a cycle — append in sorted order.
-        let mut cyclic: Vec<NodeId> = node_ids.iter()
+        let mut cyclic: Vec<NodeId> = node_ids
+            .iter()
             .filter(|&&id| !in_sorted.contains(&id))
             .copied()
             .collect();
@@ -2427,7 +2887,11 @@ impl Graph {
 
     /// Re-evaluate with pre-existing values (for injected hardware data).
     /// Evaluates in topological order so downstream nodes see fresh values in one pass.
-    pub fn evaluate_with_existing(&mut self, values: &mut HashMap<(NodeId, usize), PortValue>, _now_secs: f64) {
+    pub fn evaluate_with_existing(
+        &mut self,
+        values: &mut HashMap<(NodeId, usize), PortValue>,
+        _now_secs: f64,
+    ) {
         if self.topo_dirty || self.topo_order.is_empty() {
             self.rebuild_topo_order();
         }
@@ -2437,12 +2901,23 @@ impl Graph {
         for _ in 0..2 {
             for &id in &eval_order {
                 let inputs = self.collect_inputs(id, values);
-                let node = match self.nodes.get_mut(&id) { Some(n) => n, None => continue };
+                let node = match self.nodes.get_mut(&id) {
+                    Some(n) => n,
+                    None => continue,
+                };
                 match &mut node.node_type {
-                    NodeType::Slider { value, min, max, .. } => {
-                        if let Some(PortValue::Float(v)) = inputs.get(1) { *min = *v; }
-                        if let Some(PortValue::Float(v)) = inputs.get(2) { *max = *v; }
-                        if let Some(PortValue::Float(v)) = inputs.first() { *value = *v; }
+                    NodeType::Slider {
+                        value, min, max, ..
+                    } => {
+                        if let Some(PortValue::Float(v)) = inputs.get(1) {
+                            *min = *v;
+                        }
+                        if let Some(PortValue::Float(v)) = inputs.get(2) {
+                            *max = *v;
+                        }
+                        if let Some(PortValue::Float(v)) = inputs.first() {
+                            *value = *v;
+                        }
                         values.insert((id, 0), PortValue::Float(*value));
                     }
                     _ => {}
@@ -2496,454 +2971,584 @@ impl Graph {
         now_secs: f64,
     ) {
         match node_type {
-                    NodeType::Slider { value, min, max, .. } => {
-                        // Override min/max from inputs if connected
-                        if let Some(PortValue::Float(v)) = inputs.get(1) { *min = *v; }
-                        if let Some(PortValue::Float(v)) = inputs.get(2) { *max = *v; }
-                        // Override value from input — also update the stored value so slider UI moves
-                        if let Some(PortValue::Float(v)) = inputs.first() {
-                            *value = *v;
-                        }
-                        values.insert((id, 0), PortValue::Float(*value));
-                    }
-                    NodeType::Timer { interval, elapsed, running, pulse_width,
-                                       ref_time, paused_elapsed, time_initialized,
-                                       phase_offset, last_sync_phase } => {
-                        // Override interval from input port 0
-                        if let Some(pv) = inputs.first() {
-                            let v = pv.as_float();
-                            if v > 0.0 { *interval = v; }
-                        }
-                        // Override interval from BPM input port 1
-                        if let Some(pv) = inputs.get(1) {
-                            let bpm_in = pv.as_float();
-                            if bpm_in > 0.0 {
-                                *interval = 60.0 / bpm_in;
-                            }
-                        }
-
-                        // ── Sync mode: Phase In (port 2) ─────────────────
-                        // When wired, Timer locks to the external phase and
-                        // skips the wall-clock path entirely.
-                        if let Some(PortValue::Float(ext_phase)) = inputs.get(2) {
-                            let offset = match inputs.get(3) {
-                                Some(PortValue::Float(v)) => *v,
-                                _ => *phase_offset,
-                            };
-                            let shifted = (ext_phase + offset).fract();
-                            let shifted = if shifted < 0.0 { shifted + 1.0 } else { shifted };
-                            let trigger = if shifted < *last_sync_phase
-                                             && (*last_sync_phase - shifted) > 0.5
-                                             && *running
-                            { 1.0 } else { 0.0 };
-                            *last_sync_phase = shifted;
-                            let bpm = 60.0 / interval.max(0.01);
-                            values.insert((id, 0), PortValue::Float(trigger));
-                            values.insert((id, 1), PortValue::Float(shifted));
-                            values.insert((id, 2), PortValue::Float(bpm));
-                            return; // skip wall-clock path
-                        }
-
-                        // ── Free-running wall-clock timing ────────────────
-                        if !*time_initialized {
-                            if *running {
-                                *ref_time = now_secs;
-                                *paused_elapsed = *elapsed as f64;
-                            }
-                            *time_initialized = true;
-                        }
-
-                        if *running {
-                            *elapsed = ((now_secs - *ref_time) + *paused_elapsed) as f32;
-                        }
-
-                        let safe_interval = interval.max(0.01);
-                        let phase = (*elapsed % safe_interval) / safe_interval;
-                        let is_pulse = phase < (*pulse_width / safe_interval);
-                        let trigger = if is_pulse && *running { 1.0 } else { 0.0 };
-                        let bpm = 60.0 / safe_interval;
-                        values.insert((id, 0), PortValue::Float(trigger));
-                        values.insert((id, 1), PortValue::Float(phase));
-                        values.insert((id, 2), PortValue::Float(bpm));
-                    }
-                    NodeType::SampleHold { held_float, held_text, is_text, last_trigger, history } => {
-                        // Input 0 = Value, Input 1 = Trigger
-                        let trigger_val = inputs.get(1).map(|v| v.as_float()).unwrap_or(0.0);
-                        let rising_edge = trigger_val > 0.5 && *last_trigger <= 0.5;
-                        *last_trigger = trigger_val;
-
-                        if rising_edge {
-                            if let Some(val) = inputs.first() {
-                                match val {
-                                    PortValue::Float(f) => {
-                                        *held_float = *f;
-                                        *is_text = false;
-                                        history.push(*f);
-                                        while history.len() > 40 { history.remove(0); }
-                                    }
-                                    PortValue::Text(t) => {
-                                        *held_text = t.clone();
-                                        *is_text = true;
-                                    }
-                                    _ => {}
-                                }
-                            }
-                        }
-
-                        // Output held value
-                        if *is_text {
-                            values.insert((id, 0), PortValue::Text(held_text.clone()));
-                        } else {
-                            values.insert((id, 0), PortValue::Float(*held_float));
-                        }
-                        // Trigger echo: 1.0 on rising edge frame, else 0.0
-                        values.insert((id, 1), PortValue::Float(if rising_edge { 1.0 } else { 0.0 }));
-                    }
-                    NodeType::Curve {
-                        points, mode, speed, looping, manual_gate, sustain_index,
-                        phase, playing, last_trigger, last_phase,
-                        last_step_index, sustain_held,
-                    } => {
-                        // ── Backward-compat migration: legacy LFO mode ──
-                        if *mode == 2 {
-                            *mode = 1;
-                            *looping = true;
-                        }
-                        // Sustain index invariant: clear if it points past the
-                        // end (e.g. user removed the marked point).
-                        if let Some(idx) = *sustain_index {
-                            if idx as usize >= points.len() { *sustain_index = None; }
-                        }
-
-                        // Override speed from input port 2
-                        if let Some(pv) = inputs.get(2) {
-                            let v = pv.as_float();
-                            if v > 0.0 { *speed = v; }
-                        }
-                        // Gate input (port 3) — falls back to manual_gate checkbox
-                        // when nothing is wired. The renderer hides the checkbox
-                        // while the port is wired so the manual value is dormant.
-                        let gate_input_high = inputs.get(3).map(|v| v.as_float() > 0.5).unwrap_or(false);
-                        let gate_high = gate_input_high || *manual_gate;
-
-                        let prev_phase = *last_phase;
-
-                        let x_pos = match *mode {
-                            0 => {
-                                // ── Lookup mode: X input drives Y, no playback ──
-                                *playing = false;
-                                *sustain_held = false;
-                                inputs.first().map(|v| v.as_float()).unwrap_or(0.0).clamp(0.0, 1.0)
-                            }
-                            _ => {
-                                // ── Played mode: trigger-driven playback ──
-                                let trig_val = inputs.get(1).map(|v| v.as_float()).unwrap_or(0.0);
-                                let rising = trig_val > 0.5 && *last_trigger <= 0.5;
-                                *last_trigger = trig_val;
-
-                                if rising {
-                                    *phase = 0.0;
-                                    *playing = true;
-                                    *sustain_held = false;
-                                    *last_phase = -1.0;     // re-fire crossings from x=0
-                                    *last_step_index = -1;
-                                }
-
-                                if *playing {
-                                    // Sustain logic: clamp at the marked point
-                                    // while gate is held high.
-                                    if let Some(idx) = *sustain_index {
-                                        let sx = points[idx as usize][0];
-                                        if *sustain_held {
-                                            if !gate_high { *sustain_held = false; }
-                                        } else if gate_high
-                                            && *phase < sx
-                                            && *phase + real_dt * *speed >= sx
-                                        {
-                                            *phase = sx;
-                                            *sustain_held = true;
-                                        }
-                                    }
-
-                                    if !*sustain_held {
-                                        *phase += real_dt * *speed;
-                                        if *phase >= 1.0 {
-                                            if *looping {
-                                                *phase %= 1.0;
-                                                // Wrap: reset crossing tracker so the
-                                                // first points of the new cycle re-fire.
-                                                *last_phase = -1.0;
-                                                *last_step_index = -1;
-                                            } else {
-                                                *phase = 1.0;
-                                                *playing = false;
-                                            }
-                                        }
-                                    }
-                                }
-                                *phase
-                            }
-                        };
-
-                        let y_val = crate::nodes::curve::evaluate_curve(points, x_pos);
-
-                        // ── Step crossing detection (Played mode only) ──
-                        let mut step_trigger = 0.0f32;
-                        if *mode != 0 && *playing {
-                            // Note: we use the local prev_phase (not *last_phase)
-                            // because *last_phase was reset to -1.0 above on
-                            // trigger / wrap to force the new-cycle re-fire.
-                            let scan_prev = if *last_phase < 0.0 { -1.0 } else { prev_phase };
-                            for (i, pt) in points.iter().enumerate() {
-                                let px = pt[0];
-                                if px > scan_prev && px <= x_pos {
-                                    step_trigger = 1.0;
-                                    *last_step_index = i as i8;
-                                }
-                            }
-                        }
-                        let step_value = if *mode != 0 && *last_step_index >= 0 {
-                            points.get(*last_step_index as usize).map(|p| p[1]).unwrap_or(0.0)
-                        } else { 0.0 };
-                        *last_phase = x_pos;
-
-                        let at_end = !*playing && *phase >= 1.0 && *mode != 0;
-
-                        values.insert((id, 0), PortValue::Float(y_val));
-                        values.insert((id, 1), PortValue::Float(x_pos));
-                        values.insert((id, 2), PortValue::Float(if at_end { 1.0 } else { 0.0 }));
-                        // (id, 3) Image handled in app.rs image pass
-                        values.insert((id, 4), PortValue::Float(step_value));
-                        values.insert((id, 5), PortValue::Float(step_trigger));
-                    }
-                    NodeType::FolderBrowser { selected_file, cached_content, cached_content_path, .. } => {
-                        // Output the selected file path and name
-                        values.insert((id, 0), PortValue::Text(selected_file.clone()));
-                        let name = std::path::Path::new(selected_file.as_str())
-                            .file_name()
-                            .map(|n| n.to_string_lossy().to_string())
-                            .unwrap_or_default();
-                        values.insert((id, 1), PortValue::Text(name));
-                        // Read content, cached by selected_file path.
-                        // Previously re-read from disk every frame — pure waste
-                        // of syscalls + CPU for the 99.99% of frames where the
-                        // selection hasn't changed.
-                        if !selected_file.is_empty() {
-                            if cached_content_path != selected_file {
-                                *cached_content = std::fs::read_to_string(selected_file.as_str()).unwrap_or_default();
-                                *cached_content_path = selected_file.clone();
-                            }
-                            values.insert((id, 2), PortValue::Text(cached_content.clone()));
-                        } else {
-                            cached_content.clear();
-                            cached_content_path.clear();
-                        }
-                    }
-                    NodeType::MidiIn { channel, note, velocity, .. } => {
-                        values.insert((id, 0), PortValue::Float(*channel as f32));
-                        values.insert((id, 1), PortValue::Float(*note as f32));
-                        values.insert((id, 2), PortValue::Float(*velocity as f32));
-                    }
-                    NodeType::Theme { bg_color, text_color, accent, .. } => {
-                        values.insert((id, 0), PortValue::Float(bg_color[0] as f32));
-                        values.insert((id, 1), PortValue::Float(bg_color[1] as f32));
-                        values.insert((id, 2), PortValue::Float(bg_color[2] as f32));
-                        values.insert((id, 3), PortValue::Float(text_color[0] as f32));
-                        values.insert((id, 4), PortValue::Float(text_color[1] as f32));
-                        values.insert((id, 5), PortValue::Float(text_color[2] as f32));
-                        values.insert((id, 6), PortValue::Float(accent[0] as f32));
-                        values.insert((id, 7), PortValue::Float(accent[1] as f32));
-                        values.insert((id, 8), PortValue::Float(accent[2] as f32));
-                    }
-                    NodeType::Serial { last_line, .. } => {
-                        values.insert((id, 0), PortValue::Text(last_line.clone()));
-                    }
-                    NodeType::Script { input_names, output_names, code, last_values, error, continuous, trigger, .. } => {
-                        // Code port: if Code input is connected, use that; else use inline code
-                        // Port layout: [Exec? (if manual)] [Code] [user inputs...]
-                        let code_port_idx: usize = if *continuous { 0 } else { 1 };
-                        let code_from_port = match inputs.get(code_port_idx) {
-                            Some(PortValue::Text(s)) if !s.is_empty() => Some(s.clone()),
-                            _ => None,
-                        };
-                        let effective_code = code_from_port.as_deref().unwrap_or(code.as_str());
-
-                        if effective_code.is_empty() || output_names.is_empty() {
-                            for (i, v) in last_values.iter().enumerate() {
-                                values.insert((id, i), PortValue::Float(*v));
-                            }
-                            return; // emit last values and skip eval for this node
-                        }
-
-                        // In manual mode, only run if triggered
-                        let should_run = if *continuous {
-                            true
-                        } else {
-                            let exec_val = inputs.first().map(|v| v.as_float()).unwrap_or(0.0);
-                            let fired = exec_val > 0.5 || *trigger;
-                            *trigger = false;
-                            fired
-                        };
-
-                        if !should_run {
-                            for (i, v) in last_values.iter().enumerate() {
-                                values.insert((id, i), PortValue::Float(*v));
-                            }
-                            return; // emit last values and skip eval for this node
-                        }
-
-                        let engine = rhai::Engine::new();
-                        // User inputs start after [Exec?] [Code] ports
-                        let input_offset: usize = code_port_idx + 1;
-                        let in_vars: Vec<String> = input_names.iter().enumerate().map(|(i, name)| {
-                            let val = inputs.get(i + input_offset).map(|v| v.as_float()).unwrap_or(0.0);
-                            format!("let {} = {};", name, val)
-                        }).collect();
-                        // Declare output variables initialized to 0.0
-                        let out_vars: Vec<String> = output_names.iter()
-                            .map(|name| format!("let {} = 0.0;", name))
-                            .collect();
-                        // After user code, collect output variables into array
-                        let collect_outputs = format!("[{}]",
-                            output_names.join(", ")
-                        );
-                        let full_script = format!(
-                            "{}\n{}\n{}\n{}",
-                            in_vars.join("\n"),
-                            out_vars.join("\n"),
-                            effective_code,
-                            collect_outputs
-                        );
-                        match engine.eval::<rhai::Array>(&full_script) {
-                            Ok(arr) => {
-                                error.clear();
-                                last_values.clear();
-                                for (i, val) in arr.iter().enumerate() {
-                                    if i < output_names.len() {
-                                        let f = val.as_float().unwrap_or(0.0) as f32;
-                                        values.insert((id, i), PortValue::Float(f));
-                                        last_values.push(f);
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                *error = e.to_string();
-                            }
-                        }
-                    }
-                    NodeType::HttpRequest { response, status, .. } => {
-                        values.insert((id, 0), PortValue::Text(response.clone()));
-                        // Parse status code from status string (e.g., "200 OK" → 200.0)
-                        let code = status.split_whitespace().next()
-                            .and_then(|s| s.parse::<f32>().ok())
-                            .unwrap_or(0.0);
-                        values.insert((id, 1), PortValue::Float(code));
-                    }
-                    NodeType::AiRequest { response, status, mode: _, .. } => {
-                        // v1: always emit URL/text on Response port. v2 will
-                        // swap the Image-mode arm to PortValue::Image once
-                        // an auto-fetch path exists.
-                        values.insert((id, 0), PortValue::Text(response.clone()));
-                        let code = if status.contains("done") { 1.0 }
-                            else if status.contains("error") { -1.0 }
-                            else if status.contains("thinking") { 0.5 }
-                            else { 0.0 };
-                        values.insert((id, 1), PortValue::Float(code));
-                    }
-                    NodeType::Console { messages } => {
-                        // Log input value as a timestamped message
-                        if let Some(val) = inputs.first() {
-                            let text = format!("{}", val);
-                            if !text.is_empty() && text != "—" {
-                                // Only log if value changed (avoid flooding)
-                                let is_new = messages.last().map(|last| {
-                                    // Strip timestamp prefix for comparison
-                                    let last_msg = last.splitn(2, "] ").nth(1).unwrap_or(last);
-                                    last_msg != text
-                                }).unwrap_or(true);
-                                if is_new {
-                                    let secs = now_secs as u32;
-                                    let mins = secs / 60;
-                                    let s = secs % 60;
-                                    messages.push(format!("[{:02}:{:02}] {}", mins, s, text));
-                                    // Cap at 200 messages
-                                    if messages.len() > 200 {
-                                        messages.drain(..messages.len() - 200);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    NodeType::OscOut { .. } => {}
-                    NodeType::OscIn { last_args, last_args_text, arg_count, address_filter, .. } => {
-                        for i in 0..*arg_count {
-                            let v = last_args.get(i).copied().unwrap_or(0.0);
-                            values.insert((id, i), PortValue::Float(v));
-                        }
-                        // Raw text output: all args joined
-                        let raw = last_args_text.join(", ");
-                        values.insert((id, *arg_count), PortValue::Text(raw));
-                        // Address output
-                        values.insert((id, *arg_count + 1), PortValue::Text(address_filter.clone()));
-                    }
-                    NodeType::DmxOut { .. } | NodeType::ArtNetOut { .. } => {}
-                    NodeType::DmxIn { last_values, channel_count, .. }
-                    | NodeType::ArtNetIn { last_values, channel_count, .. } => {
-                        // Surface each declared channel as a 0..1 normalized
-                        // float so it integrates with everything else in
-                        // the graph. DMX is u8 0..255 → divide by 255.
-                        for i in 0..*channel_count {
-                            let v = last_values.get(i).copied().unwrap_or(0) as f32 / 255.0;
-                            values.insert((id, i), PortValue::Float(v));
-                        }
-                    }
-                    NodeType::NetworkSend { .. } => {}
-                    NodeType::NetworkReceive { imported_schema, last_values, last_values_text, status, .. } => {
-                        for (i, s) in imported_schema.iter().enumerate() {
-                            match s.kind {
-                                NetPortKind::Float => {
-                                    let v = last_values.get(i).copied().unwrap_or(0.0);
-                                    values.insert((id, i), PortValue::Float(v));
-                                }
-                                NetPortKind::Text => {
-                                    let t = last_values_text.get(i).cloned().unwrap_or_default();
-                                    values.insert((id, i), PortValue::Text(t));
-                                }
-                                NetPortKind::Image => {
-                                    // Image data is handled via last_values_text as base64
-                                    // For now, output as text
-                                    let t = last_values_text.get(i).cloned().unwrap_or_default();
-                                    values.insert((id, i), PortValue::Text(t));
-                                }
-                            }
-                        }
-                        // Status output (last port)
-                        values.insert((id, imported_schema.len()), PortValue::Text(status.clone()));
-                    }
-                    NodeType::Dynamic { inner } => {
-                        let results = inner.node.evaluate(inputs);
-                        for (port, value) in results {
-                            values.insert((id, port), value);
-                        }
-                    }
-                    _ => {}
+            NodeType::Slider {
+                value, min, max, ..
+            } => {
+                // Override min/max from inputs if connected
+                if let Some(PortValue::Float(v)) = inputs.get(1) {
+                    *min = *v;
                 }
+                if let Some(PortValue::Float(v)) = inputs.get(2) {
+                    *max = *v;
+                }
+                // Override value from input — also update the stored value so slider UI moves
+                if let Some(PortValue::Float(v)) = inputs.first() {
+                    *value = *v;
+                }
+                values.insert((id, 0), PortValue::Float(*value));
+            }
+            NodeType::Timer {
+                interval,
+                elapsed,
+                running,
+                pulse_width,
+                ref_time,
+                paused_elapsed,
+                time_initialized,
+                phase_offset,
+                last_sync_phase,
+            } => {
+                // Override interval from input port 0
+                if let Some(pv) = inputs.first() {
+                    let v = pv.as_float();
+                    if v > 0.0 {
+                        *interval = v;
+                    }
+                }
+                // Override interval from BPM input port 1
+                if let Some(pv) = inputs.get(1) {
+                    let bpm_in = pv.as_float();
+                    if bpm_in > 0.0 {
+                        *interval = 60.0 / bpm_in;
+                    }
+                }
+
+                // ── Sync mode: Phase In (port 2) ─────────────────
+                // When wired, Timer locks to the external phase and
+                // skips the wall-clock path entirely.
+                if let Some(PortValue::Float(ext_phase)) = inputs.get(2) {
+                    let offset = match inputs.get(3) {
+                        Some(PortValue::Float(v)) => *v,
+                        _ => *phase_offset,
+                    };
+                    let shifted = (ext_phase + offset).fract();
+                    let shifted = if shifted < 0.0 {
+                        shifted + 1.0
+                    } else {
+                        shifted
+                    };
+                    let trigger = if shifted < *last_sync_phase
+                        && (*last_sync_phase - shifted) > 0.5
+                        && *running
+                    {
+                        1.0
+                    } else {
+                        0.0
+                    };
+                    *last_sync_phase = shifted;
+                    let bpm = 60.0 / interval.max(0.01);
+                    values.insert((id, 0), PortValue::Float(trigger));
+                    values.insert((id, 1), PortValue::Float(shifted));
+                    values.insert((id, 2), PortValue::Float(bpm));
+                    return; // skip wall-clock path
+                }
+
+                // ── Free-running wall-clock timing ────────────────
+                if !*time_initialized {
+                    if *running {
+                        *ref_time = now_secs;
+                        *paused_elapsed = *elapsed as f64;
+                    }
+                    *time_initialized = true;
+                }
+
+                if *running {
+                    *elapsed = ((now_secs - *ref_time) + *paused_elapsed) as f32;
+                }
+
+                let safe_interval = interval.max(0.01);
+                let phase = (*elapsed % safe_interval) / safe_interval;
+                let is_pulse = phase < (*pulse_width / safe_interval);
+                let trigger = if is_pulse && *running { 1.0 } else { 0.0 };
+                let bpm = 60.0 / safe_interval;
+                values.insert((id, 0), PortValue::Float(trigger));
+                values.insert((id, 1), PortValue::Float(phase));
+                values.insert((id, 2), PortValue::Float(bpm));
+            }
+            NodeType::SampleHold {
+                held_float,
+                held_text,
+                is_text,
+                last_trigger,
+                history,
+            } => {
+                // Input 0 = Value, Input 1 = Trigger
+                let trigger_val = inputs.get(1).map(|v| v.as_float()).unwrap_or(0.0);
+                let rising_edge = trigger_val > 0.5 && *last_trigger <= 0.5;
+                *last_trigger = trigger_val;
+
+                if rising_edge {
+                    if let Some(val) = inputs.first() {
+                        match val {
+                            PortValue::Float(f) => {
+                                *held_float = *f;
+                                *is_text = false;
+                                history.push(*f);
+                                while history.len() > 40 {
+                                    history.remove(0);
+                                }
+                            }
+                            PortValue::Text(t) => {
+                                *held_text = t.clone();
+                                *is_text = true;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+
+                // Output held value
+                if *is_text {
+                    values.insert((id, 0), PortValue::Text(held_text.clone()));
+                } else {
+                    values.insert((id, 0), PortValue::Float(*held_float));
+                }
+                // Trigger echo: 1.0 on rising edge frame, else 0.0
+                values.insert(
+                    (id, 1),
+                    PortValue::Float(if rising_edge { 1.0 } else { 0.0 }),
+                );
+            }
+            NodeType::Curve {
+                points,
+                mode,
+                speed,
+                looping,
+                manual_gate,
+                sustain_index,
+                phase,
+                playing,
+                last_trigger,
+                last_phase,
+                last_step_index,
+                sustain_held,
+            } => {
+                // ── Backward-compat migration: legacy LFO mode ──
+                if *mode == 2 {
+                    *mode = 1;
+                    *looping = true;
+                }
+                // Sustain index invariant: clear if it points past the
+                // end (e.g. user removed the marked point).
+                if let Some(idx) = *sustain_index {
+                    if idx as usize >= points.len() {
+                        *sustain_index = None;
+                    }
+                }
+
+                // Override speed from input port 2
+                if let Some(pv) = inputs.get(2) {
+                    let v = pv.as_float();
+                    if v > 0.0 {
+                        *speed = v;
+                    }
+                }
+                // Gate input (port 3) — falls back to manual_gate checkbox
+                // when nothing is wired. The renderer hides the checkbox
+                // while the port is wired so the manual value is dormant.
+                let gate_input_high = inputs.get(3).map(|v| v.as_float() > 0.5).unwrap_or(false);
+                let gate_high = gate_input_high || *manual_gate;
+
+                let prev_phase = *last_phase;
+
+                let x_pos = match *mode {
+                    0 => {
+                        // ── Lookup mode: X input drives Y, no playback ──
+                        *playing = false;
+                        *sustain_held = false;
+                        inputs
+                            .first()
+                            .map(|v| v.as_float())
+                            .unwrap_or(0.0)
+                            .clamp(0.0, 1.0)
+                    }
+                    _ => {
+                        // ── Played mode: trigger-driven playback ──
+                        let trig_val = inputs.get(1).map(|v| v.as_float()).unwrap_or(0.0);
+                        let rising = trig_val > 0.5 && *last_trigger <= 0.5;
+                        *last_trigger = trig_val;
+
+                        if rising {
+                            *phase = 0.0;
+                            *playing = true;
+                            *sustain_held = false;
+                            *last_phase = -1.0; // re-fire crossings from x=0
+                            *last_step_index = -1;
+                        }
+
+                        if *playing {
+                            // Sustain logic: clamp at the marked point
+                            // while gate is held high.
+                            if let Some(idx) = *sustain_index {
+                                let sx = points[idx as usize][0];
+                                if *sustain_held {
+                                    if !gate_high {
+                                        *sustain_held = false;
+                                    }
+                                } else if gate_high
+                                    && *phase < sx
+                                    && *phase + real_dt * *speed >= sx
+                                {
+                                    *phase = sx;
+                                    *sustain_held = true;
+                                }
+                            }
+
+                            if !*sustain_held {
+                                *phase += real_dt * *speed;
+                                if *phase >= 1.0 {
+                                    if *looping {
+                                        *phase %= 1.0;
+                                        // Wrap: reset crossing tracker so the
+                                        // first points of the new cycle re-fire.
+                                        *last_phase = -1.0;
+                                        *last_step_index = -1;
+                                    } else {
+                                        *phase = 1.0;
+                                        *playing = false;
+                                    }
+                                }
+                            }
+                        }
+                        *phase
+                    }
+                };
+
+                let y_val = crate::nodes::curve::evaluate_curve(points, x_pos);
+
+                // ── Step crossing detection (Played mode only) ──
+                let mut step_trigger = 0.0f32;
+                if *mode != 0 && *playing {
+                    // Note: we use the local prev_phase (not *last_phase)
+                    // because *last_phase was reset to -1.0 above on
+                    // trigger / wrap to force the new-cycle re-fire.
+                    let scan_prev = if *last_phase < 0.0 { -1.0 } else { prev_phase };
+                    for (i, pt) in points.iter().enumerate() {
+                        let px = pt[0];
+                        if px > scan_prev && px <= x_pos {
+                            step_trigger = 1.0;
+                            *last_step_index = i as i8;
+                        }
+                    }
+                }
+                let step_value = if *mode != 0 && *last_step_index >= 0 {
+                    points
+                        .get(*last_step_index as usize)
+                        .map(|p| p[1])
+                        .unwrap_or(0.0)
+                } else {
+                    0.0
+                };
+                *last_phase = x_pos;
+
+                let at_end = !*playing && *phase >= 1.0 && *mode != 0;
+
+                values.insert((id, 0), PortValue::Float(y_val));
+                values.insert((id, 1), PortValue::Float(x_pos));
+                values.insert((id, 2), PortValue::Float(if at_end { 1.0 } else { 0.0 }));
+                // (id, 3) Image handled in app.rs image pass
+                values.insert((id, 4), PortValue::Float(step_value));
+                values.insert((id, 5), PortValue::Float(step_trigger));
+            }
+            NodeType::FolderBrowser {
+                selected_file,
+                cached_content,
+                cached_content_path,
+                ..
+            } => {
+                // Output the selected file path and name
+                values.insert((id, 0), PortValue::Text(selected_file.clone()));
+                let name = std::path::Path::new(selected_file.as_str())
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                values.insert((id, 1), PortValue::Text(name));
+                // Read content, cached by selected_file path.
+                // Previously re-read from disk every frame — pure waste
+                // of syscalls + CPU for the 99.99% of frames where the
+                // selection hasn't changed.
+                if !selected_file.is_empty() {
+                    if cached_content_path != selected_file {
+                        *cached_content =
+                            std::fs::read_to_string(selected_file.as_str()).unwrap_or_default();
+                        *cached_content_path = selected_file.clone();
+                    }
+                    values.insert((id, 2), PortValue::Text(cached_content.clone()));
+                } else {
+                    cached_content.clear();
+                    cached_content_path.clear();
+                }
+            }
+            NodeType::MidiIn {
+                channel,
+                note,
+                velocity,
+                ..
+            } => {
+                values.insert((id, 0), PortValue::Float(*channel as f32));
+                values.insert((id, 1), PortValue::Float(*note as f32));
+                values.insert((id, 2), PortValue::Float(*velocity as f32));
+            }
+            NodeType::Theme {
+                bg_color,
+                text_color,
+                accent,
+                ..
+            } => {
+                values.insert((id, 0), PortValue::Float(bg_color[0] as f32));
+                values.insert((id, 1), PortValue::Float(bg_color[1] as f32));
+                values.insert((id, 2), PortValue::Float(bg_color[2] as f32));
+                values.insert((id, 3), PortValue::Float(text_color[0] as f32));
+                values.insert((id, 4), PortValue::Float(text_color[1] as f32));
+                values.insert((id, 5), PortValue::Float(text_color[2] as f32));
+                values.insert((id, 6), PortValue::Float(accent[0] as f32));
+                values.insert((id, 7), PortValue::Float(accent[1] as f32));
+                values.insert((id, 8), PortValue::Float(accent[2] as f32));
+            }
+            NodeType::Serial { last_line, .. } => {
+                values.insert((id, 0), PortValue::Text(last_line.clone()));
+            }
+            NodeType::Script {
+                input_names,
+                output_names,
+                code,
+                last_values,
+                error,
+                continuous,
+                trigger,
+                ..
+            } => {
+                // Code port: if Code input is connected, use that; else use inline code
+                // Port layout: [Exec? (if manual)] [Code] [user inputs...]
+                let code_port_idx: usize = if *continuous { 0 } else { 1 };
+                let code_from_port = match inputs.get(code_port_idx) {
+                    Some(PortValue::Text(s)) if !s.is_empty() => Some(s.clone()),
+                    _ => None,
+                };
+                let effective_code = code_from_port.as_deref().unwrap_or(code.as_str());
+
+                if effective_code.is_empty() || output_names.is_empty() {
+                    for (i, v) in last_values.iter().enumerate() {
+                        values.insert((id, i), PortValue::Float(*v));
+                    }
+                    return; // emit last values and skip eval for this node
+                }
+
+                // In manual mode, only run if triggered
+                let should_run = if *continuous {
+                    true
+                } else {
+                    let exec_val = inputs.first().map(|v| v.as_float()).unwrap_or(0.0);
+                    let fired = exec_val > 0.5 || *trigger;
+                    *trigger = false;
+                    fired
+                };
+
+                if !should_run {
+                    for (i, v) in last_values.iter().enumerate() {
+                        values.insert((id, i), PortValue::Float(*v));
+                    }
+                    return; // emit last values and skip eval for this node
+                }
+
+                let engine = rhai::Engine::new();
+                // User inputs start after [Exec?] [Code] ports
+                let input_offset: usize = code_port_idx + 1;
+                let in_vars: Vec<String> = input_names
+                    .iter()
+                    .enumerate()
+                    .map(|(i, name)| {
+                        let val = inputs
+                            .get(i + input_offset)
+                            .map(|v| v.as_float())
+                            .unwrap_or(0.0);
+                        format!("let {} = {};", name, val)
+                    })
+                    .collect();
+                // Declare output variables initialized to 0.0
+                let out_vars: Vec<String> = output_names
+                    .iter()
+                    .map(|name| format!("let {} = 0.0;", name))
+                    .collect();
+                // After user code, collect output variables into array
+                let collect_outputs = format!("[{}]", output_names.join(", "));
+                let full_script = format!(
+                    "{}\n{}\n{}\n{}",
+                    in_vars.join("\n"),
+                    out_vars.join("\n"),
+                    effective_code,
+                    collect_outputs
+                );
+                match engine.eval::<rhai::Array>(&full_script) {
+                    Ok(arr) => {
+                        error.clear();
+                        last_values.clear();
+                        for (i, val) in arr.iter().enumerate() {
+                            if i < output_names.len() {
+                                let f = val.as_float().unwrap_or(0.0) as f32;
+                                values.insert((id, i), PortValue::Float(f));
+                                last_values.push(f);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        *error = e.to_string();
+                    }
+                }
+            }
+            NodeType::HttpRequest {
+                response, status, ..
+            } => {
+                values.insert((id, 0), PortValue::Text(response.clone()));
+                // Parse status code from status string (e.g., "200 OK" → 200.0)
+                let code = status
+                    .split_whitespace()
+                    .next()
+                    .and_then(|s| s.parse::<f32>().ok())
+                    .unwrap_or(0.0);
+                values.insert((id, 1), PortValue::Float(code));
+            }
+            NodeType::AiRequest {
+                response,
+                status,
+                mode: _,
+                ..
+            } => {
+                // v1: always emit URL/text on Response port. v2 will
+                // swap the Image-mode arm to PortValue::Image once
+                // an auto-fetch path exists.
+                values.insert((id, 0), PortValue::Text(response.clone()));
+                let code = if status.contains("done") {
+                    1.0
+                } else if status.contains("error") {
+                    -1.0
+                } else if status.contains("thinking") {
+                    0.5
+                } else {
+                    0.0
+                };
+                values.insert((id, 1), PortValue::Float(code));
+            }
+            NodeType::Console { messages } => {
+                // Log input value as a timestamped message
+                if let Some(val) = inputs.first() {
+                    let text = format!("{}", val);
+                    if !text.is_empty() && text != "—" {
+                        // Only log if value changed (avoid flooding)
+                        let is_new = messages
+                            .last()
+                            .map(|last| {
+                                // Strip timestamp prefix for comparison
+                                let last_msg = last.splitn(2, "] ").nth(1).unwrap_or(last);
+                                last_msg != text
+                            })
+                            .unwrap_or(true);
+                        if is_new {
+                            let secs = now_secs as u32;
+                            let mins = secs / 60;
+                            let s = secs % 60;
+                            messages.push(format!("[{:02}:{:02}] {}", mins, s, text));
+                            // Cap at 200 messages
+                            if messages.len() > 200 {
+                                messages.drain(..messages.len() - 200);
+                            }
+                        }
+                    }
+                }
+            }
+            NodeType::OscOut { .. } => {}
+            NodeType::OscIn {
+                last_args,
+                last_args_text,
+                arg_count,
+                address_filter,
+                ..
+            } => {
+                for i in 0..*arg_count {
+                    let v = last_args.get(i).copied().unwrap_or(0.0);
+                    values.insert((id, i), PortValue::Float(v));
+                }
+                // Raw text output: all args joined
+                let raw = last_args_text.join(", ");
+                values.insert((id, *arg_count), PortValue::Text(raw));
+                // Address output
+                values.insert(
+                    (id, *arg_count + 1),
+                    PortValue::Text(address_filter.clone()),
+                );
+            }
+            NodeType::DmxOut { .. } | NodeType::ArtNetOut { .. } => {}
+            NodeType::DmxIn {
+                last_values,
+                channel_count,
+                ..
+            }
+            | NodeType::ArtNetIn {
+                last_values,
+                channel_count,
+                ..
+            } => {
+                // Surface each declared channel as a 0..1 normalized
+                // float so it integrates with everything else in
+                // the graph. DMX is u8 0..255 → divide by 255.
+                for i in 0..*channel_count {
+                    let v = last_values.get(i).copied().unwrap_or(0) as f32 / 255.0;
+                    values.insert((id, i), PortValue::Float(v));
+                }
+            }
+            NodeType::NetworkSend { .. } => {}
+            NodeType::NetworkReceive {
+                imported_schema,
+                last_values,
+                last_values_text,
+                status,
+                ..
+            } => {
+                for (i, s) in imported_schema.iter().enumerate() {
+                    match s.kind {
+                        NetPortKind::Float => {
+                            let v = last_values.get(i).copied().unwrap_or(0.0);
+                            values.insert((id, i), PortValue::Float(v));
+                        }
+                        NetPortKind::Text => {
+                            let t = last_values_text.get(i).cloned().unwrap_or_default();
+                            values.insert((id, i), PortValue::Text(t));
+                        }
+                        NetPortKind::Image => {
+                            // Image data is handled via last_values_text as base64
+                            // For now, output as text
+                            let t = last_values_text.get(i).cloned().unwrap_or_default();
+                            values.insert((id, i), PortValue::Text(t));
+                        }
+                    }
+                }
+                // Status output (last port)
+                values.insert((id, imported_schema.len()), PortValue::Text(status.clone()));
+            }
+            NodeType::Dynamic { inner } => {
+                let results = inner.node.evaluate(inputs);
+                for (port, value) in results {
+                    values.insert((id, port), value);
+                }
+            }
+            _ => {}
+        }
     }
     /// Evaluate the graph. `now_secs` is the monotonic wall-clock time in seconds
     /// (from `std::time::Instant` elapsed since app start). Used by Timer for drift-free tempo.
     pub fn evaluate(&mut self, now_secs: f64) -> HashMap<(NodeId, usize), PortValue> {
-    self.evaluate_with_injected_inputs(now_secs, &[])
-}
-pub fn evaluate_with_injected_inputs(
-    &mut self,
-    now_secs: f64,
-    injected_inputs: &[(NodeId, PortValue)],
-) -> HashMap<(NodeId, usize), PortValue> {
+        self.evaluate_with_injected_inputs(now_secs, &[])
+    }
+    pub fn evaluate_with_injected_inputs(
+        &mut self,
+        now_secs: f64,
+        injected_inputs: &[(NodeId, PortValue)],
+    ) -> HashMap<(NodeId, usize), PortValue> {
         // Compute real frame dt from wall clock (clamped to avoid huge jumps).
         let real_dt = if self.last_eval_time > 0.0 {
             ((now_secs - self.last_eval_time) as f32).clamp(0.0001, 0.25)
         } else {
-            1.0 / 60.0  // first-frame fallback
+            1.0 / 60.0 // first-frame fallback
         };
         self.last_eval_time = now_secs;
 
@@ -2960,88 +3565,89 @@ pub fn evaluate_with_injected_inputs(
             if matches!(
                 self.nodes.get(node_id).map(|n| &n.node_type),
                 Some(NodeType::CustomInput { .. })
-             ) {
-            values.insert((*node_id, 0), value.clone());
+            ) {
+                values.insert((*node_id, 0), value.clone());
+            }
         }
-}
-for &id in &eval_order {
-        // CustomInput values are supplied by the parent custom-node instance.
+        for &id in &eval_order {
+            // CustomInput values are supplied by the parent custom-node instance.
             if matches!(
                 self.nodes.get(&id).map(|n| &n.node_type),
                 Some(NodeType::CustomInput { .. })
             ) {
                 continue;
             }
-    // Skip bypassed nodes — they emit no outputs, so anything downstream
-    // reads `None` on the ports that would have come from here.
-    if self.nodes.get(&id).map(|n| n.bypassed).unwrap_or(false) {
-        continue;
-    }
-   let inputs = self.collect_inputs(id, &values);
+            // Skip bypassed nodes — they emit no outputs, so anything downstream
+            // reads `None` on the ports that would have come from here.
+            if self.nodes.get(&id).map(|n| n.bypassed).unwrap_or(false) {
+                continue;
+            }
+            let inputs = self.collect_inputs(id, &values);
 
-let custom_file = self.nodes.get(&id).and_then(|node| {
-    if let NodeType::CustomNodeInstance { file, .. } = &node.node_type {
-        Some(file.clone())
-    } else {
-        None
-    }
-});
-
-if let Some(file) = custom_file {
-    match self.ensure_custom_runtime(id, &file) {
-        Ok(()) => {
-            if let Some(runtime) = self.custom_runtimes.get_mut(&id) {
-                let mut input_nodes: Vec<NodeId> = runtime.nodes
-                    .iter()
-                    .filter_map(|(&node_id, node)| {
-                        if matches!(&node.node_type, NodeType::CustomInput { .. }) {
-                            Some(node_id)
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-
-                input_nodes.sort();
-
-                let injected: Vec<(NodeId, PortValue)> = input_nodes
-                    .iter()
-                    .enumerate()
-                    .map(|(index, &node_id)| {
-                        (
-                            node_id,
-                            inputs.get(index).cloned().unwrap_or(PortValue::None),
-                        )
-                    })
-                    .collect();
-
-                let internal_values =
-                    runtime.evaluate_with_injected_inputs(now_secs, &injected);
-                let outputs = runtime.collect_custom_outputs(&internal_values);
-                for (port, value) in outputs.into_iter().enumerate() {
-                    values.insert((id, port), value);
+            let custom_file = self.nodes.get(&id).and_then(|node| {
+                if let NodeType::CustomNodeInstance { file, .. } = &node.node_type {
+                    Some(file.clone())
+                } else {
+                    None
                 }
+            });
+
+            if let Some(file) = custom_file {
+                match self.ensure_custom_runtime(id, &file) {
+                    Ok(()) => {
+                        if let Some(runtime) = self.custom_runtimes.get_mut(&id) {
+                            let mut input_nodes: Vec<NodeId> = runtime
+                                .nodes
+                                .iter()
+                                .filter_map(|(&node_id, node)| {
+                                    if matches!(&node.node_type, NodeType::CustomInput { .. }) {
+                                        Some(node_id)
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .collect();
+
+                            input_nodes.sort();
+
+                            let injected: Vec<(NodeId, PortValue)> = input_nodes
+                                .iter()
+                                .enumerate()
+                                .map(|(index, &node_id)| {
+                                    (
+                                        node_id,
+                                        inputs.get(index).cloned().unwrap_or(PortValue::None),
+                                    )
+                                })
+                                .collect();
+
+                            let internal_values =
+                                runtime.evaluate_with_injected_inputs(now_secs, &injected);
+                            let outputs = runtime.collect_custom_outputs(&internal_values);
+                            for (port, value) in outputs.into_iter().enumerate() {
+                                values.insert((id, port), value);
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        crate::node_errors::report_for(
+                            id,
+                            format!("Custom node load failed: {error}"),
+                        );
+                    }
+                }
+            } else if let Some(node) = self.nodes.get_mut(&id) {
+                Self::evaluate_node(
+                    id,
+                    &mut node.node_type,
+                    &inputs,
+                    &mut values,
+                    real_dt,
+                    now_secs,
+                );
             }
         }
-        Err(error) => {
-            crate::node_errors::report_for(
-                id,
-                format!("Custom node load failed: {error}"),
-            );
-        }
-    }
-} else if let Some(node) = self.nodes.get_mut(&id) {
-    Self::evaluate_node(
-        id,
-        &mut node.node_type,
-        &inputs,
-        &mut values,
-        real_dt,
-        now_secs,
-    );
-}
-}
-         // ── Extra passes for cyclic nodes (feedback loops) ───────────────────
+        // ── Extra passes for cyclic nodes (feedback loops) ───────────────────
         // Kahn's algorithm could not linearize these nodes. Two extra passes let
         // values propagate around short cycles without running the full graph again.
         if !cyclic_ids.is_empty() {
@@ -3053,78 +3659,85 @@ if let Some(file) = custom_file {
                 //     }
                 // }
                 for &id in &cyclic_ids {
-    // Preserve externally injected CustomInput values.
+                    // Preserve externally injected CustomInput values.
                     if matches!(
-                    self.nodes.get(&id).map(|n| &n.node_type),
-                    Some(NodeType::CustomInput { .. })
+                        self.nodes.get(&id).map(|n| &n.node_type),
+                        Some(NodeType::CustomInput { .. })
                     ) {
-                    continue;
-                }
+                        continue;
+                    }
 
-            if self.nodes.get(&id).map(|n| n.bypassed).unwrap_or(false) {
-            continue;
-            }
-                let inputs = self.collect_inputs(id, &values);
-                // Handle custom-node instances separately to avoid mutable borrow conflicts.
-                let custom_file = self.nodes.get(&id).and_then(|node| {
-                if let NodeType::CustomNodeInstance { file, .. } = &node.node_type {
-                     Some(file.clone())
-                } else {
-                    None
-                }
-                });
-if let Some(file) = custom_file {
-    match self.ensure_custom_runtime(id, &file) {
-        Ok(()) => {
-            if let Some(runtime) = self.custom_runtimes.get_mut(&id) {
-                // Match the stable port ordering used when saving .pwnode.
-                let mut input_nodes: Vec<NodeId> = runtime.nodes
-                    .iter()
-                    .filter_map(|(&node_id, node)| {
-                        if matches!(&node.node_type, NodeType::CustomInput { .. }) {
-                            Some(node_id)
+                    if self.nodes.get(&id).map(|n| n.bypassed).unwrap_or(false) {
+                        continue;
+                    }
+                    let inputs = self.collect_inputs(id, &values);
+                    // Handle custom-node instances separately to avoid mutable borrow conflicts.
+                    let custom_file = self.nodes.get(&id).and_then(|node| {
+                        if let NodeType::CustomNodeInstance { file, .. } = &node.node_type {
+                            Some(file.clone())
                         } else {
                             None
                         }
-                    })
-                    .collect();
-                input_nodes.sort();
-                let injected: Vec<(NodeId, PortValue)> = input_nodes
-                    .iter()
-                    .enumerate()
-                    .map(|(index, &node_id)| {
-                        (
-                            node_id,
-                            inputs.get(index).cloned().unwrap_or(PortValue::None),
-                        )
-                    })
-                    .collect();
-                let internal_values =
-                    runtime.evaluate_with_injected_inputs(now_secs, &injected);
-                let outputs = runtime.collect_custom_outputs(&internal_values);
-                for (port, value) in outputs.into_iter().enumerate() {
-                    values.insert((id, port), value);
-                }
-            }
-        }
-        Err(error) => {
-            crate::node_errors::report_for(
-                id,
-                format!("Custom node load failed: {error}"),
-            );
-        }
-    }
-} else if let Some(node) = self.nodes.get_mut(&id) {
-    // Existing execution path for normal nodes.
-    Self::evaluate_node(
-        id,
-        &mut node.node_type,
-        &inputs,
-        &mut values,
-        real_dt,
-        now_secs,
-    );
-}
+                    });
+                    if let Some(file) = custom_file {
+                        match self.ensure_custom_runtime(id, &file) {
+                            Ok(()) => {
+                                if let Some(runtime) = self.custom_runtimes.get_mut(&id) {
+                                    // Match the stable port ordering used when saving .pwnode.
+                                    let mut input_nodes: Vec<NodeId> = runtime
+                                        .nodes
+                                        .iter()
+                                        .filter_map(|(&node_id, node)| {
+                                            if matches!(
+                                                &node.node_type,
+                                                NodeType::CustomInput { .. }
+                                            ) {
+                                                Some(node_id)
+                                            } else {
+                                                None
+                                            }
+                                        })
+                                        .collect();
+                                    input_nodes.sort();
+                                    let injected: Vec<(NodeId, PortValue)> = input_nodes
+                                        .iter()
+                                        .enumerate()
+                                        .map(|(index, &node_id)| {
+                                            (
+                                                node_id,
+                                                inputs
+                                                    .get(index)
+                                                    .cloned()
+                                                    .unwrap_or(PortValue::None),
+                                            )
+                                        })
+                                        .collect();
+                                    let internal_values =
+                                        runtime.evaluate_with_injected_inputs(now_secs, &injected);
+                                    let outputs = runtime.collect_custom_outputs(&internal_values);
+                                    for (port, value) in outputs.into_iter().enumerate() {
+                                        values.insert((id, port), value);
+                                    }
+                                }
+                            }
+                            Err(error) => {
+                                crate::node_errors::report_for(
+                                    id,
+                                    format!("Custom node load failed: {error}"),
+                                );
+                            }
+                        }
+                    } else if let Some(node) = self.nodes.get_mut(&id) {
+                        // Existing execution path for normal nodes.
+                        Self::evaluate_node(
+                            id,
+                            &mut node.node_type,
+                            &inputs,
+                            &mut values,
+                            real_dt,
+                            now_secs,
+                        );
+                    }
                 }
             }
         }
@@ -3133,234 +3746,220 @@ if let Some(file) = custom_file {
     }
     // Step 24: Load and cache each custom node's internal graph.
     fn sync_custom_ports(
-    &mut self,
-    instance_id: NodeId,
-    new_inputs: Vec<crate::document::CustomNodePort>,
-    new_outputs: Vec<crate::document::CustomNodePort>,
-) {
-    let Some(node) = self.nodes.get_mut(&instance_id) else {
-        return;
-    };
+        &mut self,
+        instance_id: NodeId,
+        new_inputs: Vec<crate::document::CustomNodePort>,
+        new_outputs: Vec<crate::document::CustomNodePort>,
+    ) {
+        let Some(node) = self.nodes.get_mut(&instance_id) else {
+            return;
+        };
 
-    let NodeType::CustomNodeInstance {
-        inputs,
-        outputs,
-        ..
-    } = &mut node.node_type else {
-        return;
-    };
+        let NodeType::CustomNodeInstance {
+            inputs, outputs, ..
+        } = &mut node.node_type
+        else {
+            return;
+        };
 
-    // Preserve the previous interface for connection remapping.
-    let old_inputs = inputs.clone();
-    let old_outputs = outputs.clone();
+        // Preserve the previous interface for connection remapping.
+        let old_inputs = inputs.clone();
+        let old_outputs = outputs.clone();
 
-    // Map an old port index to its new index by matching name and type.
-    let remap = |
-        old_ports: &[crate::document::CustomNodePort],
-        new_ports: &[crate::document::CustomNodePort],
-        old_index: usize,
-    | -> Option<usize> {
-        let old = old_ports.get(old_index)?;
+        // Map an old port index to its new index by matching name and type.
+        let remap = |old_ports: &[crate::document::CustomNodePort],
+                     new_ports: &[crate::document::CustomNodePort],
+                     old_index: usize|
+         -> Option<usize> {
+            let old = old_ports.get(old_index)?;
 
-        // Ambiguous names are not remapped.
-        if old_ports.iter().filter(|p| p.name == old.name).count() != 1 {
-            return None;
-        }
+            // Ambiguous names are not remapped.
+            if old_ports.iter().filter(|p| p.name == old.name).count() != 1 {
+                return None;
+            }
 
-        let mut matches = new_ports.iter().enumerate().filter(|(_, p)| {
-            p.name == old.name && p.kind == old.kind
+            let mut matches = new_ports
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| p.name == old.name && p.kind == old.kind);
+
+            let index = matches.next()?.0;
+
+            if matches.next().is_some() {
+                return None;
+            }
+
+            Some(index)
+        };
+
+        self.connections.retain_mut(|connection| {
+            if connection.to_node == instance_id {
+                let Some(index) = remap(&old_inputs, &new_inputs, connection.to_port) else {
+                    return false;
+                };
+
+                connection.to_port = index;
+            }
+
+            if connection.from_node == instance_id {
+                let Some(index) = remap(&old_outputs, &new_outputs, connection.from_port) else {
+                    return false;
+                };
+
+                connection.from_port = index;
+            }
+
+            true
         });
 
-        let index = matches.next()?.0;
+        *inputs = new_inputs;
+        *outputs = new_outputs;
 
-        if matches.next().is_some() {
-            return None;
-        }
-
-        Some(index)
-    };
-
-    self.connections.retain_mut(|connection| {
-        if connection.to_node == instance_id {
-            let Some(index) =
-                remap(&old_inputs, &new_inputs, connection.to_port)
-            else {
-                return false;
-            };
-
-            connection.to_port = index;
-        }
-
-        if connection.from_node == instance_id {
-            let Some(index) =
-                remap(&old_outputs, &new_outputs, connection.from_port)
-            else {
-                return false;
-            };
-
-            connection.from_port = index;
-        }
-
-        true
-    });
-
-    *inputs = new_inputs;
-    *outputs = new_outputs;
-
-    self.topo_dirty = true;
-    self.audio_topology_dirty = true;
-}
-pub(crate) fn validate_custom_node_save(
-    graph: &Graph,
-    target_path: &std::path::Path,
-) -> Result<(), String> {
-    let target = std::fs::canonicalize(target_path)
-        .map_err(|e| format!("Cannot resolve custom node path: {e}"))?;
-
-    for node in graph.nodes.values() {
-        if let NodeType::CustomNodeInstance { file, .. } = &node.node_type {
-            let child_path = std::path::Path::new(file);
-
-            let resolved = if child_path.is_absolute() {
-                child_path.to_path_buf()
-            } else {
-                target
-                    .parent()
-                    .unwrap_or(std::path::Path::new("."))
-                    .join(child_path)
-            };
-
-            let mut visited = std::collections::HashSet::new();
-
-            // Treat the file being saved as already visited.
-            // Any dependency reaching it creates a cycle.
-            visited.insert(target.clone());
-
-            Self::check_custom_node_dependencies(
-                &resolved,
-                &mut visited,
-                1,
-            )?;
-        }
+        self.topo_dirty = true;
+        self.audio_topology_dirty = true;
     }
+    pub(crate) fn validate_custom_node_save(
+        graph: &Graph,
+        target_path: &std::path::Path,
+    ) -> Result<(), String> {
+        let target = std::fs::canonicalize(target_path)
+            .map_err(|e| format!("Cannot resolve custom node path: {e}"))?;
 
-    Ok(())
-}
-pub(crate) fn check_custom_node_dependencies(
-    path: &std::path::Path,
-    visited: &mut std::collections::HashSet<std::path::PathBuf>,
-    depth: usize,
-) -> Result<(), String> {
-    const MAX_DEPTH: usize = 8;
-
-    if depth > MAX_DEPTH {
-        return Err(format!(
-            "Custom node nesting exceeds maximum depth of {MAX_DEPTH}"
-        ));
-    }
-
-    let canonical = std::fs::canonicalize(path)
-        .map_err(|e| format!("Cannot resolve custom node {}: {e}", path.display()))?;
-
-    if !visited.insert(canonical.clone()) {
-        return Err(format!(
-            "Recursive custom node reference detected: {}",
-            canonical.display()
-        ));
-    }
-
-    let result = (|| {
-        let custom = crate::document::CustomNodeFile::load(&canonical)?;
-
-        for node in custom.graph.nodes.values() {
+        for node in graph.nodes.values() {
             if let NodeType::CustomNodeInstance { file, .. } = &node.node_type {
                 let child_path = std::path::Path::new(file);
 
                 let resolved = if child_path.is_absolute() {
                     child_path.to_path_buf()
                 } else {
-                    canonical
+                    target
                         .parent()
                         .unwrap_or(std::path::Path::new("."))
                         .join(child_path)
                 };
 
-                Self::check_custom_node_dependencies(&resolved, visited, depth + 1)?;
+                let mut visited = std::collections::HashSet::new();
+
+                // Treat the file being saved as already visited.
+                // Any dependency reaching it creates a cycle.
+                visited.insert(target.clone());
+
+                Self::check_custom_node_dependencies(&resolved, &mut visited, 1)?;
             }
         }
 
         Ok(())
-    })();
+    }
+    pub(crate) fn check_custom_node_dependencies(
+        path: &std::path::Path,
+        visited: &mut std::collections::HashSet<std::path::PathBuf>,
+        depth: usize,
+    ) -> Result<(), String> {
+        const MAX_DEPTH: usize = 8;
 
-    visited.remove(&canonical);
-    result
-}
-fn ensure_custom_runtime(
-    &mut self,
-    instance_id: NodeId,
-    file: &str,
-) -> Result<(), String> {
-    let path = std::path::Path::new(file);
-  let modified = std::fs::metadata(path)
-    .and_then(|metadata| metadata.modified())
-    .map_err(|error| format!(
-        "Cannot read custom node modification time: {error}"
-    ))?;
-if self.custom_runtimes.contains_key(&instance_id)
-    && self.custom_runtime_modified.get(&instance_id) == Some(&modified)
-{
-    return Ok(());
-}
-let custom = crate::document::CustomNodeFile::load(path)?;
-    // Reject direct and indirect recursive custom-node references.
-Self::check_custom_node_dependencies(
-    path,
-    &mut std::collections::HashSet::new(),
-    0,
-)?;
-  // Synchronize the instance's external ports with the source file.
-self.sync_custom_ports(
-    instance_id,
-    custom.inputs,
-    custom.outputs,
-);
-// Replace the cached runtime with the updated internal graph.
-self.custom_runtimes
-    .insert(instance_id, Box::new(custom.graph));
+        if depth > MAX_DEPTH {
+            return Err(format!(
+                "Custom node nesting exceeds maximum depth of {MAX_DEPTH}"
+            ));
+        }
 
-self.custom_runtime_modified.insert(instance_id, modified);
+        let canonical = std::fs::canonicalize(path)
+            .map_err(|e| format!("Cannot resolve custom node {}: {e}", path.display()))?;
 
-Ok(())
-}
-pub fn collect_custom_outputs(
-    &self,
-    values: &HashMap<(NodeId, usize), PortValue>,
-) -> Vec<PortValue> {
-    // Use stable NodeId ordering, matching the saved .pwnode interface.
-    let mut output_nodes: Vec<NodeId> = self.nodes
-        .iter()
-        .filter_map(|(&id, node)| {
-            if matches!(&node.node_type, NodeType::CustomOutput { .. }) {
-                Some(id)
-            } else {
-                None
+        if !visited.insert(canonical.clone()) {
+            return Err(format!(
+                "Recursive custom node reference detected: {}",
+                canonical.display()
+            ));
+        }
+
+        let result = (|| {
+            let custom = crate::document::CustomNodeFile::load(&canonical)?;
+
+            for node in custom.graph.nodes.values() {
+                if let NodeType::CustomNodeInstance { file, .. } = &node.node_type {
+                    let child_path = std::path::Path::new(file);
+
+                    let resolved = if child_path.is_absolute() {
+                        child_path.to_path_buf()
+                    } else {
+                        canonical
+                            .parent()
+                            .unwrap_or(std::path::Path::new("."))
+                            .join(child_path)
+                    };
+
+                    Self::check_custom_node_dependencies(&resolved, visited, depth + 1)?;
+                }
             }
-        })
-        .collect();
-    output_nodes.sort();
-    output_nodes
-        .iter()
-        .map(|&id| {
-            // CustomOutput receives its value through input port 0.
-            self.collect_inputs(id, values)
-                .into_iter()
-                .next()
-                .unwrap_or(PortValue::None)
-        })
-        .collect()
-}
-    pub fn collect_inputs(&self, node_id: NodeId, values: &HashMap<(NodeId, usize), PortValue>) -> Vec<PortValue> {
-        let num = self.nodes.get(&node_id).map(|n| n.node_type.inputs().len()).unwrap_or(0);
+
+            Ok(())
+        })();
+
+        visited.remove(&canonical);
+        result
+    }
+    fn ensure_custom_runtime(&mut self, instance_id: NodeId, file: &str) -> Result<(), String> {
+        let path = std::path::Path::new(file);
+        let modified = std::fs::metadata(path)
+            .and_then(|metadata| metadata.modified())
+            .map_err(|error| format!("Cannot read custom node modification time: {error}"))?;
+        if self.custom_runtimes.contains_key(&instance_id)
+            && self.custom_runtime_modified.get(&instance_id) == Some(&modified)
+        {
+            return Ok(());
+        }
+        let custom = crate::document::CustomNodeFile::load(path)?;
+        // Reject direct and indirect recursive custom-node references.
+        Self::check_custom_node_dependencies(path, &mut std::collections::HashSet::new(), 0)?;
+        // Synchronize the instance's external ports with the source file.
+        self.sync_custom_ports(instance_id, custom.inputs, custom.outputs);
+        // Replace the cached runtime with the updated internal graph.
+        self.custom_runtimes
+            .insert(instance_id, Box::new(custom.graph));
+
+        self.custom_runtime_modified.insert(instance_id, modified);
+
+        Ok(())
+    }
+    pub fn collect_custom_outputs(
+        &self,
+        values: &HashMap<(NodeId, usize), PortValue>,
+    ) -> Vec<PortValue> {
+        // Use stable NodeId ordering, matching the saved .pwnode interface.
+        let mut output_nodes: Vec<NodeId> = self
+            .nodes
+            .iter()
+            .filter_map(|(&id, node)| {
+                if matches!(&node.node_type, NodeType::CustomOutput { .. }) {
+                    Some(id)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        output_nodes.sort();
+        output_nodes
+            .iter()
+            .map(|&id| {
+                // CustomOutput receives its value through input port 0.
+                self.collect_inputs(id, values)
+                    .into_iter()
+                    .next()
+                    .unwrap_or(PortValue::None)
+            })
+            .collect()
+    }
+    pub fn collect_inputs(
+        &self,
+        node_id: NodeId,
+        values: &HashMap<(NodeId, usize), PortValue>,
+    ) -> Vec<PortValue> {
+        let num = self
+            .nodes
+            .get(&node_id)
+            .map(|n| n.node_type.inputs().len())
+            .unwrap_or(0);
         let mut inputs = vec![PortValue::None; num];
         for conn in &self.connections {
             if conn.to_node == node_id && conn.to_port < num {
@@ -3376,7 +3975,11 @@ pub fn collect_custom_outputs(
     /// of `node_id`, or None for unconnected ports. Mirrors `collect_inputs`
     /// but returns identities rather than values, for GPU texture cache lookup.
     pub fn collect_input_sources(&self, node_id: NodeId) -> Vec<Option<(NodeId, usize)>> {
-        let num = self.nodes.get(&node_id).map(|n| n.node_type.inputs().len()).unwrap_or(0);
+        let num = self
+            .nodes
+            .get(&node_id)
+            .map(|n| n.node_type.inputs().len())
+            .unwrap_or(0);
         let mut sources = vec![None; num];
         for conn in &self.connections {
             if conn.to_node == node_id && conn.to_port < num {
@@ -3410,10 +4013,18 @@ pub fn collect_custom_outputs(
         false
     }
 
-    pub fn static_input_value(connections: &[Connection], values: &HashMap<(NodeId, usize), PortValue>, node_id: NodeId, port_idx: usize) -> PortValue {
+    pub fn static_input_value(
+        connections: &[Connection],
+        values: &HashMap<(NodeId, usize), PortValue>,
+        node_id: NodeId,
+        port_idx: usize,
+    ) -> PortValue {
         for c in connections {
             if c.to_node == node_id && c.to_port == port_idx {
-                return values.get(&(c.from_node, c.from_port)).cloned().unwrap_or(PortValue::None);
+                return values
+                    .get(&(c.from_node, c.from_port))
+                    .cloned()
+                    .unwrap_or(PortValue::None);
             }
         }
         PortValue::None

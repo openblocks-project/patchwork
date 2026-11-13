@@ -29,30 +29,30 @@ impl ShaderType {
     pub const ALL: [ShaderType; 3] = [ShaderType::Lit, ShaderType::Toon, ShaderType::Unlit];
     pub fn label(&self) -> &'static str {
         match self {
-            ShaderType::Lit   => "Lit",
-            ShaderType::Toon  => "Toon",
+            ShaderType::Lit => "Lit",
+            ShaderType::Toon => "Toon",
             ShaderType::Unlit => "Unlit",
         }
     }
     /// Wire encoding sent to the shader.
     pub fn shader_id(&self) -> u32 {
         match self {
-            ShaderType::Lit   => 0,
-            ShaderType::Toon  => 1,
+            ShaderType::Lit => 0,
+            ShaderType::Toon => 1,
             ShaderType::Unlit => 2,
         }
     }
     pub fn json_tag(&self) -> &'static str {
         match self {
-            ShaderType::Lit   => "lit",
-            ShaderType::Toon  => "toon",
+            ShaderType::Lit => "lit",
+            ShaderType::Toon => "toon",
             ShaderType::Unlit => "unlit",
         }
     }
     pub fn from_json_tag(tag: &str) -> Option<Self> {
         match tag {
-            "lit"   => Some(ShaderType::Lit),
-            "toon"  => Some(ShaderType::Toon),
+            "lit" => Some(ShaderType::Lit),
+            "toon" => Some(ShaderType::Toon),
             "unlit" => Some(ShaderType::Unlit),
             _ => None,
         }
@@ -60,7 +60,9 @@ impl ShaderType {
 }
 
 impl Default for ShaderType {
-    fn default() -> Self { ShaderType::Lit }
+    fn default() -> Self {
+        ShaderType::Lit
+    }
 }
 
 /// Reference to an upstream GPU texture (resolved each frame via
@@ -71,9 +73,9 @@ impl Default for ShaderType {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MaterialTexRef {
     pub node_id: NodeId,
-    pub port:    usize,
-    pub width:   u32,
-    pub height:  u32,
+    pub port: usize,
+    pub width: u32,
+    pub height: u32,
 }
 
 /// All texture-map slots on a material. Each is `None` by default, in
@@ -87,36 +89,36 @@ pub struct MaterialTexRef {
 /// trivial.
 #[derive(Clone, Debug, Default)]
 pub struct MaterialMaps {
-    pub albedo:    Option<MaterialTexRef>,
+    pub albedo: Option<MaterialTexRef>,
     pub roughness: Option<MaterialTexRef>,
-    pub metallic:  Option<MaterialTexRef>,
-    pub ao:        Option<MaterialTexRef>,
-    pub emission:  Option<MaterialTexRef>,
+    pub metallic: Option<MaterialTexRef>,
+    pub ao: Option<MaterialTexRef>,
+    pub emission: Option<MaterialTexRef>,
 }
 
 #[derive(Clone, Debug)]
 pub struct MaterialDef {
     pub shader_type: ShaderType,
-    pub albedo:      [f32; 4],
-    pub roughness:   f32,
-    pub metallic:    f32,
-    pub emission:    [f32; 3],
+    pub albedo: [f32; 4],
+    pub roughness: f32,
+    pub metallic: f32,
+    pub emission: [f32; 3],
     /// All texture-map slots. Decoded from JSON; 3D Render resolves
     /// each `wgpu::TextureView` per-frame from the GPU texture cache.
-    pub maps:        MaterialMaps,
+    pub maps: MaterialMaps,
     pub double_sided: bool,
 }
 
 impl Default for MaterialDef {
     fn default() -> Self {
         Self {
-            shader_type:   ShaderType::Lit,
-            albedo:        [0.85, 0.85, 0.85, 1.0],
-            roughness:     0.5,
-            metallic:      0.0,
-            emission:      [0.0, 0.0, 0.0],
-            maps:          MaterialMaps::default(),
-            double_sided:  false,
+            shader_type: ShaderType::Lit,
+            albedo: [0.85, 0.85, 0.85, 1.0],
+            roughness: 0.5,
+            metallic: 0.0,
+            emission: [0.0, 0.0, 0.0],
+            maps: MaterialMaps::default(),
+            double_sided: false,
         }
     }
 }
@@ -173,7 +175,8 @@ impl MaterialDef {
             return None;
         }
 
-        let shader = v.get("shader")
+        let shader = v
+            .get("shader")
             .and_then(|x| x.as_str())
             .and_then(ShaderType::from_json_tag)
             .unwrap_or_default();
@@ -201,38 +204,48 @@ impl MaterialDef {
             out
         };
         let read_f32 = |key: &str, fallback: f32| -> f32 {
-            v.get(key).and_then(|x| x.as_f64()).map(|f| f as f32).unwrap_or(fallback)
+            v.get(key)
+                .and_then(|x| x.as_f64())
+                .map(|f| f as f32)
+                .unwrap_or(fallback)
         };
         let read_bool = |key: &str, fallback: bool| -> bool {
             v.get(key).and_then(|x| x.as_bool()).unwrap_or(fallback)
         };
         let read_tex = |slot: &serde_json::Value| -> Option<MaterialTexRef> {
-            if slot.is_null() { return None; }
+            if slot.is_null() {
+                return None;
+            }
             let node_id = slot.get("node_id").and_then(|x| x.as_u64())?;
-            let port    = slot.get("port").and_then(|x| x.as_u64())? as usize;
-            let width   = slot.get("w").and_then(|x| x.as_u64())? as u32;
-            let height  = slot.get("h").and_then(|x| x.as_u64())? as u32;
-            Some(MaterialTexRef { node_id, port, width, height })
+            let port = slot.get("port").and_then(|x| x.as_u64())? as usize;
+            let width = slot.get("w").and_then(|x| x.as_u64())? as u32;
+            let height = slot.get("h").and_then(|x| x.as_u64())? as u32;
+            Some(MaterialTexRef {
+                node_id,
+                port,
+                width,
+                height,
+            })
         };
 
         let maps = if let Some(maps_obj) = v.get("maps") {
             MaterialMaps {
-                albedo:    maps_obj.get("albedo").and_then(read_tex),
+                albedo: maps_obj.get("albedo").and_then(read_tex),
                 roughness: maps_obj.get("roughness").and_then(read_tex),
-                metallic:  maps_obj.get("metallic").and_then(read_tex),
-                ao:        maps_obj.get("ao").and_then(read_tex),
-                emission:  maps_obj.get("emission").and_then(read_tex),
+                metallic: maps_obj.get("metallic").and_then(read_tex),
+                ao: maps_obj.get("ao").and_then(read_tex),
+                emission: maps_obj.get("emission").and_then(read_tex),
             }
         } else {
             MaterialMaps::default()
         };
 
         Some(Self {
-            shader_type:  shader,
-            albedo:       read_array("albedo", [0.85, 0.85, 0.85, 1.0]),
-            roughness:    read_f32("roughness", 0.5),
-            metallic:     read_f32("metallic", 0.0),
-            emission:     read_array3("emission", [0.0, 0.0, 0.0]),
+            shader_type: shader,
+            albedo: read_array("albedo", [0.85, 0.85, 0.85, 1.0]),
+            roughness: read_f32("roughness", 0.5),
+            metallic: read_f32("metallic", 0.0),
+            emission: read_array3("emission", [0.0, 0.0, 0.0]),
             double_sided: read_bool("double_sided", false),
             maps,
         })

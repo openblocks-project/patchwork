@@ -51,10 +51,7 @@ fn cache() -> &'static RwLock<HashMap<ModelKey, CachedSession>> {
 /// `sentinel` is a stable identifier (e.g. `"hand_detect"`). `bytes` is read
 /// only on cache miss. Built via `ml::ep::session_builder()` so the platform
 /// accelerator is registered.
-pub fn get_bundled_session(
-    sentinel: &'static str,
-    bytes: &[u8],
-) -> Result<CachedSession, String> {
+pub fn get_bundled_session(sentinel: &'static str, bytes: &[u8]) -> Result<CachedSession, String> {
     let key = ModelKey::Bundled(sentinel);
 
     // Fast path: read lock, return existing
@@ -106,7 +103,9 @@ pub fn get_file_session(path: &str) -> Result<CachedSession, String> {
 /// Convenience wrapper so call sites that just need the input name don't have
 /// to open their own lock block.
 pub fn input_name_of(session: &CachedSession) -> Result<String, String> {
-    let s = session.lock().map_err(|_| "Session lock poisoned".to_string())?;
+    let s = session
+        .lock()
+        .map_err(|_| "Session lock poisoned".to_string())?;
     Ok(s.inputs()
         .first()
         .ok_or_else(|| "Model has no inputs".to_string())?

@@ -12,31 +12,46 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-fn default_cache_max_mb() -> u32 { 200 }
-fn default_cache_max_files() -> u32 { 50 }
-fn default_active_config() -> String { "default".into() }
+fn default_cache_max_mb() -> u32 {
+    200
+}
+fn default_cache_max_files() -> u32 {
+    50
+}
+fn default_active_config() -> String {
+    "default".into()
+}
 
 /// API keys for each supported provider. Shared pool within a config —
 /// one Anthropic key serves every kind in the config that uses
 /// Anthropic. Empty strings trigger env-var fallback at read time.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProviderKeys {
-    #[serde(default)] pub anthropic: String,
-    #[serde(default)] pub openai: String,
-    #[serde(default)] pub google: String,
-    #[serde(default)] pub custom: String,
+    #[serde(default)]
+    pub anthropic: String,
+    #[serde(default)]
+    pub openai: String,
+    #[serde(default)]
+    pub google: String,
+    #[serde(default)]
+    pub custom: String,
 }
 
 /// Provider + model choice for one generator kind (Text / Image / Code).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KindDefault {
-    #[serde(default)] pub provider: String,
-    #[serde(default)] pub model: String,
+    #[serde(default)]
+    pub provider: String,
+    #[serde(default)]
+    pub model: String,
 }
 
 impl Default for KindDefault {
     fn default() -> Self {
-        Self { provider: String::new(), model: String::new() }
+        Self {
+            provider: String::new(),
+            model: String::new(),
+        }
     }
 }
 
@@ -44,9 +59,12 @@ impl Default for KindDefault {
 /// `"custom"` — Ollama, LM Studio, OpenRouter, vLLM, …).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CustomEndpoint {
-    #[serde(default)] pub base_url: String,
-    #[serde(default)] pub auth_header: String,
-    #[serde(default)] pub auth_format: String,
+    #[serde(default)]
+    pub base_url: String,
+    #[serde(default)]
+    pub auth_header: String,
+    #[serde(default)]
+    pub auth_format: String,
 }
 
 /// Slim AI section of `settings.json`. Just the name of the currently
@@ -60,7 +78,9 @@ pub struct AiSettings {
 
 impl Default for AiSettings {
     fn default() -> Self {
-        Self { active: default_active_config() }
+        Self {
+            active: default_active_config(),
+        }
     }
 }
 
@@ -87,7 +107,11 @@ pub struct Settings {
     /// here are copied to per-config files on first save, then this
     /// field is dropped. `#[serde(default, skip_serializing)]` means
     /// we read it if present and never write it back out.
-    #[serde(default, rename = "ai_legacy_profiles", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "ai_legacy_profiles",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub legacy_profiles: Option<serde_json::Value>,
 }
 
@@ -112,7 +136,9 @@ impl Settings {
     /// file, parse failure, etc.). Also detects and stages a migration
     /// for pre-2026-Q2 settings files that stored `ai.profiles` inline.
     pub fn load() -> Self {
-        let Some(p) = Self::path() else { return Self::default(); };
+        let Some(p) = Self::path() else {
+            return Self::default();
+        };
         let raw = match std::fs::read_to_string(&p) {
             Ok(s) => s,
             Err(_) => return Self::default(),
@@ -152,7 +178,9 @@ impl Settings {
     /// machines even though the sensitive bits (API keys) now live in
     /// separate per-config files.
     pub fn save(&self) -> std::io::Result<()> {
-        let Some(p) = Self::path() else { return Ok(()); };
+        let Some(p) = Self::path() else {
+            return Ok(());
+        };
         if let Some(parent) = p.parent() {
             std::fs::create_dir_all(parent)?;
         }

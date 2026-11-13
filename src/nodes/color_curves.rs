@@ -6,7 +6,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 const CHANNELS: &[&str] = &["Master", "Red", "Green", "Blue"];
-const CHANNEL_COLORS: &[[u8; 3]] = &[[200, 200, 200], [255, 80, 80], [80, 255, 80], [80, 120, 255]];
+const CHANNEL_COLORS: &[[u8; 3]] = &[
+    [200, 200, 200],
+    [255, 80, 80],
+    [80, 255, 80],
+    [80, 120, 255],
+];
 
 pub fn render(
     ui: &mut egui::Ui,
@@ -16,8 +21,13 @@ pub fn render(
     connections: &[Connection],
 ) {
     let (master, red, green, blue, active_channel) = match node_type {
-        NodeType::ColorCurves { master, red, green, blue, active_channel } =>
-            (master, red, green, blue, active_channel),
+        NodeType::ColorCurves {
+            master,
+            red,
+            green,
+            blue,
+            active_channel,
+        } => (master, red, green, blue, active_channel),
         _ => return,
     };
 
@@ -31,7 +41,13 @@ pub fn render(
             } else {
                 egui::Color32::from_rgb(col[0] / 2, col[1] / 2, col[2] / 2)
             };
-            if ui.add(egui::Label::new(egui::RichText::new(*name).strong().color(color)).sense(egui::Sense::click())).clicked() {
+            if ui
+                .add(
+                    egui::Label::new(egui::RichText::new(*name).strong().color(color))
+                        .sense(egui::Sense::click()),
+                )
+                .clicked()
+            {
                 *active_channel = i as u8;
             }
         }
@@ -41,22 +57,42 @@ pub fn render(
     let ac = *active_channel;
     ui.horizontal(|ui| {
         if ui.small_button("Reset").clicked() {
-            let pts = match ac { 0 => master as &mut Vec<_>, 1 => red, 2 => green, 3 => blue, _ => master };
+            let pts = match ac {
+                0 => master as &mut Vec<_>,
+                1 => red,
+                2 => green,
+                3 => blue,
+                _ => master,
+            };
             *pts = vec![[0.0, 0.0], [1.0, 1.0]];
         }
         if ui.small_button("Contrast").clicked() {
-            let pts = match ac { 0 => master as &mut Vec<_>, 1 => red, 2 => green, 3 => blue, _ => master };
+            let pts = match ac {
+                0 => master as &mut Vec<_>,
+                1 => red,
+                2 => green,
+                3 => blue,
+                _ => master,
+            };
             *pts = vec![[0.0, 0.0], [0.25, 0.15], [0.75, 0.85], [1.0, 1.0]];
         }
         if ui.small_button("Bright").clicked() {
-            let pts = match ac { 0 => master as &mut Vec<_>, 1 => red, 2 => green, 3 => blue, _ => master };
+            let pts = match ac {
+                0 => master as &mut Vec<_>,
+                1 => red,
+                2 => green,
+                3 => blue,
+                _ => master,
+            };
             *pts = vec![[0.0, 0.1], [0.5, 0.65], [1.0, 1.0]];
         }
     });
 
     // Ensure all curves have at least 2 points
     for pts in [&mut *master, &mut *red, &mut *green, &mut *blue] {
-        if pts.len() < 2 { *pts = vec![[0.0, 0.0], [1.0, 1.0]]; }
+        if pts.len() < 2 {
+            *pts = vec![[0.0, 0.0], [1.0, 1.0]];
+        }
     }
 
     // Clone all curves for drawing (before mutable borrow of active channel)
@@ -78,16 +114,25 @@ pub fn render(
 
     // Curve editor
     let size = 180.0;
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::click_and_drag());
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::click_and_drag());
     let painter = ui.painter_at(rect);
 
     // Background
     painter.rect_filled(rect, 4.0, egui::Color32::from_rgb(20, 20, 30));
-    painter.rect_stroke(rect, 4.0, egui::Stroke::new(1.0, egui::Color32::from_rgb(50, 50, 70)), egui::StrokeKind::Outside);
+    painter.rect_stroke(
+        rect,
+        4.0,
+        egui::Stroke::new(1.0, egui::Color32::from_rgb(50, 50, 70)),
+        egui::StrokeKind::Outside,
+    );
 
     // Diagonal reference line
     painter.line_segment(
-        [egui::pos2(rect.left(), rect.bottom()), egui::pos2(rect.right(), rect.top())],
+        [
+            egui::pos2(rect.left(), rect.bottom()),
+            egui::pos2(rect.right(), rect.top()),
+        ],
         egui::Stroke::new(0.5, egui::Color32::from_rgb(40, 40, 50)),
     );
 
@@ -120,7 +165,10 @@ pub fn render(
         let sx = rect.left() + pt[0] * size;
         let sy = rect.bottom() - pt[1].clamp(0.0, 1.0) * size;
         let screen_pt = egui::pos2(sx, sy);
-        let hit = response.hover_pos().map(|p| p.distance(screen_pt) < 10.0).unwrap_or(false);
+        let hit = response
+            .hover_pos()
+            .map(|p| p.distance(screen_pt) < 10.0)
+            .unwrap_or(false);
 
         let color = if hit || active_drag == Some(i) {
             egui::Color32::WHITE
@@ -140,9 +188,13 @@ pub fn render(
                 let nx = ((pos.x - rect.left()) / size).clamp(0.0, 1.0);
                 let ny = ((rect.bottom() - pos.y) / size).clamp(0.0, 1.0);
                 if idx < active_points.len() {
-                    if idx == 0 { active_points[idx] = [0.0, ny]; }
-                    else if idx == active_points.len() - 1 { active_points[idx] = [1.0, ny]; }
-                    else { active_points[idx] = [nx, ny]; }
+                    if idx == 0 {
+                        active_points[idx] = [0.0, ny];
+                    } else if idx == active_points.len() - 1 {
+                        active_points[idx] = [1.0, ny];
+                    } else {
+                        active_points[idx] = [nx, ny];
+                    }
                 }
             }
         }
@@ -155,7 +207,9 @@ pub fn render(
     ui.horizontal(|ui| {
         if ui.small_button("+").clicked() && active_points.len() < 10 {
             let mid = active_points.len() / 2;
-            let x = (active_points[mid.saturating_sub(1)][0] + active_points[mid.min(active_points.len()-1)][0]) / 2.0;
+            let x = (active_points[mid.saturating_sub(1)][0]
+                + active_points[mid.min(active_points.len() - 1)][0])
+                / 2.0;
             let y = evaluate_curve(active_points, x);
             active_points.insert(mid, [x, y]);
         }
@@ -173,13 +227,21 @@ pub fn render(
         PortValue::GpuImage(h) => {
             ui.label(egui::RichText::new(format!("Input: {}x{} (gpu)", h.width, h.height)).small());
         }
-        _ => { ui.colored_label(egui::Color32::GRAY, "Connect image input"); }
+        _ => {
+            ui.colored_label(egui::Color32::GRAY, "Connect image input");
+        }
     }
 }
 
 /// Apply color curves to an image. Called during evaluation.
 /// Uses pre-baked u8→u8 LUTs (channel curve + master in one table) for maximum throughput.
-pub fn process(img: &ImageData, master: &[[f32; 2]], red: &[[f32; 2]], green: &[[f32; 2]], blue: &[[f32; 2]]) -> Arc<ImageData> {
+pub fn process(
+    img: &ImageData,
+    master: &[[f32; 2]],
+    red: &[[f32; 2]],
+    green: &[[f32; 2]],
+    blue: &[[f32; 2]],
+) -> Arc<ImageData> {
     // Build combined u8→u8 LUTs: input byte → channel curve → master curve → output byte
     // This makes the inner loop just 3 array lookups with zero float math.
     let mut r_lut = [0u8; 256];
@@ -199,7 +261,7 @@ pub fn process(img: &ImageData, master: &[[f32; 2]], red: &[[f32; 2]], green: &[
     let len = pixels.len();
     let mut i = 0;
     while i + 3 < len {
-        pixels[i]     = r_lut[pixels[i] as usize];
+        pixels[i] = r_lut[pixels[i] as usize];
         pixels[i + 1] = g_lut[pixels[i + 1] as usize];
         pixels[i + 2] = b_lut[pixels[i + 2] as usize];
         i += 4;
@@ -259,8 +321,12 @@ struct CurvesGpuStore {
 /// Build a 256×4 RGBA LUT texture from the four curve arrays.
 /// Row 0 = master, row 1 = red, row 2 = green, row 3 = blue.
 fn build_lut_texture(
-    device: &wgpu::Device, queue: &wgpu::Queue,
-    master: &[[f32; 2]], red: &[[f32; 2]], green: &[[f32; 2]], blue: &[[f32; 2]],
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    master: &[[f32; 2]],
+    red: &[[f32; 2]],
+    green: &[[f32; 2]],
+    blue: &[[f32; 2]],
 ) -> wgpu::Texture {
     let w = 256u32;
     let h = 4u32;
@@ -282,8 +348,13 @@ fn build_lut_texture(
 
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("curves_lut"),
-        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-        mip_level_count: 1, sample_count: 1,
+        size: wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format: wgpu::TextureFormat::Rgba8UnormSrgb,
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
@@ -291,10 +362,23 @@ fn build_lut_texture(
     });
 
     queue.write_texture(
-        wgpu::TexelCopyTextureInfo { texture: &texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
         &pixels,
-        wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(w * 4), rows_per_image: Some(h) },
-        wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(w * 4),
+            rows_per_image: Some(h),
+        },
+        wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
     );
 
     texture
@@ -305,18 +389,19 @@ fn build_lut_texture(
 /// `process_gpu_cached` can ensure the pipeline without falling back to
 /// the CPU-upload `process_gpu` path, which would corrupt stub
 /// `GpuImage` inputs (empty `pixels`) into a solid black 1×1 texture.
-fn ensure_pipeline(
-    node_id: NodeId,
-    render_state: &eframe::egui_wgpu::RenderState,
-) -> bool {
+fn ensure_pipeline(node_id: NodeId, render_state: &eframe::egui_wgpu::RenderState) -> bool {
     let device = &render_state.device;
     let already = {
         let renderer = render_state.renderer.read();
-        renderer.callback_resources.get::<CurvesGpuStore>()
+        renderer
+            .callback_resources
+            .get::<CurvesGpuStore>()
             .and_then(|s| s.nodes.get(&node_id))
             .is_some()
     };
-    if already { return true; }
+    if already {
+        return true;
+    }
 
     device.push_error_scope(wgpu::ErrorFilter::Validation);
 
@@ -329,22 +414,38 @@ fn ensure_pipeline(
         label: Some("curves_bgl"),
         entries: &[
             wgpu::BindGroupLayoutEntry {
-                binding: 0, visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
                 count: None,
             },
             wgpu::BindGroupLayoutEntry {
-                binding: 1, visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
                 count: None,
             },
             wgpu::BindGroupLayoutEntry {
-                binding: 2, visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+                binding: 2,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
                 count: None,
             },
             wgpu::BindGroupLayoutEntry {
-                binding: 3, visibility: wgpu::ShaderStages::FRAGMENT,
+                binding: 3,
+                visibility: wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                 count: None,
             },
@@ -352,30 +453,57 @@ fn ensure_pipeline(
     });
 
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: None, bind_group_layouts: &[&bind_group_layout], push_constant_ranges: &[],
+        label: None,
+        bind_group_layouts: &[&bind_group_layout],
+        push_constant_ranges: &[],
     });
 
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("curves_pipeline"),
         layout: Some(&pipeline_layout),
-        vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs_main"), buffers: &[], compilation_options: wgpu::PipelineCompilationOptions::default() },
-        fragment: Some(wgpu::FragmentState { module: &shader, entry_point: Some("fs_main"), targets: &[Some(wgpu::TextureFormat::Rgba8UnormSrgb.into())], compilation_options: wgpu::PipelineCompilationOptions::default() }),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs_main"),
+            buffers: &[],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs_main"),
+            targets: &[Some(wgpu::TextureFormat::Rgba8UnormSrgb.into())],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        }),
         primitive: wgpu::PrimitiveState::default(),
-        depth_stencil: None, multisample: wgpu::MultisampleState::default(), multiview: None, cache: None,
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview: None,
+        cache: None,
     });
 
     let error = pollster::block_on(device.pop_error_scope());
-    if error.is_some() { return false; }
+    if error.is_some() {
+        return false;
+    }
 
     let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("curves_ub"), size: 16, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false,
+        label: Some("curves_ub"),
+        size: 16,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
     });
 
     let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-        mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, ..Default::default()
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        ..Default::default()
     });
 
-    let gpu = CurvesGpu { pipeline, bind_group_layout, uniform_buffer, sampler };
+    let gpu = CurvesGpu {
+        pipeline,
+        bind_group_layout,
+        uniform_buffer,
+        sampler,
+    };
     let mut renderer = render_state.renderer.write();
     if let Some(store) = renderer.callback_resources.get_mut::<CurvesGpuStore>() {
         store.nodes.insert(node_id, gpu);
@@ -390,7 +518,10 @@ fn ensure_pipeline(
 #[allow(dead_code)]
 pub fn process_gpu(
     img: &ImageData,
-    master: &[[f32; 2]], red: &[[f32; 2]], green: &[[f32; 2]], blue: &[[f32; 2]],
+    master: &[[f32; 2]],
+    red: &[[f32; 2]],
+    green: &[[f32; 2]],
+    blue: &[[f32; 2]],
     node_id: NodeId,
     render_state: &eframe::egui_wgpu::RenderState,
 ) -> Option<Arc<ImageData>> {
@@ -398,9 +529,13 @@ pub fn process_gpu(
     let queue = &render_state.queue;
     let w = img.width;
     let h = img.height;
-    if w == 0 || h == 0 { return None; }
+    if w == 0 || h == 0 {
+        return None;
+    }
 
-    if !ensure_pipeline(node_id, render_state) { return None; }
+    if !ensure_pipeline(node_id, render_state) {
+        return None;
+    }
 
     // Upload input image + LUT
     let input_tex = crate::gpu_image::upload_texture(device, queue, img, "curves_input");
@@ -411,8 +546,14 @@ pub fn process_gpu(
     // Output texture
     let output_tex = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("curves_output"),
-        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-        mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
+        size: wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
         format: wgpu::TextureFormat::Rgba8UnormSrgb,
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
         view_formats: &[],
@@ -427,12 +568,25 @@ pub fn process_gpu(
     queue.write_buffer(&gpu.uniform_buffer, 0, bytemuck::cast_slice(&params));
 
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: None, layout: &gpu.bind_group_layout,
+        label: None,
+        layout: &gpu.bind_group_layout,
         entries: &[
-            wgpu::BindGroupEntry { binding: 0, resource: gpu.uniform_buffer.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&input_view) },
-            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&lut_view) },
-            wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&gpu.sampler) },
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: gpu.uniform_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(&input_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::TextureView(&lut_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: wgpu::BindingResource::Sampler(&gpu.sampler),
+            },
         ],
     });
 
@@ -441,10 +595,15 @@ pub fn process_gpu(
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("curves_pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &output_view, resolve_target: None,
-                ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
+                view: &output_view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Store,
+                },
             })],
-            depth_stencil_attachment: None, ..Default::default()
+            depth_stencil_attachment: None,
+            ..Default::default()
         });
         pass.set_pipeline(&gpu.pipeline);
         pass.set_bind_group(0, &bind_group, &[]);
@@ -453,7 +612,13 @@ pub fn process_gpu(
     queue.submit(Some(encoder.finish()));
     drop(renderer);
 
-    Some(crate::gpu_image::readback_texture(device, queue, &output_tex, w, h))
+    Some(crate::gpu_image::readback_texture(
+        device,
+        queue,
+        &output_tex,
+        w,
+        h,
+    ))
 }
 
 /// GPU processing with texture caching — no readback.
@@ -461,7 +626,10 @@ pub fn process_gpu(
 /// The actual GPU texture is stored in the cache for downstream GPU consumers.
 pub fn process_gpu_cached(
     img: &ImageData,
-    master: &[[f32; 2]], red: &[[f32; 2]], green: &[[f32; 2]], blue: &[[f32; 2]],
+    master: &[[f32; 2]],
+    red: &[[f32; 2]],
+    green: &[[f32; 2]],
+    blue: &[[f32; 2]],
     node_id: NodeId,
     render_state: &eframe::egui_wgpu::RenderState,
     tex_cache: &mut crate::gpu_image::GpuTextureCache,
@@ -472,7 +640,9 @@ pub fn process_gpu_cached(
     let queue = &render_state.queue;
     let w = img.width;
     let h = img.height;
-    if w == 0 || h == 0 { return None; }
+    if w == 0 || h == 0 {
+        return None;
+    }
 
     // Ensure pipeline exists. We must NOT fall back to `process_gpu`:
     // it CPU-uploads `img` via `upload_texture`, which silently produces
@@ -480,7 +650,9 @@ pub fn process_gpu_cached(
     // when the input arrived as a `GpuImage` stub from an upstream GPU
     // node). The black result then poisons the per-node `("cc_cache",
     // id)` param cache for the rest of the session.
-    if !ensure_pipeline(node_id, render_state) { return None; }
+    if !ensure_pipeline(node_id, render_state) {
+        return None;
+    }
 
     // Bind input from upstream GPU cache when available; only upload from CPU as fallback.
     let need_upload = !img.pixels.is_empty();
@@ -502,10 +674,18 @@ pub fn process_gpu_cached(
     // Output texture — TEXTURE_BINDING so it can be sampled by next node's display callback
     let output_tex = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("curves_output_cached"),
-        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-        mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
+        size: wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
         format: wgpu::TextureFormat::Rgba8UnormSrgb,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_SRC,
         view_formats: &[],
     });
     let output_view = output_tex.create_view(&Default::default());
@@ -518,12 +698,25 @@ pub fn process_gpu_cached(
     queue.write_buffer(&gpu.uniform_buffer, 0, bytemuck::cast_slice(&params));
 
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: None, layout: &gpu.bind_group_layout,
+        label: None,
+        layout: &gpu.bind_group_layout,
         entries: &[
-            wgpu::BindGroupEntry { binding: 0, resource: gpu.uniform_buffer.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&input_view) },
-            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&lut_view) },
-            wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&gpu.sampler) },
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: gpu.uniform_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(&input_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::TextureView(&lut_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: wgpu::BindingResource::Sampler(&gpu.sampler),
+            },
         ],
     });
 
@@ -532,10 +725,15 @@ pub fn process_gpu_cached(
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("curves_pass_cached"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &output_view, resolve_target: None,
-                ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
+                view: &output_view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Store,
+                },
             })],
-            depth_stencil_attachment: None, ..Default::default()
+            depth_stencil_attachment: None,
+            ..Default::default()
         });
         pass.set_pipeline(&gpu.pipeline);
         pass.set_bind_group(0, &bind_group, &[]);
@@ -574,9 +772,7 @@ pub(crate) fn cleanup_node(
 
 /// Wipe every Color Curves GPU pipeline. See
 /// `GpuTextureCache::clear_all`.
-pub(crate) fn cleanup_all(
-    callback_resources: &mut eframe::egui_wgpu::CallbackResources,
-) {
+pub(crate) fn cleanup_all(callback_resources: &mut eframe::egui_wgpu::CallbackResources) {
     if let Some(store) = callback_resources.get_mut::<CurvesGpuStore>() {
         store.nodes.clear();
     }

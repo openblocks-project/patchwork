@@ -47,12 +47,7 @@ pub trait AudioProcessor: Send {
     ///
     /// Both buffers are pre-allocated and have exactly `context.block_size` elements.
     /// Never allocate inside this method.
-    fn process_block(
-        &mut self,
-        input: &[f32],
-        output: &mut [f32],
-        context: &ProcessContext,
-    );
+    fn process_block(&mut self, input: &[f32], output: &mut [f32], context: &ProcessContext);
 
     /// Update parameters from atomic snapshot (control rate: once per block).
     ///
@@ -79,7 +74,9 @@ pub trait AudioProcessor: Send {
     /// Number of output channels this processor produces.
     /// Most processors produce 1 (mono). Speaker produces 2 (interleaved stereo).
     /// The engine allocates `output_channels() * max_block_size` for the output buffer.
-    fn output_channels(&self) -> usize { 1 }
+    fn output_channels(&self) -> usize {
+        1
+    }
 
     /// Replace the EQ band coefficients in-place.
     /// Default no-op; only `EqProcessor` overrides this.
@@ -93,5 +90,7 @@ pub trait AudioProcessor: Send {
     /// Current EQ curve hash (only meaningful for `EqProcessor`). Used to skip
     /// redundant `UpdateEqBands` commands when the user hasn't actually moved
     /// a point. Default 0 means "always update".
-    fn eq_curve_hash(&self) -> u64 { 0 }
+    fn eq_curve_hash(&self) -> u64 {
+        0
+    }
 }

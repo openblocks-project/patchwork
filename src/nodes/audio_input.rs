@@ -15,8 +15,12 @@ pub fn render(
     pending_disconnects: &mut Vec<(NodeId, usize)>,
 ) {
     let (selected_device, gain, active, agc_enabled) = match node_type {
-        NodeType::AudioInput { selected_device, gain, active, agc_enabled } =>
-            (selected_device, gain, active, agc_enabled),
+        NodeType::AudioInput {
+            selected_device,
+            gain,
+            active,
+            agc_enabled,
+        } => (selected_device, gain, active, agc_enabled),
         _ => return,
     };
 
@@ -53,7 +57,10 @@ pub fn render(
             .selected_text(truncated)
             .width(140.0)
             .show_ui(ui, |ui| {
-                if ui.selectable_label(selected_device.is_empty(), "Default").clicked() {
+                if ui
+                    .selectable_label(selected_device.is_empty(), "Default")
+                    .clicked()
+                {
                     *selected_device = String::new();
                 }
                 for dev in devices {
@@ -67,7 +74,11 @@ pub fn render(
     // Auto-start input if active but stream doesn't exist
     // (happens after project load or DSP restart)
     if *active && !audio.input_buffers.contains_key(&node_id) {
-        let dev = if selected_device.is_empty() { None } else { Some(selected_device.as_str()) };
+        let dev = if selected_device.is_empty() {
+            None
+        } else {
+            Some(selected_device.as_str())
+        };
         if let Err(e) = audio.start_input(node_id, dev) {
             crate::system_log::warn(format!("Mic auto-start failed: {}", e));
             *active = false;
@@ -83,7 +94,11 @@ pub fn render(
             }
         } else {
             if ui.button("\u{25B6} Start").clicked() {
-                let dev = if selected_device.is_empty() { None } else { Some(selected_device.as_str()) };
+                let dev = if selected_device.is_empty() {
+                    None
+                } else {
+                    Some(selected_device.as_str())
+                };
                 match audio.start_input(node_id, dev) {
                     Ok(()) => *active = true,
                     Err(e) => crate::system_log::error(format!("Mic start failed: {}", e)),
@@ -95,17 +110,29 @@ pub fn render(
     // AGC toggle — opt-in. Default off so mic → effects / sampler paths
     // aren't silently shaped by a compressor the user didn't ask for.
     ui.horizontal(|ui| {
-        ui.checkbox(agc_enabled, egui::RichText::new("Auto Level (experimental)").small());
+        ui.checkbox(
+            agc_enabled,
+            egui::RichText::new("Auto Level (experimental)").small(),
+        );
     });
 
     // ── Gain slider ───────────────────────────────────────────────────
     // Familiar 0..2× (0–200%) range. This matches the pre-branch UX —
     // unity gain sits at the slider's midpoint, so users don't have to
     // hunt for "normal" on a log-dB scale.
-    let gain_wired = connections.iter().any(|c| c.to_node == node_id && c.to_port == 0);
+    let gain_wired = connections
+        .iter()
+        .any(|c| c.to_node == node_id && c.to_port == 0);
     crate::nodes::inline_port_circle(
-        ui, node_id, 0, true, connections,
-        port_positions, dragging_from, pending_disconnects, PortKind::Normalized,
+        ui,
+        node_id,
+        0,
+        true,
+        connections,
+        port_positions,
+        dragging_from,
+        pending_disconnects,
+        PortKind::Normalized,
     );
     if gain_wired {
         let v = Graph::static_input_value(connections, values, node_id, 0).as_float();
@@ -128,7 +155,9 @@ pub fn render(
     // back as the window slides past a transient.
     {
         let (level, bar_color) = if *active {
-            let raw = audio.input_buffers.get(&node_id)
+            let raw = audio
+                .input_buffers
+                .get(&node_id)
                 .map(|buf| buf.peek_level(1024))
                 .unwrap_or(0.0);
             // Post-gain so the meter reflects what downstream nodes roughly
@@ -160,7 +189,18 @@ pub fn render(
 
     // ── Output port: Audio ────────────────────────────────────────────
     ui.separator();
-    crate::nodes::audio_port_row(ui, "Audio", node_id, 0, false, port_positions, dragging_from, connections, pending_disconnects, PortKind::Audio);
+    crate::nodes::audio_port_row(
+        ui,
+        "Audio",
+        node_id,
+        0,
+        false,
+        port_positions,
+        dragging_from,
+        connections,
+        pending_disconnects,
+        PortKind::Audio,
+    );
 
     // Write gain + AGC toggle to engine (lock-free atomics)
     if *active {

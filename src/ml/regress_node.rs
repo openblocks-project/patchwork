@@ -19,8 +19,8 @@
 
 use crate::graph::{PortDef, PortKind, PortValue};
 use crate::node_trait::{NodeBehavior, RenderContext};
-use eframe::egui::{self, RichText};
 use crate::nodes::ScrollAreaExt;
+use eframe::egui::{self, RichText};
 use serde::{Deserialize, Serialize};
 
 // ── Hyperparams ──────────────────────────────────────────────────────────────
@@ -31,12 +31,20 @@ pub enum Distance {
     Manhattan,
 }
 impl Default for Distance {
-    fn default() -> Self { Self::Euclidean }
+    fn default() -> Self {
+        Self::Euclidean
+    }
 }
 
-fn default_k() -> usize { 4 }
-fn default_epsilon() -> f32 { 1e-4 }
-fn default_capture_frames() -> u32 { 5 }
+fn default_k() -> usize {
+    4
+}
+fn default_epsilon() -> f32 {
+    1e-4
+}
+fn default_capture_frames() -> u32 {
+    5
+}
 
 /// Frames after a Changed-trigger pulse before the next one is allowed —
 /// prevents flicker when query is on a boundary between two near-tied examples.
@@ -70,32 +78,47 @@ pub struct RegressNode {
     pub capture_buffer_frames: u32,
 
     // ── Transient (not persisted) ──
-    #[serde(skip)] last_outputs: Vec<f32>,
-    #[serde(skip)] last_conf: f32,
-    #[serde(skip)] last_pulse: bool,
-    #[serde(skip)] last_trigger: f32,
-    #[serde(skip)] banner: String,
+    #[serde(skip)]
+    last_outputs: Vec<f32>,
+    #[serde(skip)]
+    last_conf: f32,
+    #[serde(skip)]
+    last_pulse: bool,
+    #[serde(skip)]
+    last_trigger: f32,
+    #[serde(skip)]
+    banner: String,
     /// One-shot flag set by the UI Capture button; consumed in next evaluate().
-    #[serde(skip)] capture_armed: bool,
+    #[serde(skip)]
+    capture_armed: bool,
     /// Rolling capture buffers — filled while `capturing` is true.
-    #[serde(skip)] capture_buf_inputs: Vec<Vec<f32>>,
-    #[serde(skip)] capture_buf_targets: Vec<Vec<f32>>,
-    #[serde(skip)] capturing: bool,
+    #[serde(skip)]
+    capture_buf_inputs: Vec<Vec<f32>>,
+    #[serde(skip)]
+    capture_buf_targets: Vec<Vec<f32>>,
+    #[serde(skip)]
+    capturing: bool,
     /// Active rename UI state: which example index, and the in-flight buffer.
-    #[serde(skip)] rename_buf: Option<(usize, String)>,
+    #[serde(skip)]
+    rename_buf: Option<(usize, String)>,
     /// Hysteresis bookkeeping for the Changed trigger.
-    #[serde(skip)] last_nearest_idx: Option<usize>,
-    #[serde(skip)] frames_since_emit: u32,
+    #[serde(skip)]
+    last_nearest_idx: Option<usize>,
+    #[serde(skip)]
+    frames_since_emit: u32,
     /// Reveals the Distance / k / Rate panel when toggled. Transient; defaults
     /// closed so non-ML users see only the action surface.
-    #[serde(skip)] show_advanced: bool,
+    #[serde(skip)]
+    show_advanced: bool,
     /// Reveals the per-example list (with rename/update/delete). Collapsed by
     /// default — examples header just shows the count and Clear all, mirroring
     /// Match's count-first vibe.
-    #[serde(skip)] show_examples: bool,
+    #[serde(skip)]
+    show_examples: bool,
     /// One-frame pulse after `commit_capture` runs; consumed by `evaluate`
     /// to emit the `Captured` trigger output.
-    #[serde(skip)] last_captured_pulse: bool,
+    #[serde(skip)]
+    last_captured_pulse: bool,
 }
 
 impl Default for RegressNode {
@@ -154,7 +177,10 @@ impl RegressNode {
     /// All examples whose input dim matches the query, sorted ascending by
     /// distance. Empty if no examples or all dim-mismatched.
     pub fn nearest_neighbours(&self, query: &[f32]) -> Vec<(usize, f32)> {
-        let mut dists: Vec<(usize, f32)> = self.examples.iter().enumerate()
+        let mut dists: Vec<(usize, f32)> = self
+            .examples
+            .iter()
+            .enumerate()
             .filter(|(_, ex)| ex.input.len() == query.len())
             .map(|(i, ex)| (i, self.dist(&ex.input, query)))
             .collect();
@@ -183,7 +209,9 @@ impl RegressNode {
             wsum += w;
         }
         if wsum > 0.0 {
-            for v in out.iter_mut() { *v /= wsum; }
+            for v in out.iter_mut() {
+                *v /= wsum;
+            }
         }
         out
     }
@@ -209,23 +237,38 @@ impl RegressNode {
         }
         let n = self.capture_buf_inputs.len() as f32;
         let dim_in = self.capture_buf_inputs[0].len();
-        let dim_out = if self.capture_buf_targets.is_empty() { 0 }
-                      else { self.capture_buf_targets[0].len() };
+        let dim_out = if self.capture_buf_targets.is_empty() {
+            0
+        } else {
+            self.capture_buf_targets[0].len()
+        };
 
         let mut avg_in = vec![0.0f32; dim_in];
         for s in &self.capture_buf_inputs {
-            for i in 0..dim_in.min(s.len()) { avg_in[i] += s[i]; }
+            for i in 0..dim_in.min(s.len()) {
+                avg_in[i] += s[i];
+            }
         }
-        for v in &mut avg_in { *v /= n; }
+        for v in &mut avg_in {
+            *v /= n;
+        }
 
         let mut avg_out = vec![0.0f32; dim_out];
         for s in &self.capture_buf_targets {
-            for i in 0..dim_out.min(s.len()) { avg_out[i] += s[i]; }
+            for i in 0..dim_out.min(s.len()) {
+                avg_out[i] += s[i];
+            }
         }
-        for v in &mut avg_out { *v /= n; }
+        for v in &mut avg_out {
+            *v /= n;
+        }
 
         let name = format!("ex{}", self.examples.len() + 1);
-        self.examples.push(Example { name, input: avg_in, output: avg_out });
+        self.examples.push(Example {
+            name,
+            input: avg_in,
+            output: avg_out,
+        });
         self.capture_buf_inputs.clear();
         self.capture_buf_targets.clear();
         self.capturing = false;
@@ -260,11 +303,21 @@ fn fmt_vec(v: &[f32]) -> String {
 // ── NodeBehavior ─────────────────────────────────────────────────────────────
 
 impl NodeBehavior for RegressNode {
-    fn title(&self)      -> &str    { "Regress" }
-    fn type_tag(&self)   -> &str    { "regress" }
-    fn color_hint(&self) -> [u8; 3] { [140, 180, 230] }
-    fn min_width(&self)  -> Option<f32> { Some(240.0) }
-    fn inline_ports(&self) -> bool { true }
+    fn title(&self) -> &str {
+        "Regress"
+    }
+    fn type_tag(&self) -> &str {
+        "regress"
+    }
+    fn color_hint(&self) -> [u8; 3] {
+        [140, 180, 230]
+    }
+    fn min_width(&self) -> Option<f32> {
+        Some(240.0)
+    }
+    fn inline_ports(&self) -> bool {
+        true
+    }
 
     fn inputs(&self) -> Vec<PortDef> {
         let mut v = Vec::with_capacity(self.n_inputs + self.n_outputs + 1);
@@ -283,8 +336,8 @@ impl NodeBehavior for RegressNode {
         for j in 0..self.n_outputs {
             v.push(PortDef::dynamic(format!("out{j}"), PortKind::Number));
         }
-        v.push(PortDef::new("Conf",     PortKind::Normalized));
-        v.push(PortDef::new("Changed",  PortKind::Trigger));
+        v.push(PortDef::new("Conf", PortKind::Normalized));
+        v.push(PortDef::new("Changed", PortKind::Trigger));
         v.push(PortDef::new("Captured", PortKind::Trigger));
         v
     }
@@ -358,9 +411,15 @@ impl NodeBehavior for RegressNode {
         for (j, v) in self.last_outputs.iter().enumerate() {
             out.push((j, PortValue::Float(*v)));
         }
-        out.push((self.n_outputs,     PortValue::Float(self.last_conf)));
-        out.push((self.n_outputs + 1, PortValue::Float(if self.last_pulse { 1.0 } else { 0.0 })));
-        out.push((self.n_outputs + 2, PortValue::Float(if captured_now    { 1.0 } else { 0.0 })));
+        out.push((self.n_outputs, PortValue::Float(self.last_conf)));
+        out.push((
+            self.n_outputs + 1,
+            PortValue::Float(if self.last_pulse { 1.0 } else { 0.0 }),
+        ));
+        out.push((
+            self.n_outputs + 2,
+            PortValue::Float(if captured_now { 1.0 } else { 0.0 }),
+        ));
         out
     }
 
@@ -378,8 +437,8 @@ impl NodeBehavior for RegressNode {
 
     fn render_with_context(&mut self, ui: &mut egui::Ui, ctx: &mut RenderContext) {
         let node_id = ctx.node_id;
-        let dim     = egui::Color32::from_rgb(110, 110, 120);
-        let red     = egui::Color32::from_rgb(220, 110, 110);
+        let dim = egui::Color32::from_rgb(110, 110, 120);
+        let red = egui::Color32::from_rgb(220, 110, 110);
 
         const NODE_W: f32 = 240.0;
         ui.set_min_width(NODE_W);
@@ -392,7 +451,11 @@ impl NodeBehavior for RegressNode {
         ui.horizontal(|ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let label = if self.show_advanced { "⚙ ▴" } else { "⚙" };
-                if ui.small_button(label).on_hover_text("Advanced settings").clicked() {
+                if ui
+                    .small_button(label)
+                    .on_hover_text("Advanced settings")
+                    .clicked()
+                {
                     self.show_advanced = !self.show_advanced;
                 }
             });
@@ -413,13 +476,25 @@ impl NodeBehavior for RegressNode {
                             })
                             .width(110.0)
                             .show_ui(ui, |ui| {
-                                if ui.selectable_label(self.distance == Distance::Euclidean, "Euclidean")
-                                    .on_hover_text("Smooth blend in any direction (default).").clicked()
+                                if ui
+                                    .selectable_label(
+                                        self.distance == Distance::Euclidean,
+                                        "Euclidean",
+                                    )
+                                    .on_hover_text("Smooth blend in any direction (default).")
+                                    .clicked()
                                 {
                                     self.distance = Distance::Euclidean;
                                 }
-                                if ui.selectable_label(self.distance == Distance::Manhattan, "Manhattan")
-                                    .on_hover_text("Treats each input dim independently. Rarely needed.").clicked()
+                                if ui
+                                    .selectable_label(
+                                        self.distance == Distance::Manhattan,
+                                        "Manhattan",
+                                    )
+                                    .on_hover_text(
+                                        "Treats each input dim independently. Rarely needed.",
+                                    )
+                                    .clicked()
                                 {
                                     self.distance = Distance::Manhattan;
                                 }
@@ -435,7 +510,10 @@ impl NodeBehavior for RegressNode {
                     ui.horizontal(|ui| {
                         ui.label(RichText::new("Capture rate:").small().color(dim));
                         let mut rate = self.capture_buffer_frames as i32;
-                        if ui.add(egui::DragValue::new(&mut rate).range(1..=60)).changed() {
+                        if ui
+                            .add(egui::DragValue::new(&mut rate).range(1..=60))
+                            .changed()
+                        {
                             self.capture_buffer_frames = rate.max(1) as u32;
                         }
                         ui.label(RichText::new("frames").small().color(dim));
@@ -453,24 +531,37 @@ impl NodeBehavior for RegressNode {
         for i in 0..self.n_inputs {
             ui.horizontal(|ui| {
                 crate::nodes::inline_port_circle(
-                    ui, node_id, i, true,
-                    ctx.connections, ctx.port_positions,
-                    ctx.dragging_from, ctx.pending_disconnects,
+                    ui,
+                    node_id,
+                    i,
+                    true,
+                    ctx.connections,
+                    ctx.port_positions,
+                    ctx.dragging_from,
+                    ctx.pending_disconnects,
                     PortKind::Number,
                 );
                 ui.label(RichText::new(format!("in{i}")).small().color(dim));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let r = ui.add_enabled(!dims_locked, egui::Button::new("×").small());
-                    let r = if dims_locked { r.on_hover_text(lock_tip) }
-                            else            { r.on_hover_text("Remove this input") };
-                    if r.clicked() && self.n_inputs > 1 { remove_input = Some(i); }
+                    let r = if dims_locked {
+                        r.on_hover_text(lock_tip)
+                    } else {
+                        r.on_hover_text("Remove this input")
+                    };
+                    if r.clicked() && self.n_inputs > 1 {
+                        remove_input = Some(i);
+                    }
                 });
             });
         }
         ui.horizontal(|ui| {
             let add_btn = ui.add_enabled(!dims_locked, egui::Button::new("+ add input").small());
-            let add_btn = if dims_locked { add_btn.on_hover_text(lock_tip) }
-                          else            { add_btn.on_hover_text("Add a new input dimension") };
+            let add_btn = if dims_locked {
+                add_btn.on_hover_text(lock_tip)
+            } else {
+                add_btn.on_hover_text("Add a new input dimension")
+            };
             if add_btn.clicked() {
                 // New input slot lands at old index n_inputs; targets + capture
                 // shift down by 1, so disconnect everything from there onward
@@ -492,24 +583,37 @@ impl NodeBehavior for RegressNode {
             let port_idx = self.n_inputs + j;
             ui.horizontal(|ui| {
                 crate::nodes::inline_port_circle(
-                    ui, node_id, port_idx, true,
-                    ctx.connections, ctx.port_positions,
-                    ctx.dragging_from, ctx.pending_disconnects,
+                    ui,
+                    node_id,
+                    port_idx,
+                    true,
+                    ctx.connections,
+                    ctx.port_positions,
+                    ctx.dragging_from,
+                    ctx.pending_disconnects,
                     PortKind::Number,
                 );
                 ui.label(RichText::new(format!("target{j}")).small().color(dim));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let r = ui.add_enabled(!dims_locked, egui::Button::new("×").small());
-                    let r = if dims_locked { r.on_hover_text(lock_tip) }
-                            else            { r.on_hover_text("Remove this target") };
-                    if r.clicked() && self.n_outputs > 1 { remove_target = Some(j); }
+                    let r = if dims_locked {
+                        r.on_hover_text(lock_tip)
+                    } else {
+                        r.on_hover_text("Remove this target")
+                    };
+                    if r.clicked() && self.n_outputs > 1 {
+                        remove_target = Some(j);
+                    }
                 });
             });
         }
         ui.horizontal(|ui| {
             let add_btn = ui.add_enabled(!dims_locked, egui::Button::new("+ add target").small());
-            let add_btn = if dims_locked { add_btn.on_hover_text(lock_tip) }
-                          else            { add_btn.on_hover_text("Add a new target/output dimension") };
+            let add_btn = if dims_locked {
+                add_btn.on_hover_text(lock_tip)
+            } else {
+                add_btn.on_hover_text("Add a new target/output dimension")
+            };
             if add_btn.clicked() {
                 // New target lands at old index n_outputs; capture port shifts
                 // down by 1. (Output-side wires to Conf/Changed silently shift
@@ -547,9 +651,14 @@ impl NodeBehavior for RegressNode {
         let cap_idx = self.n_inputs + self.n_outputs;
         ui.horizontal(|ui| {
             crate::nodes::inline_port_circle(
-                ui, node_id, cap_idx, true,
-                ctx.connections, ctx.port_positions,
-                ctx.dragging_from, ctx.pending_disconnects,
+                ui,
+                node_id,
+                cap_idx,
+                true,
+                ctx.connections,
+                ctx.port_positions,
+                ctx.dragging_from,
+                ctx.pending_disconnects,
                 PortKind::Trigger,
             );
             ui.label(RichText::new("Capture").small().color(dim));
@@ -563,14 +672,23 @@ impl NodeBehavior for RegressNode {
         ui.horizontal(|ui| {
             let arrow = if self.show_examples { "▾" } else { "▸" };
             let header = format!("{}  Examples ({})", arrow, self.examples.len());
-            let resp = ui.add(
-                egui::Label::new(RichText::new(header).small().color(dim))
-                    .sense(egui::Sense::click())
-            ).on_hover_text("Show / hide example list");
-            if resp.clicked() { self.show_examples = !self.show_examples; }
+            let resp = ui
+                .add(
+                    egui::Label::new(RichText::new(header).small().color(dim))
+                        .sense(egui::Sense::click()),
+                )
+                .on_hover_text("Show / hide example list");
+            if resp.clicked() {
+                self.show_examples = !self.show_examples;
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let r = ui.add_enabled(!self.examples.is_empty(), egui::Button::new("Clear all").small());
-                if r.on_hover_text("Remove all examples and unlock structure").clicked() {
+                let r = ui.add_enabled(
+                    !self.examples.is_empty(),
+                    egui::Button::new("Clear all").small(),
+                );
+                if r.on_hover_text("Remove all examples and unlock structure")
+                    .clicked()
+                {
                     self.examples.clear();
                     self.last_nearest_idx = None;
                     self.banner.clear();
@@ -578,14 +696,20 @@ impl NodeBehavior for RegressNode {
             });
         });
         if self.examples.is_empty() {
-            ui.label(RichText::new("Wire inputs and targets, then Capture.")
-                .small().italics().color(dim));
+            ui.label(
+                RichText::new("Wire inputs and targets, then Capture.")
+                    .small()
+                    .italics()
+                    .color(dim),
+            );
         } else if self.show_examples {
             // Snapshot live values once for the per-row Update button.
             let live_inputs: Vec<f32> = (0..self.n_inputs)
-                .map(|i| live_float(ctx, node_id, i)).collect();
+                .map(|i| live_float(ctx, node_id, i))
+                .collect();
             let live_targets: Vec<f32> = (0..self.n_outputs)
-                .map(|j| live_float(ctx, node_id, self.n_inputs + j)).collect();
+                .map(|j| live_float(ctx, node_id, self.n_inputs + j))
+                .collect();
 
             let mut delete_idx: Option<usize> = None;
             let mut update_idx: Option<usize> = None;
@@ -600,40 +724,57 @@ impl NodeBehavior for RegressNode {
                             let editing = matches!(self.rename_buf, Some((idx, _)) if idx == i);
                             if editing {
                                 if let Some((_, ref mut buf)) = self.rename_buf {
-                                    let r = ui.add(egui::TextEdit::singleline(buf)
-                                        .desired_width(80.0)
-                                        .font(egui::TextStyle::Small));
+                                    let r = ui.add(
+                                        egui::TextEdit::singleline(buf)
+                                            .desired_width(80.0)
+                                            .font(egui::TextStyle::Small),
+                                    );
                                     if r.lost_focus() {
                                         let trimmed = buf.trim();
-                                        if !trimmed.is_empty() { ex.name = trimmed.to_string(); }
+                                        if !trimmed.is_empty() {
+                                            ex.name = trimmed.to_string();
+                                        }
                                         commit_rename = true;
                                     }
                                 }
                             } else {
-                                let preview = format!("[{}] → [{}]",
-                                    fmt_vec(&ex.input), fmt_vec(&ex.output));
-                                let lbl = ui.add(
-                                    egui::Label::new(RichText::new(&ex.name).small().monospace())
-                                        .sense(egui::Sense::click())
-                                ).on_hover_text(preview);
+                                let preview =
+                                    format!("[{}] → [{}]", fmt_vec(&ex.input), fmt_vec(&ex.output));
+                                let lbl = ui
+                                    .add(
+                                        egui::Label::new(
+                                            RichText::new(&ex.name).small().monospace(),
+                                        )
+                                        .sense(egui::Sense::click()),
+                                    )
+                                    .on_hover_text(preview);
                                 if lbl.double_clicked() {
                                     self.rename_buf = Some((i, ex.name.clone()));
                                 }
                             }
                             // Push the buttons to the right.
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                if ui.small_button("×").on_hover_text("Delete").clicked() {
-                                    delete_idx = Some(i);
-                                }
-                                if ui.small_button("↻").on_hover_text("Update with current live inputs/targets").clicked() {
-                                    update_idx = Some(i);
-                                }
-                            });
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui.small_button("×").on_hover_text("Delete").clicked() {
+                                        delete_idx = Some(i);
+                                    }
+                                    if ui
+                                        .small_button("↻")
+                                        .on_hover_text("Update with current live inputs/targets")
+                                        .clicked()
+                                    {
+                                        update_idx = Some(i);
+                                    }
+                                },
+                            );
                         });
                     }
                 });
 
-            if commit_rename { self.rename_buf = None; }
+            if commit_rename {
+                self.rename_buf = None;
+            }
             if let Some(i) = update_idx {
                 if let Some(ex) = self.examples.get_mut(i) {
                     ex.input = live_inputs.clone();
@@ -643,8 +784,11 @@ impl NodeBehavior for RegressNode {
             if let Some(i) = delete_idx {
                 self.examples.remove(i);
                 if let Some(last) = self.last_nearest_idx {
-                    if last == i { self.last_nearest_idx = None; }
-                    else if last > i { self.last_nearest_idx = Some(last - 1); }
+                    if last == i {
+                        self.last_nearest_idx = None;
+                    } else if last > i {
+                        self.last_nearest_idx = Some(last - 1);
+                    }
                 }
             }
         }
@@ -657,19 +801,31 @@ impl NodeBehavior for RegressNode {
             let undo_w = if undo_visible { 30.0 } else { 0.0 };
             let cap_w = (ui.available_width() - undo_w - 4.0).max(60.0);
             let cap_text = if self.capturing {
-                format!("Capturing {}/{}", self.capture_buf_inputs.len(), self.capture_buffer_frames)
+                format!(
+                    "Capturing {}/{}",
+                    self.capture_buf_inputs.len(),
+                    self.capture_buffer_frames
+                )
             } else {
                 "Capture".into()
             };
             let cap_btn = egui::Button::new(RichText::new(cap_text).strong())
                 .min_size(egui::vec2(cap_w, 26.0));
-            if ui.add_enabled(!self.capturing, cap_btn).clicked() { self.capture_armed = true; }
+            if ui.add_enabled(!self.capturing, cap_btn).clicked() {
+                self.capture_armed = true;
+            }
             if undo_visible {
                 let undo_btn = egui::Button::new("↶").min_size(egui::vec2(26.0, 26.0));
-                if ui.add(undo_btn).on_hover_text("Undo last capture").clicked() {
+                if ui
+                    .add(undo_btn)
+                    .on_hover_text("Undo last capture")
+                    .clicked()
+                {
                     self.examples.pop();
                     if let Some(last) = self.last_nearest_idx {
-                        if last >= self.examples.len() { self.last_nearest_idx = None; }
+                        if last >= self.examples.len() {
+                            self.last_nearest_idx = None;
+                        }
                     }
                 }
             }
@@ -688,29 +844,61 @@ impl NodeBehavior for RegressNode {
             let val = self.last_outputs.get(j).copied().unwrap_or(0.0);
             let val_str = format!("{val:.3}");
             crate::nodes::output_port_row(
-                ui, &format!("out{j}"), &val_str, node_id, j,
-                ctx.port_positions, ctx.dragging_from, ctx.connections, ctx.pending_disconnects,
+                ui,
+                &format!("out{j}"),
+                &val_str,
+                node_id,
+                j,
+                ctx.port_positions,
+                ctx.dragging_from,
+                ctx.connections,
+                ctx.pending_disconnects,
                 PortKind::Number,
             );
         }
         let conf_str = format!("{:.2}", self.last_conf);
         crate::nodes::output_port_row(
-            ui, "Conf", &conf_str, node_id, self.n_outputs,
-            ctx.port_positions, ctx.dragging_from, ctx.connections, ctx.pending_disconnects,
+            ui,
+            "Conf",
+            &conf_str,
+            node_id,
+            self.n_outputs,
+            ctx.port_positions,
+            ctx.dragging_from,
+            ctx.connections,
+            ctx.pending_disconnects,
             PortKind::Normalized,
         );
         let chg_str = if self.last_pulse { "▶" } else { "·" };
         crate::nodes::output_port_row(
-            ui, "Changed", chg_str, node_id, self.n_outputs + 1,
-            ctx.port_positions, ctx.dragging_from, ctx.connections, ctx.pending_disconnects,
+            ui,
+            "Changed",
+            chg_str,
+            node_id,
+            self.n_outputs + 1,
+            ctx.port_positions,
+            ctx.dragging_from,
+            ctx.connections,
+            ctx.pending_disconnects,
             PortKind::Trigger,
         );
         // Captured pulses for one frame after each commit_capture(). Useful for
         // chaining (auto-name, log, advance step, etc.).
-        let cap_str = if self.last_captured_pulse { "▶" } else { "·" };
+        let cap_str = if self.last_captured_pulse {
+            "▶"
+        } else {
+            "·"
+        };
         crate::nodes::output_port_row(
-            ui, "Captured", cap_str, node_id, self.n_outputs + 2,
-            ctx.port_positions, ctx.dragging_from, ctx.connections, ctx.pending_disconnects,
+            ui,
+            "Captured",
+            cap_str,
+            node_id,
+            self.n_outputs + 2,
+            ctx.port_positions,
+            ctx.dragging_from,
+            ctx.connections,
+            ctx.pending_disconnects,
             PortKind::Trigger,
         );
     }
@@ -733,15 +921,21 @@ mod tests {
     use super::*;
 
     fn ex(name: &str, input: Vec<f32>, output: Vec<f32>) -> Example {
-        Example { name: name.into(), input, output }
+        Example {
+            name: name.into(),
+            input,
+            output,
+        }
     }
 
     /// Build the full evaluate() inputs vector for an N=2, M=2 node:
     /// [in0, in1, target0, target1, capture]
     fn pv(in0: f32, in1: f32, t0: f32, t1: f32, cap: f32) -> Vec<PortValue> {
         vec![
-            PortValue::Float(in0), PortValue::Float(in1),
-            PortValue::Float(t0),  PortValue::Float(t1),
+            PortValue::Float(in0),
+            PortValue::Float(in1),
+            PortValue::Float(t0),
+            PortValue::Float(t1),
             PortValue::Float(cap),
         ]
     }
@@ -784,8 +978,16 @@ mod tests {
         n.examples.push(ex("a", vec![0.0, 0.0], vec![1.0, 0.0]));
         n.examples.push(ex("b", vec![1.0, 1.0], vec![0.0, 1.0]));
         let out = n.predict(&[0.5, 0.5]);
-        assert!((out[0] - 0.5).abs() < 1e-3, "out[0] = {} expected ≈ 0.5", out[0]);
-        assert!((out[1] - 0.5).abs() < 1e-3, "out[1] = {} expected ≈ 0.5", out[1]);
+        assert!(
+            (out[0] - 0.5).abs() < 1e-3,
+            "out[0] = {} expected ≈ 0.5",
+            out[0]
+        );
+        assert!(
+            (out[1] - 0.5).abs() < 1e-3,
+            "out[1] = {} expected ≈ 0.5",
+            out[1]
+        );
     }
 
     #[test]
@@ -795,7 +997,11 @@ mod tests {
         n.examples.push(ex("b", vec![1.0], vec![0.0]));
         n.examples.push(ex("c", vec![10.0], vec![100.0]));
         let out = n.predict(&[0.05]);
-        assert!(out[0] > 0.5, "out = {}, expected closer to 1.0 than to 0 or 100", out[0]);
+        assert!(
+            out[0] > 0.5,
+            "out = {}, expected closer to 1.0 than to 0 or 100",
+            out[0]
+        );
         assert!(out[0] < 5.0, "outlier should not dominate, got {}", out[0]);
     }
 
@@ -861,8 +1067,10 @@ mod tests {
         n.k = 7;
         n.distance = Distance::Manhattan;
         n.capture_buffer_frames = 12;
-        n.examples.push(ex("foo", vec![0.1, 0.2, 0.3], vec![1.0, 2.0, 3.0, 4.0]));
-        n.examples.push(ex("bar", vec![0.4, 0.5, 0.6], vec![5.0, 6.0, 7.0, 8.0]));
+        n.examples
+            .push(ex("foo", vec![0.1, 0.2, 0.3], vec![1.0, 2.0, 3.0, 4.0]));
+        n.examples
+            .push(ex("bar", vec![0.4, 0.5, 0.6], vec![5.0, 6.0, 7.0, 8.0]));
 
         let state = n.save_state();
         let mut restored = RegressNode::default();
@@ -895,15 +1103,25 @@ mod tests {
         let mut n = RegressNode::default();
         n.n_outputs = 3;
         n.last_outputs = vec![0.0; 3];
-        n.examples.push(ex("a", vec![0.0, 0.0], vec![0.1, 0.2, 0.3]));
+        n.examples
+            .push(ex("a", vec![0.0, 0.0], vec![0.1, 0.2, 0.3]));
         let inputs = vec![
-            PortValue::Float(0.0), PortValue::Float(0.0),  // in0, in1
-            PortValue::Float(0.0), PortValue::Float(0.0), PortValue::Float(0.0),  // target0..2
-            PortValue::Float(0.0),  // capture
+            PortValue::Float(0.0),
+            PortValue::Float(0.0), // in0, in1
+            PortValue::Float(0.0),
+            PortValue::Float(0.0),
+            PortValue::Float(0.0), // target0..2
+            PortValue::Float(0.0), // capture
         ];
         let out = n.evaluate(&inputs);
         assert_eq!(out.len(), 6, "M=3 outputs + Conf + Changed + Captured = 6");
-        let vals: Vec<f32> = out.iter().map(|(_, v)| match v { PortValue::Float(f) => *f, _ => 0.0 }).collect();
+        let vals: Vec<f32> = out
+            .iter()
+            .map(|(_, v)| match v {
+                PortValue::Float(f) => *f,
+                _ => 0.0,
+            })
+            .collect();
         // Exact-hit at training point → its output verbatim; Conf ≈ 1.0; Changed ≈ 1.0 (first nearest).
         assert!((vals[0] - 0.1).abs() < 1e-5);
         assert!((vals[1] - 0.2).abs() < 1e-5);
@@ -945,7 +1163,11 @@ mod tests {
         assert!((n.last_conf - 1.0).abs() < 1e-5);
         // Far away: distance ≫ 0 → conf < 0.5.
         let _ = n.evaluate(&pv(10.0, 10.0, 0.0, 0.0, 0.0));
-        assert!(n.last_conf < 0.5, "expected low conf far from training, got {}", n.last_conf);
+        assert!(
+            n.last_conf < 0.5,
+            "expected low conf far from training, got {}",
+            n.last_conf
+        );
     }
 
     #[test]
@@ -958,7 +1180,9 @@ mod tests {
         let mut pulses_a = 0;
         for _ in 0..10 {
             let _ = n.evaluate(&pv(0.0, 0.0, 0.0, 0.0, 0.0));
-            if n.last_pulse { pulses_a += 1; }
+            if n.last_pulse {
+                pulses_a += 1;
+            }
         }
         assert_eq!(pulses_a, 1, "sustained near A should pulse exactly once");
 
@@ -966,7 +1190,9 @@ mod tests {
         let mut pulses_b = 0;
         for _ in 0..10 {
             let _ = n.evaluate(&pv(1.0, 1.0, 0.0, 0.0, 0.0));
-            if n.last_pulse { pulses_b += 1; }
+            if n.last_pulse {
+                pulses_b += 1;
+            }
         }
         assert_eq!(pulses_b, 1, "flip to B should pulse exactly once");
     }

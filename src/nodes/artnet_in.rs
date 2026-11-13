@@ -42,7 +42,10 @@ pub fn render(
     ui.horizontal(|ui| {
         ui.label("Port:");
         let mut p = *listen_port as u32;
-        if ui.add(egui::DragValue::new(&mut p).range(1024..=65535)).changed() {
+        if ui
+            .add(egui::DragValue::new(&mut p).range(1024..=65535))
+            .changed()
+        {
             *listen_port = p.clamp(1024, 65535) as u16;
         }
     });
@@ -50,7 +53,13 @@ pub fn render(
     ui.horizontal(|ui| {
         ui.checkbox(universe_filter, "Filter universe");
         let mut u32v = *universe as u32;
-        if ui.add_enabled(*universe_filter, egui::DragValue::new(&mut u32v).range(0..=32767)).changed() {
+        if ui
+            .add_enabled(
+                *universe_filter,
+                egui::DragValue::new(&mut u32v).range(0..=32767),
+            )
+            .changed()
+        {
             *universe = u32v.min(32767) as u16;
         }
     });
@@ -67,7 +76,10 @@ pub fn render(
         }
         ui.label("from");
         let mut s = *start_at as u32;
-        if ui.add(egui::DragValue::new(&mut s).range(1..=512)).changed() {
+        if ui
+            .add(egui::DragValue::new(&mut s).range(1..=512))
+            .changed()
+        {
             *start_at = s.clamp(1, 512) as u16;
         }
     });
@@ -77,8 +89,15 @@ pub fn render(
     for i in 0..*channel_count {
         ui.horizontal(|ui| {
             super::inline_port_circle(
-                ui, node_id, i, false, connections,
-                port_positions, dragging_from, pending_disconnects, PortKind::Normalized,
+                ui,
+                node_id,
+                i,
+                false,
+                connections,
+                port_positions,
+                dragging_from,
+                pending_disconnects,
+                PortKind::Normalized,
             );
             let ch = (*start_at as usize) + i;
             let byte = last_values.get(i).copied().unwrap_or(0);

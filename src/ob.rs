@@ -26,7 +26,11 @@ pub enum ObMessage {
     /// System: /sys/ready type id
     Ready { device_type: String, id: u8 },
     /// System: /sys/status type id mode=xxx
-    Status { device_type: String, id: u8, mode: String },
+    Status {
+        device_type: String,
+        id: u8,
+        mode: String,
+    },
     /// System: other /sys/ messages (detecting_mode, hub_found, etc.)
     SysInfo { message: String },
     /// Raw unparsed line
@@ -132,35 +136,33 @@ impl ObDevice {
                     self.values.insert("target".into(), values[2]);
                 }
             }
-            ("orb", act) if act == "accel" || act == "gyro" || act == "imu" => {
-                match act {
-                    "accel" => {
-                        if values.len() >= 3 {
-                            self.values.insert("ax".into(), values[0]);
-                            self.values.insert("ay".into(), values[1]);
-                            self.values.insert("az".into(), values[2]);
-                        }
+            ("orb", act) if act == "accel" || act == "gyro" || act == "imu" => match act {
+                "accel" => {
+                    if values.len() >= 3 {
+                        self.values.insert("ax".into(), values[0]);
+                        self.values.insert("ay".into(), values[1]);
+                        self.values.insert("az".into(), values[2]);
                     }
-                    "gyro" => {
-                        if values.len() >= 3 {
-                            self.values.insert("gx".into(), values[0]);
-                            self.values.insert("gy".into(), values[1]);
-                            self.values.insert("gz".into(), values[2]);
-                        }
-                    }
-                    "imu" => {
-                        if values.len() >= 6 {
-                            self.values.insert("ax".into(), values[0]);
-                            self.values.insert("ay".into(), values[1]);
-                            self.values.insert("az".into(), values[2]);
-                            self.values.insert("gx".into(), values[3]);
-                            self.values.insert("gy".into(), values[4]);
-                            self.values.insert("gz".into(), values[5]);
-                        }
-                    }
-                    _ => {}
                 }
-            }
+                "gyro" => {
+                    if values.len() >= 3 {
+                        self.values.insert("gx".into(), values[0]);
+                        self.values.insert("gy".into(), values[1]);
+                        self.values.insert("gz".into(), values[2]);
+                    }
+                }
+                "imu" => {
+                    if values.len() >= 6 {
+                        self.values.insert("ax".into(), values[0]);
+                        self.values.insert("ay".into(), values[1]);
+                        self.values.insert("az".into(), values[2]);
+                        self.values.insert("gx".into(), values[3]);
+                        self.values.insert("gy".into(), values[4]);
+                        self.values.insert("gz".into(), values[5]);
+                    }
+                }
+                _ => {}
+            },
             // Generic fallback: store all values by index
             (_, _) => {
                 for (i, &v) in values.iter().enumerate() {
@@ -190,7 +192,8 @@ pub struct ObHub {
 impl Drop for ObHub {
     fn drop(&mut self) {
         // Signal the reader thread to stop
-        self.stop_signal.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.stop_signal
+            .store(true, std::sync::atomic::Ordering::Relaxed);
         // Drop the writer first to close our end of the port
         self.writer.take();
         // Wait for the thread to finish (with timeout)
@@ -209,11 +212,17 @@ impl ObHub {
             .map_err(|e| {
                 let msg = e.to_string();
                 if msg.contains("Resource busy") || msg.contains("EBUSY") {
-                    format!("Port busy — close Serial Monitor, Arduino IDE, or other apps using {}", port_name)
+                    format!(
+                        "Port busy — close Serial Monitor, Arduino IDE, or other apps using {}",
+                        port_name
+                    )
                 } else if msg.contains("No such file") || msg.contains("not found") {
                     format!("Port not found — device may be disconnected: {}", port_name)
                 } else if msg.contains("Permission denied") {
-                    format!("Permission denied on {} — check user permissions", port_name)
+                    format!(
+                        "Permission denied on {} — check user permissions",
+                        port_name
+                    )
                 } else {
                     format!("{}: {}", port_name, msg)
                 }
@@ -221,7 +230,13 @@ impl ObHub {
 
         let (writer, write_warning) = match port.try_clone() {
             Ok(p) => (Some(Box::new(p) as Box<dyn std::io::Write + Send>), None),
-            Err(e) => (None, Some(format!("⚠ Cannot send commands: port clone failed ({}). Read-only mode.", e))),
+            Err(e) => (
+                None,
+                Some(format!(
+                    "⚠ Cannot send commands: port clone failed ({}). Read-only mode.",
+                    e
+                )),
+            ),
         };
 
         let (tx, rx) = mpsc::channel();
@@ -292,15 +307,26 @@ impl ObHub {
 
         while let Ok(msg) = self.rx.try_recv() {
             match &msg {
-                ObMessage::Data { device_type, id, action, values } => {
+                ObMessage::Data {
+                    device_type,
+                    id,
+                    action,
+                    values,
+                } => {
                     let key = (device_type.clone(), *id);
-                    let device = self.devices.entry(key).or_insert_with(|| ObDevice::new(device_type, *id));
+                    let device = self
+                        .devices
+                        .entry(key)
+                        .or_insert_with(|| ObDevice::new(device_type, *id));
                     device.apply_data(action, values);
                     self.log_push(format!("/{}/{}/{} {:?}", device_type, id, action, values));
                 }
                 ObMessage::Connected { device_type, id } => {
                     let key = (device_type.clone(), *id);
-                    let device = self.devices.entry(key).or_insert_with(|| ObDevice::new(device_type, *id));
+                    let device = self
+                        .devices
+                        .entry(key)
+                        .or_insert_with(|| ObDevice::new(device_type, *id));
                     device.is_active = true;
                     device.last_seen = now;
                     self.log_push(format!("+ {} #{} connected", device_type, id));
@@ -314,12 +340,19 @@ impl ObHub {
                 }
                 ObMessage::Ready { device_type, id } => {
                     let key = (device_type.clone(), *id);
-                    let device = self.devices.entry(key).or_insert_with(|| ObDevice::new(device_type, *id));
+                    let device = self
+                        .devices
+                        .entry(key)
+                        .or_insert_with(|| ObDevice::new(device_type, *id));
                     device.is_active = true;
                     device.last_seen = now;
                     self.log_push(format!("✓ {} #{} ready", device_type, id));
                 }
-                ObMessage::Status { device_type, id, mode } => {
+                ObMessage::Status {
+                    device_type,
+                    id,
+                    mode,
+                } => {
                     self.log_push(format!("i {} #{} mode={}", device_type, id, mode));
                 }
                 ObMessage::SysInfo { message } => {
@@ -440,7 +473,13 @@ impl ObManager {
 
     /// Get device value from a specific hub
     #[allow(dead_code)]
-    pub fn get_device_value(&self, hub_node_id: NodeId, device_type: &str, id: u8, key: &str) -> f32 {
+    pub fn get_device_value(
+        &self,
+        hub_node_id: NodeId,
+        device_type: &str,
+        id: u8,
+        key: &str,
+    ) -> f32 {
         self.hubs
             .get(&hub_node_id)
             .map(|h| h.get_value(device_type, id, key))
@@ -485,14 +524,22 @@ fn parse_ob_line(line: &str) -> ObMessage {
                     let device_type = parts[1].to_string();
                     let id = parts[2].parse::<u8>().unwrap_or(0);
                     let mode = parts[3..].join(" ");
-                    return ObMessage::Status { device_type, id, mode };
+                    return ObMessage::Status {
+                        device_type,
+                        id,
+                        mode,
+                    };
                 }
                 _ => {
-                    return ObMessage::SysInfo { message: line.to_string() };
+                    return ObMessage::SysInfo {
+                        message: line.to_string(),
+                    };
                 }
             }
         }
-        return ObMessage::SysInfo { message: line.to_string() };
+        return ObMessage::SysInfo {
+            message: line.to_string(),
+        };
     }
 
     // Data messages: /type/id/action val0 val1 ...
@@ -508,11 +555,14 @@ fn parse_ob_line(line: &str) -> ObMessage {
                 let device_type = path_parts[1].to_string();
                 if let Ok(id) = path_parts[2].parse::<u8>() {
                     let action = path_parts[3].to_string();
-                    let values: Vec<f32> = parts[1..]
-                        .iter()
-                        .filter_map(|v| v.parse().ok())
-                        .collect();
-                    return ObMessage::Data { device_type, id, action, values };
+                    let values: Vec<f32> =
+                        parts[1..].iter().filter_map(|v| v.parse().ok()).collect();
+                    return ObMessage::Data {
+                        device_type,
+                        id,
+                        action,
+                        values,
+                    };
                 }
             }
         }

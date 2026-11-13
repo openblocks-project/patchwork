@@ -14,7 +14,7 @@
 use crate::graph::{ImageData, NodeId, PortDef, PortKind, PortValue};
 use crate::node_trait::{NodeBehavior, RenderContext};
 use crate::nodes::video_player::{
-    cached_camera_list, fast_downsample, list_screens, refresh_camera_list_now, VideoDecoder,
+    VideoDecoder, cached_camera_list, fast_downsample, list_screens, refresh_camera_list_now,
 };
 use eframe::egui;
 use serde::{Deserialize, Serialize};
@@ -73,70 +73,97 @@ impl VideoSource {
         }
     }
     fn all() -> [Self; 7] {
-        [Self::Camera, Self::Screen, Self::File, Self::Url, Self::Syphon, Self::Ndi, Self::Spout]
+        [
+            Self::Camera,
+            Self::Screen,
+            Self::File,
+            Self::Url,
+            Self::Syphon,
+            Self::Ndi,
+            Self::Spout,
+        ]
     }
 }
 
-fn default_res_w() -> u32 { 640 }
-fn default_res_h() -> u32 { 480 }
-fn default_volume() -> f32 { 1.0 }
+fn default_res_w() -> u32 {
+    640
+}
+fn default_res_h() -> u32 {
+    480
+}
+fn default_volume() -> f32 {
+    1.0
+}
 
 #[derive(Serialize, Deserialize)]
 pub struct VideoInNode {
-    #[serde(default)] pub source: VideoSource,
+    #[serde(default)]
+    pub source: VideoSource,
 
     /// Encodes source‑specific identity. Camera → device index as a
     /// string ("0", "1", …). File → absolute path. Screen → display
     /// index. Syphon/NDI/Spout → publish name. Single field so every
     /// source type serialises the same way.
-    #[serde(default)] pub device_id: String,
+    #[serde(default)]
+    pub device_id: String,
 
-    #[serde(default = "default_res_w")] pub res_w: u32,
-    #[serde(default = "default_res_h")] pub res_h: u32,
+    #[serde(default = "default_res_w")]
+    pub res_w: u32,
+    #[serde(default = "default_res_h")]
+    pub res_h: u32,
 
     /// Mirror the frame horizontally before emit. Persisted per-project.
     /// macOS front cameras return a mirrored stream by default (selfie
     /// convention), so toggling this on un-mirrors the downstream feed
     /// for Syphon / Visual Output / any consumer. Preview also mirrors.
-    #[serde(default)] pub mirror_h: bool,
+    #[serde(default)]
+    pub mirror_h: bool,
     /// Mirror the frame vertically before emit. Rarely needed — usually
     /// only on camera mounts that ship the signal upside-down.
-    #[serde(default)] pub mirror_v: bool,
+    #[serde(default)]
+    pub mirror_v: bool,
 
     /// Reflects whether the decoder is currently open. Deliberately not
     /// restored from project files — user presses Start to capture.
-    #[serde(skip)] pub active: bool,
+    #[serde(skip)]
+    pub active: bool,
 
-    #[serde(skip)] pub status: String,
+    #[serde(skip)]
+    pub status: String,
 
     /// Resolved URL for the URL source. For direct URLs this is just a
     /// copy of `device_id`. For YouTube / Vimeo URLs this is the real
     /// stream URL extracted by `yt-dlp` — typically temporary (expires
     /// in a few hours). Cleared on Stop. Never persisted: the user-typed
     /// page URL stays in `device_id` so save/load round-trips correctly.
-    #[serde(skip)] pub effective_url: String,
+    #[serde(skip)]
+    pub effective_url: String,
 
     /// When the URL source EOFs (finite mp4 / podcast / a YouTube video
     /// that ended), should we transparently re-open and play it again?
     /// No-op for live streams (HLS / RTSP — those don't EOF). Persisted.
-    #[serde(default)] pub loop_playback: bool,
+    #[serde(default)]
+    pub loop_playback: bool,
 
     /// Audio volume for the URL stream's audio output, 0.0–2.0.
     /// Written to the FilePlayerProcessor's volume param atomic each
     /// frame so the slider feels responsive. Persisted.
-    #[serde(default = "default_volume")] pub volume: f32,
+    #[serde(default = "default_volume")]
+    pub volume: f32,
 
     /// Path to a cached local copy of the URL's media, **relative** to the
     /// project folder (e.g. "assets/video_in/<id>.mp4"). Empty when not
     /// cached. Persisted; survives save/load alongside the project.
-    #[serde(default)] pub cached_path: String,
+    #[serde(default)]
+    pub cached_path: String,
 
     /// Resolved absolute path of `cached_path` against the current project
     /// directory. Set on first render after load (and on Cache-success);
     /// cleared on Stop / source change. When the file at this path exists,
     /// it takes precedence over `effective_url` / `device_id` — no network
     /// fetch, no yt-dlp.
-    #[serde(skip)] pub cached_abs: Option<std::path::PathBuf>,
+    #[serde(skip)]
+    pub cached_abs: Option<std::path::PathBuf>,
 
     // ── Playhead / scrubber state ───────────────────────────────────
     /// Source duration in seconds. 0.0 means unknown / live (no fixed
@@ -144,38 +171,47 @@ pub struct VideoInNode {
     /// resolve. Persisted so projects re-open with the cached value
     /// (saves a probe on Start), but re-probed on the actual Start to
     /// catch length changes.
-    #[serde(default)] pub duration_secs: f32,
+    #[serde(default)]
+    pub duration_secs: f32,
 
     /// `Instant` that corresponds to the playhead being at
     /// `position_anchor_secs`. `None` while paused / stopped — in those
     /// states we read `paused_at_secs` instead. Set on Start, on Resume,
     /// and on every Seek so live playhead = anchor + (now - anchor_at).
-    #[serde(skip)] pub position_anchor_instant: Option<std::time::Instant>,
-    #[serde(skip)] pub position_anchor_secs: f32,
+    #[serde(skip)]
+    pub position_anchor_instant: Option<std::time::Instant>,
+    #[serde(skip)]
+    pub position_anchor_secs: f32,
 
     /// Captured playhead while paused. None when actively playing.
-    #[serde(skip)] pub paused_at_secs: Option<f32>,
+    #[serde(skip)]
+    pub paused_at_secs: Option<f32>,
 
     /// User's current scrub-drag intent. Read by the slider's value
     /// during a drag (so the thumb tracks the cursor smoothly without
     /// the live-position calculation overwriting it). Committed to a
     /// real seek on `drag_stopped()`.
-    #[serde(skip)] pub scrub_value: f32,
-    #[serde(skip)] pub scrubbing: bool,
+    #[serde(skip)]
+    pub scrub_value: f32,
+    #[serde(skip)]
+    pub scrubbing: bool,
 
     // ── Runtime state (never serialised) ────────────────────────────
-    #[serde(skip)] pub current_frame: Option<Arc<ImageData>>,
+    #[serde(skip)]
+    pub current_frame: Option<Arc<ImageData>>,
 
     /// The ffmpeg decoder. `Arc<Mutex<…>>` gets us `Send + Sync`
     /// without forcing `VideoDecoder` to be Sync (its `Child` isn't).
     /// `Drop` on the Box<dyn NodeBehavior> drops this Arc → drops the
     /// last strong ref → drops the decoder → kills the ffmpeg child.
-    #[serde(skip)] decoder: Arc<Mutex<Option<VideoDecoder>>>,
+    #[serde(skip)]
+    decoder: Arc<Mutex<Option<VideoDecoder>>>,
 
     /// Preview texture + last uploaded Arc pointer. Mirrors the
     /// `VIDEO_TEXTURES` cache inside `render_camera` so we don't
     /// re‑upload an unchanged frame on every repaint.
-    #[serde(skip)] preview_tex: Option<(egui::TextureHandle, usize)>,
+    #[serde(skip)]
+    preview_tex: Option<(egui::TextureHandle, usize)>,
 
     /// Syphon client — connected when `source == Syphon` and the user
     /// has picked a server. `Arc<Mutex<…>>` so the node stays
@@ -405,8 +441,9 @@ impl Default for VideoInNode {
 /// Camera device 0 don't conflict (different AVFoundation
 /// subsystems). NDI / Syphon don't use this registry — they're
 /// publish-subscribe and support any number of concurrent receivers.
-static CAMERA_OWNERS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<(VideoSource, u32), NodeId>>> =
-    std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+static CAMERA_OWNERS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<(VideoSource, u32), NodeId>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
 impl VideoInNode {
     fn device_index(&self) -> u32 {
@@ -482,7 +519,9 @@ impl VideoInNode {
                 //      yt-dlp expiry, makes the project portable.
                 //   2. effective_url (direct URL or yt-dlp resolved).
                 //   3. device_id (the raw user-pasted URL — fallback).
-                let from_cache = self.cached_abs.as_ref()
+                let from_cache = self
+                    .cached_abs
+                    .as_ref()
                     .filter(|p| p.exists())
                     .map(|p| p.to_string_lossy().into_owned());
                 let url = if let Some(p) = from_cache {
@@ -508,11 +547,16 @@ impl VideoInNode {
                     VideoDecoder::open_file(path, self.res_w, self.res_h, start_time)
                 }
             }
-            _ => Err(format!("{} source not yet implemented", self.source.label())),
+            _ => Err(format!(
+                "{} source not yet implemented",
+                self.source.label()
+            )),
         };
         match result {
             Ok(dec) => {
-                if let Ok(mut guard) = self.decoder.lock() { *guard = Some(dec); }
+                if let Ok(mut guard) = self.decoder.lock() {
+                    *guard = Some(dec);
+                }
                 self.active = true;
                 self.status = "Capturing".into();
             }
@@ -531,19 +575,25 @@ impl VideoInNode {
         // decoder down, so a second Video In can reclaim the device
         // on the very next frame. Idempotent if we never held it.
         self.release_camera(node_id);
-        if let Ok(mut guard) = self.decoder.lock() { *guard = None; }
+        if let Ok(mut guard) = self.decoder.lock() {
+            *guard = None;
+        }
         #[cfg(target_os = "macos")]
         {
             // Drop any Syphon client too. SyphonClient::Drop sends
             // `-stop` which unsubscribes cleanly so the server knows
             // we're gone.
-            if let Ok(mut g) = self.syphon_client.lock() { *g = None; }
+            if let Ok(mut g) = self.syphon_client.lock() {
+                *g = None;
+            }
             self.syphon_last_dims = None;
 
             // NDI: drop the worker first (its `Drop` joins the thread
             // and flips the stop flag), then drop the finder.
             self.ndi_worker = None;
-            if let Ok(mut g) = self.ndi_finder.lock() { *g = None; }
+            if let Ok(mut g) = self.ndi_finder.lock() {
+                *g = None;
+            }
             self.ndi_last_dims = None;
             self.ndi_last_frame_at = None;
         }
@@ -564,7 +614,9 @@ impl VideoInNode {
             Ok(g) => g,
             Err(_) => return,
         };
-        let Some(decoder) = guard.as_mut() else { return; };
+        let Some(decoder) = guard.as_mut() else {
+            return;
+        };
         // Drain any ffmpeg stderr into the decoder's log so we can
         // surface a meaningful error if frames never start flowing.
         decoder.pump_stderr();
@@ -595,16 +647,10 @@ impl VideoInNode {
             // permission and point the user at System Settings.
             let elapsed = decoder.started_at.elapsed().as_secs_f32();
             if elapsed > 1.5 && !decoder.stderr_log.is_empty() {
-                let last_line = decoder
-                    .stderr_log
-                    .lines()
-                    .last()
-                    .unwrap_or("")
-                    .to_string();
+                let last_line = decoder.stderr_log.lines().last().unwrap_or("").to_string();
                 self.status = format!("ffmpeg: {}", last_line);
             } else if elapsed > 3.0 {
-                self.status =
-                    "No frames — check System Settings → Privacy → Camera".into();
+                self.status = "No frames — check System Settings → Privacy → Camera".into();
             }
         }
         if decoder.disconnected {
@@ -614,8 +660,8 @@ impl VideoInNode {
             // happen outside this borrow scope (we're holding the
             // decoder lock guard here), so we set a transient flag and
             // restart below the unlock.
-            let want_restart = self.loop_playback
-                && matches!(self.source, VideoSource::Url | VideoSource::File);
+            let want_restart =
+                self.loop_playback && matches!(self.source, VideoSource::Url | VideoSource::File);
             self.current_frame = None;
             self.active = false;
             decoder.disconnected = false;
@@ -651,7 +697,10 @@ impl VideoInNode {
                     .map(|t| now.duration_since(t).as_secs_f32() >= 3.0)
                     .unwrap_or(true);
                 if should_log {
-                    crate::system_log::warn(format!("Video In disconnected (id:{}) — if you just clicked Start, the camera may still be in use by the previous ffmpeg; wait a moment before retrying", node_id));
+                    crate::system_log::warn(format!(
+                        "Video In disconnected (id:{}) — if you just clicked Start, the camera may still be in use by the previous ffmpeg; wait a moment before retrying",
+                        node_id
+                    ));
                     self.last_disconnect_log_at = Some(now);
                 }
             }
@@ -660,8 +709,12 @@ impl VideoInNode {
 }
 
 impl NodeBehavior for VideoInNode {
-    fn title(&self) -> &str { "Video In" }
-    fn inputs(&self) -> Vec<PortDef> { vec![] }
+    fn title(&self) -> &str {
+        "Video In"
+    }
+    fn inputs(&self) -> Vec<PortDef> {
+        vec![]
+    }
     fn outputs(&self) -> Vec<PortDef> {
         // Audio port is always present — for non-URL sources it just stays
         // disconnected (Camera / Screen / Syphon / NDI don't carry audio
@@ -672,13 +725,19 @@ impl NodeBehavior for VideoInNode {
             PortDef::new("Audio", PortKind::Audio),
         ]
     }
-    fn color_hint(&self) -> [u8; 3] { [80, 200, 140] }
-    fn type_tag(&self) -> &str { "video_in" }
+    fn color_hint(&self) -> [u8; 3] {
+        [80, 200, 140]
+    }
+    fn type_tag(&self) -> &str {
+        "video_in"
+    }
     /// The Frame output port is rendered inline via `output_port_row`
     /// inside `render_with_ctx`, so the framework must skip its default
     /// bottom-port rendering — otherwise the port shows twice and only
     /// the framework one is wired up.
-    fn inline_ports(&self) -> bool { true }
+    fn inline_ports(&self) -> bool {
+        true
+    }
 
     fn evaluate(&mut self, _inputs: &[PortValue]) -> Vec<(usize, PortValue)> {
         if let Some(frame) = self.current_frame.as_ref() {
@@ -763,7 +822,9 @@ impl NodeBehavior for VideoInNode {
                         });
                     }
                 });
-            if self.source != prev { source_changed = true; }
+            if self.source != prev {
+                source_changed = true;
+            }
         });
         if source_changed {
             self.close_decoder(ctx.node_id);
@@ -793,7 +854,8 @@ impl NodeBehavior for VideoInNode {
                     egui::RichText::new(format!(
                         "{} source — coming in a later phase.\nSee docs/video_io_spec.md",
                         self.source.label()
-                    )).small(),
+                    ))
+                    .small(),
                 );
                 ui.add_space(4.0);
             }
@@ -801,10 +863,21 @@ impl NodeBehavior for VideoInNode {
 
         // ── Output port row (always visible) ───────────────────────
         ui.separator();
-        let out_val = if self.current_frame.is_some() { "●" } else { "—" };
+        let out_val = if self.current_frame.is_some() {
+            "●"
+        } else {
+            "—"
+        };
         crate::nodes::output_port_row(
-            ui, "Frame", out_val, ctx.node_id, 0,
-            ctx.port_positions, ctx.dragging_from, ctx.connections, ctx.pending_disconnects,
+            ui,
+            "Frame",
+            out_val,
+            ctx.node_id,
+            0,
+            ctx.port_positions,
+            ctx.dragging_from,
+            ctx.connections,
+            ctx.pending_disconnects,
             PortKind::Image,
         );
         // Audio port — only meaningful for URL streams in v1, but always
@@ -814,12 +887,21 @@ impl NodeBehavior for VideoInNode {
             && matches!(self.source, VideoSource::Url)
             && ctx.audio.file_buffers.contains_key(&ctx.node_id);
         crate::nodes::output_port_row(
-            ui, "Audio", if audio_active { "●" } else { "—" }, ctx.node_id, 1,
-            ctx.port_positions, ctx.dragging_from, ctx.connections, ctx.pending_disconnects,
+            ui,
+            "Audio",
+            if audio_active { "●" } else { "—" },
+            ctx.node_id,
+            1,
+            ctx.port_positions,
+            ctx.dragging_from,
+            ctx.connections,
+            ctx.pending_disconnects,
             PortKind::Audio,
         );
 
-        if self.active { ui.ctx().request_repaint(); }
+        if self.active {
+            ui.ctx().request_repaint();
+        }
     }
 }
 
@@ -861,7 +943,11 @@ impl VideoInNode {
                 });
             // "↻" — bypass the 10s TTL so OBS / Continuity / fresh USB
             // cams show up instantly after plugging in.
-            if ui.small_button("↻").on_hover_text("Refresh device list").clicked() {
+            if ui
+                .small_button("↻")
+                .on_hover_text("Refresh device list")
+                .clicked()
+            {
                 refresh_camera_list_now();
             }
         });
@@ -869,7 +955,9 @@ impl VideoInNode {
             let was_active = self.active;
             self.close_decoder(ctx.node_id);
             self.device_id = idx.to_string();
-            if was_active { self.open_decoder(ctx.node_id, 0.0); }
+            if was_active {
+                self.open_decoder(ctx.node_id, 0.0);
+            }
         }
 
         // Windows-only diagnostics: when ffmpeg's dshow enumeration
@@ -897,22 +985,32 @@ impl VideoInNode {
                 .show(ui, |ui| {
                     ui.label(egui::RichText::new("ffmpeg said:").small());
                     let max = stderr.len().saturating_sub(1024);
-                    let tail = if max > 0 { &stderr[max..] } else { stderr.as_str() };
+                    let tail = if max > 0 {
+                        &stderr[max..]
+                    } else {
+                        stderr.as_str()
+                    };
                     let mut s = tail.to_string();
                     egui::ScrollArea::vertical()
                         .id_salt(egui::Id::new(("vin_dshow_stderr", ctx.node_id)))
                         .max_height(160.0)
                         .show(ui, |ui| {
-                            ui.add(egui::TextEdit::multiline(&mut s)
-                                .desired_width(f32::INFINITY)
-                                .font(egui::TextStyle::Monospace)
-                                .interactive(false));
+                            ui.add(
+                                egui::TextEdit::multiline(&mut s)
+                                    .desired_width(f32::INFINITY)
+                                    .font(egui::TextStyle::Monospace)
+                                    .interactive(false),
+                            );
                         });
                     ui.label(egui::RichText::new("Try running this in cmd.exe:").small());
                     let cmd = "ffmpeg -list_devices true -f dshow -i dummy";
                     ui.horizontal(|ui| {
                         ui.code(cmd);
-                        if ui.small_button("📋").on_hover_text("Copy command").clicked() {
+                        if ui
+                            .small_button("📋")
+                            .on_hover_text("Copy command")
+                            .clicked()
+                        {
                             ui.ctx().copy_text(cmd.to_string());
                         }
                     });
@@ -927,8 +1025,18 @@ impl VideoInNode {
             // (useful for "average colour of frame → signal" patches) up
             // through 4K. ffmpeg negotiates the closest supported native
             // resolution from the camera and scales if needed.
-            ui.add(egui::DragValue::new(&mut self.res_w).range(1..=4096).speed(10).prefix("W:"));
-            ui.add(egui::DragValue::new(&mut self.res_h).range(1..=4096).speed(10).prefix("H:"));
+            ui.add(
+                egui::DragValue::new(&mut self.res_w)
+                    .range(1..=4096)
+                    .speed(10)
+                    .prefix("W:"),
+            );
+            ui.add(
+                egui::DragValue::new(&mut self.res_h)
+                    .range(1..=4096)
+                    .speed(10)
+                    .prefix("H:"),
+            );
         });
 
         // Mirror toggles — applied in `poll_decoder` before emit, so
@@ -946,7 +1054,9 @@ impl VideoInNode {
         let mut toggle_stop = false;
         ui.horizontal(|ui| {
             if self.active {
-                if ui.button("⏹ Stop").clicked() { toggle_stop = true; }
+                if ui.button("⏹ Stop").clicked() {
+                    toggle_stop = true;
+                }
                 ui.colored_label(egui::Color32::from_rgb(255, 80, 80), "● REC");
             } else if ui.button("▶ Start").clicked() {
                 toggle_start = true;
@@ -977,7 +1087,8 @@ impl VideoInNode {
             #[cfg(target_os = "windows")]
             let capture: Option<(&str, String)> = {
                 let inputs = crate::nodes::video_player::cached_audio_input_list_dshow();
-                inputs.first()
+                inputs
+                    .first()
                     .map(|(_, name)| ("dshow", format!("audio={}", name)))
             };
             #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
@@ -1043,10 +1154,15 @@ fn needs_yt_dlp(url: &str) -> bool {
 /// usable can be extracted.
 fn cache_filename(url: &str) -> String {
     let no_query = url.split(['?', '#']).next().unwrap_or(url);
-    if let Some(id) = extract_youtube_id(no_query) { return format!("{}.mp4", id); }
-    if let Some(id) = extract_vimeo_id(no_query)   { return format!("{}.mp4", id); }
+    if let Some(id) = extract_youtube_id(no_query) {
+        return format!("{}.mp4", id);
+    }
+    if let Some(id) = extract_vimeo_id(no_query) {
+        return format!("{}.mp4", id);
+    }
     let last = no_query.rsplit('/').next().unwrap_or("video");
-    let sanitised: String = last.chars()
+    let sanitised: String = last
+        .chars()
         .filter(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '.'))
         .collect();
     if sanitised.is_empty() {
@@ -1060,21 +1176,32 @@ fn cache_filename(url: &str) -> String {
 
 fn extract_youtube_id(url: &str) -> Option<String> {
     let take_id = |rest: &str| -> Option<String> {
-        let id: String = rest.chars().take(11)
+        let id: String = rest
+            .chars()
+            .take(11)
             .filter(|c| c.is_alphanumeric() || matches!(c, '_' | '-'))
             .collect();
         if id.len() == 11 { Some(id) } else { None }
     };
-    if let Some(idx) = url.find("youtu.be/")  { return take_id(&url[idx + "youtu.be/".len()..]); }
-    if let Some(idx) = url.find("v=")          { return take_id(&url[idx + 2..]); }
-    if let Some(idx) = url.find("/embed/")     { return take_id(&url[idx + "/embed/".len()..]); }
+    if let Some(idx) = url.find("youtu.be/") {
+        return take_id(&url[idx + "youtu.be/".len()..]);
+    }
+    if let Some(idx) = url.find("v=") {
+        return take_id(&url[idx + 2..]);
+    }
+    if let Some(idx) = url.find("/embed/") {
+        return take_id(&url[idx + "/embed/".len()..]);
+    }
     None
 }
 
 fn extract_vimeo_id(url: &str) -> Option<String> {
     let after_host = url.split("vimeo.com/").nth(1)?;
     let after_video = after_host.strip_prefix("video/").unwrap_or(after_host);
-    let id: String = after_video.chars().take_while(|c| c.is_ascii_digit()).collect();
+    let id: String = after_video
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
     if id.len() >= 5 { Some(id) } else { None }
 }
 
@@ -1085,8 +1212,7 @@ fn download_to_disk(url: &str, dest: &std::path::Path) -> Result<(), String> {
     // Make sure the parent dir exists — caller passes
     // <project>/assets/video_in/<file>, so create that tree.
     if let Some(parent) = dest.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("Create assets/video_in: {}", e))?;
+        std::fs::create_dir_all(parent).map_err(|e| format!("Create assets/video_in: {}", e))?;
     }
     let status = if needs_yt_dlp(url) {
         std::process::Command::new("yt-dlp")
@@ -1106,18 +1232,26 @@ fn download_to_disk(url: &str, dest: &std::path::Path) -> Result<(), String> {
     } else {
         std::process::Command::new("ffmpeg")
             .args([
-                "-hide_banner", "-loglevel", "error",
-                "-y",                       // overwrite if exists
-                "-i", url,
-                "-c", "copy",               // byte-exact, no transcode
-                "-bsf:a", "aac_adtstoasc",  // safety for HLS-AAC → mp4
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y", // overwrite if exists
+                "-i",
+                url,
+                "-c",
+                "copy", // byte-exact, no transcode
+                "-bsf:a",
+                "aac_adtstoasc", // safety for HLS-AAC → mp4
             ])
             .arg(dest)
             .status()
             .map_err(|e| format!("ffmpeg launch failed: {}", e))?
     };
     if !status.success() {
-        return Err(format!("download failed (exit {})", status.code().unwrap_or(-1)));
+        return Err(format!(
+            "download failed (exit {})",
+            status.code().unwrap_or(-1)
+        ));
     }
     if !dest.exists() {
         return Err("download succeeded but no file written".into());
@@ -1165,15 +1299,15 @@ impl VideoInNode {
     fn render_url_ui(&mut self, ui: &mut egui::Ui, ctx: &mut RenderContext) {
         let dim = ui.visuals().widgets.noninteractive.fg_stroke.color;
         let node_id = ctx.node_id;
-        let pending_id        = egui::Id::new(("vin_url_pending",         node_id));
-        let status_id         = egui::Id::new(("vin_url_status",          node_id));
+        let pending_id = egui::Id::new(("vin_url_pending", node_id));
+        let status_id = egui::Id::new(("vin_url_status", node_id));
         // Two keys instead of `Result<String, String>` because egui 0.31's
         // remove_temp requires `Default`, which Result doesn't implement.
-        let resolved_ok_id    = egui::Id::new(("vin_url_resolved_ok",     node_id));
-        let resolved_err_id   = egui::Id::new(("vin_url_resolved_err",    node_id));
-        let cache_pending_id  = egui::Id::new(("vin_url_cache_pending",   node_id));
-        let cache_done_id     = egui::Id::new(("vin_url_cache_done",      node_id));
-        let cache_err_id      = egui::Id::new(("vin_url_cache_err",       node_id));
+        let resolved_ok_id = egui::Id::new(("vin_url_resolved_ok", node_id));
+        let resolved_err_id = egui::Id::new(("vin_url_resolved_err", node_id));
+        let cache_pending_id = egui::Id::new(("vin_url_cache_pending", node_id));
+        let cache_done_id = egui::Id::new(("vin_url_cache_done", node_id));
+        let cache_err_id = egui::Id::new(("vin_url_cache_err", node_id));
 
         // ── Lazy-resolve cached_abs from cached_path on first render ──
         // load_state can't see the project_dir; render_with_context can.
@@ -1202,26 +1336,34 @@ impl VideoInNode {
         // ── Resolution sliders (matches camera/screen) ───────────────
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("Size").small().color(dim));
-            ui.add(egui::DragValue::new(&mut self.res_w).range(1..=4096).speed(8));
+            ui.add(
+                egui::DragValue::new(&mut self.res_w)
+                    .range(1..=4096)
+                    .speed(8),
+            );
             ui.label(egui::RichText::new("×").small().color(dim));
-            ui.add(egui::DragValue::new(&mut self.res_h).range(1..=4096).speed(8));
+            ui.add(
+                egui::DragValue::new(&mut self.res_h)
+                    .range(1..=4096)
+                    .speed(8),
+            );
         });
 
         // ── Loop checkbox (URL-only feature) ─────────────────────────
         ui.horizontal(|ui| {
-            ui.checkbox(&mut self.loop_playback, "Loop")
-              .on_hover_text(
+            ui.checkbox(&mut self.loop_playback, "Loop").on_hover_text(
                 "When the source ends, restart it. No effect on live \
                  streams. For YouTube/Vimeo, the resolved URL may expire \
-                 after a few hours — re-press Start in that case."
-              );
+                 after a few hours — re-press Start in that case.",
+            );
         });
 
         // ── Drain cache-worker result if one arrived this frame ──────
         let cache_done: Option<String> = ui.ctx().data_mut(|d| d.remove_temp(cache_done_id));
-        let cache_err:  Option<String> = ui.ctx().data_mut(|d| d.remove_temp(cache_err_id));
+        let cache_err: Option<String> = ui.ctx().data_mut(|d| d.remove_temp(cache_err_id));
         if cache_done.is_some() || cache_err.is_some() {
-            ui.ctx().data_mut(|d| d.remove_temp::<bool>(cache_pending_id));
+            ui.ctx()
+                .data_mut(|d| d.remove_temp::<bool>(cache_pending_id));
         }
         if let Some(rel_path) = cache_done {
             // Worker wrote the file at <project>/<rel_path>. Promote it
@@ -1231,12 +1373,12 @@ impl VideoInNode {
                 self.cached_abs = Some(pdir.join(&rel_path));
             }
         } else if let Some(e) = cache_err {
-            ui.ctx().data_mut(|d|
-                d.insert_temp(status_id, format!("Cache failed: {}", e)));
+            ui.ctx()
+                .data_mut(|d| d.insert_temp(status_id, format!("Cache failed: {}", e)));
         }
 
         // ── Drain yt-dlp result if one arrived this frame ────────────
-        let resolved_ok:  Option<String> = ui.ctx().data_mut(|d| d.remove_temp(resolved_ok_id));
+        let resolved_ok: Option<String> = ui.ctx().data_mut(|d| d.remove_temp(resolved_ok_id));
         let resolved_err: Option<String> = ui.ctx().data_mut(|d| d.remove_temp(resolved_err_id));
         if resolved_ok.is_some() || resolved_err.is_some() {
             ui.ctx().data_mut(|d| d.remove_temp::<bool>(pending_id));
@@ -1246,10 +1388,9 @@ impl VideoInNode {
             // Probe duration of the resolved URL so the scrubber knows
             // its range. ffprobe HEADs the moov atom; cheap on most
             // CDN-backed mp4s. Returns None for live streams (HLS).
-            self.duration_secs = crate::nodes::video_player::get_duration(&resolved)
-                .unwrap_or(0.0);
-            ui.ctx().data_mut(|d|
-                d.insert_temp(status_id, "Connecting…".to_string()));
+            self.duration_secs = crate::nodes::video_player::get_duration(&resolved).unwrap_or(0.0);
+            ui.ctx()
+                .data_mut(|d| d.insert_temp(status_id, "Connecting…".to_string()));
             self.open_decoder(node_id, 0.0);
             // Always spawn audio when a URL source starts. The samples
             // flow into the engine immediately; whether sound reaches
@@ -1264,12 +1405,12 @@ impl VideoInNode {
                 self.anchor_position(0.0);
             }
             if self.active {
-                ui.ctx().data_mut(|d|
-                    d.insert_temp(status_id, "Streaming".to_string()));
+                ui.ctx()
+                    .data_mut(|d| d.insert_temp(status_id, "Streaming".to_string()));
             }
         } else if let Some(e) = resolved_err {
-            ui.ctx().data_mut(|d|
-                d.insert_temp(status_id, format!("Error: {}", e)));
+            ui.ctx()
+                .data_mut(|d| d.insert_temp(status_id, format!("Error: {}", e)));
         }
 
         // ── Status label ─────────────────────────────────────────────
@@ -1288,7 +1429,9 @@ impl VideoInNode {
         }
 
         // ── Start / Resolving / Stop ─────────────────────────────────
-        let pending: bool = ui.ctx().data_mut(|d| d.get_temp(pending_id).unwrap_or(false));
+        let pending: bool = ui
+            .ctx()
+            .data_mut(|d| d.get_temp(pending_id).unwrap_or(false));
         ui.horizontal(|ui| {
             if pending {
                 ui.add_enabled_ui(false, |ui| {
@@ -1443,12 +1586,13 @@ impl VideoInNode {
         // knows what happened. self.status holds the message; we copy
         // it into the temp_data status so the URL section shows it
         // instead of a stale "Connecting…".
-        if !self.active && !self.status.is_empty()
+        if !self.active
+            && !self.status.is_empty()
             && self.status != "Stopped"
             && self.status != "Capturing"
         {
-            ui.ctx().data_mut(|d|
-                d.insert_temp(status_id, format!("Error: {}", self.status)));
+            ui.ctx()
+                .data_mut(|d| d.insert_temp(status_id, format!("Error: {}", self.status)));
         }
     }
 
@@ -1456,14 +1600,18 @@ impl VideoInNode {
     /// Used to decide whether to spawn the audio-extraction ffmpeg —
     /// nothing wired = no point burning CPU on a second decode.
     fn audio_port_wired(ctx: &RenderContext, node_id: NodeId) -> bool {
-        ctx.connections.iter().any(|c| c.from_node == node_id && c.from_port == 1)
+        ctx.connections
+            .iter()
+            .any(|c| c.from_node == node_id && c.from_port == 1)
     }
 
     /// Current playhead in seconds. Wall-clock estimate accumulated since
     /// the last anchor (Start / Resume / Seek). Returns the captured
     /// position when paused, or zero before the first Start.
     fn current_position(&self) -> f32 {
-        if let Some(p) = self.paused_at_secs { return p; }
+        if let Some(p) = self.paused_at_secs {
+            return p;
+        }
         if let Some(t) = self.position_anchor_instant {
             return self.position_anchor_secs + t.elapsed().as_secs_f32();
         }
@@ -1524,7 +1672,9 @@ impl VideoInNode {
                 if let Some(p) = self.cached_abs.as_ref().filter(|p| p.exists()) {
                     return p.to_string_lossy().into_owned();
                 }
-                if !self.effective_url.is_empty() { return self.effective_url.clone(); }
+                if !self.effective_url.is_empty() {
+                    return self.effective_url.clone();
+                }
                 self.device_id.trim().to_string()
             }
             VideoSource::File => self.device_id.clone(),
@@ -1559,22 +1709,33 @@ impl VideoInNode {
             // computed playhead so the thumb advances during playback.
             // While dragging, scrub_value floats with the cursor and pos
             // is unused.
-            if !self.scrubbing { self.scrub_value = pos; }
-            let display_left = if self.scrubbing { self.scrub_value } else { pos };
+            if !self.scrubbing {
+                self.scrub_value = pos;
+            }
+            let display_left = if self.scrubbing {
+                self.scrub_value
+            } else {
+                pos
+            };
             let dur = self.duration_secs;
             ui.horizontal(|ui| {
                 ui.label(
                     egui::RichText::new(format_time(display_left))
-                        .small().monospace().color(dim),
+                        .small()
+                        .monospace()
+                        .color(dim),
                 );
-                let resp = ui.add(
-                    egui::Slider::new(&mut self.scrub_value, 0.0..=dur).show_value(false),
-                );
+                let resp =
+                    ui.add(egui::Slider::new(&mut self.scrub_value, 0.0..=dur).show_value(false));
                 ui.label(
                     egui::RichText::new(format_time(dur))
-                        .small().monospace().color(dim),
+                        .small()
+                        .monospace()
+                        .color(dim),
                 );
-                if resp.dragged() { self.scrubbing = true; }
+                if resp.dragged() {
+                    self.scrubbing = true;
+                }
                 if resp.drag_stopped() {
                     let target = self.scrub_value;
                     self.seek_to(node_id, target, ctx);
@@ -1599,8 +1760,11 @@ fn format_time(s: f32) -> String {
     let h = (s / 3600.0) as u32;
     let m = ((s % 3600.0) / 60.0) as u32;
     let sec = (s % 60.0) as u32;
-    if h > 0 { format!("{}:{:02}:{:02}", h, m, sec) }
-    else { format!("{}:{:02}", m, sec) }
+    if h > 0 {
+        format!("{}:{:02}:{:02}", h, m, sec)
+    } else {
+        format!("{}:{:02}", m, sec)
+    }
 }
 
 impl VideoInNode {
@@ -1617,15 +1781,21 @@ impl VideoInNode {
         ui.horizontal(|ui| {
             if ui.button(egui::RichText::new("📁 Open").small()).clicked() {
                 if let Some(p) = rfd::FileDialog::new()
-                    .add_filter("Video", &["mp4", "mov", "m4v", "avi", "webm", "mkv", "gif", "mp3", "wav", "ogg", "flac", "aac"])
+                    .add_filter(
+                        "Video",
+                        &[
+                            "mp4", "mov", "m4v", "avi", "webm", "mkv", "gif", "mp3", "wav", "ogg",
+                            "flac", "aac",
+                        ],
+                    )
                     .pick_file()
                 {
                     let path = p.display().to_string();
                     self.device_id = path.clone();
                     // Probe duration immediately so the scrubber knows
                     // its range before Start. Cheap (reads moov atom).
-                    self.duration_secs = crate::nodes::video_player::get_duration(&path)
-                        .unwrap_or(0.0);
+                    self.duration_secs =
+                        crate::nodes::video_player::get_duration(&path).unwrap_or(0.0);
                     // Reset position state since we have a new source.
                     self.clear_position();
                     self.close_decoder(node_id);
@@ -1639,9 +1809,8 @@ impl VideoInNode {
                 } else {
                     self.device_id.clone()
                 };
-                ui.label(
-                    egui::RichText::new(short).small().monospace().color(dim),
-                ).on_hover_text(&self.device_id);
+                ui.label(egui::RichText::new(short).small().monospace().color(dim))
+                    .on_hover_text(&self.device_id);
                 if ui.small_button("✕").on_hover_text("Clear file").clicked() {
                     self.device_id.clear();
                     self.duration_secs = 0.0;
@@ -1656,15 +1825,23 @@ impl VideoInNode {
         // ── Resolution sliders ───────────────────────────────────────
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("Size").small().color(dim));
-            ui.add(egui::DragValue::new(&mut self.res_w).range(1..=4096).speed(8));
+            ui.add(
+                egui::DragValue::new(&mut self.res_w)
+                    .range(1..=4096)
+                    .speed(8),
+            );
             ui.label(egui::RichText::new("×").small().color(dim));
-            ui.add(egui::DragValue::new(&mut self.res_h).range(1..=4096).speed(8));
+            ui.add(
+                egui::DragValue::new(&mut self.res_h)
+                    .range(1..=4096)
+                    .speed(8),
+            );
         });
 
         // ── Loop checkbox ────────────────────────────────────────────
         ui.horizontal(|ui| {
             ui.checkbox(&mut self.loop_playback, "Loop")
-              .on_hover_text("When the file ends, restart from the beginning.");
+                .on_hover_text("When the file ends, restart from the beginning.");
         });
 
         // ── Status label ─────────────────────────────────────────────
@@ -1686,10 +1863,13 @@ impl VideoInNode {
         ui.horizontal(|ui| {
             if !self.active {
                 let can_start = !self.device_id.trim().is_empty();
-                if ui.add_enabled(can_start, egui::Button::new("▶ Start")).clicked() {
+                if ui
+                    .add_enabled(can_start, egui::Button::new("▶ Start"))
+                    .clicked()
+                {
                     let path = self.device_id.clone();
-                    ui.ctx().data_mut(|d|
-                        d.insert_temp(status_id, "Loading…".to_string()));
+                    ui.ctx()
+                        .data_mut(|d| d.insert_temp(status_id, "Loading…".to_string()));
                     self.open_decoder(node_id, 0.0);
                     if self.active {
                         if let Err(e) = ctx.audio.play_pipe_audio(node_id, &path, 0.0) {
@@ -1697,8 +1877,8 @@ impl VideoInNode {
                         }
                         ctx.audio.engine_write_param(node_id, 0, self.volume);
                         self.anchor_position(0.0);
-                        ui.ctx().data_mut(|d|
-                            d.insert_temp(status_id, "Streaming".to_string()));
+                        ui.ctx()
+                            .data_mut(|d| d.insert_temp(status_id, "Streaming".to_string()));
                     }
                 }
             } else {
@@ -1708,15 +1888,15 @@ impl VideoInNode {
                         ctx.audio.resume_file(node_id);
                         let pos = self.paused_at_secs.unwrap_or(0.0);
                         self.anchor_position(pos);
-                        ui.ctx().data_mut(|d|
-                            d.insert_temp(status_id, "Streaming".to_string()));
+                        ui.ctx()
+                            .data_mut(|d| d.insert_temp(status_id, "Streaming".to_string()));
                     }
                 } else {
                     if ui.button("⏸ Pause").clicked() {
                         ctx.audio.pause_file(node_id);
                         self.pause_position();
-                        ui.ctx().data_mut(|d|
-                            d.insert_temp(status_id, "Paused".to_string()));
+                        ui.ctx()
+                            .data_mut(|d| d.insert_temp(status_id, "Paused".to_string()));
                     }
                 }
                 if ui.button("⏹ Stop").clicked() {
@@ -1738,12 +1918,13 @@ impl VideoInNode {
         self.render_preview(ui, ctx);
 
         // Surface decoder open errors via the URL-flow status display.
-        if !self.active && !self.status.is_empty()
+        if !self.active
+            && !self.status.is_empty()
             && self.status != "Stopped"
             && self.status != "Capturing"
         {
-            ui.ctx().data_mut(|d|
-                d.insert_temp(status_id, format!("Error: {}", self.status)));
+            ui.ctx()
+                .data_mut(|d| d.insert_temp(status_id, format!("Error: {}", self.status)));
         }
     }
 
@@ -1775,7 +1956,11 @@ impl VideoInNode {
                         }
                     }
                 });
-            if ui.small_button("↻").on_hover_text("Refresh display list").clicked() {
+            if ui
+                .small_button("↻")
+                .on_hover_text("Refresh display list")
+                .clicked()
+            {
                 // Screens come from the camera list on macOS, so the
                 // same refresh helper serves both.
                 refresh_camera_list_now();
@@ -1785,7 +1970,9 @@ impl VideoInNode {
             let was_active = self.active;
             self.close_decoder(ctx.node_id);
             self.device_id = idx.to_string();
-            if was_active { self.open_decoder(ctx.node_id, 0.0); }
+            if was_active {
+                self.open_decoder(ctx.node_id, 0.0);
+            }
         }
 
         if screens.is_empty() {
@@ -1798,8 +1985,18 @@ impl VideoInNode {
         // Resolution (same as camera)
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("Res").small());
-            ui.add(egui::DragValue::new(&mut self.res_w).range(1..=4096).speed(10).prefix("W:"));
-            ui.add(egui::DragValue::new(&mut self.res_h).range(1..=4096).speed(10).prefix("H:"));
+            ui.add(
+                egui::DragValue::new(&mut self.res_w)
+                    .range(1..=4096)
+                    .speed(10)
+                    .prefix("W:"),
+            );
+            ui.add(
+                egui::DragValue::new(&mut self.res_h)
+                    .range(1..=4096)
+                    .speed(10)
+                    .prefix("H:"),
+            );
         });
 
         // Start / Stop — deferred-apply to avoid borrowing self twice
@@ -1807,14 +2004,20 @@ impl VideoInNode {
         let mut toggle_stop = false;
         ui.horizontal(|ui| {
             if self.active {
-                if ui.button("⏹ Stop").clicked() { toggle_stop = true; }
+                if ui.button("⏹ Stop").clicked() {
+                    toggle_stop = true;
+                }
                 ui.colored_label(egui::Color32::from_rgb(255, 80, 80), "● CAP");
             } else if ui.button("▶ Start").clicked() {
                 toggle_start = true;
             }
         });
-        if toggle_start { self.open_decoder(ctx.node_id, 0.0); }
-        if toggle_stop { self.close_decoder(ctx.node_id); }
+        if toggle_start {
+            self.open_decoder(ctx.node_id, 0.0);
+        }
+        if toggle_stop {
+            self.close_decoder(ctx.node_id);
+        }
 
         // Status
         if !self.status.is_empty() {
@@ -1880,9 +2083,10 @@ impl VideoInNode {
             ui.label(egui::RichText::new("Server").small());
             let selected_text = if self.device_id.is_empty() {
                 "Select…".to_string()
-            } else if let Some((app, name)) = discovered.iter().find(|(a, n)| {
-                format!("{}:{}", a, n) == self.device_id
-            }) {
+            } else if let Some((app, name)) = discovered
+                .iter()
+                .find(|(a, n)| format!("{}:{}", a, n) == self.device_id)
+            {
                 // Truncate for node-width friendliness; dropdown shows full.
                 let full = format!("{}: {}", app, name);
                 crate::nodes::truncate_chars(&full, 22)
@@ -1894,9 +2098,7 @@ impl VideoInNode {
                 .width(190.0)
                 .show_ui(ui, |ui| {
                     if discovered.is_empty() {
-                        ui.label(
-                            egui::RichText::new("No Syphon servers running").small(),
-                        );
+                        ui.label(egui::RichText::new("No Syphon servers running").small());
                     }
                     for (app, name) in &discovered {
                         let key = format!("{}:{}", app, name);
@@ -1907,7 +2109,11 @@ impl VideoInNode {
                         }
                     }
                 });
-            if ui.small_button("↻").on_hover_text("Refresh server list").clicked() {
+            if ui
+                .small_button("↻")
+                .on_hover_text("Refresh server list")
+                .clicked()
+            {
                 // Force next frame's cache-stale check to fire.
                 self.syphon_servers_cache = None;
             }
@@ -1926,20 +2132,29 @@ impl VideoInNode {
         let mut toggle_stop = false;
         ui.horizontal(|ui| {
             if self.active {
-                if ui.button("⏹ Stop").clicked() { toggle_stop = true; }
+                if ui.button("⏹ Stop").clicked() {
+                    toggle_stop = true;
+                }
                 ui.colored_label(egui::Color32::from_rgb(80, 200, 80), "● RX");
             } else {
                 let can_start = !self.device_id.is_empty()
-                    && discovered.iter().any(|(a, n)| {
-                        format!("{}:{}", a, n) == self.device_id
-                    });
-                if ui.add_enabled(can_start, egui::Button::new("▶ Connect")).clicked() {
+                    && discovered
+                        .iter()
+                        .any(|(a, n)| format!("{}:{}", a, n) == self.device_id);
+                if ui
+                    .add_enabled(can_start, egui::Button::new("▶ Connect"))
+                    .clicked()
+                {
                     toggle_start = true;
                 }
             }
         });
-        if toggle_start { self.open_syphon_client(ctx); }
-        if toggle_stop { self.close_decoder(ctx.node_id); }
+        if toggle_start {
+            self.open_syphon_client(ctx);
+        }
+        if toggle_stop {
+            self.close_decoder(ctx.node_id);
+        }
 
         // ── Status / dimensions ────────────────────────────────────
         if !self.status.is_empty() {
@@ -1953,10 +2168,7 @@ impl VideoInNode {
             ui.colored_label(color, egui::RichText::new(&self.status).small());
         }
         if let Some((w, h)) = self.syphon_last_dims {
-            ui.colored_label(
-                dim,
-                egui::RichText::new(format!("{}×{}", w, h)).small(),
-            );
+            ui.colored_label(dim, egui::RichText::new(format!("{}×{}", w, h)).small());
         }
 
         // ── Poll the client each frame ─────────────────────────────
@@ -1988,9 +2200,10 @@ impl VideoInNode {
         // Re-query discovered servers — the selected one might have
         // quit between the dropdown render and now.
         let servers_now = syphon::servers();
-        let Some(info) = servers_now.iter().find(|i| {
-            format!("{}:{}", i.app_name, i.name) == self.device_id
-        }) else {
+        let Some(info) = servers_now
+            .iter()
+            .find(|i| format!("{}:{}", i.app_name, i.name) == self.device_id)
+        else {
             self.status = "Server not running".into();
             return;
         };
@@ -2015,10 +2228,18 @@ impl VideoInNode {
     #[cfg(target_os = "macos")]
     fn poll_syphon_client(&mut self, ctx: &mut RenderContext) {
         use crate::{gpu_image, video_io::wgpu_metal};
-        let Some(render_state) = ctx.wgpu_render_state else { return; };
-        let Ok(guard) = self.syphon_client.lock() else { return; };
-        let Some(client) = guard.as_ref() else { return; };
-        let Some(mtl_tex) = client.take_latest() else { return; };
+        let Some(render_state) = ctx.wgpu_render_state else {
+            return;
+        };
+        let Ok(guard) = self.syphon_client.lock() else {
+            return;
+        };
+        let Some(client) = guard.as_ref() else {
+            return;
+        };
+        let Some(mtl_tex) = client.take_latest() else {
+            return;
+        };
         drop(guard); // release lock before the wgpu bridge (cheap but nice)
 
         // Remember dimensions for UI
@@ -2076,12 +2297,7 @@ impl VideoInNode {
         // ── Ensure finder exists (lazy) ────────────────────────────
         // Kept alive for the source-picker session; dropped on sink
         // switch / Stop / remove.
-        if self
-            .ndi_finder
-            .lock()
-            .map(|g| g.is_none())
-            .unwrap_or(true)
-        {
+        if self.ndi_finder.lock().map(|g| g.is_none()).unwrap_or(true) {
             if let Ok(mut g) = self.ndi_finder.lock() {
                 match ndi::NdiFinder::new() {
                     Ok(f) => *g = Some(f),
@@ -2105,8 +2321,7 @@ impl VideoInNode {
             if let Ok(g) = self.ndi_finder.lock() {
                 if let Some(f) = g.as_ref() {
                     let fresh = f.sources();
-                    self.ndi_sources_cache =
-                        Some((std::time::Instant::now(), fresh));
+                    self.ndi_sources_cache = Some((std::time::Instant::now(), fresh));
                 }
             }
         }
@@ -2132,9 +2347,7 @@ impl VideoInNode {
                 .width(220.0)
                 .show_ui(ui, |ui| {
                     if discovered.is_empty() {
-                        ui.label(
-                            egui::RichText::new("No NDI sources on LAN").small(),
-                        );
+                        ui.label(egui::RichText::new("No NDI sources on LAN").small());
                     }
                     for info in &discovered {
                         let selected = self.device_id == info.name;
@@ -2238,8 +2451,8 @@ impl VideoInNode {
     #[cfg(target_os = "macos")]
     fn open_ndi_receiver(&mut self, ctx: &mut RenderContext) {
         use crate::video_io::{ndi, pixel_swizzle};
-        use std::sync::atomic::{AtomicBool, Ordering};
         use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
 
         // Re-query sources now — the one the user picked might have
         // quit between the dropdown render and the Connect click.
@@ -2247,8 +2460,7 @@ impl VideoInNode {
             Ok(g) => g.as_ref().map(|f| f.sources()).unwrap_or_default(),
             Err(_) => return,
         };
-        let Some(info) = sources.into_iter().find(|s| s.name == self.device_id)
-        else {
+        let Some(info) = sources.into_iter().find(|s| s.name == self.device_id) else {
             self.status = "Source not found on LAN".into();
             return;
         };
@@ -2270,8 +2482,7 @@ impl VideoInNode {
         // `render_ndi_ui` already calls `ui.ctx().request_repaint()`
         // while `active`, so we don't need to hop contexts from the
         // worker to kick egui into drawing.
-        let latest: Arc<Mutex<Option<Arc<ImageData>>>> =
-            Arc::new(Mutex::new(None));
+        let latest: Arc<Mutex<Option<Arc<ImageData>>>> = Arc::new(Mutex::new(None));
         let latest_worker = latest.clone();
         let stop = Arc::new(AtomicBool::new(false));
         let stop_worker = stop.clone();
@@ -2336,12 +2547,10 @@ impl VideoInNode {
     /// `ndi_last_frame_at.elapsed()` against a threshold, not here.
     #[cfg(target_os = "macos")]
     fn poll_ndi_receiver(&mut self) {
-        let Some(worker) = self.ndi_worker.as_ref() else { return; };
-        let drained = worker
-            .latest
-            .lock()
-            .ok()
-            .and_then(|mut slot| slot.take());
+        let Some(worker) = self.ndi_worker.as_ref() else {
+            return;
+        };
+        let drained = worker.latest.lock().ok().and_then(|mut slot| slot.take());
         if let Some(img) = drained {
             self.ndi_last_dims = Some((img.width, img.height));
             self.ndi_last_frame_at = Some(std::time::Instant::now());
@@ -2370,7 +2579,9 @@ impl VideoInNode {
     /// Shared preview block used by Camera and Screen UIs. Keeps the
     /// fast_downsample + cached-texture logic in one place.
     fn render_preview(&mut self, ui: &mut egui::Ui, ctx: &mut RenderContext) {
-        let Some(frame) = self.current_frame.as_ref() else { return; };
+        let Some(frame) = self.current_frame.as_ref() else {
+            return;
+        };
 
         // Defensive: an upstream that constructs ImageData with
         // mismatched (width, height, pixels) — e.g. a future node

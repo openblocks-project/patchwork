@@ -7,10 +7,10 @@ use crate::graph::*;
 use crate::node_trait::NodeBehavior;
 use crate::nodes;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::io::{BufRead, Write};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 
 /// Shared MCP log accessible from both MCP thread and GUI
 pub type McpLog = Arc<Mutex<Vec<String>>>;
@@ -22,7 +22,9 @@ pub fn new_log() -> McpLog {
 fn log_msg(log: &McpLog, msg: String) {
     if let Ok(mut l) = log.lock() {
         l.push(msg);
-        if l.len() > 200 { l.drain(0..100); }
+        if l.len() > 200 {
+            l.drain(0..100);
+        }
     }
 }
 
@@ -37,23 +39,58 @@ pub enum McpCommand {
         full: bool,
     },
     /// Full schema for one node type (ports with index+kind, properties with defaults).
-    DescribeNodeType { name: String },
-    CreateNode { type_name: String, position: [f32; 2], properties: Option<Value> },
-    DeleteNode { node_id: NodeId },
+    DescribeNodeType {
+        name: String,
+    },
+    CreateNode {
+        type_name: String,
+        position: [f32; 2],
+        properties: Option<Value>,
+    },
+    DeleteNode {
+        node_id: NodeId,
+    },
     ListNodes,
-    GetNode { node_id: NodeId },
-    UpdateNode { node_id: NodeId, properties: Value },
-    Connect { from_node: NodeId, from_port: usize, to_node: NodeId, to_port: usize },
-    Disconnect { from_node: NodeId, from_port: usize, to_node: NodeId, to_port: usize },
+    GetNode {
+        node_id: NodeId,
+    },
+    UpdateNode {
+        node_id: NodeId,
+        properties: Value,
+    },
+    Connect {
+        from_node: NodeId,
+        from_port: usize,
+        to_node: NodeId,
+        to_port: usize,
+    },
+    Disconnect {
+        from_node: NodeId,
+        from_port: usize,
+        to_node: NodeId,
+        to_port: usize,
+    },
     ListConnections,
-    GetPortValues { node_id: Option<NodeId> },
-    SaveProject { path: String },
-    LoadProject { path: String },
+    GetPortValues {
+        node_id: Option<NodeId>,
+    },
+    SaveProject {
+        path: String,
+    },
+    LoadProject {
+        path: String,
+    },
     #[allow(dead_code)]
     GetGraph,
-    CreateWorkflow { nodes: Vec<WorkflowNode>, connections: Vec<WorkflowConn> },
+    CreateWorkflow {
+        nodes: Vec<WorkflowNode>,
+        connections: Vec<WorkflowConn>,
+    },
     /// Trigger an action on a node (send, play, listen, etc.)
-    TriggerNode { node_id: NodeId, action: String },
+    TriggerNode {
+        node_id: NodeId,
+        action: String,
+    },
 }
 
 #[derive(Serialize)]
@@ -276,13 +313,28 @@ fn tool_definitions() -> Value {
 /// `apply_properties` rejects writes to these and `extract_property_schema`
 /// hides them from `list_node_types` / `describe_node_type` output.
 pub const READONLY_FIELDS: &[&str] = &[
-    "response", "status", "log", "last_hash",
-    "last_args", "last_args_text", "discovered",
-    "result", "error", "result_text", "last_input_hash",
-    "current_frame", "duration", "variables",
-    "image_data", "last_save_hash", "content",
-    "messages", "detected_devices", "effects",
-    "x", "y", // mouse tracker runtime values
+    "response",
+    "status",
+    "log",
+    "last_hash",
+    "last_args",
+    "last_args_text",
+    "discovered",
+    "result",
+    "error",
+    "result_text",
+    "last_input_hash",
+    "current_frame",
+    "duration",
+    "variables",
+    "image_data",
+    "last_save_hash",
+    "content",
+    "messages",
+    "detected_devices",
+    "effects",
+    "x",
+    "y", // mouse tracker runtime values
 ];
 
 /// Diagnostics returned by `apply_properties` so callers can tell which keys
@@ -335,14 +387,18 @@ pub fn apply_properties(node_type: &mut NodeType, properties: Value) -> PropResu
     let mut result = PropResult::default();
 
     let Value::Object(props) = properties else {
-        result.errors.push("'properties' must be a JSON object".into());
+        result
+            .errors
+            .push("'properties' must be a JSON object".into());
         return result;
     };
 
     let current = match serde_json::to_value(&*node_type) {
         Ok(v) => v,
         Err(e) => {
-            result.errors.push(format!("serialize current state: {}", e));
+            result
+                .errors
+                .push(format!("serialize current state: {}", e));
             return result;
         }
     };
@@ -350,7 +406,9 @@ pub fn apply_properties(node_type: &mut NodeType, properties: Value) -> PropResu
     let mut outer_obj = match current {
         Value::Object(m) => m,
         _ => {
-            result.errors.push("unexpected NodeType serialization shape".into());
+            result
+                .errors
+                .push("unexpected NodeType serialization shape".into());
             return result;
         }
     };
@@ -390,7 +448,9 @@ pub fn apply_properties(node_type: &mut NodeType, properties: Value) -> PropResu
     // Re-deserialize from the modified outer object
     match serde_json::from_value::<NodeType>(Value::Object(outer_obj)) {
         Ok(updated) => *node_type = updated,
-        Err(e) => result.errors.push(format!("deserialize after merge: {}", e)),
+        Err(e) => result
+            .errors
+            .push(format!("deserialize after merge: {}", e)),
     }
 
     result
@@ -431,7 +491,8 @@ fn extract_property_schema(nt: &NodeType) -> Value {
         Value::Object(m) => m,
         _ => return json!({}),
     };
-    let schema: serde_json::Map<String, Value> = fields.into_iter()
+    let schema: serde_json::Map<String, Value> = fields
+        .into_iter()
         .filter(|(k, _)| !READONLY_FIELDS.contains(&k.as_str()))
         .map(|(k, v)| {
             let type_str = match &v {
@@ -450,16 +511,30 @@ fn extract_property_schema(nt: &NodeType) -> Value {
 
 /// Full per-node description used by `describe_node_type` and `list_node_types({full: true})`.
 fn describe_node_type_value(entry: &nodes::NodeCatalogEntry, nt: &NodeType) -> Value {
-    let inputs: Vec<Value> = nt.inputs().iter().enumerate().map(|(i, p)| json!({
-        "index": i,
-        "name": p.name.as_ref(),
-        "kind": port_kind_str(p.kind),
-    })).collect();
-    let outputs: Vec<Value> = nt.outputs().iter().enumerate().map(|(i, p)| json!({
-        "index": i,
-        "name": p.name.as_ref(),
-        "kind": port_kind_str(p.kind),
-    })).collect();
+    let inputs: Vec<Value> = nt
+        .inputs()
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            json!({
+                "index": i,
+                "name": p.name.as_ref(),
+                "kind": port_kind_str(p.kind),
+            })
+        })
+        .collect();
+    let outputs: Vec<Value> = nt
+        .outputs()
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            json!({
+                "index": i,
+                "name": p.name.as_ref(),
+                "kind": port_kind_str(p.kind),
+            })
+        })
+        .collect();
     json!({
         "name": entry.label,
         "category": entry.category,
@@ -478,15 +553,26 @@ pub fn execute_command(
     values: &HashMap<(NodeId, usize), PortValue>,
 ) -> McpResult {
     match cmd {
-        McpCommand::ListNodeTypes { category, name_filter, full } => {
+        McpCommand::ListNodeTypes {
+            category,
+            name_filter,
+            full,
+        } => {
             let catalog = nodes::catalog();
             let cat_lower = category.as_ref().map(|c| c.to_lowercase());
             let name_lower = name_filter.as_ref().map(|n| n.to_lowercase());
-            let types: Vec<Value> = catalog.iter()
-                .filter(|e| cat_lower.as_ref()
-                    .map_or(true, |c| e.category.to_lowercase() == *c))
-                .filter(|e| name_lower.as_ref()
-                    .map_or(true, |n| e.label.to_lowercase().contains(n)))
+            let types: Vec<Value> = catalog
+                .iter()
+                .filter(|e| {
+                    cat_lower
+                        .as_ref()
+                        .map_or(true, |c| e.category.to_lowercase() == *c)
+                })
+                .filter(|e| {
+                    name_lower
+                        .as_ref()
+                        .map_or(true, |n| e.label.to_lowercase().contains(n))
+                })
                 .map(|e| {
                     let nt = (e.factory)();
                     if full {
@@ -513,14 +599,24 @@ pub fn execute_command(
                     McpResult::Json(describe_node_type_value(entry, &nt))
                 }
                 None => McpResult::Error {
-                    error: format!("Unknown node type: '{}'. Use list_node_types to discover names.", name),
+                    error: format!(
+                        "Unknown node type: '{}'. Use list_node_types to discover names.",
+                        name
+                    ),
                 },
             }
         }
 
-        McpCommand::CreateNode { type_name, position, properties } => {
+        McpCommand::CreateNode {
+            type_name,
+            position,
+            properties,
+        } => {
             let catalog = nodes::catalog();
-            if let Some(entry) = catalog.iter().find(|e| e.label.eq_ignore_ascii_case(&type_name)) {
+            if let Some(entry) = catalog
+                .iter()
+                .find(|e| e.label.eq_ignore_ascii_case(&type_name))
+            {
                 let mut nt = (entry.factory)();
                 let prop_result = properties
                     .map(|props| apply_properties(&mut nt, props))
@@ -530,7 +626,12 @@ pub fn execute_command(
                 prop_result.merge_into(&mut resp);
                 McpResult::Json(resp)
             } else {
-                McpResult::Error { error: format!("Unknown node type: '{}'. Use list_node_types to see available types.", type_name) }
+                McpResult::Error {
+                    error: format!(
+                        "Unknown node type: '{}'. Use list_node_types to see available types.",
+                        type_name
+                    ),
+                }
             }
         }
 
@@ -539,7 +640,9 @@ pub fn execute_command(
                 graph.remove_node(node_id);
                 McpResult::Json(json!({ "success": true }))
             } else {
-                McpResult::Error { error: format!("Node {} not found", node_id) }
+                McpResult::Error {
+                    error: format!("Node {} not found", node_id),
+                }
             }
         }
 
@@ -568,54 +671,95 @@ pub fn execute_command(
                     "outputs": node.node_type.outputs().iter().map(|p| p.name.as_ref()).collect::<Vec<_>>(),
                 }))
             } else {
-                McpResult::Error { error: format!("Node {} not found", node_id) }
+                McpResult::Error {
+                    error: format!("Node {} not found", node_id),
+                }
             }
         }
 
-        McpCommand::UpdateNode { node_id, properties } => {
+        McpCommand::UpdateNode {
+            node_id,
+            properties,
+        } => {
             if let Some(node) = graph.nodes.get_mut(&node_id) {
                 let prop_result = apply_properties(&mut node.node_type, properties);
                 let mut resp = json!({ "success": prop_result.errors.is_empty() });
                 prop_result.merge_into(&mut resp);
                 McpResult::Json(resp)
             } else {
-                McpResult::Error { error: format!("Node {} not found", node_id) }
+                McpResult::Error {
+                    error: format!("Node {} not found", node_id),
+                }
             }
         }
 
-        McpCommand::Connect { from_node, from_port, to_node, to_port } => {
+        McpCommand::Connect {
+            from_node,
+            from_port,
+            to_node,
+            to_port,
+        } => {
             let src_node = match graph.nodes.get(&from_node) {
                 Some(n) => n,
-                None => return McpResult::Error { error: format!("Source node {} not found", from_node) },
+                None => {
+                    return McpResult::Error {
+                        error: format!("Source node {} not found", from_node),
+                    };
+                }
             };
             let dst_node = match graph.nodes.get(&to_node) {
                 Some(n) => n,
-                None => return McpResult::Error { error: format!("Target node {} not found", to_node) },
+                None => {
+                    return McpResult::Error {
+                        error: format!("Target node {} not found", to_node),
+                    };
+                }
             };
             // Validate port bounds
             let src_outputs = src_node.node_type.outputs();
             let dst_inputs = dst_node.node_type.inputs();
             if from_port >= src_outputs.len() {
-                return McpResult::Error { error: format!("Source port {} out of range (node has {} outputs)", from_port, src_outputs.len()) };
+                return McpResult::Error {
+                    error: format!(
+                        "Source port {} out of range (node has {} outputs)",
+                        from_port,
+                        src_outputs.len()
+                    ),
+                };
             }
             if to_port >= dst_inputs.len() {
-                return McpResult::Error { error: format!("Target port {} out of range (node has {} inputs)", to_port, dst_inputs.len()) };
+                return McpResult::Error {
+                    error: format!(
+                        "Target port {} out of range (node has {} inputs)",
+                        to_port,
+                        dst_inputs.len()
+                    ),
+                };
             }
             // Validate port type compatibility
             let src_kind = src_outputs[from_port].kind;
             let dst_kind = dst_inputs[to_port].kind;
             if !PortKind::compatible(src_kind, dst_kind) {
-                return McpResult::Error { error: format!("Incompatible ports: {:?} → {:?}", src_kind, dst_kind) };
+                return McpResult::Error {
+                    error: format!("Incompatible ports: {:?} → {:?}", src_kind, dst_kind),
+                };
             }
             graph.add_connection(from_node, from_port, to_node, to_port);
             McpResult::Json(json!({ "success": true }))
         }
 
-        McpCommand::Disconnect { from_node, from_port, to_node, to_port } => {
+        McpCommand::Disconnect {
+            from_node,
+            from_port,
+            to_node,
+            to_port,
+        } => {
             let before = graph.connections.len();
             graph.connections.retain(|c| {
-                !(c.from_node == from_node && c.from_port == from_port &&
-                  c.to_node == to_node && c.to_port == to_port)
+                !(c.from_node == from_node
+                    && c.from_port == from_port
+                    && c.to_node == to_node
+                    && c.to_port == to_port)
             });
             let removed = before - graph.connections.len();
             McpResult::Json(json!({ "success": true, "removed": removed }))
@@ -645,10 +789,22 @@ pub fn execute_command(
                     let v = match val {
                         PortValue::Float(f) => json!(f),
                         PortValue::Text(s) => json!(s),
-                        PortValue::Image(img) => json!(format!("[Image {}x{}]", img.width, img.height)),
-                        PortValue::GpuImage(h) => json!(format!("[GpuImage {}x{} @ node {}:{}]", h.width, h.height, h.node_id, h.port)),
-                        PortValue::Mesh(p) => json!(format!("[Mesh {}v/{}i]", p.mesh.vertices.len(), p.mesh.indices.len())),
-                        PortValue::GpuMesh(h) => json!(format!("[GpuMesh {}v/{}i @ node {}:{}]", h.vertex_count, h.index_count, h.node_id, h.port)),
+                        PortValue::Image(img) => {
+                            json!(format!("[Image {}x{}]", img.width, img.height))
+                        }
+                        PortValue::GpuImage(h) => json!(format!(
+                            "[GpuImage {}x{} @ node {}:{}]",
+                            h.width, h.height, h.node_id, h.port
+                        )),
+                        PortValue::Mesh(p) => json!(format!(
+                            "[Mesh {}v/{}i]",
+                            p.mesh.vertices.len(),
+                            p.mesh.indices.len()
+                        )),
+                        PortValue::GpuMesh(h) => json!(format!(
+                            "[GpuMesh {}v/{}i @ node {}:{}]",
+                            h.vertex_count, h.index_count, h.node_id, h.port
+                        )),
                         PortValue::None => json!(null),
                     };
                     result.insert(key, v);
@@ -660,27 +816,39 @@ pub fn execute_command(
         McpCommand::SaveProject { path } => {
             let dir = std::path::Path::new(&path);
             if let Err(e) = std::fs::create_dir_all(dir) {
-                return McpResult::Error { error: format!("mkdir: {}", e) };
+                return McpResult::Error {
+                    error: format!("mkdir: {}", e),
+                };
             }
             let json = serde_json::to_string_pretty(graph).unwrap_or_default();
             match std::fs::write(dir.join("project.json"), json) {
                 Ok(()) => McpResult::Json(json!({ "success": true, "path": path })),
-                Err(e) => McpResult::Error { error: format!("write: {}", e) },
+                Err(e) => McpResult::Error {
+                    error: format!("write: {}", e),
+                },
             }
         }
 
         McpCommand::LoadProject { path } => {
             let p = std::path::Path::new(&path);
-            let json_path = if p.is_file() { p.to_path_buf() } else { p.join("project.json") };
+            let json_path = if p.is_file() {
+                p.to_path_buf()
+            } else {
+                p.join("project.json")
+            };
             match std::fs::read_to_string(&json_path) {
                 Ok(content) => match serde_json::from_str::<Graph>(&content) {
                     Ok(loaded) => {
                         *graph = loaded;
                         McpResult::Json(json!({ "success": true, "nodes": graph.nodes.len() }))
                     }
-                    Err(e) => McpResult::Error { error: format!("parse: {}", e) },
+                    Err(e) => McpResult::Error {
+                        error: format!("parse: {}", e),
+                    },
                 },
-                Err(e) => McpResult::Error { error: format!("read: {}", e) },
+                Err(e) => McpResult::Error {
+                    error: format!("read: {}", e),
+                },
             }
         }
 
@@ -692,11 +860,22 @@ pub fn execute_command(
         McpCommand::TriggerNode { node_id, action } => {
             let node = match graph.nodes.get_mut(&node_id) {
                 Some(n) => n,
-                None => return McpResult::Error { error: format!("Node {} not found", node_id) },
+                None => {
+                    return McpResult::Error {
+                        error: format!("Node {} not found", node_id),
+                    };
+                }
             };
             match (&mut node.node_type, action.as_str()) {
                 // HttpRequest: mark for send by setting auto_send + resetting hash
-                (NodeType::HttpRequest { auto_send, last_hash, .. }, "send") => {
+                (
+                    NodeType::HttpRequest {
+                        auto_send,
+                        last_hash,
+                        ..
+                    },
+                    "send",
+                ) => {
                     *auto_send = true;
                     *last_hash = 0; // Force hash mismatch → triggers send on next frame
                     McpResult::Json(json!({ "success": true, "triggered": "send" }))
@@ -707,17 +886,31 @@ pub fn execute_command(
                     McpResult::Json(json!({ "success": true, "triggered": "send" }))
                 }
                 // VideoPlayer
-                (NodeType::VideoPlayer { playing, status, .. }, "play") => {
-                    *playing = true; *status = "Playing".into();
+                (
+                    NodeType::VideoPlayer {
+                        playing, status, ..
+                    },
+                    "play",
+                ) => {
+                    *playing = true;
+                    *status = "Playing".into();
                     McpResult::Json(json!({ "success": true, "triggered": "play" }))
                 }
-                (NodeType::VideoPlayer { playing, status, .. }, "pause" | "stop") => {
-                    *playing = false; *status = "Stopped".into();
+                (
+                    NodeType::VideoPlayer {
+                        playing, status, ..
+                    },
+                    "pause" | "stop",
+                ) => {
+                    *playing = false;
+                    *status = "Stopped".into();
                     McpResult::Json(json!({ "success": true, "triggered": action }))
                 }
                 // AudioPlayer
                 (NodeType::AudioPlayer { volume, .. }, "play") => {
-                    if *volume <= 0.0 { *volume = 1.0; }
+                    if *volume <= 0.0 {
+                        *volume = 1.0;
+                    }
                     McpResult::Json(json!({ "success": true, "triggered": "play" }))
                 }
                 // Speaker
@@ -730,7 +923,12 @@ pub fn execute_command(
                     McpResult::Json(json!({ "success": true, "triggered": "deactivate" }))
                 }
                 // OscIn
-                (NodeType::OscIn { listening, port, .. }, "listen") => {
+                (
+                    NodeType::OscIn {
+                        listening, port, ..
+                    },
+                    "listen",
+                ) => {
                     *listening = true;
                     // Actual listener start happens via mcp_trigger temp data
                     let p = *port;
@@ -805,19 +1003,28 @@ pub fn execute_command(
                     port_name.clear();
                     McpResult::Json(json!({ "success": true, "triggered": "disconnect" }))
                 }
-                _ => McpResult::Error { error: format!(
-                    "Action '{}' not supported for node type '{}'", action, node.node_type.title()
-                ) },
+                _ => McpResult::Error {
+                    error: format!(
+                        "Action '{}' not supported for node type '{}'",
+                        action,
+                        node.node_type.title()
+                    ),
+                },
             }
         }
 
-        McpCommand::CreateWorkflow { nodes: wf_nodes, connections: wf_conns } => {
+        McpCommand::CreateWorkflow {
+            nodes: wf_nodes,
+            connections: wf_conns,
+        } => {
             let catalog = nodes::catalog();
             let mut created_ids: Vec<NodeId> = Vec::new();
             let mut prop_warnings: Vec<Value> = Vec::new();
 
             for (i, wf_node) in wf_nodes.iter().enumerate() {
-                let entry = catalog.iter().find(|e| e.label.eq_ignore_ascii_case(&wf_node.node_type));
+                let entry = catalog
+                    .iter()
+                    .find(|e| e.label.eq_ignore_ascii_case(&wf_node.node_type));
                 if let Some(entry) = entry {
                     let mut nt = (entry.factory)();
                     let prop_result = if let Some(ref props) = wf_node.properties {
@@ -825,7 +1032,9 @@ pub fn execute_command(
                     } else {
                         PropResult::default()
                     };
-                    let pos = wf_node.position.unwrap_or([200.0 + i as f32 * 250.0, 200.0]);
+                    let pos = wf_node
+                        .position
+                        .unwrap_or([200.0 + i as f32 * 250.0, 200.0]);
                     let id = graph.add_node(nt, pos);
                     created_ids.push(id);
 
@@ -845,7 +1054,8 @@ pub fn execute_command(
             // Create connections using the resolved IDs
             let mut connection_errors: Vec<Value> = Vec::new();
             for (ci, wf_conn) in wf_conns.iter().enumerate() {
-                if wf_conn.from_index >= created_ids.len() || wf_conn.to_index >= created_ids.len() {
+                if wf_conn.from_index >= created_ids.len() || wf_conn.to_index >= created_ids.len()
+                {
                     connection_errors.push(json!({
                         "connection_index": ci,
                         "error": "from_index or to_index out of range",
@@ -929,7 +1139,14 @@ fn handle_mcp_request(
         "tools/call" => {
             let tool_name = params.get("name").and_then(|n| n.as_str()).unwrap_or("");
             let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
-            log_msg(log, format!("→ {} {}", tool_name, serde_json::to_string(&arguments).unwrap_or_default()));
+            log_msg(
+                log,
+                format!(
+                    "→ {} {}",
+                    tool_name,
+                    serde_json::to_string(&arguments).unwrap_or_default()
+                ),
+            );
 
             let cmd = match parse_tool_call(tool_name, &arguments) {
                 Ok(cmd) => cmd,
@@ -949,7 +1166,10 @@ fn handle_mcp_request(
 
             // Send command to GUI thread and wait for result
             let (resp_tx, resp_rx) = mpsc::channel();
-            let req = McpRequest { command: cmd, response_tx: resp_tx };
+            let req = McpRequest {
+                command: cmd,
+                response_tx: resp_tx,
+            };
             if command_tx.send(req).is_err() {
                 write_jsonrpc_error(stdout, id, -32603, "App disconnected");
                 return true;
@@ -966,8 +1186,13 @@ fn handle_mcp_request(
                     let short = if text.chars().count() > 80 {
                         let head: String = text.chars().take(80).collect();
                         format!("{}...", head)
-                    } else { text.clone() };
-                    log_msg(log, format!("← {}{}", if is_error { "ERR " } else { "" }, short));
+                    } else {
+                        text.clone()
+                    };
+                    log_msg(
+                        log,
+                        format!("← {}{}", if is_error { "ERR " } else { "" }, short),
+                    );
                     let response = json!({
                         "jsonrpc": "2.0",
                         "id": id,
@@ -1000,13 +1225,19 @@ pub fn run_mcp_thread(command_tx: mpsc::Sender<McpRequest>, log: McpLog) {
         let stdin_fd = std::io::stdin().as_raw_fd();
         let is_tty = unsafe { libc::isatty(stdin_fd) } != 0;
         if is_tty {
-            log_msg(&log, "MCP: stdin is terminal, waiting for pipe connection...".into());
+            log_msg(
+                &log,
+                "MCP: stdin is terminal, waiting for pipe connection...".into(),
+            );
             // Block on stdin — if someone pipes data later, we'll process it
             // If the app exits, this thread exits too
         }
     }
 
-    log_msg(&log, "MCP: Server thread started, listening on stdin".into());
+    log_msg(
+        &log,
+        "MCP: Server thread started, listening on stdin".into(),
+    );
 
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout();
@@ -1020,7 +1251,9 @@ pub fn run_mcp_thread(command_tx: mpsc::Sender<McpRequest>, log: McpLog) {
                 break;
             }
         };
-        if line.trim().is_empty() { continue; }
+        if line.trim().is_empty() {
+            continue;
+        }
 
         let request: Value = match serde_json::from_str(&line) {
             Ok(v) => v,
@@ -1058,41 +1291,68 @@ pub fn run_mcp_thread(command_tx: mpsc::Sender<McpRequest>, log: McpLog) {
             }
         };
 
-        if should_break { break; }
+        if should_break {
+            break;
+        }
     }
 }
 
 fn parse_tool_call(name: &str, args: &Value) -> Result<McpCommand, String> {
     match name {
         "list_node_types" => {
-            let category = args.get("category").and_then(|v| v.as_str()).map(String::from);
-            let name_filter = args.get("name_filter").and_then(|v| v.as_str()).map(String::from);
+            let category = args
+                .get("category")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            let name_filter = args
+                .get("name_filter")
+                .and_then(|v| v.as_str())
+                .map(String::from);
             let full = args.get("full").and_then(|v| v.as_bool()).unwrap_or(false);
-            Ok(McpCommand::ListNodeTypes { category, name_filter, full })
+            Ok(McpCommand::ListNodeTypes {
+                category,
+                name_filter,
+                full,
+            })
         }
 
         "describe_node_type" => {
-            let name = args.get("name").and_then(|v| v.as_str())
-                .ok_or("Missing 'name' parameter")?.to_string();
+            let name = args
+                .get("name")
+                .and_then(|v| v.as_str())
+                .ok_or("Missing 'name' parameter")?
+                .to_string();
             Ok(McpCommand::DescribeNodeType { name })
         }
 
         "create_node" => {
-            let type_name = args.get("type").and_then(|v| v.as_str())
-                .ok_or("Missing 'type' parameter")?.to_string();
-            let position = args.get("position")
+            let type_name = args
+                .get("type")
+                .and_then(|v| v.as_str())
+                .ok_or("Missing 'type' parameter")?
+                .to_string();
+            let position = args
+                .get("position")
                 .and_then(|v| v.as_array())
-                .map(|a| [
-                    a.first().and_then(|v| v.as_f64()).unwrap_or(200.0) as f32,
-                    a.get(1).and_then(|v| v.as_f64()).unwrap_or(200.0) as f32,
-                ])
+                .map(|a| {
+                    [
+                        a.first().and_then(|v| v.as_f64()).unwrap_or(200.0) as f32,
+                        a.get(1).and_then(|v| v.as_f64()).unwrap_or(200.0) as f32,
+                    ]
+                })
                 .unwrap_or([200.0, 200.0]);
             let properties = args.get("properties").cloned();
-            Ok(McpCommand::CreateNode { type_name, position, properties })
+            Ok(McpCommand::CreateNode {
+                type_name,
+                position,
+                properties,
+            })
         }
 
         "delete_node" => {
-            let node_id = args.get("node_id").and_then(|v| v.as_u64())
+            let node_id = args
+                .get("node_id")
+                .and_then(|v| v.as_u64())
                 .ok_or("Missing 'node_id'")?;
             Ok(McpCommand::DeleteNode { node_id })
         }
@@ -1100,33 +1360,76 @@ fn parse_tool_call(name: &str, args: &Value) -> Result<McpCommand, String> {
         "list_nodes" => Ok(McpCommand::ListNodes),
 
         "get_node" => {
-            let node_id = args.get("node_id").and_then(|v| v.as_u64())
+            let node_id = args
+                .get("node_id")
+                .and_then(|v| v.as_u64())
                 .ok_or("Missing 'node_id'")?;
             Ok(McpCommand::GetNode { node_id })
         }
 
         "update_node" => {
-            let node_id = args.get("node_id").and_then(|v| v.as_u64())
+            let node_id = args
+                .get("node_id")
+                .and_then(|v| v.as_u64())
                 .ok_or("Missing 'node_id'")?;
-            let properties = args.get("properties").cloned()
+            let properties = args
+                .get("properties")
+                .cloned()
                 .ok_or("Missing 'properties'")?;
-            Ok(McpCommand::UpdateNode { node_id, properties })
+            Ok(McpCommand::UpdateNode {
+                node_id,
+                properties,
+            })
         }
 
         "connect" => {
-            let from_node = args.get("from_node").and_then(|v| v.as_u64()).ok_or("Missing 'from_node'")?;
-            let from_port = args.get("from_port").and_then(|v| v.as_u64()).ok_or("Missing 'from_port'")? as usize;
-            let to_node = args.get("to_node").and_then(|v| v.as_u64()).ok_or("Missing 'to_node'")?;
-            let to_port = args.get("to_port").and_then(|v| v.as_u64()).ok_or("Missing 'to_port'")? as usize;
-            Ok(McpCommand::Connect { from_node, from_port, to_node, to_port })
+            let from_node = args
+                .get("from_node")
+                .and_then(|v| v.as_u64())
+                .ok_or("Missing 'from_node'")?;
+            let from_port = args
+                .get("from_port")
+                .and_then(|v| v.as_u64())
+                .ok_or("Missing 'from_port'")? as usize;
+            let to_node = args
+                .get("to_node")
+                .and_then(|v| v.as_u64())
+                .ok_or("Missing 'to_node'")?;
+            let to_port = args
+                .get("to_port")
+                .and_then(|v| v.as_u64())
+                .ok_or("Missing 'to_port'")? as usize;
+            Ok(McpCommand::Connect {
+                from_node,
+                from_port,
+                to_node,
+                to_port,
+            })
         }
 
         "disconnect" => {
-            let from_node = args.get("from_node").and_then(|v| v.as_u64()).ok_or("Missing 'from_node'")?;
-            let from_port = args.get("from_port").and_then(|v| v.as_u64()).ok_or("Missing 'from_port'")? as usize;
-            let to_node = args.get("to_node").and_then(|v| v.as_u64()).ok_or("Missing 'to_node'")?;
-            let to_port = args.get("to_port").and_then(|v| v.as_u64()).ok_or("Missing 'to_port'")? as usize;
-            Ok(McpCommand::Disconnect { from_node, from_port, to_node, to_port })
+            let from_node = args
+                .get("from_node")
+                .and_then(|v| v.as_u64())
+                .ok_or("Missing 'from_node'")?;
+            let from_port = args
+                .get("from_port")
+                .and_then(|v| v.as_u64())
+                .ok_or("Missing 'from_port'")? as usize;
+            let to_node = args
+                .get("to_node")
+                .and_then(|v| v.as_u64())
+                .ok_or("Missing 'to_node'")?;
+            let to_port = args
+                .get("to_port")
+                .and_then(|v| v.as_u64())
+                .ok_or("Missing 'to_port'")? as usize;
+            Ok(McpCommand::Disconnect {
+                from_node,
+                from_port,
+                to_node,
+                to_port,
+            })
         }
 
         "list_connections" => Ok(McpCommand::ListConnections),
@@ -1137,32 +1440,45 @@ fn parse_tool_call(name: &str, args: &Value) -> Result<McpCommand, String> {
         }
 
         "save_project" => {
-            let path = args.get("path").and_then(|v| v.as_str())
-                .ok_or("Missing 'path'")?.to_string();
+            let path = args
+                .get("path")
+                .and_then(|v| v.as_str())
+                .ok_or("Missing 'path'")?
+                .to_string();
             Ok(McpCommand::SaveProject { path })
         }
 
         "load_project" => {
-            let path = args.get("path").and_then(|v| v.as_str())
-                .ok_or("Missing 'path'")?.to_string();
+            let path = args
+                .get("path")
+                .and_then(|v| v.as_str())
+                .ok_or("Missing 'path'")?
+                .to_string();
             Ok(McpCommand::LoadProject { path })
         }
 
         "create_workflow" => {
-            let nodes: Vec<WorkflowNode> = args.get("nodes")
+            let nodes: Vec<WorkflowNode> = args
+                .get("nodes")
                 .and_then(|v| serde_json::from_value(v.clone()).ok())
                 .ok_or("Missing or invalid 'nodes' array")?;
-            let connections: Vec<WorkflowConn> = args.get("connections")
+            let connections: Vec<WorkflowConn> = args
+                .get("connections")
                 .and_then(|v| serde_json::from_value(v.clone()).ok())
                 .unwrap_or_default();
             Ok(McpCommand::CreateWorkflow { nodes, connections })
         }
 
         "trigger_node" => {
-            let node_id = args.get("node_id").and_then(|v| v.as_u64())
+            let node_id = args
+                .get("node_id")
+                .and_then(|v| v.as_u64())
                 .ok_or("Missing 'node_id'")?;
-            let action = args.get("action").and_then(|v| v.as_str())
-                .ok_or("Missing 'action'")?.to_string();
+            let action = args
+                .get("action")
+                .and_then(|v| v.as_str())
+                .ok_or("Missing 'action'")?
+                .to_string();
             Ok(McpCommand::TriggerNode { node_id, action })
         }
 

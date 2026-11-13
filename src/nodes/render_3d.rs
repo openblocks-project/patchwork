@@ -8,10 +8,10 @@
 // `Render3DNode::eye_x` etc. — with each exposed as a Float input port for
 // animation. Phase 4 will add a Light input port and shadow maps.
 
+use crate::gpu_mesh::{GpuMeshCache, vertex_buffer_layout};
 use crate::graph::{ImageData, NodeId, PortDef, PortKind, PortValue};
-use crate::gpu_mesh::{vertex_buffer_layout, GpuMeshCache};
 use crate::material::MaterialDef;
-use crate::mesh::{build_normal_matrix, CameraParams, PlacedMesh};
+use crate::mesh::{CameraParams, PlacedMesh, build_normal_matrix};
 use crate::node_trait::{NodeBehavior, RenderContext};
 use crate::nodes::inline_port_circle;
 use eframe::egui;
@@ -149,7 +149,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
 "#;
 
 const TARGET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
-const DEPTH_FORMAT:  wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 const UNIFORM_BUF_SIZE: u64 = 384;
 
 // ── Per-node GPU state ──────────────────────────────────────────────────────
@@ -158,13 +158,13 @@ struct Render3DGpu {
     pipeline: wgpu::RenderPipeline,
     bind_group_layout: wgpu::BindGroupLayout,
     uniform_buffer: wgpu::Buffer,
-    sampler:        wgpu::Sampler,
+    sampler: wgpu::Sampler,
     dummy_white_view: wgpu::TextureView,
 
     color_texture: wgpu::Texture,
-    color_view:    wgpu::TextureView,
+    color_view: wgpu::TextureView,
     depth_texture: wgpu::Texture,
-    depth_view:    wgpu::TextureView,
+    depth_view: wgpu::TextureView,
     size: (u32, u32),
 
     mesh_cache: GpuMeshCache,
@@ -182,22 +182,36 @@ struct Render3DStore {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Render3DNode {
-    #[serde(default = "default_w")] pub width:  u32,
-    #[serde(default = "default_h")] pub height: u32,
+    #[serde(default = "default_w")]
+    pub width: u32,
+    #[serde(default = "default_h")]
+    pub height: u32,
     // Camera params (folded in from the old Camera 3D node).
-    #[serde(default = "default_eye_x")]    pub eye_x:  f32,
-    #[serde(default = "default_eye_y")]    pub eye_y:  f32,
-    #[serde(default = "default_eye_z")]    pub eye_z:  f32,
-    #[serde(default)]                      pub target_x: f32,
-    #[serde(default)]                      pub target_y: f32,
-    #[serde(default)]                      pub target_z: f32,
-    #[serde(default = "default_fov")]      pub fov_y_deg: f32,
-    #[serde(default = "default_near")]     pub near: f32,
-    #[serde(default = "default_far")]      pub far:  f32,
+    #[serde(default = "default_eye_x")]
+    pub eye_x: f32,
+    #[serde(default = "default_eye_y")]
+    pub eye_y: f32,
+    #[serde(default = "default_eye_z")]
+    pub eye_z: f32,
+    #[serde(default)]
+    pub target_x: f32,
+    #[serde(default)]
+    pub target_y: f32,
+    #[serde(default)]
+    pub target_z: f32,
+    #[serde(default = "default_fov")]
+    pub fov_y_deg: f32,
+    #[serde(default = "default_near")]
+    pub near: f32,
+    #[serde(default = "default_far")]
+    pub far: f32,
     // Light direction.
-    #[serde(default = "default_light_x")] pub light_dir_x: f32,
-    #[serde(default = "default_light_y")] pub light_dir_y: f32,
-    #[serde(default = "default_light_z")] pub light_dir_z: f32,
+    #[serde(default = "default_light_x")]
+    pub light_dir_x: f32,
+    #[serde(default = "default_light_y")]
+    pub light_dir_y: f32,
+    #[serde(default = "default_light_z")]
+    pub light_dir_z: f32,
 
     /// Cached parsed material from the upstream Text/JSON wire. Re-parsed
     /// only when the source string's hash changes.
@@ -207,26 +221,57 @@ pub struct Render3DNode {
     last_material: Option<MaterialDef>,
 }
 
-fn default_w() -> u32 { 512 }
-fn default_h() -> u32 { 512 }
-fn default_eye_x() -> f32 { 3.0 }
-fn default_eye_y() -> f32 { 2.0 }
-fn default_eye_z() -> f32 { 4.0 }
-fn default_fov()   -> f32 { 45.0 }
-fn default_near()  -> f32 { 0.1 }
-fn default_far()   -> f32 { 100.0 }
-fn default_light_x() -> f32 { -0.4 }
-fn default_light_y() -> f32 {  0.8 }
-fn default_light_z() -> f32 { -0.5 }
+fn default_w() -> u32 {
+    512
+}
+fn default_h() -> u32 {
+    512
+}
+fn default_eye_x() -> f32 {
+    3.0
+}
+fn default_eye_y() -> f32 {
+    2.0
+}
+fn default_eye_z() -> f32 {
+    4.0
+}
+fn default_fov() -> f32 {
+    45.0
+}
+fn default_near() -> f32 {
+    0.1
+}
+fn default_far() -> f32 {
+    100.0
+}
+fn default_light_x() -> f32 {
+    -0.4
+}
+fn default_light_y() -> f32 {
+    0.8
+}
+fn default_light_z() -> f32 {
+    -0.5
+}
 
 impl Default for Render3DNode {
     fn default() -> Self {
         Self {
-            width: 512, height: 512,
-            eye_x: 3.0, eye_y: 2.0, eye_z: 4.0,
-            target_x: 0.0, target_y: 0.0, target_z: 0.0,
-            fov_y_deg: 45.0, near: 0.1, far: 100.0,
-            light_dir_x: -0.4, light_dir_y: 0.8, light_dir_z: -0.5,
+            width: 512,
+            height: 512,
+            eye_x: 3.0,
+            eye_y: 2.0,
+            eye_z: 4.0,
+            target_x: 0.0,
+            target_y: 0.0,
+            target_z: 0.0,
+            fov_y_deg: 45.0,
+            near: 0.1,
+            far: 100.0,
+            light_dir_x: -0.4,
+            light_dir_y: 0.8,
+            light_dir_z: -0.5,
             last_material_hash: 0,
             last_material: None,
         }
@@ -235,26 +280,34 @@ impl Default for Render3DNode {
 
 // Port layout: 0=Mesh, 1=Material, 2..=10 camera floats, 11..=13 light dir.
 const CAMERA_FLOAT_PORT_BASE: usize = 2; // eye_x at port 2
-const LIGHT_FLOAT_PORT_BASE:  usize = 11;
+const LIGHT_FLOAT_PORT_BASE: usize = 11;
 
 const CAMERA_PORT_NAMES: [&str; 9] = [
-    "Eye X", "Eye Y", "Eye Z",
-    "Target X", "Target Y", "Target Z",
-    "FOV", "Near", "Far",
+    "Eye X", "Eye Y", "Eye Z", "Target X", "Target Y", "Target Z", "FOV", "Near", "Far",
 ];
 
 impl NodeBehavior for Render3DNode {
-    fn title(&self)        -> &str    { "3D Render" }
-    fn type_tag(&self)     -> &str    { "render_3d" }
-    fn color_hint(&self)   -> [u8; 3] { [180, 80, 220] }
-    fn inline_ports(&self) -> bool    { true }
+    fn title(&self) -> &str {
+        "3D Render"
+    }
+    fn type_tag(&self) -> &str {
+        "render_3d"
+    }
+    fn color_hint(&self) -> [u8; 3] {
+        [180, 80, 220]
+    }
+    fn inline_ports(&self) -> bool {
+        true
+    }
 
     fn inputs(&self) -> Vec<PortDef> {
         let mut v = vec![
-            PortDef::new("Mesh",     PortKind::Mesh),
+            PortDef::new("Mesh", PortKind::Mesh),
             PortDef::new("Material", PortKind::Text),
         ];
-        for n in CAMERA_PORT_NAMES { v.push(PortDef::new(n, PortKind::Number)); }
+        for n in CAMERA_PORT_NAMES {
+            v.push(PortDef::new(n, PortKind::Number));
+        }
         v.push(PortDef::new("Light X", PortKind::Number));
         v.push(PortDef::new("Light Y", PortKind::Number));
         v.push(PortDef::new("Light Z", PortKind::Number));
@@ -265,7 +318,9 @@ impl NodeBehavior for Render3DNode {
         vec![PortDef::new("Image", PortKind::Image)]
     }
 
-    fn needs_cpu_image_input(&self, _port: usize) -> bool { false }
+    fn needs_cpu_image_input(&self, _port: usize) -> bool {
+        false
+    }
 
     fn evaluate_with_ctx(
         &mut self,
@@ -315,7 +370,7 @@ impl NodeBehavior for Render3DNode {
 
         // Resolve camera params: stored value, optionally overridden by wired Float port.
         let camera = CameraParams {
-            eye:    [
+            eye: [
                 read_float(CAMERA_FLOAT_PORT_BASE + 0, self.eye_x),
                 read_float(CAMERA_FLOAT_PORT_BASE + 1, self.eye_y),
                 read_float(CAMERA_FLOAT_PORT_BASE + 2, self.eye_z),
@@ -327,8 +382,8 @@ impl NodeBehavior for Render3DNode {
             ],
             up: [0.0, 1.0, 0.0],
             fov_y_deg: read_float(CAMERA_FLOAT_PORT_BASE + 6, self.fov_y_deg),
-            near:      read_float(CAMERA_FLOAT_PORT_BASE + 7, self.near),
-            far:       read_float(CAMERA_FLOAT_PORT_BASE + 8, self.far),
+            near: read_float(CAMERA_FLOAT_PORT_BASE + 7, self.near),
+            far: read_float(CAMERA_FLOAT_PORT_BASE + 8, self.far),
         };
         let light_dir_raw = [
             read_float(LIGHT_FLOAT_PORT_BASE + 0, self.light_dir_x),
@@ -336,7 +391,7 @@ impl NodeBehavior for Render3DNode {
             read_float(LIGHT_FLOAT_PORT_BASE + 2, self.light_dir_z),
         ];
 
-        let width  = self.width.max(16);
+        let width = self.width.max(16);
         let height = self.height.max(16);
         let aspect = width as f32 / height as f32;
 
@@ -344,11 +399,16 @@ impl NodeBehavior for Render3DNode {
         let light_dir = glam::Vec3::from_array(light_dir_raw).normalize_or_zero();
 
         let publish_result = render_offscreen(
-            rs, ctx.node_id, ctx.gpu_tex_cache, mesh, mat,
+            rs,
+            ctx.node_id,
+            ctx.gpu_tex_cache,
+            mesh,
+            mat,
             view_proj.to_cols_array_2d(),
             camera.eye,
             [light_dir.x, light_dir.y, light_dir.z],
-            width, height,
+            width,
+            height,
         );
 
         match publish_result {
@@ -361,19 +421,27 @@ impl NodeBehavior for Render3DNode {
         serde_json::to_value(self).unwrap_or_default()
     }
     fn load_state(&mut self, state: &serde_json::Value) {
-        if let Ok(l) = serde_json::from_value::<Render3DNode>(state.clone()) { *self = l; }
+        if let Ok(l) = serde_json::from_value::<Render3DNode>(state.clone()) {
+            *self = l;
+        }
     }
 
     fn render_with_context(&mut self, ui: &mut egui::Ui, ctx: &mut RenderContext) {
         // Top: Mesh + Material input ports (Material rides on a Text/JSON wire).
         for (idx, name, kind) in [
-            (0usize, "Mesh",     PortKind::Mesh),
-            (1,      "Material", PortKind::Text),
+            (0usize, "Mesh", PortKind::Mesh),
+            (1, "Material", PortKind::Text),
         ] {
             ui.horizontal(|ui| {
                 inline_port_circle(
-                    ui, ctx.node_id, idx, true,
-                    ctx.connections, ctx.port_positions, ctx.dragging_from, ctx.pending_disconnects,
+                    ui,
+                    ctx.node_id,
+                    idx,
+                    true,
+                    ctx.connections,
+                    ctx.port_positions,
+                    ctx.dragging_from,
+                    ctx.pending_disconnects,
                     kind,
                 );
                 ui.label(egui::RichText::new(name).small());
@@ -387,48 +455,87 @@ impl NodeBehavior for Render3DNode {
             ui.label(egui::RichText::new("Size").small());
             let mut w = self.width as i32;
             let mut h = self.height as i32;
-            if ui.add(egui::DragValue::new(&mut w).speed(8.0).range(64..=4096)).changed() {
-                self.width  = w.max(16) as u32;
+            if ui
+                .add(egui::DragValue::new(&mut w).speed(8.0).range(64..=4096))
+                .changed()
+            {
+                self.width = w.max(16) as u32;
             }
             ui.label("×");
-            if ui.add(egui::DragValue::new(&mut h).speed(8.0).range(64..=4096)).changed() {
+            if ui
+                .add(egui::DragValue::new(&mut h).speed(8.0).range(64..=4096))
+                .changed()
+            {
                 self.height = h.max(16) as u32;
             }
         });
 
         ui.collapsing("Camera", |ui| {
             xyz_row(
-                ui, ctx, "Eye",
+                ui,
+                ctx,
+                "Eye",
                 [
                     (CAMERA_FLOAT_PORT_BASE + 0, &mut self.eye_x),
                     (CAMERA_FLOAT_PORT_BASE + 1, &mut self.eye_y),
                     (CAMERA_FLOAT_PORT_BASE + 2, &mut self.eye_z),
                 ],
-                0.05, -50.0..=50.0,
+                0.05,
+                -50.0..=50.0,
             );
             xyz_row(
-                ui, ctx, "Target",
+                ui,
+                ctx,
+                "Target",
                 [
                     (CAMERA_FLOAT_PORT_BASE + 3, &mut self.target_x),
                     (CAMERA_FLOAT_PORT_BASE + 4, &mut self.target_y),
                     (CAMERA_FLOAT_PORT_BASE + 5, &mut self.target_z),
                 ],
-                0.05, -50.0..=50.0,
+                0.05,
+                -50.0..=50.0,
             );
-            scalar_row(ui, ctx, "FOV",  CAMERA_FLOAT_PORT_BASE + 6, &mut self.fov_y_deg, 0.5,   1.0..=170.0);
-            scalar_row(ui, ctx, "Near", CAMERA_FLOAT_PORT_BASE + 7, &mut self.near,      0.01,  0.001..=10.0);
-            scalar_row(ui, ctx, "Far",  CAMERA_FLOAT_PORT_BASE + 8, &mut self.far,       0.5,   1.0..=10000.0);
+            scalar_row(
+                ui,
+                ctx,
+                "FOV",
+                CAMERA_FLOAT_PORT_BASE + 6,
+                &mut self.fov_y_deg,
+                0.5,
+                1.0..=170.0,
+            );
+            scalar_row(
+                ui,
+                ctx,
+                "Near",
+                CAMERA_FLOAT_PORT_BASE + 7,
+                &mut self.near,
+                0.01,
+                0.001..=10.0,
+            );
+            scalar_row(
+                ui,
+                ctx,
+                "Far",
+                CAMERA_FLOAT_PORT_BASE + 8,
+                &mut self.far,
+                0.5,
+                1.0..=10000.0,
+            );
         });
 
         ui.collapsing("Light", |ui| {
             xyz_row(
-                ui, ctx, "Dir",
+                ui,
+                ctx,
+                "Dir",
                 [
                     (LIGHT_FLOAT_PORT_BASE + 0, &mut self.light_dir_x),
                     (LIGHT_FLOAT_PORT_BASE + 1, &mut self.light_dir_y),
                     (LIGHT_FLOAT_PORT_BASE + 2, &mut self.light_dir_z),
                 ],
-                0.02, -1.0..=1.0,
+                0.02,
+                -1.0..=1.0,
             );
         });
 
@@ -442,29 +549,32 @@ impl NodeBehavior for Render3DNode {
         let preview_w = 240.0_f32.min(ui.available_width());
         let aspect = if self.height > 0 {
             self.width as f32 / self.height as f32
-        } else { 1.0 };
+        } else {
+            1.0
+        };
         let preview_h = (preview_w / aspect.max(0.1)).clamp(80.0, 400.0);
-        let (rect, _) = ui.allocate_exact_size(
-            egui::vec2(preview_w, preview_h),
-            egui::Sense::hover(),
-        );
-        ui.painter().rect_filled(rect, 4.0, egui::Color32::from_gray(15));
-        let target_format = ui.ctx().data_mut(|d| {
-            d.get_temp::<wgpu::TextureFormat>(egui::Id::new("wgpu_target_format"))
-        }).unwrap_or(wgpu::TextureFormat::Bgra8UnormSrgb);
-        ui.painter().add(eframe::egui_wgpu::Callback::new_paint_callback(
-            rect,
-            crate::gpu_image::GpuImageDisplayCallback {
-                node_id: ctx.node_id,
-                img: Arc::new(ImageData {
-                    width: self.width.max(1),
-                    height: self.height.max(1),
-                    pixels: Vec::new(),
-                }),
-                target_format,
-                gpu_source: Some((ctx.node_id, 0)),
-            },
-        ));
+        let (rect, _) =
+            ui.allocate_exact_size(egui::vec2(preview_w, preview_h), egui::Sense::hover());
+        ui.painter()
+            .rect_filled(rect, 4.0, egui::Color32::from_gray(15));
+        let target_format = ui
+            .ctx()
+            .data_mut(|d| d.get_temp::<wgpu::TextureFormat>(egui::Id::new("wgpu_target_format")))
+            .unwrap_or(wgpu::TextureFormat::Bgra8UnormSrgb);
+        ui.painter()
+            .add(eframe::egui_wgpu::Callback::new_paint_callback(
+                rect,
+                crate::gpu_image::GpuImageDisplayCallback {
+                    node_id: ctx.node_id,
+                    img: Arc::new(ImageData {
+                        width: self.width.max(1),
+                        height: self.height.max(1),
+                        pixels: Vec::new(),
+                    }),
+                    target_format,
+                    gpu_source: Some((ctx.node_id, 0)),
+                },
+            ));
 
         ui.separator();
 
@@ -472,8 +582,14 @@ impl NodeBehavior for Render3DNode {
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("Image").small());
             inline_port_circle(
-                ui, ctx.node_id, 0, false,
-                ctx.connections, ctx.port_positions, ctx.dragging_from, ctx.pending_disconnects,
+                ui,
+                ctx.node_id,
+                0,
+                false,
+                ctx.connections,
+                ctx.port_positions,
+                ctx.dragging_from,
+                ctx.pending_disconnects,
                 PortKind::Image,
             );
         });
@@ -514,7 +630,11 @@ fn create_render_pipeline(
         bind_group_layouts: &[bind_group_layout],
         push_constant_ranges: &[],
     });
-    let cull_mode = if double_sided { None } else { Some(wgpu::Face::Back) };
+    let cull_mode = if double_sided {
+        None
+    } else {
+        Some(wgpu::Face::Back)
+    };
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("render_3d_pipeline"),
         layout: Some(&pipeline_layout),
@@ -552,11 +672,20 @@ fn create_render_pipeline(
     })
 }
 
-fn create_color_target(device: &wgpu::Device, w: u32, h: u32) -> (wgpu::Texture, wgpu::TextureView) {
+fn create_color_target(
+    device: &wgpu::Device,
+    w: u32,
+    h: u32,
+) -> (wgpu::Texture, wgpu::TextureView) {
     let tex = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("render_3d_color"),
-        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-        mip_level_count: 1, sample_count: 1,
+        size: wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format: TARGET_FORMAT,
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT
@@ -568,11 +697,20 @@ fn create_color_target(device: &wgpu::Device, w: u32, h: u32) -> (wgpu::Texture,
     (tex, view)
 }
 
-fn create_depth_target(device: &wgpu::Device, w: u32, h: u32) -> (wgpu::Texture, wgpu::TextureView) {
+fn create_depth_target(
+    device: &wgpu::Device,
+    w: u32,
+    h: u32,
+) -> (wgpu::Texture, wgpu::TextureView) {
     let tex = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("render_3d_depth"),
-        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-        mip_level_count: 1, sample_count: 1,
+        size: wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format: DEPTH_FORMAT,
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -626,8 +764,13 @@ fn create_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
 fn create_dummy_white_texture(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::TextureView {
     let tex = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("render_3d_dummy_white"),
-        size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
-        mip_level_count: 1, sample_count: 1,
+        size: wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format: wgpu::TextureFormat::Rgba8UnormSrgb,
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
@@ -635,13 +778,22 @@ fn create_dummy_white_texture(device: &wgpu::Device, queue: &wgpu::Queue) -> wgp
     });
     queue.write_texture(
         wgpu::TexelCopyTextureInfo {
-            texture: &tex, mip_level: 0,
+            texture: &tex,
+            mip_level: 0,
             origin: wgpu::Origin3d::ZERO,
             aspect: wgpu::TextureAspect::All,
         },
         &[255u8, 255, 255, 255],
-        wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4), rows_per_image: Some(1) },
-        wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(4),
+            rows_per_image: Some(1),
+        },
+        wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
     );
     tex.create_view(&Default::default())
 }
@@ -651,15 +803,15 @@ fn create_dummy_white_texture(device: &wgpu::Device, queue: &wgpu::Queue) -> wgp
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct Uniforms {
-    view_proj:  [[f32; 4]; 4],
-    model:      [[f32; 4]; 4],
+    view_proj: [[f32; 4]; 4],
+    model: [[f32; 4]; 4],
     normal_mat: [[f32; 4]; 4],
-    light_dir:  [f32; 4],
-    eye_pos:    [f32; 4],
-    albedo:     [f32; 4],
-    emission:   [f32; 4], // xyz emission, w = use_emission_tex
-    rough_met:  [f32; 4], // x rough, y metal, z shader_id, w unused
-    map_use:    [f32; 4], // x albedo, y roughness, z metallic, w ao
+    light_dir: [f32; 4],
+    eye_pos: [f32; 4],
+    albedo: [f32; 4],
+    emission: [f32; 4],  // xyz emission, w = use_emission_tex
+    rough_met: [f32; 4], // x rough, y metal, z shader_id, w unused
+    map_use: [f32; 4],   // x albedo, y roughness, z metallic, w ao
 }
 
 fn render_offscreen(
@@ -675,35 +827,38 @@ fn render_offscreen(
     height: u32,
 ) -> Option<crate::graph::GpuImageHandle> {
     let mesh = &placed.mesh;
-    let model      = placed.transform;
+    let model = placed.transform;
     let normal_mat = build_normal_matrix(model);
     let device = &rs.device;
-    let queue  = &rs.queue;
+    let queue = &rs.queue;
     let signature = pipeline_signature(material.double_sided);
 
     // Resolve every map slot's upstream texture view. Per-frame snapshot
     // first (same path WGSL Viewer uses for image inputs), then upload
     // cache as a fallback for first-frame-after-wiring.
-    let resolve_view = |slot: Option<crate::material::MaterialTexRef>| -> Option<wgpu::TextureView> {
-        let snap = slot.and_then(|t| {
-            crate::gpu_image::frame_snapshot_get_view(t.node_id, t.port).map(|(v, _, _)| v)
-        });
-        snap.or_else(|| {
-            slot.and_then(|t| {
-                tex_cache.get_node_output(t.node_id, t.port).map(|(v, _, _)| v.clone())
+    let resolve_view =
+        |slot: Option<crate::material::MaterialTexRef>| -> Option<wgpu::TextureView> {
+            let snap = slot.and_then(|t| {
+                crate::gpu_image::frame_snapshot_get_view(t.node_id, t.port).map(|(v, _, _)| v)
+            });
+            snap.or_else(|| {
+                slot.and_then(|t| {
+                    tex_cache
+                        .get_node_output(t.node_id, t.port)
+                        .map(|(v, _, _)| v.clone())
+                })
             })
-        })
-    };
-    let view_albedo    = resolve_view(material.maps.albedo);
+        };
+    let view_albedo = resolve_view(material.maps.albedo);
     let view_roughness = resolve_view(material.maps.roughness);
-    let view_metallic  = resolve_view(material.maps.metallic);
-    let view_ao        = resolve_view(material.maps.ao);
-    let view_emission  = resolve_view(material.maps.emission);
-    let use_albedo    = view_albedo.is_some();
+    let view_metallic = resolve_view(material.maps.metallic);
+    let view_ao = resolve_view(material.maps.ao);
+    let view_emission = resolve_view(material.maps.emission);
+    let use_albedo = view_albedo.is_some();
     let use_roughness = view_roughness.is_some();
-    let use_metallic  = view_metallic.is_some();
-    let use_ao        = view_ao.is_some();
-    let use_emission  = view_emission.is_some();
+    let use_metallic = view_metallic.is_some();
+    let use_ao = view_ao.is_some();
+    let use_emission = view_emission.is_some();
 
     let mut renderer = rs.renderer.write();
     if renderer.callback_resources.get::<Render3DStore>().is_none() {
@@ -734,26 +889,30 @@ fn render_offscreen(
             ..Default::default()
         });
         let dummy_white_view = create_dummy_white_texture(device, queue);
-        store.nodes.insert(node_id, Render3DGpu {
-            pipeline,
-            bind_group_layout: bgl,
-            uniform_buffer,
-            sampler,
-            dummy_white_view,
-            color_texture: color_tex,
-            color_view,
-            depth_texture: depth_tex,
-            depth_view,
-            size: (width, height),
-            mesh_cache: GpuMeshCache::new(),
-            pipeline_signature: signature,
-        });
+        store.nodes.insert(
+            node_id,
+            Render3DGpu {
+                pipeline,
+                bind_group_layout: bgl,
+                uniform_buffer,
+                sampler,
+                dummy_white_view,
+                color_texture: color_tex,
+                color_view,
+                depth_texture: depth_tex,
+                depth_view,
+                size: (width, height),
+                mesh_cache: GpuMeshCache::new(),
+                pipeline_signature: signature,
+            },
+        );
     }
 
     let gpu = store.nodes.get_mut(&node_id)?;
 
     if gpu.pipeline_signature != signature {
-        gpu.pipeline = create_render_pipeline(device, &gpu.bind_group_layout, material.double_sided);
+        gpu.pipeline =
+            create_render_pipeline(device, &gpu.bind_group_layout, material.double_sided);
         gpu.pipeline_signature = signature;
     }
 
@@ -761,9 +920,9 @@ fn render_offscreen(
         let (color_tex, color_view) = create_color_target(device, width, height);
         let (depth_tex, depth_view) = create_depth_target(device, width, height);
         gpu.color_texture = color_tex;
-        gpu.color_view    = color_view;
+        gpu.color_view = color_view;
         gpu.depth_texture = depth_tex;
-        gpu.depth_view    = depth_view;
+        gpu.depth_view = depth_view;
         gpu.size = (width, height);
     }
 
@@ -779,16 +938,26 @@ fn render_offscreen(
         model,
         normal_mat,
         light_dir: [light_dir[0], light_dir[1], light_dir[2], 0.0],
-        eye_pos:   [eye_pos[0],   eye_pos[1],   eye_pos[2],   0.0],
-        albedo:    material.albedo,
-        emission:  [material.emission[0], material.emission[1], material.emission[2], f01(use_emission)],
+        eye_pos: [eye_pos[0], eye_pos[1], eye_pos[2], 0.0],
+        albedo: material.albedo,
+        emission: [
+            material.emission[0],
+            material.emission[1],
+            material.emission[2],
+            f01(use_emission),
+        ],
         rough_met: [
             material.roughness,
             material.metallic,
             material.shader_type.shader_id() as f32,
             0.0,
         ],
-        map_use: [f01(use_albedo), f01(use_roughness), f01(use_metallic), f01(use_ao)],
+        map_use: [
+            f01(use_albedo),
+            f01(use_roughness),
+            f01(use_metallic),
+            f01(use_ao),
+        ],
     };
     queue.write_buffer(&gpu.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
 
@@ -796,28 +965,49 @@ fn render_offscreen(
     // resolved upstream view or a 1×1 white texture (white = "no effect"
     // when multiplied into the scalar/color path in the fragment shader).
     let dummy = &gpu.dummy_white_view;
-    let bind_albedo    = view_albedo.as_ref().unwrap_or(dummy);
+    let bind_albedo = view_albedo.as_ref().unwrap_or(dummy);
     let bind_roughness = view_roughness.as_ref().unwrap_or(dummy);
-    let bind_metallic  = view_metallic.as_ref().unwrap_or(dummy);
-    let bind_ao        = view_ao.as_ref().unwrap_or(dummy);
-    let bind_emission  = view_emission.as_ref().unwrap_or(dummy);
+    let bind_metallic = view_metallic.as_ref().unwrap_or(dummy);
+    let bind_ao = view_ao.as_ref().unwrap_or(dummy);
+    let bind_emission = view_emission.as_ref().unwrap_or(dummy);
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("render_3d_bg"),
         layout: &gpu.bind_group_layout,
         entries: &[
-            wgpu::BindGroupEntry { binding: 0, resource: gpu.uniform_buffer.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&gpu.sampler) },
-            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(bind_albedo) },
-            wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(bind_roughness) },
-            wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(bind_metallic) },
-            wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(bind_ao) },
-            wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::TextureView(bind_emission) },
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: gpu.uniform_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(&gpu.sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::TextureView(bind_albedo),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: wgpu::BindingResource::TextureView(bind_roughness),
+            },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: wgpu::BindingResource::TextureView(bind_metallic),
+            },
+            wgpu::BindGroupEntry {
+                binding: 5,
+                resource: wgpu::BindingResource::TextureView(bind_ao),
+            },
+            wgpu::BindGroupEntry {
+                binding: 6,
+                resource: wgpu::BindingResource::TextureView(bind_emission),
+            },
         ],
     });
 
     let color_view = gpu.color_view.clone();
     let depth_view = gpu.depth_view.clone();
-    let pipeline   = &gpu.pipeline;
+    let pipeline = &gpu.pipeline;
 
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
         label: Some("render_3d_encoder"),
@@ -829,7 +1019,12 @@ fn render_offscreen(
                 view: &color_view,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.02, g: 0.02, b: 0.04, a: 1.0 }),
+                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                        r: 0.02,
+                        g: 0.02,
+                        b: 0.04,
+                        a: 1.0,
+                    }),
                     store: wgpu::StoreOp::Store,
                 },
             })],
@@ -887,19 +1082,42 @@ fn scalar_row(
     speed: f32,
     range: std::ops::RangeInclusive<f32>,
 ) {
-    let wired = ctx.connections.iter().any(|c| c.to_node == ctx.node_id && c.to_port == port_idx);
+    let wired = ctx
+        .connections
+        .iter()
+        .any(|c| c.to_node == ctx.node_id && c.to_port == port_idx);
     ui.horizontal(|ui| {
         inline_port_circle(
-            ui, ctx.node_id, port_idx, true,
-            ctx.connections, ctx.port_positions, ctx.dragging_from, ctx.pending_disconnects,
+            ui,
+            ctx.node_id,
+            port_idx,
+            true,
+            ctx.connections,
+            ctx.port_positions,
+            ctx.dragging_from,
+            ctx.pending_disconnects,
             PortKind::Number,
         );
         ui.label(egui::RichText::new(label).small());
         if wired {
-            let v = crate::graph::Graph::static_input_value(ctx.connections, ctx.values, ctx.node_id, port_idx);
-            ui.label(egui::RichText::new(format!("{}", v)).small().color(ui.visuals().hyperlink_color));
+            let v = crate::graph::Graph::static_input_value(
+                ctx.connections,
+                ctx.values,
+                ctx.node_id,
+                port_idx,
+            );
+            ui.label(
+                egui::RichText::new(format!("{}", v))
+                    .small()
+                    .color(ui.visuals().hyperlink_color),
+            );
         } else {
-            ui.add(egui::DragValue::new(value).speed(speed).range(range).fixed_decimals(2));
+            ui.add(
+                egui::DragValue::new(value)
+                    .speed(speed)
+                    .range(range)
+                    .fixed_decimals(2),
+            );
         }
     });
 }
@@ -918,22 +1136,42 @@ fn xyz_row(
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new(label).small());
         for (port_idx, value) in cells {
-            let wired = ctx.connections.iter().any(|c| c.to_node == ctx.node_id && c.to_port == port_idx);
+            let wired = ctx
+                .connections
+                .iter()
+                .any(|c| c.to_node == ctx.node_id && c.to_port == port_idx);
             inline_port_circle(
-                ui, ctx.node_id, port_idx, true,
-                ctx.connections, ctx.port_positions, ctx.dragging_from, ctx.pending_disconnects,
+                ui,
+                ctx.node_id,
+                port_idx,
+                true,
+                ctx.connections,
+                ctx.port_positions,
+                ctx.dragging_from,
+                ctx.pending_disconnects,
                 PortKind::Number,
             );
             if wired {
-                let v = crate::graph::Graph::static_input_value(ctx.connections, ctx.values, ctx.node_id, port_idx)
-                    .as_float();
-                ui.label(egui::RichText::new(format!("{:.2}", v)).small()
-                    .color(ui.visuals().hyperlink_color));
+                let v = crate::graph::Graph::static_input_value(
+                    ctx.connections,
+                    ctx.values,
+                    ctx.node_id,
+                    port_idx,
+                )
+                .as_float();
+                ui.label(
+                    egui::RichText::new(format!("{:.2}", v))
+                        .small()
+                        .color(ui.visuals().hyperlink_color),
+                );
             } else {
                 // Compact width so 3 cells + the header fit in the node body.
                 ui.add_sized(
                     [46.0, 18.0],
-                    egui::DragValue::new(value).speed(speed).range(range.clone()).fixed_decimals(2),
+                    egui::DragValue::new(value)
+                        .speed(speed)
+                        .range(range.clone())
+                        .fixed_decimals(2),
                 );
             }
         }

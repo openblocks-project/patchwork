@@ -19,10 +19,10 @@
 //! thread.
 
 use crate::audio::buffers::LiveInputBuffer;
-use crate::audio::processor::{AudioProcessor, ProcessContext, ProcessorKind};
 use crate::audio::params::AtomicF32;
-use std::sync::atomic::{AtomicBool, Ordering};
+use crate::audio::processor::{AudioProcessor, ProcessContext, ProcessorKind};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
@@ -60,8 +60,12 @@ impl AudioTapProcessor {
 }
 
 impl AudioProcessor for AudioTapProcessor {
-    fn type_id(&self) -> &str { "web_stream_tap" }
-    fn kind(&self) -> ProcessorKind { ProcessorKind::Effect }
+    fn type_id(&self) -> &str {
+        "web_stream_tap"
+    }
+    fn kind(&self) -> ProcessorKind {
+        ProcessorKind::Effect
+    }
 
     fn process_block(&mut self, input: &[f32], output: &mut [f32], _ctx: &ProcessContext) {
         // SPSC write — RT-safe (no allocation, no locks, no I/O).
@@ -77,16 +81,24 @@ impl AudioProcessor for AudioTapProcessor {
         // `output` slice as scratch (we'll overwrite it with silence
         // after — we're a sink). Reuse it to avoid heap allocation.
         for (i, s) in buf_in.iter().enumerate() {
-            let v = if s.is_finite() { s.clamp(-1.0, 1.0) } else { 0.0 };
+            let v = if s.is_finite() {
+                s.clamp(-1.0, 1.0)
+            } else {
+                0.0
+            };
             output[i] = v;
         }
         self.buffer.write(&output[..n]);
         // Sink: emit silence on our (unused) audio output port.
-        for s in output.iter_mut() { *s = 0.0; }
+        for s in output.iter_mut() {
+            *s = 0.0;
+        }
     }
 
     fn set_params(&mut self, _params: &[f32]) {}
-    fn param_count(&self) -> usize { 0 }
+    fn param_count(&self) -> usize {
+        0
+    }
     fn prepare(&mut self, _sample_rate: f32, _max_block_size: usize) {}
     fn reset(&mut self) {}
     fn set_shared_params(&mut self, _params: Arc<Vec<AtomicF32>>) {}
@@ -211,8 +223,8 @@ fn pump_loop(
                 let lo = src_pos as usize;
                 let hi = (lo + 1).min(read_chunk - 1);
                 let frac = src_pos - lo as f64;
-                output_scratch[i] = input_scratch[lo] * (1.0 - frac as f32)
-                    + input_scratch[hi] * (frac as f32);
+                output_scratch[i] =
+                    input_scratch[lo] * (1.0 - frac as f32) + input_scratch[hi] * (frac as f32);
             }
             &output_scratch
         } else {

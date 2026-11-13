@@ -1,7 +1,7 @@
 use crate::graph::{PortDef, PortKind, PortValue};
 use crate::node_trait::{NodeBehavior, RenderContext};
-use serde::{Serialize, Deserialize};
 use eframe::egui;
+use serde::{Deserialize, Serialize};
 
 // ── Timer Node ───────────────────────────────────────────────────────────────
 //
@@ -43,9 +43,15 @@ pub struct TimerNode {
     last_sync_phase: f32,
 }
 
-fn default_one() -> f32 { 1.0 }
-fn default_true() -> bool { true }
-fn default_pulse_width() -> f32 { 0.1 }
+fn default_one() -> f32 {
+    1.0
+}
+fn default_true() -> bool {
+    true
+}
+fn default_pulse_width() -> f32 {
+    0.1
+}
 
 impl Default for TimerNode {
     fn default() -> Self {
@@ -65,31 +71,41 @@ impl Default for TimerNode {
 }
 
 impl NodeBehavior for TimerNode {
-    fn title(&self) -> &str { "Timer" }
-    fn type_tag(&self) -> &str { "timer" }
-    fn color_hint(&self) -> [u8; 3] { [100, 200, 180] }
-    fn inline_ports(&self) -> bool { true }
+    fn title(&self) -> &str {
+        "Timer"
+    }
+    fn type_tag(&self) -> &str {
+        "timer"
+    }
+    fn color_hint(&self) -> [u8; 3] {
+        [100, 200, 180]
+    }
+    fn inline_ports(&self) -> bool {
+        true
+    }
 
     fn inputs(&self) -> Vec<PortDef> {
         vec![
             PortDef::new("Interval", PortKind::Number),
-            PortDef::new("Start",    PortKind::Trigger),
-            PortDef::new("Phase",    PortKind::Normalized),  // sync: 0..1 from Clock or another Timer
-            PortDef::new("Offset",   PortKind::Normalized),  // overrides inline phase_offset slider when wired
+            PortDef::new("Start", PortKind::Trigger),
+            PortDef::new("Phase", PortKind::Normalized), // sync: 0..1 from Clock or another Timer
+            PortDef::new("Offset", PortKind::Normalized), // overrides inline phase_offset slider when wired
         ]
     }
 
     fn outputs(&self) -> Vec<PortDef> {
         vec![
             PortDef::new("Trigger", PortKind::Trigger),
-            PortDef::new("Phase",   PortKind::Normalized),
+            PortDef::new("Phase", PortKind::Normalized),
         ]
     }
 
     fn evaluate(&mut self, inputs: &[PortValue]) -> Vec<(usize, PortValue)> {
         // Override interval from input port
         if let Some(PortValue::Float(v)) = inputs.first() {
-            if *v > 0.0 { self.interval = *v; }
+            if *v > 0.0 {
+                self.interval = *v;
+            }
         }
 
         // Start trigger (port 1) — rising edge resets and starts
@@ -114,13 +130,21 @@ impl NodeBehavior for TimerNode {
                 _ => self.phase_offset,
             };
             let shifted = (ext_phase + offset).fract();
-            let shifted = if shifted < 0.0 { shifted + 1.0 } else { shifted };
+            let shifted = if shifted < 0.0 {
+                shifted + 1.0
+            } else {
+                shifted
+            };
             // Trigger on phase wrap-around: shifted drops from ~1 to ~0.
             // Guard > 0.5 prevents false fires from float jitter.
             let trigger = if shifted < self.last_sync_phase
-                             && (self.last_sync_phase - shifted) > 0.5
-                             && self.running
-            { 1.0 } else { 0.0 };
+                && (self.last_sync_phase - shifted) > 0.5
+                && self.running
+            {
+                1.0
+            } else {
+                0.0
+            };
             self.last_sync_phase = shifted;
             return vec![
                 (0, PortValue::Float(trigger)),
@@ -147,10 +171,7 @@ impl NodeBehavior for TimerNode {
         let is_pulse = phase < (self.pulse_width / safe_interval).min(0.5);
         let trigger = if is_pulse && self.running { 1.0 } else { 0.0 };
 
-        vec![
-            (0, PortValue::Float(trigger)),
-            (1, PortValue::Float(phase)),
-        ]
+        vec![(0, PortValue::Float(trigger)), (1, PortValue::Float(phase))]
     }
 
     fn save_state(&self) -> serde_json::Value {
@@ -164,68 +185,154 @@ impl NodeBehavior for TimerNode {
     }
 
     fn load_state(&mut self, state: &serde_json::Value) {
-        if let Some(v) = state.get("interval").and_then(|v| v.as_f64()) { self.interval = v as f32; }
-        if let Some(v) = state.get("elapsed").and_then(|v| v.as_f64()) { self.elapsed = v as f32; }
-        if let Some(v) = state.get("running").and_then(|v| v.as_bool()) { self.running = v; }
-        if let Some(v) = state.get("pulse_width").and_then(|v| v.as_f64()) { self.pulse_width = v as f32; }
-        if let Some(v) = state.get("phase_offset").and_then(|v| v.as_f64()) { self.phase_offset = v as f32; }
+        if let Some(v) = state.get("interval").and_then(|v| v.as_f64()) {
+            self.interval = v as f32;
+        }
+        if let Some(v) = state.get("elapsed").and_then(|v| v.as_f64()) {
+            self.elapsed = v as f32;
+        }
+        if let Some(v) = state.get("running").and_then(|v| v.as_bool()) {
+            self.running = v;
+        }
+        if let Some(v) = state.get("pulse_width").and_then(|v| v.as_f64()) {
+            self.pulse_width = v as f32;
+        }
+        if let Some(v) = state.get("phase_offset").and_then(|v| v.as_f64()) {
+            self.phase_offset = v as f32;
+        }
     }
 
     fn render_with_context(&mut self, ui: &mut egui::Ui, ctx: &mut RenderContext) {
         let dim = egui::Color32::from_rgb(110, 110, 120);
         let blue = egui::Color32::from_rgb(80, 170, 255);
-        let interval_wired = ctx.connections.iter().any(|c| c.to_node == ctx.node_id && c.to_port == 0);
-        let start_wired = ctx.connections.iter().any(|c| c.to_node == ctx.node_id && c.to_port == 1);
+        let interval_wired = ctx
+            .connections
+            .iter()
+            .any(|c| c.to_node == ctx.node_id && c.to_port == 0);
+        let start_wired = ctx
+            .connections
+            .iter()
+            .any(|c| c.to_node == ctx.node_id && c.to_port == 1);
 
         // ── Input ports ──────────────────────────────────────────
         ui.horizontal(|ui| {
-            crate::nodes::inline_port_circle(ui, ctx.node_id, 0, true, ctx.connections,
-                ctx.port_positions, ctx.dragging_from, ctx.pending_disconnects, PortKind::Number);
+            crate::nodes::inline_port_circle(
+                ui,
+                ctx.node_id,
+                0,
+                true,
+                ctx.connections,
+                ctx.port_positions,
+                ctx.dragging_from,
+                ctx.pending_disconnects,
+                PortKind::Number,
+            );
             ui.label(egui::RichText::new("Interval").small());
             if interval_wired {
-                ui.label(egui::RichText::new(format!("{:.3}s", self.interval)).small().color(blue));
+                ui.label(
+                    egui::RichText::new(format!("{:.3}s", self.interval))
+                        .small()
+                        .color(blue),
+                );
             }
         });
         ui.horizontal(|ui| {
-            crate::nodes::inline_port_circle(ui, ctx.node_id, 1, true, ctx.connections,
-                ctx.port_positions, ctx.dragging_from, ctx.pending_disconnects, PortKind::Trigger);
-            ui.label(egui::RichText::new("Start").small().color(
-                if start_wired { egui::Color32::from_rgb(255, 150, 60) } else { dim }));
+            crate::nodes::inline_port_circle(
+                ui,
+                ctx.node_id,
+                1,
+                true,
+                ctx.connections,
+                ctx.port_positions,
+                ctx.dragging_from,
+                ctx.pending_disconnects,
+                PortKind::Trigger,
+            );
+            ui.label(egui::RichText::new("Start").small().color(if start_wired {
+                egui::Color32::from_rgb(255, 150, 60)
+            } else {
+                dim
+            }));
         });
 
         // Phase sync input (port 2) — connect a Clock's Phase output here
-        let phase_wired = ctx.connections.iter().any(|c| c.to_node == ctx.node_id && c.to_port == 2);
+        let phase_wired = ctx
+            .connections
+            .iter()
+            .any(|c| c.to_node == ctx.node_id && c.to_port == 2);
         ui.horizontal(|ui| {
-            crate::nodes::inline_port_circle(ui, ctx.node_id, 2, true, ctx.connections,
-                ctx.port_positions, ctx.dragging_from, ctx.pending_disconnects, PortKind::Normalized);
-            ui.label(egui::RichText::new("Phase").small().color(
-                if phase_wired { blue } else { dim }));
+            crate::nodes::inline_port_circle(
+                ui,
+                ctx.node_id,
+                2,
+                true,
+                ctx.connections,
+                ctx.port_positions,
+                ctx.dragging_from,
+                ctx.pending_disconnects,
+                PortKind::Normalized,
+            );
+            ui.label(egui::RichText::new("Phase").small().color(if phase_wired {
+                blue
+            } else {
+                dim
+            }));
             if phase_wired {
-                ui.label(egui::RichText::new("synced").small().color(egui::Color32::from_rgb(80, 220, 120)));
+                ui.label(
+                    egui::RichText::new("synced")
+                        .small()
+                        .color(egui::Color32::from_rgb(80, 220, 120)),
+                );
             }
         });
 
         // Offset input (port 3) — overrides inline slider when wired
-        let offset_wired = ctx.connections.iter().any(|c| c.to_node == ctx.node_id && c.to_port == 3);
+        let offset_wired = ctx
+            .connections
+            .iter()
+            .any(|c| c.to_node == ctx.node_id && c.to_port == 3);
         ui.horizontal(|ui| {
-            crate::nodes::inline_port_circle(ui, ctx.node_id, 3, true, ctx.connections,
-                ctx.port_positions, ctx.dragging_from, ctx.pending_disconnects, PortKind::Normalized);
-            ui.label(egui::RichText::new("Offset").small().color(
-                if offset_wired { blue } else { dim }));
+            crate::nodes::inline_port_circle(
+                ui,
+                ctx.node_id,
+                3,
+                true,
+                ctx.connections,
+                ctx.port_positions,
+                ctx.dragging_from,
+                ctx.pending_disconnects,
+                PortKind::Normalized,
+            );
+            ui.label(
+                egui::RichText::new("Offset")
+                    .small()
+                    .color(if offset_wired { blue } else { dim }),
+            );
             if !offset_wired && phase_wired {
                 // Inline offset slider — visible only when synced.
                 // Progressive disclosure: no clutter for free-running Timers.
-                ui.add(egui::DragValue::new(&mut self.phase_offset)
-                    .speed(0.01).range(0.0..=0.99).max_decimals(2)
-                    .custom_formatter(|v, _| {
-                        if v.abs() < 0.005 { "0".into() }
-                        else if (v - 0.25).abs() < 0.01 { "¼".into() }
-                        else if (v - 0.333).abs() < 0.02 { "⅓".into() }
-                        else if (v - 0.5).abs() < 0.01 { "½".into() }
-                        else if (v - 0.667).abs() < 0.02 { "⅔".into() }
-                        else if (v - 0.75).abs() < 0.01 { "¾".into() }
-                        else { format!("{:.2}", v) }
-                    })
+                ui.add(
+                    egui::DragValue::new(&mut self.phase_offset)
+                        .speed(0.01)
+                        .range(0.0..=0.99)
+                        .max_decimals(2)
+                        .custom_formatter(|v, _| {
+                            if v.abs() < 0.005 {
+                                "0".into()
+                            } else if (v - 0.25).abs() < 0.01 {
+                                "¼".into()
+                            } else if (v - 0.333).abs() < 0.02 {
+                                "⅓".into()
+                            } else if (v - 0.5).abs() < 0.01 {
+                                "½".into()
+                            } else if (v - 0.667).abs() < 0.02 {
+                                "⅔".into()
+                            } else if (v - 0.75).abs() < 0.01 {
+                                "¾".into()
+                            } else {
+                                format!("{:.2}", v)
+                            }
+                        }),
                 );
             }
         });
@@ -255,22 +362,26 @@ impl NodeBehavior for TimerNode {
         if !interval_wired {
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Interval").small());
-                ui.add(egui::Slider::new(&mut self.interval, 0.001..=30.0)
-                    .suffix("s")
-                    .logarithmic(true)
-                    .custom_formatter(|v, _| format!("{:.3}", v))
-                    .clamping(egui::SliderClamping::Never));
+                ui.add(
+                    egui::Slider::new(&mut self.interval, 0.001..=30.0)
+                        .suffix("s")
+                        .logarithmic(true)
+                        .custom_formatter(|v, _| format!("{:.3}", v))
+                        .clamping(egui::SliderClamping::Never),
+                );
             });
         }
 
         // Pulse width
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("Pulse").small());
-            ui.add(egui::Slider::new(&mut self.pulse_width, 0.001..=1.0)
-                .suffix("s")
-                .logarithmic(true)
-                .custom_formatter(|v, _| format!("{:.3}", v))
-                .clamping(egui::SliderClamping::Never));
+            ui.add(
+                egui::Slider::new(&mut self.pulse_width, 0.001..=1.0)
+                    .suffix("s")
+                    .logarithmic(true)
+                    .custom_formatter(|v, _| format!("{:.3}", v))
+                    .clamping(egui::SliderClamping::Never),
+            );
         });
 
         // ── Spinner visual ───────────────────────────────────────
@@ -285,29 +396,44 @@ impl NodeBehavior for TimerNode {
         };
 
         let spinner_size = 50.0;
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(spinner_size, spinner_size), egui::Sense::hover());
+        let (rect, _) =
+            ui.allocate_exact_size(egui::vec2(spinner_size, spinner_size), egui::Sense::hover());
         let center = rect.center();
         let radius = spinner_size * 0.4;
         let painter = ui.painter();
 
-        painter.circle_stroke(center, radius, egui::Stroke::new(2.0, egui::Color32::from_rgb(60, 60, 70)));
+        painter.circle_stroke(
+            center,
+            radius,
+            egui::Stroke::new(2.0, egui::Color32::from_rgb(60, 60, 70)),
+        );
 
         let segments = 32;
         let filled = (phase * segments as f32) as usize;
         for i in 0..segments {
-            let a1 = std::f32::consts::TAU * (i as f32 / segments as f32) - std::f32::consts::FRAC_PI_2;
-            let a2 = std::f32::consts::TAU * ((i + 1) as f32 / segments as f32) - std::f32::consts::FRAC_PI_2;
+            let a1 =
+                std::f32::consts::TAU * (i as f32 / segments as f32) - std::f32::consts::FRAC_PI_2;
+            let a2 = std::f32::consts::TAU * ((i + 1) as f32 / segments as f32)
+                - std::f32::consts::FRAC_PI_2;
             let r_inner = radius - 5.0;
             let p1 = center + egui::vec2(a1.cos() * r_inner, a1.sin() * r_inner);
             let p2 = center + egui::vec2(a1.cos() * radius, a1.sin() * radius);
             let p3 = center + egui::vec2(a2.cos() * radius, a2.sin() * radius);
             let p4 = center + egui::vec2(a2.cos() * r_inner, a2.sin() * r_inner);
             let col = if i < filled {
-                if self.running { egui::Color32::from_rgb(80, 200, 120) } else { egui::Color32::from_rgb(120, 120, 60) }
+                if self.running {
+                    egui::Color32::from_rgb(80, 200, 120)
+                } else {
+                    egui::Color32::from_rgb(120, 120, 60)
+                }
             } else {
                 egui::Color32::from_rgb(40, 40, 50)
             };
-            painter.add(egui::Shape::convex_polygon(vec![p1, p2, p3, p4], col, egui::Stroke::NONE));
+            painter.add(egui::Shape::convex_polygon(
+                vec![p1, p2, p3, p4],
+                col,
+                egui::Stroke::NONE,
+            ));
         }
 
         let dot_col = if is_pulse && self.running {
@@ -328,19 +454,45 @@ impl NodeBehavior for TimerNode {
             } else {
                 ui.colored_label(dim, "⏸ Paused");
             }
-            ui.label(egui::RichText::new(format!("{:.2}s", self.elapsed)).small().monospace().color(dim));
+            ui.label(
+                egui::RichText::new(format!("{:.2}s", self.elapsed))
+                    .small()
+                    .monospace()
+                    .color(dim),
+            );
         });
 
         ui.separator();
 
         // ── Output ports ─────────────────────────────────────────
-        crate::nodes::output_port_row(ui, "Trigger",
+        crate::nodes::output_port_row(
+            ui,
+            "Trigger",
             &format!("{}", if is_pulse && self.running { 1 } else { 0 }),
-            ctx.node_id, 0, ctx.port_positions, ctx.dragging_from, ctx.connections, ctx.pending_disconnects, PortKind::Trigger);
-        crate::nodes::output_port_row(ui, "Phase", &format!("{:.2}", phase),
-            ctx.node_id, 1, ctx.port_positions, ctx.dragging_from, ctx.connections, ctx.pending_disconnects, PortKind::Normalized);
+            ctx.node_id,
+            0,
+            ctx.port_positions,
+            ctx.dragging_from,
+            ctx.connections,
+            ctx.pending_disconnects,
+            PortKind::Trigger,
+        );
+        crate::nodes::output_port_row(
+            ui,
+            "Phase",
+            &format!("{:.2}", phase),
+            ctx.node_id,
+            1,
+            ctx.port_positions,
+            ctx.dragging_from,
+            ctx.connections,
+            ctx.pending_disconnects,
+            PortKind::Normalized,
+        );
 
-        if self.running { ui.ctx().request_repaint(); }
+        if self.running {
+            ui.ctx().request_repaint();
+        }
     }
 }
 

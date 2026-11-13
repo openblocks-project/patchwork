@@ -1,8 +1,8 @@
 use crate::graph::*;
 use eframe::egui;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 /// Per-fetch result: optional decoded image + optional local cache file
 /// path written for remote URLs (so we can survive URL expiry).
@@ -35,10 +35,18 @@ fn hash_url(url: &str) -> String {
 
 /// Sniff bytes to pick an extension. Falls back to .bin.
 fn sniff_ext(bytes: &[u8]) -> &'static str {
-    if bytes.len() >= 8 && &bytes[..8] == b"\x89PNG\r\n\x1a\n" { return "png"; }
-    if bytes.len() >= 3 && &bytes[..3] == b"\xff\xd8\xff" { return "jpg"; }
-    if bytes.len() >= 6 && (&bytes[..6] == b"GIF87a" || &bytes[..6] == b"GIF89a") { return "gif"; }
-    if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" { return "webp"; }
+    if bytes.len() >= 8 && &bytes[..8] == b"\x89PNG\r\n\x1a\n" {
+        return "png";
+    }
+    if bytes.len() >= 3 && &bytes[..3] == b"\xff\xd8\xff" {
+        return "jpg";
+    }
+    if bytes.len() >= 6 && (&bytes[..6] == b"GIF87a" || &bytes[..6] == b"GIF89a") {
+        return "gif";
+    }
+    if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        return "webp";
+    }
     "bin"
 }
 
@@ -51,7 +59,9 @@ fn cache_dir() -> Option<std::path::PathBuf> {
 
 /// Returns `(file_count, total_bytes)` for the image cache directory.
 pub fn image_cache_stats() -> (usize, u64) {
-    let Some(dir) = cache_dir() else { return (0, 0); };
+    let Some(dir) = cache_dir() else {
+        return (0, 0);
+    };
     let mut count = 0usize;
     let mut bytes = 0u64;
     if let Ok(rd) = std::fs::read_dir(&dir) {
@@ -71,7 +81,9 @@ pub fn image_cache_stats() -> (usize, u64) {
 /// respected. Sort key is mtime (newest kept first). Safe to run on app
 /// startup, after settings changes, or after each new download.
 pub fn evict_image_cache(max_bytes: u64, max_files: usize) {
-    let Some(dir) = cache_dir() else { return; };
+    let Some(dir) = cache_dir() else {
+        return;
+    };
     let mut entries: Vec<(std::path::PathBuf, std::time::SystemTime, u64)> = Vec::new();
     if let Ok(rd) = std::fs::read_dir(&dir) {
         for e in rd.flatten() {
@@ -101,7 +113,9 @@ pub fn evict_image_cache(max_bytes: u64, max_files: usize) {
 /// Wipe every file in the image cache. Used by the Settings node's
 /// "Clear cache" button.
 pub fn clear_image_cache() {
-    let Some(dir) = cache_dir() else { return; };
+    let Some(dir) = cache_dir() else {
+        return;
+    };
     if let Ok(rd) = std::fs::read_dir(&dir) {
         for e in rd.flatten() {
             let _ = std::fs::remove_file(e.path());
@@ -122,7 +136,10 @@ fn fetch_and_cache(node_id: NodeId, url: &str) -> FetchResult {
     {
         Ok(c) => c,
         Err(e) => {
-            crate::node_errors::report_for(node_id, format!("Image fetch: HTTP client init failed: {}", e));
+            crate::node_errors::report_for(
+                node_id,
+                format!("Image fetch: HTTP client init failed: {}", e),
+            );
             return (None, None);
         }
     };
@@ -140,7 +157,10 @@ fn fetch_and_cache(node_id: NodeId, url: &str) -> FetchResult {
     let bytes = match resp.bytes() {
         Ok(b) => b,
         Err(e) => {
-            crate::node_errors::report_for(node_id, format!("Image fetch: body read failed: {}", e));
+            crate::node_errors::report_for(
+                node_id,
+                format!("Image fetch: body read failed: {}", e),
+            );
             return (None, None);
         }
     };
@@ -180,11 +200,7 @@ fn fetch_and_cache(node_id: NodeId, url: &str) -> FetchResult {
 /// `image_data`. Local file paths load synchronously (cheap); http(s)
 /// URLs spawn a background thread and `ctx.request_repaint()` wakes egui
 /// up when the bytes arrive — keeping the render thread responsive.
-pub fn maybe_load_async(
-    ctx: &egui::Context,
-    node_id: NodeId,
-    src: &str,
-) -> Option<FetchResult> {
+pub fn maybe_load_async(ctx: &egui::Context, node_id: NodeId, src: &str) -> Option<FetchResult> {
     let id = egui::Id::new(("img_fetch_state", node_id));
     let trimmed = src.trim().to_string();
     if trimmed.is_empty() {
@@ -201,11 +217,7 @@ pub fn maybe_load_async(
         });
 
     // 1) Drain any completed background fetch first.
-    let drained: Option<FetchResult> = state
-        .pending_result
-        .lock()
-        .ok()
-        .and_then(|mut g| g.take());
+    let drained: Option<FetchResult> = state.pending_result.lock().ok().and_then(|mut g| g.take());
     if let Some(result) = drained {
         state.loaded_url = state.pending_url.clone();
         state.pending_url.clear();
@@ -238,7 +250,9 @@ pub fn maybe_load_async(
         // will see a stale gen at completion and discard its result.
         let my_gen = state.generation.fetch_add(1, Ordering::SeqCst) + 1;
         // Reset the slot so any stale value doesn't fool us.
-        if let Ok(mut g) = state.pending_result.lock() { *g = None; }
+        if let Ok(mut g) = state.pending_result.lock() {
+            *g = None;
+        }
         let slot = state.pending_result.clone();
         let gen_ref = state.generation.clone();
         let ctx_clone = ctx.clone();
@@ -280,7 +294,21 @@ pub fn render(
     connections: &[Connection],
 ) {
     let (path, save_path, image_data, preview_size, last_save_hash, cached_file) = match node_type {
-        NodeType::ImageNode { path, save_path, image_data, preview_size, last_save_hash, cached_file } => (path, save_path, image_data, preview_size, last_save_hash, cached_file),
+        NodeType::ImageNode {
+            path,
+            save_path,
+            image_data,
+            preview_size,
+            last_save_hash,
+            cached_file,
+        } => (
+            path,
+            save_path,
+            image_data,
+            preview_size,
+            last_save_hash,
+            cached_file,
+        ),
         _ => return,
     };
 
@@ -290,7 +318,9 @@ pub fn render(
     // the stub stays around and downstream Effects/Blend see a 0-pixel
     // image (process_gpu_cached bails). Detect that case and reset so
     // the cold-load + path-reload paths below can refill from disk.
-    let image_in_wired = connections.iter().any(|c| c.to_node == node_id && c.to_port == 0);
+    let image_in_wired = connections
+        .iter()
+        .any(|c| c.to_node == node_id && c.to_port == 0);
     let is_stale_stub = matches!(image_data.as_ref(), Some(img) if img.pixels.is_empty());
     if !image_in_wired && is_stale_stub {
         *image_data = None;
@@ -332,7 +362,9 @@ pub fn render(
     // When wired, the upstream text overrides the manually-typed path.
     // Supports http(s):// URLs (one-shot blocking download), file://
     // URLs, and plain filesystem paths.
-    let src_wired = connections.iter().any(|c| c.to_node == node_id && c.to_port == 1);
+    let src_wired = connections
+        .iter()
+        .any(|c| c.to_node == node_id && c.to_port == 1);
     if src_wired {
         if let PortValue::Text(s) = Graph::static_input_value(connections, values, node_id, 1) {
             let trimmed = s.trim().to_string();
@@ -343,7 +375,9 @@ pub fn render(
                 // Only swap on a successful load — a failed/empty fetch
                 // must NOT clear the previous frame, otherwise downstream
                 // blends flash blank between AI responses.
-                if let Some((maybe_img, maybe_cache)) = maybe_load_async(ui.ctx(), node_id, &trimmed) {
+                if let Some((maybe_img, maybe_cache)) =
+                    maybe_load_async(ui.ctx(), node_id, &trimmed)
+                {
                     if let Some(new_img) = maybe_img {
                         *image_data = Some(new_img);
                     }
@@ -401,7 +435,9 @@ pub fn render(
             match maybe_load_async(ui.ctx(), node_id, &p) {
                 Some((Some(new_img), maybe_cache)) => {
                     *image_data = Some(new_img);
-                    if let Some(cp) = maybe_cache { *cached_file = cp; }
+                    if let Some(cp) = maybe_cache {
+                        *cached_file = cp;
+                    }
                 }
                 Some((None, _)) if image_data.is_none() => *image_data = None,
                 _ => {}
@@ -412,7 +448,12 @@ pub fn render(
     // Auto-save path — when set, saves automatically when image changes
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new("Save:").small());
-        ui.add(egui::TextEdit::singleline(save_path).desired_width(160.0).font(egui::TextStyle::Small).hint_text("auto-save path"));
+        ui.add(
+            egui::TextEdit::singleline(save_path)
+                .desired_width(160.0)
+                .font(egui::TextStyle::Small)
+                .hint_text("auto-save path"),
+        );
     });
 
     // Auto-save: if save_path is set and image exists, save when image changes
@@ -425,7 +466,7 @@ pub fn render(
             img.height.hash(&mut h);
             if img.pixels.len() >= 16 {
                 img.pixels[..16].hash(&mut h);
-                img.pixels[img.pixels.len()-16..].hash(&mut h);
+                img.pixels[img.pixels.len() - 16..].hash(&mut h);
             }
             let hash = h.finish();
             if hash != *last_save_hash {
@@ -504,8 +545,16 @@ fn save_image(img: &ImageData, path: &str) {
 /// Display an image thumbnail in the UI. Caches texture per node + image pointer.
 /// Render image via wgpu paint callback — bypasses egui texture system.
 /// Faster for animated images (no ColorImage copy + load_texture each frame).
-pub fn show_image_gpu(ui: &mut egui::Ui, node_id: NodeId, img: &std::sync::Arc<ImageData>, max_size: f32, gpu_source: Option<(NodeId, usize)>) {
-    if img.width == 0 || img.height == 0 { return; }
+pub fn show_image_gpu(
+    ui: &mut egui::Ui,
+    node_id: NodeId,
+    img: &std::sync::Arc<ImageData>,
+    max_size: f32,
+    gpu_source: Option<(NodeId, usize)>,
+) {
+    if img.width == 0 || img.height == 0 {
+        return;
+    }
 
     let aspect = img.height as f32 / img.width as f32;
     let w = max_size.min(ui.available_width());
@@ -513,21 +562,29 @@ pub fn show_image_gpu(ui: &mut egui::Ui, node_id: NodeId, img: &std::sync::Arc<I
     let (rect, _) = ui.allocate_exact_size(egui::vec2(w, h), egui::Sense::hover());
 
     // If pixels are empty AND no GPU source, nothing to render
-    if img.pixels.is_empty() && gpu_source.is_none() { return; }
+    if img.pixels.is_empty() && gpu_source.is_none() {
+        return;
+    }
 
-    let target_format = ui.ctx().data_mut(|d| {
-        d.get_temp::<eframe::egui_wgpu::wgpu::TextureFormat>(egui::Id::new("wgpu_target_format"))
-    }).unwrap_or(eframe::egui_wgpu::wgpu::TextureFormat::Bgra8UnormSrgb);
+    let target_format = ui
+        .ctx()
+        .data_mut(|d| {
+            d.get_temp::<eframe::egui_wgpu::wgpu::TextureFormat>(egui::Id::new(
+                "wgpu_target_format",
+            ))
+        })
+        .unwrap_or(eframe::egui_wgpu::wgpu::TextureFormat::Bgra8UnormSrgb);
 
-    ui.painter().add(eframe::egui_wgpu::Callback::new_paint_callback(
-        rect,
-        crate::gpu_image::GpuImageDisplayCallback {
-            node_id,
-            img: img.clone(),
-            target_format,
-            gpu_source,
-        },
-    ));
+    ui.painter()
+        .add(eframe::egui_wgpu::Callback::new_paint_callback(
+            rect,
+            crate::gpu_image::GpuImageDisplayCallback {
+                node_id,
+                img: img.clone(),
+                target_format,
+                gpu_source,
+            },
+        ));
 }
 
 pub fn show_image_preview(ui: &mut egui::Ui, node_id: NodeId, img: &ImageData, max_size: f32) {
@@ -618,7 +675,10 @@ fn show_image_preview_cached(
     } else {
         (max_size * aspect, max_size)
     };
-    ui.image(egui::load::SizedTexture::new(texture.id(), egui::vec2(w, h)));
+    ui.image(egui::load::SizedTexture::new(
+        texture.id(),
+        egui::vec2(w, h),
+    ));
 }
 
 fn downsample_for_preview(img: &ImageData, scale: f32) -> (usize, usize, Vec<u8>) {

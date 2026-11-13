@@ -55,18 +55,54 @@ struct Preset {
 /// camera/edge/displacement effects). Adding a new bundled preset = drop the
 /// `.wgsl` file in `assets/presets/wgsl/` AND add one line here.
 const BUNDLED_PRESETS: &[(&str, &str)] = &[
-    ("gradient",     include_str!("../../assets/presets/wgsl/gradient.wgsl")),
-    ("plasma",       include_str!("../../assets/presets/wgsl/plasma.wgsl")),
-    ("particles",    include_str!("../../assets/presets/wgsl/particles.wgsl")),
-    ("spinsquare",   include_str!("../../assets/presets/wgsl/spinsquare.wgsl")),
-    ("julia",        include_str!("../../assets/presets/wgsl/julia.wgsl")),
-    ("kaleidoscope", include_str!("../../assets/presets/wgsl/kaleidoscope.wgsl")),
-    ("mandelbrot",   include_str!("../../assets/presets/wgsl/mandelbrot.wgsl")),
-    ("fractal_zoom", include_str!("../../assets/presets/wgsl/fractal_zoom.wgsl")),
-    ("lissajous",    include_str!("../../assets/presets/wgsl/lissajous.wgsl")),
-    ("camera_grade", include_str!("../../assets/presets/wgsl/camera_grade.wgsl")),
-    ("edge_detect",  include_str!("../../assets/presets/wgsl/edge_detect.wgsl")),
-    ("displacement", include_str!("../../assets/presets/wgsl/displacement.wgsl")),
+    (
+        "gradient",
+        include_str!("../../assets/presets/wgsl/gradient.wgsl"),
+    ),
+    (
+        "plasma",
+        include_str!("../../assets/presets/wgsl/plasma.wgsl"),
+    ),
+    (
+        "particles",
+        include_str!("../../assets/presets/wgsl/particles.wgsl"),
+    ),
+    (
+        "spinsquare",
+        include_str!("../../assets/presets/wgsl/spinsquare.wgsl"),
+    ),
+    (
+        "julia",
+        include_str!("../../assets/presets/wgsl/julia.wgsl"),
+    ),
+    (
+        "kaleidoscope",
+        include_str!("../../assets/presets/wgsl/kaleidoscope.wgsl"),
+    ),
+    (
+        "mandelbrot",
+        include_str!("../../assets/presets/wgsl/mandelbrot.wgsl"),
+    ),
+    (
+        "fractal_zoom",
+        include_str!("../../assets/presets/wgsl/fractal_zoom.wgsl"),
+    ),
+    (
+        "lissajous",
+        include_str!("../../assets/presets/wgsl/lissajous.wgsl"),
+    ),
+    (
+        "camera_grade",
+        include_str!("../../assets/presets/wgsl/camera_grade.wgsl"),
+    ),
+    (
+        "edge_detect",
+        include_str!("../../assets/presets/wgsl/edge_detect.wgsl"),
+    ),
+    (
+        "displacement",
+        include_str!("../../assets/presets/wgsl/displacement.wgsl"),
+    ),
 ];
 
 /// Optional user-customizable directory: `~/.patchwork/presets/wgsl/`. Any
@@ -106,7 +142,9 @@ fn all_presets() -> &'static Vec<Preset> {
                         if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
                             // Skip if a bundled preset already owns this name —
                             // we never let user files silently shadow shipped ones.
-                            if out.iter().any(|p| p.key == stem) { continue; }
+                            if out.iter().any(|p| p.key == stem) {
+                                continue;
+                            }
                             out.push(Preset {
                                 key: stem.to_string(),
                                 label: humanize_stem(stem),
@@ -179,22 +217,30 @@ impl Default for WgslPresetsNode {
 }
 
 impl NodeBehavior for WgslPresetsNode {
-    fn title(&self) -> &str { "Visual Presets (WGSL)" }
+    fn title(&self) -> &str {
+        "Visual Presets (WGSL)"
+    }
 
-    fn inputs(&self) -> Vec<PortDef> { Vec::new() }
+    fn inputs(&self) -> Vec<PortDef> {
+        Vec::new()
+    }
 
     fn outputs(&self) -> Vec<PortDef> {
         vec![PortDef::new("Shader", PortKind::Text)]
     }
 
-    fn color_hint(&self) -> [u8; 3] { [180, 130, 220] }
+    fn color_hint(&self) -> [u8; 3] {
+        [180, 130, 220]
+    }
 
     fn evaluate(&mut self, _inputs: &[PortValue]) -> Vec<(usize, PortValue)> {
         let src = build_preset_wgsl(&self.preset_key);
         vec![(0, PortValue::Text(src))]
     }
 
-    fn type_tag(&self) -> &str { "wgsl_presets" }
+    fn type_tag(&self) -> &str {
+        "wgsl_presets"
+    }
 
     fn save_state(&self) -> serde_json::Value {
         serde_json::to_value(self).unwrap_or_default()
@@ -237,7 +283,9 @@ impl NodeBehavior for WgslPresetsNode {
             .on_hover_text("Create a Visuals (WGSL) viewer to the right and connect Shader → WGSL")
             .clicked()
         {
-            let req = WgslPresetsSpawnRequest { source_node: ctx.node_id };
+            let req = WgslPresetsSpawnRequest {
+                source_node: ctx.node_id,
+            };
             ui.ctx().data_mut(|d| {
                 d.insert_temp(egui::Id::new("wgsl_presets_spawn_request"), req);
             });

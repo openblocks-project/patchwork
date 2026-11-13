@@ -1,14 +1,14 @@
-use eframe::egui::{self, RichText};
+use crate::graph::{PortDef, PortKind, PortValue};
+use crate::node_trait::{NodeBehavior, RenderContext};
 use crate::nodes::ScrollAreaExt;
 use crate::nodes::web_app_mjpeg::{JpegSlot, MjpegEncoder, PLACEHOLDER_JPEG};
+use eframe::egui::{self, RichText};
 use std::collections::{HashMap, hash_map::DefaultHasher};
 use std::hash::{Hash, Hasher};
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use crate::graph::{PortDef, PortKind, PortValue};
-use crate::node_trait::{NodeBehavior, RenderContext};
 
 // ── Web App Node ─────────────────────────────────────────────────────────────
 //
@@ -192,10 +192,13 @@ fn start_web_app_server(state: SharedWebAppState) -> u16 {
                 crate::system_log::error(format!("Web App server bind failed: {}", e));
                 return 0;
             }
-        }
+        },
     };
     let port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
-    if let Ok(mut s) = state.lock() { s.port = port; s.is_running = true; }
+    if let Ok(mut s) = state.lock() {
+        s.port = port;
+        s.is_running = true;
+    }
 
     crate::system_log::log(format!("Web App server started on port {}", port));
 
@@ -204,7 +207,9 @@ fn start_web_app_server(state: SharedWebAppState) -> u16 {
             let Ok(mut stream) = stream else { continue };
             let mut buf = [0u8; 4096];
             let n = stream.read(&mut buf).unwrap_or(0);
-            if n == 0 { continue; }
+            if n == 0 {
+                continue;
+            }
             let request = String::from_utf8_lossy(&buf[..n]);
 
             if request.starts_with("OPTIONS ") {
@@ -227,8 +232,7 @@ fn start_web_app_server(state: SharedWebAppState) -> u16 {
                                     s.output_values.insert(k.clone(), f as f32);
                                     accepted += 1;
                                 } else if let Some(b) = v.as_bool() {
-                                    s.output_values.insert(k.clone(),
-                                        if b { 1.0 } else { 0.0 });
+                                    s.output_values.insert(k.clone(), if b { 1.0 } else { 0.0 });
                                     accepted += 1;
                                 } else if let Some(i) = v.as_i64() {
                                     s.output_values.insert(k.clone(), i as f32);
@@ -241,14 +245,19 @@ fn start_web_app_server(state: SharedWebAppState) -> u16 {
                 let body_resp = format!(r#"{{"accepted":{}}}"#, accepted);
                 let resp = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nCache-Control: no-cache\r\nContent-Length: {}\r\n\r\n{}",
-                    body_resp.len(), body_resp);
+                    body_resp.len(),
+                    body_resp
+                );
                 let _ = stream.write_all(resp.as_bytes());
                 let _ = stream.flush();
                 continue;
             } else if request.contains("GET /data") {
                 // Serve current input values as JSON
                 let json = if let Ok(s) = state.lock() {
-                    let pairs: Vec<String> = s.input_names.iter().zip(s.input_values.iter())
+                    let pairs: Vec<String> = s
+                        .input_names
+                        .iter()
+                        .zip(s.input_values.iter())
                         .map(|(name, val)| format!("\"{}\":{:.6}", name, val))
                         .collect();
                     format!("{{{}}}", pairs.join(","))
@@ -257,20 +266,26 @@ fn start_web_app_server(state: SharedWebAppState) -> u16 {
                 };
                 let resp = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nCache-Control: no-cache\r\nContent-Length: {}\r\n\r\n{}",
-                    json.len(), json);
+                    json.len(),
+                    json
+                );
                 let _ = stream.write_all(resp.as_bytes());
             } else if request.contains("GET /hash") {
                 let hash = state.lock().map(|s| s.html_hash).unwrap_or(0);
                 let body = format!("{}", hash);
                 let resp = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nAccess-Control-Allow-Origin: *\r\nCache-Control: no-cache\r\nContent-Length: {}\r\n\r\n{}",
-                    body.len(), body);
+                    body.len(),
+                    body
+                );
                 let _ = stream.write_all(resp.as_bytes());
             } else if request.contains("GET /raw") {
                 let html = state.lock().map(|s| s.html.clone()).unwrap_or_default();
                 let resp = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nAccess-Control-Allow-Origin: *\r\nCache-Control: no-cache\r\nContent-Length: {}\r\n\r\n{}",
-                    html.len(), html);
+                    html.len(),
+                    html
+                );
                 let _ = stream.write_all(resp.as_bytes());
             } else if request.contains("GET /stream") {
                 // MJPEG live stream. Hand off to a per-connection thread
@@ -286,7 +301,8 @@ fn start_web_app_server(state: SharedWebAppState) -> u16 {
                 continue;
             } else {
                 // Serve full page with injected bridge
-                let (html, hash) = state.lock()
+                let (html, hash) = state
+                    .lock()
                     .map(|s| (s.html.clone(), s.html_hash))
                     .unwrap_or_default();
 
@@ -309,14 +325,19 @@ fn start_web_app_server(state: SharedWebAppState) -> u16 {
                     // Fragment — wrap in full page. Bridge first so
                     // any inline scripts in the user fragment can use
                     // `patchwork.*` immediately.
-                    format!("<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>Web App</title>\
+                    format!(
+                        "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>Web App</title>\
                         <style>body{{margin:0;padding:16px;font-family:sans-serif;background:#1a1a2e;color:#eee;}}</style>\
-                        </head><body>{}{}</body></html>", bridge, html)
+                        </head><body>{}{}</body></html>",
+                        bridge, html
+                    )
                 };
 
                 let resp = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nCache-Control: no-cache\r\nContent-Length: {}\r\n\r\n{}",
-                    page.len(), page);
+                    page.len(),
+                    page
+                );
                 let _ = stream.write_all(resp.as_bytes());
             }
             let _ = stream.flush();
@@ -371,9 +392,11 @@ fn serve_mjpeg_stream(mut stream: std::net::TcpStream, slot: Arc<JpegSlot>) {
     }
 }
 
-fn write_mjpeg_part(stream: &mut std::net::TcpStream, boundary: &str, jpeg: &[u8])
-    -> std::io::Result<()>
-{
+fn write_mjpeg_part(
+    stream: &mut std::net::TcpStream,
+    boundary: &str,
+    jpeg: &[u8],
+) -> std::io::Result<()> {
     let part_header = format!(
         "--{boundary}\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\n\r\n",
         jpeg.len()
@@ -388,7 +411,9 @@ pub(crate) fn open_in_browser(url: &str) {
     #[cfg(target_os = "macos")]
     let _ = std::process::Command::new("open").arg(url).spawn();
     #[cfg(target_os = "windows")]
-    let _ = std::process::Command::new("cmd").args(["/C", "start", "", url]).spawn();
+    let _ = std::process::Command::new("cmd")
+        .args(["/C", "start", "", url])
+        .spawn();
     #[cfg(target_os = "linux")]
     let _ = std::process::Command::new("xdg-open").arg(url).spawn();
 }
@@ -403,7 +428,11 @@ pub(crate) fn detect_lan_ip() -> Option<std::net::IpAddr> {
     let s = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
     s.connect("8.8.8.8:80").ok()?;
     let ip = s.local_addr().ok()?.ip();
-    if ip.is_loopback() || ip.is_unspecified() { None } else { Some(ip) }
+    if ip.is_loopback() || ip.is_unspecified() {
+        None
+    } else {
+        Some(ip)
+    }
 }
 
 // ── QR code rendering ───────────────────────────────────────────────────────
@@ -416,7 +445,9 @@ pub(crate) fn url_qr_image(url: &str) -> Option<egui::ColorImage> {
     let code = qrcode::QrCode::new(url.as_bytes()).ok()?;
     let colors = code.to_colors();
     let side = code.width(); // QR is square, side = sqrt(colors.len())
-    if side == 0 { return None; }
+    if side == 0 {
+        return None;
+    }
     const SCALE: usize = 4;
     const QUIET: usize = 2;
     let pix_side = (side + QUIET * 2) * SCALE;
@@ -434,7 +465,10 @@ pub(crate) fn url_qr_image(url: &str) -> Option<egui::ColorImage> {
             }
         }
     }
-    Some(egui::ColorImage { size: [pix_side, pix_side], pixels })
+    Some(egui::ColorImage {
+        size: [pix_side, pix_side],
+        pixels,
+    })
 }
 
 // ── Node ──────────────────────────────────────────────────────────────────────
@@ -522,11 +556,21 @@ impl Default for WebAppNode {
 }
 
 impl NodeBehavior for WebAppNode {
-    fn title(&self)      -> &str   { "Web App" }
-    fn type_tag(&self)   -> &str   { "web_app" }
-    fn color_hint(&self) -> [u8;3] { [60, 200, 180] }
-    fn min_width(&self)  -> Option<f32> { Some(240.0) }
-    fn inline_ports(&self) -> bool { true }
+    fn title(&self) -> &str {
+        "Web App"
+    }
+    fn type_tag(&self) -> &str {
+        "web_app"
+    }
+    fn color_hint(&self) -> [u8; 3] {
+        [60, 200, 180]
+    }
+    fn min_width(&self) -> Option<f32> {
+        Some(240.0)
+    }
+    fn inline_ports(&self) -> bool {
+        true
+    }
 
     fn inputs(&self) -> Vec<PortDef> {
         // Port indices are pinned so adding/removing named numerics
@@ -547,7 +591,8 @@ impl NodeBehavior for WebAppNode {
     }
 
     fn outputs(&self) -> Vec<PortDef> {
-        self.output_names.iter()
+        self.output_names
+            .iter()
             .map(|n| PortDef::dynamic(n.clone(), PortKind::Number))
             .collect()
     }
@@ -599,7 +644,8 @@ impl NodeBehavior for WebAppNode {
             Some(PortValue::GpuImage(_)) => {
                 if self.image_status.is_empty() {
                     self.image_status = "GPU image not yet supported — \
-                        insert an image effect (e.g. Crop, Transform) before Web App".into();
+                        insert an image effect (e.g. Crop, Transform) before Web App"
+                        .into();
                 }
                 self.encoder = None;
                 self.encoder_dims = None;
@@ -650,7 +696,7 @@ impl NodeBehavior for WebAppNode {
 
     fn render_with_context(&mut self, ui: &mut egui::Ui, ctx: &mut RenderContext) {
         let node_id = ctx.node_id;
-        let dim   = egui::Color32::from_rgb(110, 110, 120);
+        let dim = egui::Color32::from_rgb(110, 110, 120);
         let green = egui::Color32::from_rgb(80, 200, 120);
 
         // ── Lazy server startup ──────────────────────────────────────────
@@ -674,7 +720,9 @@ impl NodeBehavior for WebAppNode {
         // both spawn-on-demand and drop-on-unwire of an external decoder
         // gated by a port-wiring check that lives in render. Spawning
         // happens in evaluate() (we need dims from the first frame).
-        let image_wired = ctx.connections.iter()
+        let image_wired = ctx
+            .connections
+            .iter()
             .any(|c| c.to_node == node_id && c.to_port == IMAGE_PORT_IDX);
         if !image_wired && self.encoder.is_some() {
             self.encoder = None;
@@ -708,7 +756,9 @@ impl NodeBehavior for WebAppNode {
             }
             if !primary_url.is_empty() {
                 let resp = ui.label(
-                    RichText::new(&primary_url).small().monospace()
+                    RichText::new(&primary_url)
+                        .small()
+                        .monospace()
                         .color(egui::Color32::from_rgb(100, 220, 200)),
                 );
                 resp.on_hover_text("Click ⤴ Open or scan the QR with a phone on the same Wi-Fi.");
@@ -716,7 +766,10 @@ impl NodeBehavior for WebAppNode {
                 ui.label(RichText::new("Stopped").small().color(dim));
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.small_button("⤴ Open").on_hover_text("Open in default browser").clicked()
+                if ui
+                    .small_button("⤴ Open")
+                    .on_hover_text("Open in default browser")
+                    .clicked()
                     && !primary_url.is_empty()
                 {
                     open_in_browser(&primary_url);
@@ -737,8 +790,11 @@ impl NodeBehavior for WebAppNode {
 
         // QR code — regenerate the texture lazily when the URL changes.
         if !primary_url.is_empty() {
-            let cache_hit = self.qr_texture.as_ref()
-                .map(|(u, _)| u == &primary_url).unwrap_or(false);
+            let cache_hit = self
+                .qr_texture
+                .as_ref()
+                .map(|(u, _)| u == &primary_url)
+                .unwrap_or(false);
             if !cache_hit {
                 if let Some(img) = url_qr_image(&primary_url) {
                     let handle = ui.ctx().load_texture(
@@ -761,12 +817,27 @@ impl NodeBehavior for WebAppNode {
         ui.add_space(2.0);
 
         // ── HTML input port ──────────────────────────────────────────────
-        let html_connected = ctx.connections.iter().any(|c| c.to_node == node_id && c.to_port == 0);
+        let html_connected = ctx
+            .connections
+            .iter()
+            .any(|c| c.to_node == node_id && c.to_port == 0);
         ui.horizontal(|ui| {
-            crate::nodes::inline_port_circle(ui, node_id, 0, true,
-                ctx.connections, ctx.port_positions, ctx.dragging_from, ctx.pending_disconnects, PortKind::Text);
-            ui.label(RichText::new(if html_connected { "HTML ✓" } else { "HTML" }).small()
-                .color(if html_connected { green } else { dim }));
+            crate::nodes::inline_port_circle(
+                ui,
+                node_id,
+                0,
+                true,
+                ctx.connections,
+                ctx.port_positions,
+                ctx.dragging_from,
+                ctx.pending_disconnects,
+                PortKind::Text,
+            );
+            ui.label(
+                RichText::new(if html_connected { "HTML ✓" } else { "HTML" })
+                    .small()
+                    .color(if html_connected { green } else { dim }),
+            );
         });
 
         // ── Named input ports ────────────────────────────────────────────
@@ -787,27 +858,55 @@ impl NodeBehavior for WebAppNode {
         let mut remove_idx: Option<usize> = None;
         for i in 0..self.input_names.len() {
             let port_idx = i + 2; // 0=HTML, 1=Image, 2..N+1=numerics
-            let port_wired = ctx.connections.iter().any(|c| c.to_node == node_id && c.to_port == port_idx);
+            let port_wired = ctx
+                .connections
+                .iter()
+                .any(|c| c.to_node == node_id && c.to_port == port_idx);
             ui.horizontal(|ui| {
-                crate::nodes::inline_port_circle(ui, node_id, port_idx, true,
-                    ctx.connections, ctx.port_positions, ctx.dragging_from, ctx.pending_disconnects, PortKind::Number);
-                ui.add(egui::TextEdit::singleline(&mut self.input_names[i]).desired_width(50.0)
-                    .font(egui::TextStyle::Small));
+                crate::nodes::inline_port_circle(
+                    ui,
+                    node_id,
+                    port_idx,
+                    true,
+                    ctx.connections,
+                    ctx.port_positions,
+                    ctx.dragging_from,
+                    ctx.pending_disconnects,
+                    PortKind::Number,
+                );
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.input_names[i])
+                        .desired_width(50.0)
+                        .font(egui::TextStyle::Small),
+                );
                 if port_wired {
                     let val = self.input_values.get(i).copied().unwrap_or(0.0);
-                    ui.label(RichText::new(format!("{:.2}", val)).small().monospace()
-                        .color(egui::Color32::from_rgb(100, 180, 240)));
+                    ui.label(
+                        RichText::new(format!("{:.2}", val))
+                            .small()
+                            .monospace()
+                            .color(egui::Color32::from_rgb(100, 180, 240)),
+                    );
                 } else {
                     // DragValue when not wired
                     if i < self.input_values.len() {
-                        ui.add(egui::DragValue::new(&mut self.input_values[i])
-                            .speed(0.01).range(0.0..=1.0).max_decimals(2));
+                        ui.add(
+                            egui::DragValue::new(&mut self.input_values[i])
+                                .speed(0.01)
+                                .range(0.0..=1.0)
+                                .max_decimals(2),
+                        );
                     }
                 }
                 // Remove button on the right
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if self.input_names.len() > 1 {
-                        if ui.small_button(RichText::new("−").color(egui::Color32::from_rgb(220, 80, 80))).clicked() {
+                        if ui
+                            .small_button(
+                                RichText::new("−").color(egui::Color32::from_rgb(220, 80, 80)),
+                            )
+                            .clicked()
+                        {
                             remove_idx = Some(i);
                         }
                     }
@@ -817,7 +916,9 @@ impl NodeBehavior for WebAppNode {
 
         if let Some(idx) = remove_idx {
             self.input_names.remove(idx);
-            if idx < self.input_values.len() { self.input_values.remove(idx); }
+            if idx < self.input_values.len() {
+                self.input_values.remove(idx);
+            }
             // Disconnect the removed numeric port + every numeric that
             // shifted down. Image (port 1) is pinned and unaffected.
             //   Pre-remove: numerics span ports 2..N+1.
@@ -838,9 +939,17 @@ impl NodeBehavior for WebAppNode {
         // order, so the wire connects to wherever this row sits.
         let img_wired = image_wired;
         ui.horizontal(|ui| {
-            crate::nodes::inline_port_circle(ui, node_id, IMAGE_PORT_IDX, true,
-                ctx.connections, ctx.port_positions, ctx.dragging_from,
-                ctx.pending_disconnects, PortKind::Image);
+            crate::nodes::inline_port_circle(
+                ui,
+                node_id,
+                IMAGE_PORT_IDX,
+                true,
+                ctx.connections,
+                ctx.port_positions,
+                ctx.dragging_from,
+                ctx.pending_disconnects,
+                PortKind::Image,
+            );
             let label = if !self.image_status.is_empty() {
                 "Image ⚠"
             } else if self.encoder.is_some() {
@@ -859,12 +968,20 @@ impl NodeBehavior for WebAppNode {
             };
             ui.label(RichText::new(label).small().color(color));
             if let Some((w, h)) = self.encoder_dims {
-                ui.label(RichText::new(format!("{}×{} → MJPEG", w, h)).small().monospace().color(dim));
+                ui.label(
+                    RichText::new(format!("{}×{} → MJPEG", w, h))
+                        .small()
+                        .monospace()
+                        .color(dim),
+                );
             }
         });
         if !self.image_status.is_empty() {
-            ui.label(RichText::new(&self.image_status).small()
-                .color(egui::Color32::from_rgb(220, 160, 80)));
+            ui.label(
+                RichText::new(&self.image_status)
+                    .small()
+                    .color(egui::Color32::from_rgb(220, 160, 80)),
+            );
         }
 
         ui.add_space(2.0);
@@ -889,19 +1006,36 @@ impl NodeBehavior for WebAppNode {
         // Output ports are indexed by their position in output_names (0..N).
         for i in 0..self.output_names.len() {
             ui.horizontal(|ui| {
-                crate::nodes::inline_port_circle(ui, node_id, i, false,
-                    ctx.connections, ctx.port_positions, ctx.dragging_from,
-                    ctx.pending_disconnects, PortKind::Number);
-                ui.add(egui::TextEdit::singleline(&mut self.output_names[i])
-                    .desired_width(70.0)
-                    .font(egui::TextStyle::Small));
+                crate::nodes::inline_port_circle(
+                    ui,
+                    node_id,
+                    i,
+                    false,
+                    ctx.connections,
+                    ctx.port_positions,
+                    ctx.dragging_from,
+                    ctx.pending_disconnects,
+                    PortKind::Number,
+                );
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.output_names[i])
+                        .desired_width(70.0)
+                        .font(egui::TextStyle::Small),
+                );
                 let v = self.output_cache.get(i).copied().unwrap_or(0.0);
-                ui.label(RichText::new(format!("{:.2}", v)).small().monospace()
-                    .color(egui::Color32::from_rgb(100, 220, 200)));
+                ui.label(
+                    RichText::new(format!("{:.2}", v))
+                        .small()
+                        .monospace()
+                        .color(egui::Color32::from_rgb(100, 220, 200)),
+                );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.small_button(
-                        RichText::new("−").color(egui::Color32::from_rgb(220, 80, 80))
-                    ).clicked() {
+                    if ui
+                        .small_button(
+                            RichText::new("−").color(egui::Color32::from_rgb(220, 80, 80)),
+                        )
+                        .clicked()
+                    {
                         remove_out_idx = Some(i);
                     }
                 });
@@ -909,7 +1043,9 @@ impl NodeBehavior for WebAppNode {
         }
         if let Some(idx) = remove_out_idx {
             self.output_names.remove(idx);
-            if idx < self.output_cache.len() { self.output_cache.remove(idx); }
+            if idx < self.output_cache.len() {
+                self.output_cache.remove(idx);
+            }
             // Disconnect any wires hanging off this (or shifted) output port.
             for p in idx..self.output_names.len() + 1 {
                 ctx.pending_disconnects.push((node_id, p));
@@ -927,11 +1063,15 @@ impl NodeBehavior for WebAppNode {
                 .id_salt(egui::Id::new(("webapp_code", node_id)))
                 .max_height(150.0)
                 .show_pannable(ui, |ui| {
-                    ui.add(egui::TextEdit::multiline(&mut self.html_code)
-                        .desired_rows(4)
-                        .desired_width(f32::INFINITY)
-                        .font(egui::TextStyle::Monospace)).changed()
-                }).inner;
+                    ui.add(
+                        egui::TextEdit::multiline(&mut self.html_code)
+                            .desired_rows(4)
+                            .desired_width(f32::INFINITY)
+                            .font(egui::TextStyle::Monospace),
+                    )
+                    .changed()
+                })
+                .inner;
 
             if changed {
                 if let Some(ref state) = self.server_state {
@@ -943,13 +1083,18 @@ impl NodeBehavior for WebAppNode {
                 }
             }
 
-            if ui.small_button(RichText::new("Open in editor").small()).clicked() {
+            if ui
+                .small_button(RichText::new("Open in editor").small())
+                .clicked()
+            {
                 let tmp = std::env::temp_dir().join(format!("patchwork_webapp_{}.html", node_id));
                 if std::fs::write(&tmp, &self.html_code).is_ok() {
                     #[cfg(target_os = "macos")]
                     let _ = std::process::Command::new("open").arg(&tmp).spawn();
                     #[cfg(target_os = "windows")]
-                    let _ = std::process::Command::new("cmd").args(["/C", "start", "", &tmp.display().to_string()]).spawn();
+                    let _ = std::process::Command::new("cmd")
+                        .args(["/C", "start", "", &tmp.display().to_string()])
+                        .spawn();
                     #[cfg(target_os = "linux")]
                     let _ = std::process::Command::new("xdg-open").arg(&tmp).spawn();
                 }
@@ -957,7 +1102,6 @@ impl NodeBehavior for WebAppNode {
         } else {
             ui.label(RichText::new("HTML from input ✓").small().color(green));
         }
-
     }
 
     fn save_state(&self) -> serde_json::Value {
@@ -970,13 +1114,15 @@ impl NodeBehavior for WebAppNode {
 
     fn load_state(&mut self, state: &serde_json::Value) {
         if let Some(names) = state.get("input_names").and_then(|v| v.as_array()) {
-            self.input_names = names.iter()
+            self.input_names = names
+                .iter()
                 .filter_map(|v| v.as_str().map(String::from))
                 .collect();
             self.input_values = vec![0.0; self.input_names.len()];
         }
         if let Some(names) = state.get("output_names").and_then(|v| v.as_array()) {
-            self.output_names = names.iter()
+            self.output_names = names
+                .iter()
                 .filter_map(|v| v.as_str().map(String::from))
                 .collect();
             self.output_cache = vec![0.0; self.output_names.len()];

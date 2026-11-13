@@ -28,13 +28,21 @@ pub struct HttpManager {
 
 impl HttpManager {
     pub fn new() -> Self {
-        Self { pending: HashMap::new() }
+        Self {
+            pending: HashMap::new(),
+        }
     }
 
     pub fn process(&mut self, actions: Vec<HttpAction>) {
         for action in actions {
             match action {
-                HttpAction::SendRequest { node_id, url, method, headers, body } => {
+                HttpAction::SendRequest {
+                    node_id,
+                    url,
+                    method,
+                    headers,
+                    body,
+                } => {
                     let (tx, rx) = mpsc::channel();
                     self.pending.insert(node_id, PendingRequest { rx });
 
@@ -47,7 +55,10 @@ impl HttpManager {
                     let body_len = body.len();
                     crate::system_log::log(format!(
                         "HTTP → node#{} {} {} ({} body bytes)",
-                        node_id, method_up, truncate(&display_url, 120), body_len
+                        node_id,
+                        method_up,
+                        truncate(&display_url, 120),
+                        body_len
                     ));
 
                     let log_method = method_up.clone();
@@ -91,16 +102,24 @@ impl HttpManager {
                         let elapsed_ms = started.elapsed().as_millis();
                         let summary = format!(
                             "HTTP ← node#{} {} {} → {} in {}ms ({} bytes)",
-                            node_id, log_method, truncate(&log_url, 80),
-                            resp.status, elapsed_ms, resp.body.len()
+                            node_id,
+                            log_method,
+                            truncate(&log_url, 80),
+                            resp.status,
+                            elapsed_ms,
+                            resp.body.len()
                         );
                         if resp.status == 0 {
                             crate::system_log::error(format!(
-                                "{} | {}", summary, truncate(&resp.body, 240)
+                                "{} | {}",
+                                summary,
+                                truncate(&resp.body, 240)
                             ));
                         } else if !(200..300).contains(&resp.status) {
                             crate::system_log::warn(format!(
-                                "{} | {}", summary, truncate(&resp.body, 240)
+                                "{} | {}",
+                                summary,
+                                truncate(&resp.body, 240)
                             ));
                         } else {
                             crate::system_log::log(summary);
@@ -150,18 +169,23 @@ fn truncate(s: &str, max: usize) -> String {
 /// `?api_key=...`, `?token=...`) so the system console doesn't leak
 /// API keys when logging Google / Imagen URLs.
 fn redact_url_query(url: &str) -> String {
-    let Some(q_pos) = url.find('?') else { return url.to_string(); };
+    let Some(q_pos) = url.find('?') else {
+        return url.to_string();
+    };
     let (base, query) = url.split_at(q_pos);
     let query = &query[1..];
-    let cleaned: Vec<String> = query.split('&').map(|kv| {
-        if let Some(eq) = kv.find('=') {
-            let (k, _) = kv.split_at(eq);
-            let lower = k.to_ascii_lowercase();
-            if lower.contains("key") || lower.contains("token") || lower.contains("secret") {
-                return format!("{}=***", k);
+    let cleaned: Vec<String> = query
+        .split('&')
+        .map(|kv| {
+            if let Some(eq) = kv.find('=') {
+                let (k, _) = kv.split_at(eq);
+                let lower = k.to_ascii_lowercase();
+                if lower.contains("key") || lower.contains("token") || lower.contains("secret") {
+                    return format!("{}=***", k);
+                }
             }
-        }
-        kv.to_string()
-    }).collect();
+            kv.to_string()
+        })
+        .collect();
     format!("{}?{}", base, cleaned.join("&"))
 }

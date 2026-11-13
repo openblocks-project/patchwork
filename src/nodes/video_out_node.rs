@@ -79,36 +79,46 @@ impl VideoSink {
     }
     fn all() -> [Self; 6] {
         [
-            Self::Window, Self::Syphon, Self::Ndi, Self::Spout,
-            Self::VirtualCamera, Self::FileRecord,
+            Self::Window,
+            Self::Syphon,
+            Self::Ndi,
+            Self::Spout,
+            Self::VirtualCamera,
+            Self::FileRecord,
         ]
     }
 }
 
 #[derive(Serialize, Deserialize)]
 pub struct VideoOutNode {
-    #[serde(default)] pub sink: VideoSink,
+    #[serde(default)]
+    pub sink: VideoSink,
 
     /// Display id for `Window` sinks (matches `Display::id` from
     /// `crate::display`); publish name for Syphon / NDI / Spout
     /// (Phase 2–4); path for FileRecord (Phase 6). Empty string means
     /// "primary display" for Window sinks.
-    #[serde(default)] pub destination: String,
+    #[serde(default)]
+    pub destination: String,
 
     /// Fullscreen flag for the Window sink. Persisted so a project that
     /// ships with Video Out meant to go fullscreen on a second monitor
     /// opens that way on reload.
-    #[serde(default)] pub fullscreen: bool,
+    #[serde(default)]
+    pub fullscreen: bool,
 
     /// Optional fps cap (NDI sender uses this in Phase 3).
-    #[serde(default)] pub fps_cap: f32,
+    #[serde(default)]
+    pub fps_cap: f32,
 
     /// Whether the sink is currently publishing. Deliberately not
     /// serialised — user toggles on after loading a project so stray
     /// viewports don't pop on load.
-    #[serde(skip)] pub enabled: bool,
+    #[serde(skip)]
+    pub enabled: bool,
 
-    #[serde(skip)] pub status: String,
+    #[serde(skip)]
+    pub status: String,
 
     /// Syphon server, lazily created on first enabled tick when the
     /// sink is `Syphon`. `Arc<Mutex<…>>` so the whole node stays
@@ -156,13 +166,15 @@ pub struct VideoOutNode {
     /// 2=ProRes (`crate::video_io::file_recorder::codec_from_byte`
     /// parses; unknown values fall back to H.264). Persists so a saved
     /// project re-loads with the user's last codec choice.
-    #[serde(default)] pub recorder_codec: u8,
+    #[serde(default)]
+    pub recorder_codec: u8,
 
     /// Path of the next file to write. Persists across save/load so
     /// users don't re-pick the path each time they reopen a project.
     /// Empty means "use the auto-generated default" (filled in on
     /// Start).
-    #[serde(default)] pub recorder_path: String,
+    #[serde(default)]
+    pub recorder_path: String,
 
     /// Active recorder. `Arc<Mutex<Option<...>>>` matches the
     /// Send + Sync shape used for syphon/ndi handles. Lazy-created on
@@ -240,17 +252,29 @@ impl Clone for VideoOutNode {
 }
 
 impl NodeBehavior for VideoOutNode {
-    fn title(&self) -> &str { "Video Out" }
-    fn inputs(&self) -> Vec<PortDef> { vec![PortDef::new("Image", PortKind::Image)] }
-    fn outputs(&self) -> Vec<PortDef> { vec![] }
-    fn color_hint(&self) -> [u8; 3] { [200, 100, 255] }
-    fn type_tag(&self) -> &str { "video_out" }
+    fn title(&self) -> &str {
+        "Video Out"
+    }
+    fn inputs(&self) -> Vec<PortDef> {
+        vec![PortDef::new("Image", PortKind::Image)]
+    }
+    fn outputs(&self) -> Vec<PortDef> {
+        vec![]
+    }
+    fn color_hint(&self) -> [u8; 3] {
+        [200, 100, 255]
+    }
+    fn type_tag(&self) -> &str {
+        "video_out"
+    }
 
     /// We draw the Image input port ourselves inside `render_with_context`
     /// via `inline_port_circle` — tell the node framework to skip the
     /// default auto-rendered port header so we don't get two "Image"
     /// rows stacked on top of each other.
-    fn inline_ports(&self) -> bool { true }
+    fn inline_ports(&self) -> bool {
+        true
+    }
 
     /// Window sink is GPU-resident (draws via `show_image_gpu`). Only
     /// flip to `true` once a CPU-requiring sink (virtual camera
@@ -269,7 +293,9 @@ impl NodeBehavior for VideoOutNode {
         matches!(self.sink, VideoSink::VirtualCamera | VideoSink::FileRecord)
     }
 
-    fn evaluate(&mut self, _inputs: &[PortValue]) -> Vec<(usize, PortValue)> { vec![] }
+    fn evaluate(&mut self, _inputs: &[PortValue]) -> Vec<(usize, PortValue)> {
+        vec![]
+    }
 
     fn save_state(&self) -> serde_json::Value {
         serde_json::to_value(self).unwrap_or_default()
@@ -335,9 +361,15 @@ impl NodeBehavior for VideoOutNode {
 
         ui.horizontal(|ui| {
             crate::nodes::inline_port_circle(
-                ui, ctx.node_id, 0, true,
-                ctx.connections, ctx.port_positions, ctx.dragging_from,
-                ctx.pending_disconnects, PortKind::Image,
+                ui,
+                ctx.node_id,
+                0,
+                true,
+                ctx.connections,
+                ctx.port_positions,
+                ctx.dragging_from,
+                ctx.pending_disconnects,
+                PortKind::Image,
             );
             ui.label(egui::RichText::new("Image").small());
             if wired {
@@ -347,7 +379,11 @@ impl NodeBehavior for VideoOutNode {
                     _ => None,
                 };
                 if let Some((w, h)) = dims {
-                    ui.label(egui::RichText::new(format!("{}×{}", w, h)).small().color(dim));
+                    ui.label(
+                        egui::RichText::new(format!("{}×{}", w, h))
+                            .small()
+                            .color(dim),
+                    );
                 }
             }
         });
@@ -385,10 +421,7 @@ impl NodeBehavior for VideoOutNode {
                                         ),
                                     )
                                 } else {
-                                    (
-                                        format!("{}  ({})", s.label(), s.phase_hint()),
-                                        None,
-                                    )
+                                    (format!("{}  ({})", s.label(), s.phase_hint()), None)
                                 }
                             }
                             #[cfg(not(target_os = "macos"))]
@@ -462,7 +495,8 @@ impl NodeBehavior for VideoOutNode {
                         "{} — shipping in {}.\nSee docs/video_io_spec.md",
                         self.sink.label(),
                         self.sink.phase_hint(),
-                    )).small(),
+                    ))
+                    .small(),
                 );
                 ui.add_space(4.0);
             }
@@ -537,8 +571,14 @@ impl VideoOutNode {
         //   server up, ≥1 client   → green "● live"
         let mut toggle_clicked = false;
         ui.horizontal(|ui| {
-            let label = if self.enabled { "● Stop" } else { "▶ Broadcast" };
-            if ui.button(label).clicked() { toggle_clicked = true; }
+            let label = if self.enabled {
+                "● Stop"
+            } else {
+                "▶ Broadcast"
+            };
+            if ui.button(label).clicked() {
+                toggle_clicked = true;
+            }
             if self.enabled {
                 let (has_server, has_clients) = self
                     .syphon_server
@@ -554,7 +594,10 @@ impl VideoOutNode {
                 } else if has_clients {
                     ("● live", egui::Color32::from_rgb(80, 200, 80))
                 } else {
-                    ("waiting for subscribers", egui::Color32::from_rgb(200, 180, 80))
+                    (
+                        "waiting for subscribers",
+                        egui::Color32::from_rgb(200, 180, 80),
+                    )
                 };
                 ui.colored_label(color, egui::RichText::new(text).small());
             }
@@ -611,7 +654,9 @@ impl VideoOutNode {
             self.status = "wgpu render state unavailable".into();
             return;
         };
-        let Ok(mut guard) = self.syphon_server.lock() else { return; };
+        let Ok(mut guard) = self.syphon_server.lock() else {
+            return;
+        };
         if guard.is_none() {
             let Some(mtl_device) = wgpu_metal::wgpu_device_to_mtl(&render_state.device) else {
                 self.status = "Not on Metal backend".into();
@@ -632,7 +677,9 @@ impl VideoOutNode {
                 }
             }
         }
-        let Some(server) = guard.as_ref() else { return; };
+        let Some(server) = guard.as_ref() else {
+            return;
+        };
 
         // ── Bridge wgpu::Texture → MTLTexture and publish ──────────
         let Some(mtl_tex) = wgpu_metal::wgpu_texture_to_mtl(&tex) else {
@@ -768,7 +815,11 @@ impl VideoOutNode {
         //   sender up, ≥1 conn     → green "● live (N)"
         let mut toggle_clicked = false;
         ui.horizontal(|ui| {
-            let label = if self.enabled { "● Stop" } else { "▶ Broadcast" };
+            let label = if self.enabled {
+                "● Stop"
+            } else {
+                "▶ Broadcast"
+            };
             if ui.button(label).clicked() {
                 toggle_clicked = true;
             }
@@ -818,11 +869,7 @@ impl VideoOutNode {
                 let since = t.elapsed();
                 ui.colored_label(
                     dim,
-                    egui::RichText::new(format!(
-                        "last send: {} ms ago",
-                        since.as_millis()
-                    ))
-                    .small(),
+                    egui::RichText::new(format!("last send: {} ms ago", since.as_millis())).small(),
                 );
             }
         }
@@ -894,7 +941,11 @@ impl VideoOutNode {
                 // row. If it's RGBA, it additionally swaps R↔B
                 // inline during the extraction — still a single pass.
                 let bgra = gpu_image::readback_texture_bgra(
-                    &render_state.device, &render_state.queue, &tex, w, h,
+                    &render_state.device,
+                    &render_state.queue,
+                    &tex,
+                    w,
+                    h,
                 );
                 let expected = (w as usize) * (h as usize) * 4;
                 if bgra.len() != expected {
@@ -923,7 +974,9 @@ impl VideoOutNode {
         }
 
         // ── Lazy-init NdiSender ────────────────────────────────────
-        let Ok(mut guard) = self.ndi_sender.lock() else { return; };
+        let Ok(mut guard) = self.ndi_sender.lock() else {
+            return;
+        };
         if guard.is_none() {
             let name = if self.destination.trim().is_empty() {
                 "PatchWork"
@@ -939,7 +992,9 @@ impl VideoOutNode {
                 }
             }
         }
-        let Some(sender) = guard.as_ref() else { return; };
+        let Some(sender) = guard.as_ref() else {
+            return;
+        };
 
         // ── Publish ────────────────────────────────────────────────
         let (rn, rd) = rational_fps(fps_cap);
@@ -954,10 +1009,7 @@ impl VideoOutNode {
         ui.ctx().request_repaint();
 
         ui.add_space(2.0);
-        ui.colored_label(
-            dim,
-            egui::RichText::new(format!("{}×{}", w, h)).small(),
-        );
+        ui.colored_label(dim, egui::RichText::new(format!("{}×{}", w, h)).small());
     }
 
     /// Phase 1 Window sink: display picker + fullscreen checkbox +
@@ -1014,7 +1066,11 @@ impl VideoOutNode {
         // ── Fullscreen + Enable row ────────────────────────────────
         ui.horizontal(|ui| {
             ui.checkbox(&mut self.fullscreen, "Fullscreen");
-            let button_label = if self.enabled { "● Close" } else { "▶ Open" };
+            let button_label = if self.enabled {
+                "● Close"
+            } else {
+                "▶ Open"
+            };
             if ui.button(button_label).clicked() {
                 self.enabled = !self.enabled;
                 if self.enabled {
@@ -1058,14 +1114,18 @@ impl VideoOutNode {
         // shape `show_image_gpu` expects.
         let img_and_src: Option<(Arc<ImageData>, Option<(NodeId, usize)>)> = match input_val {
             PortValue::Image(img) => {
-                let gpu_source = ctx.connections.iter()
+                let gpu_source = ctx
+                    .connections
+                    .iter()
                     .find(|c| c.to_node == ctx.node_id && c.to_port == 0)
                     .map(|c| (c.from_node, c.from_port));
                 Some((img.clone(), gpu_source))
             }
             PortValue::GpuImage(handle) => {
                 let stub = Arc::new(ImageData {
-                    width: handle.width, height: handle.height, pixels: Vec::new(),
+                    width: handle.width,
+                    height: handle.height,
+                    pixels: Vec::new(),
                 });
                 Some((stub, Some((handle.node_id, handle.port))))
             }
@@ -1097,10 +1157,8 @@ impl VideoOutNode {
         // temp flag as the bridge (the closure can only &mut borrow
         // things with `'static`).
         let close_flag_id = egui::Id::new(("vout_close", nid));
-        ui.ctx().show_viewport_immediate(
-            viewport_id,
-            builder,
-            move |ctx, _class| {
+        ui.ctx()
+            .show_viewport_immediate(viewport_id, builder, move |ctx, _class| {
                 egui::CentralPanel::default()
                     .frame(egui::Frame::NONE.fill(egui::Color32::BLACK))
                     .show(ctx, |ui| {
@@ -1115,11 +1173,19 @@ impl VideoOutNode {
                             };
                             let pad_x = (avail.x - draw_w) / 2.0;
                             let pad_y = (avail.y - draw_h) / 2.0;
-                            if pad_y > 0.0 { ui.add_space(pad_y); }
+                            if pad_y > 0.0 {
+                                ui.add_space(pad_y);
+                            }
                             ui.horizontal(|ui| {
-                                if pad_x > 0.0 { ui.add_space(pad_x); }
+                                if pad_x > 0.0 {
+                                    ui.add_space(pad_x);
+                                }
                                 crate::nodes::image_node::show_image_gpu(
-                                    ui, nid, img, draw_w, src_for_viewport,
+                                    ui,
+                                    nid,
+                                    img,
+                                    draw_w,
+                                    src_for_viewport,
                                 );
                             });
                         }
@@ -1131,8 +1197,7 @@ impl VideoOutNode {
                     ctx.data_mut(|d| d.insert_temp(close_flag_id, true));
                 }
                 ctx.request_repaint();
-            },
-        );
+            });
 
         // Drain the close flag from egui data so the next frame
         // observes the teardown request.
@@ -1228,9 +1293,7 @@ impl VideoOutNode {
                     }
                     ui.add_space(6.0);
                     if ui
-                        .add(egui::Button::new(
-                            egui::RichText::new("Confirm").strong(),
-                        ))
+                        .add(egui::Button::new(egui::RichText::new("Confirm").strong()))
                         .clicked()
                     {
                         confirm_clicked = true;
@@ -1243,7 +1306,8 @@ impl VideoOutNode {
                 }
             });
 
-        ui.ctx().data_mut(|d| d.insert_temp(dont_show_id, dont_show));
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(dont_show_id, dont_show));
 
         if confirm_clicked {
             // Persist the "don't show again" preference. Load-mutate-
@@ -1422,8 +1486,14 @@ impl VideoOutNode {
             .lock()
             .ok()
             .and_then(|g| {
-                g.as_ref()
-                    .map(|r| (r.is_paused(), r.frames_written(), r.file_size_on_disk(), r.elapsed().as_secs()))
+                g.as_ref().map(|r| {
+                    (
+                        r.is_paused(),
+                        r.frames_written(),
+                        r.file_size_on_disk(),
+                        r.elapsed().as_secs(),
+                    )
+                })
             })
             .unwrap_or((false, 0, 0, 0));
 
@@ -1450,11 +1520,7 @@ impl VideoOutNode {
                     // Hand the recorder to a worker thread for the
                     // graceful flush — UI thread can't afford the 5 s
                     // wait. Result comes back via `stop_result_rx`.
-                    let opt = self
-                        .file_recorder
-                        .lock()
-                        .ok()
-                        .and_then(|mut g| g.take());
+                    let opt = self.file_recorder.lock().ok().and_then(|mut g| g.take());
                     if let Some(rec) = opt {
                         let (tx, rx) = crossbeam_channel::bounded::<Result<(), String>>(1);
                         std::thread::spawn(move || {
@@ -1470,12 +1536,18 @@ impl VideoOutNode {
                 let s = secs % 60;
                 let (text, color) = if paused {
                     (
-                        format!("⏸ paused ({} frames, {}, {:02}:{:02})", frames_w, size_str, m, s),
+                        format!(
+                            "⏸ paused ({} frames, {}, {:02}:{:02})",
+                            frames_w, size_str, m, s
+                        ),
                         egui::Color32::from_rgb(200, 180, 80),
                     )
                 } else {
                     (
-                        format!("● recording ({} frames, {}, {:02}:{:02})", frames_w, size_str, m, s),
+                        format!(
+                            "● recording ({} frames, {}, {:02}:{:02})",
+                            frames_w, size_str, m, s
+                        ),
                         egui::Color32::from_rgb(80, 200, 80),
                     )
                 };
@@ -1484,7 +1556,11 @@ impl VideoOutNode {
                 let saving = self.stop_result_rx.is_some();
                 let start_enabled = !saving;
                 ui.add_enabled_ui(start_enabled, |ui| {
-                    if ui.button("● Start").on_hover_text("Begin recording").clicked() {
+                    if ui
+                        .button("● Start")
+                        .on_hover_text("Begin recording")
+                        .clicked()
+                    {
                         // Auto-fill path from default if user left it
                         // blank — single-click "just record" UX.
                         if self.recorder_path.trim().is_empty() {
@@ -1515,24 +1591,19 @@ impl VideoOutNode {
 
         // ── Latest stderr line (amber, only while recording) ───────
         if recorder_active {
-            if let Some(line) = self
-                .file_recorder
-                .lock()
-                .ok()
-                .and_then(|mut g| {
-                    if let Some(r) = g.as_mut() {
-                        r.pump_stderr();
-                        let log = r.stderr_log();
-                        if log.is_empty() {
-                            None
-                        } else {
-                            Some(log.lines().last().unwrap_or("").to_string())
-                        }
-                    } else {
+            if let Some(line) = self.file_recorder.lock().ok().and_then(|mut g| {
+                if let Some(r) = g.as_mut() {
+                    r.pump_stderr();
+                    let log = r.stderr_log();
+                    if log.is_empty() {
                         None
+                    } else {
+                        Some(log.lines().last().unwrap_or("").to_string())
                     }
-                })
-            {
+                } else {
+                    None
+                }
+            }) {
                 if !line.is_empty() {
                     ui.colored_label(
                         egui::Color32::from_rgb(220, 180, 80),

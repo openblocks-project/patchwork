@@ -2,10 +2,10 @@
 //! Image: crop margins (top/left/bottom/right as 0-1 fractions)
 //! Text: substring extraction (start/end as 0-1 fractions)
 
-use crate::graph::{NodeId, PortDef, PortKind, PortValue, ImageData, Graph};
+use crate::graph::{Graph, ImageData, NodeId, PortDef, PortKind, PortValue};
 use crate::node_trait::{NodeBehavior, RenderContext};
-use serde::{Serialize, Deserialize};
 use eframe::egui;
+use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -27,7 +27,9 @@ fn downsample_for_preview(img: &ImageData, target_w: u32, target_h: u32) -> Vec<
     let out_bytes = (target_w * target_h * 4) as usize;
     let mut out: Vec<u8> = Vec::with_capacity(out_bytes);
     // SAFETY: every u32 written in the loop below.
-    unsafe { out.set_len(out_bytes); }
+    unsafe {
+        out.set_len(out_bytes);
+    }
 
     let x_ratio = img.width as f32 / target_w as f32;
     let y_ratio = img.height as f32 / target_h as f32;
@@ -67,7 +69,12 @@ pub struct CropNode {
 
 impl Default for CropNode {
     fn default() -> Self {
-        Self { top: 0.0, left: 0.0, bottom: 0.0, right: 0.0 }
+        Self {
+            top: 0.0,
+            left: 0.0,
+            bottom: 0.0,
+            right: 0.0,
+        }
     }
 }
 
@@ -91,7 +98,9 @@ impl CropNode {
         // SAFETY: every output pixel is written below — either from the
         // copied row or by the zero-fill on rows that fall outside the
         // source.
-        unsafe { pixels.set_len(out_bytes); }
+        unsafe {
+            pixels.set_len(out_bytes);
+        }
 
         let src: &[u32] = bytemuck::cast_slice(&img.pixels);
         let dst: &mut [u32] = bytemuck::cast_slice_mut(&mut pixels);
@@ -114,27 +123,38 @@ impl CropNode {
             let src_col_start = x0 as usize;
 
             // Fast path: whole-row slice copy via u32.
-            dst[dst_row_start .. dst_row_start + copyable]
-                .copy_from_slice(&src[src_row_start + src_col_start .. src_row_start + src_col_start + copyable]);
+            dst[dst_row_start..dst_row_start + copyable].copy_from_slice(
+                &src[src_row_start + src_col_start..src_row_start + src_col_start + copyable],
+            );
 
             // Right-edge padding (if out_w > copyable) → zero.
             for i in copyable..out_w_us {
                 dst[dst_row_start + i] = 0;
             }
         }
-        Arc::new(ImageData { width: out_w, height: out_h, pixels })
+        Arc::new(ImageData {
+            width: out_w,
+            height: out_h,
+            pixels,
+        })
     }
 
     fn crop_text(&self, text: &str) -> String {
         let len = text.len();
         let start = (self.left * len as f32) as usize;
         let end = len.saturating_sub((self.right * len as f32) as usize);
-        if start < end { text[start..end].to_string() } else { String::new() }
+        if start < end {
+            text[start..end].to_string()
+        } else {
+            String::new()
+        }
     }
 }
 
 impl NodeBehavior for CropNode {
-    fn title(&self) -> &str { "Crop" }
+    fn title(&self) -> &str {
+        "Crop"
+    }
     fn inputs(&self) -> Vec<PortDef> {
         vec![
             PortDef::new("Input", PortKind::Image),
@@ -144,16 +164,30 @@ impl NodeBehavior for CropNode {
             PortDef::new("Right", PortKind::Normalized),
         ]
     }
-    fn outputs(&self) -> Vec<PortDef> { vec![PortDef::new("Cropped", PortKind::Image)] }
-    fn color_hint(&self) -> [u8; 3] { [160, 140, 200] }
-    fn inline_ports(&self) -> bool { true }
+    fn outputs(&self) -> Vec<PortDef> {
+        vec![PortDef::new("Cropped", PortKind::Image)]
+    }
+    fn color_hint(&self) -> [u8; 3] {
+        [160, 140, 200]
+    }
+    fn inline_ports(&self) -> bool {
+        true
+    }
 
     fn evaluate(&mut self, inputs: &[PortValue]) -> Vec<(usize, PortValue)> {
         // Override margins from ports
-        if let Some(PortValue::Float(v)) = inputs.get(1) { self.top = v.clamp(0.0, 0.95); }
-        if let Some(PortValue::Float(v)) = inputs.get(2) { self.left = v.clamp(0.0, 0.95); }
-        if let Some(PortValue::Float(v)) = inputs.get(3) { self.bottom = v.clamp(0.0, 0.95); }
-        if let Some(PortValue::Float(v)) = inputs.get(4) { self.right = v.clamp(0.0, 0.95); }
+        if let Some(PortValue::Float(v)) = inputs.get(1) {
+            self.top = v.clamp(0.0, 0.95);
+        }
+        if let Some(PortValue::Float(v)) = inputs.get(2) {
+            self.left = v.clamp(0.0, 0.95);
+        }
+        if let Some(PortValue::Float(v)) = inputs.get(3) {
+            self.bottom = v.clamp(0.0, 0.95);
+        }
+        if let Some(PortValue::Float(v)) = inputs.get(4) {
+            self.right = v.clamp(0.0, 0.95);
+        }
 
         let result = match inputs.first() {
             Some(PortValue::Image(img)) => PortValue::Image(self.crop_image(img)),
@@ -170,10 +204,16 @@ impl NodeBehavior for CropNode {
         vec![(0, result)]
     }
 
-    fn type_tag(&self) -> &str { "crop" }
-    fn save_state(&self) -> serde_json::Value { serde_json::to_value(self).unwrap_or_default() }
+    fn type_tag(&self) -> &str {
+        "crop"
+    }
+    fn save_state(&self) -> serde_json::Value {
+        serde_json::to_value(self).unwrap_or_default()
+    }
     fn load_state(&mut self, state: &serde_json::Value) {
-        if let Ok(l) = serde_json::from_value::<CropNode>(state.clone()) { *self = l; }
+        if let Ok(l) = serde_json::from_value::<CropNode>(state.clone()) {
+            *self = l;
+        }
     }
 
     fn render_with_context(&mut self, ui: &mut egui::Ui, ctx: &mut RenderContext) {
@@ -182,8 +222,17 @@ impl NodeBehavior for CropNode {
 
         // Input port
         ui.horizontal(|ui| {
-            crate::nodes::inline_port_circle(ui, ctx.node_id, 0, true, ctx.connections,
-                ctx.port_positions, ctx.dragging_from, ctx.pending_disconnects, PortKind::Image);
+            crate::nodes::inline_port_circle(
+                ui,
+                ctx.node_id,
+                0,
+                true,
+                ctx.connections,
+                ctx.port_positions,
+                ctx.dragging_from,
+                ctx.pending_disconnects,
+                PortKind::Image,
+            );
             ui.label(egui::RichText::new("Input").small());
         });
 
@@ -199,7 +248,8 @@ impl NodeBehavior for CropNode {
             let max_w = ui.available_width().min(200.0);
             let aspect = ih as f32 / iw as f32;
             let preview_h = max_w * aspect;
-            let (rect, _) = ui.allocate_exact_size(egui::vec2(max_w, preview_h), egui::Sense::hover());
+            let (rect, _) =
+                ui.allocate_exact_size(egui::vec2(max_w, preview_h), egui::Sense::hover());
             let painter = ui.painter();
 
             // Draw the actual input image as the preview background (CPU
@@ -217,7 +267,8 @@ impl NodeBehavior for CropNode {
 
                     CROP_PREVIEW_TEX.with(|cache| {
                         let mut cache = cache.borrow_mut();
-                        let cached_same = cache.get(&ctx.node_id)
+                        let cached_same = cache
+                            .get(&ctx.node_id)
                             .map(|(_, p)| *p == arc_ptr)
                             .unwrap_or(false);
 
@@ -247,7 +298,10 @@ impl NodeBehavior for CropNode {
                             painter.image(
                                 tex.id(),
                                 rect,
-                                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                                egui::Rect::from_min_max(
+                                    egui::pos2(0.0, 0.0),
+                                    egui::pos2(1.0, 1.0),
+                                ),
                                 egui::Color32::WHITE,
                             );
                             drew_image = true;
@@ -259,36 +313,85 @@ impl NodeBehavior for CropNode {
             if !drew_image {
                 // GpuImage / empty pixels fallback — keep the old dark
                 // placeholder so the crop-rect overlay still reads.
-                painter.rect_filled(rect, 0.0, egui::Color32::from_rgba_unmultiplied(0, 0, 0, 100));
+                painter.rect_filled(
+                    rect,
+                    0.0,
+                    egui::Color32::from_rgba_unmultiplied(0, 0, 0, 100),
+                );
             }
 
             // Crop-region overlay: subtle white fill + accent stroke on top.
             let crop_rect = egui::Rect::from_min_max(
-                egui::pos2(rect.left() + rect.width() * self.left, rect.top() + rect.height() * self.top),
-                egui::pos2(rect.right() - rect.width() * self.right, rect.bottom() - rect.height() * self.bottom),
+                egui::pos2(
+                    rect.left() + rect.width() * self.left,
+                    rect.top() + rect.height() * self.top,
+                ),
+                egui::pos2(
+                    rect.right() - rect.width() * self.right,
+                    rect.bottom() - rect.height() * self.bottom,
+                ),
             );
-            painter.rect_filled(crop_rect, 0.0, egui::Color32::from_rgba_unmultiplied(255, 255, 255, 30));
-            painter.rect_stroke(crop_rect, 0.0, egui::Stroke::new(1.5, accent), egui::StrokeKind::Outside);
+            painter.rect_filled(
+                crop_rect,
+                0.0,
+                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 30),
+            );
+            painter.rect_stroke(
+                crop_rect,
+                0.0,
+                egui::Stroke::new(1.5, accent),
+                egui::StrokeKind::Outside,
+            );
 
             let out_w = ((1.0 - self.left - self.right).max(0.01) * iw as f32) as u32;
             let out_h = ((1.0 - self.top - self.bottom).max(0.01) * ih as f32) as u32;
-            ui.label(egui::RichText::new(format!("{}×{} → {}×{}", iw, ih, out_w, out_h)).small().color(dim));
+            ui.label(
+                egui::RichText::new(format!("{}×{} → {}×{}", iw, ih, out_w, out_h))
+                    .small()
+                    .color(dim),
+            );
         } else if let PortValue::Text(text) = &input_val {
             let start = (self.left * text.len() as f32) as usize;
-            let end = text.len().saturating_sub((self.right * text.len() as f32) as usize);
-            ui.label(egui::RichText::new(format!("Text: {} chars → {}", text.len(), end.saturating_sub(start))).small().color(dim));
+            let end = text
+                .len()
+                .saturating_sub((self.right * text.len() as f32) as usize);
+            ui.label(
+                egui::RichText::new(format!(
+                    "Text: {} chars → {}",
+                    text.len(),
+                    end.saturating_sub(start)
+                ))
+                .small()
+                .color(dim),
+            );
         }
 
         ui.separator();
 
         // Margin sliders
         let mut slider_row = |ui: &mut egui::Ui, label: &str, val: &mut f32, port: usize| {
-            let wired = ctx.connections.iter().any(|c| c.to_node == ctx.node_id && c.to_port == port);
+            let wired = ctx
+                .connections
+                .iter()
+                .any(|c| c.to_node == ctx.node_id && c.to_port == port);
             ui.horizontal(|ui| {
-                crate::nodes::inline_port_circle(ui, ctx.node_id, port, true, ctx.connections,
-                    ctx.port_positions, ctx.dragging_from, ctx.pending_disconnects, PortKind::Normalized);
+                crate::nodes::inline_port_circle(
+                    ui,
+                    ctx.node_id,
+                    port,
+                    true,
+                    ctx.connections,
+                    ctx.port_positions,
+                    ctx.dragging_from,
+                    ctx.pending_disconnects,
+                    PortKind::Normalized,
+                );
                 if wired {
-                    ui.label(egui::RichText::new(format!("{}: {:.0}%", label, *val * 100.0)).small().color(accent));
+                    ui.label(
+                        egui::RichText::new(format!("{}: {:.0}%", label, *val * 100.0))
+                            .small()
+                            .color(accent),
+                    );
                 } else {
                     ui.label(egui::RichText::new(format!("{}:", label)).small());
                     ui.add(egui::Slider::new(val, 0.0..=0.95).show_value(false));
@@ -302,18 +405,36 @@ impl NodeBehavior for CropNode {
         slider_row(ui, "Right", &mut self.right, 4);
 
         // Clamp
-        if self.top + self.bottom > 0.95 { self.bottom = 0.95 - self.top; }
-        if self.left + self.right > 0.95 { self.right = 0.95 - self.left; }
+        if self.top + self.bottom > 0.95 {
+            self.bottom = 0.95 - self.top;
+        }
+        if self.left + self.right > 0.95 {
+            self.right = 0.95 - self.left;
+        }
 
         ui.separator();
-        crate::nodes::output_port_row(ui, "Cropped", "", ctx.node_id, 0, ctx.port_positions, ctx.dragging_from, ctx.connections, ctx.pending_disconnects, PortKind::Image);
+        crate::nodes::output_port_row(
+            ui,
+            "Cropped",
+            "",
+            ctx.node_id,
+            0,
+            ctx.port_positions,
+            ctx.dragging_from,
+            ctx.connections,
+            ctx.pending_disconnects,
+            PortKind::Image,
+        );
     }
 }
 
 #[allow(dead_code)]
 pub fn register(registry: &mut crate::node_trait::NodeRegistryInner) {
     registry.register("crop", |state| {
-        if let Ok(n) = serde_json::from_value::<CropNode>(state.clone()) { Box::new(n) }
-        else { Box::new(CropNode::default()) }
+        if let Ok(n) = serde_json::from_value::<CropNode>(state.clone()) {
+            Box::new(n)
+        } else {
+            Box::new(CropNode::default())
+        }
     });
 }

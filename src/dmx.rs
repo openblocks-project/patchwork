@@ -19,7 +19,7 @@ use crate::graph::NodeId;
 use serialport::SerialPort;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -31,7 +31,9 @@ pub enum DmxAdapter {
 }
 
 impl Default for DmxAdapter {
-    fn default() -> Self { DmxAdapter::UsbPro }
+    fn default() -> Self {
+        DmxAdapter::UsbPro
+    }
 }
 
 pub enum DmxAction {
@@ -50,14 +52,18 @@ pub enum DmxAction {
         data: Vec<u8>, // first byte ignored; we always emit start code 0
     },
     /// Close the port and stop its sender thread.
-    Close { node_id: NodeId },
+    Close {
+        node_id: NodeId,
+    },
     /// USB Pro only — start receiving inbound DMX frames from the adapter.
     StartListening {
         node_id: NodeId,
         port_name: String,
         adapter: DmxAdapter,
     },
-    StopListening { node_id: NodeId },
+    StopListening {
+        node_id: NodeId,
+    },
 }
 
 /// One inbound DMX frame from a USB Pro adapter (label 5).
@@ -89,13 +95,21 @@ pub struct DmxManager {
 
 impl DmxManager {
     pub fn new() -> Self {
-        Self { outputs: HashMap::new(), inputs: HashMap::new() }
+        Self {
+            outputs: HashMap::new(),
+            inputs: HashMap::new(),
+        }
     }
 
     pub fn process(&mut self, actions: Vec<DmxAction>) {
         for action in actions {
             match action {
-                DmxAction::OpenOutput { node_id, port_name, adapter, frame_rate_hz } => {
+                DmxAction::OpenOutput {
+                    node_id,
+                    port_name,
+                    adapter,
+                    frame_rate_hz,
+                } => {
                     // If the port is already open with the same adapter,
                     // skip — universe data is updated via SetUniverse.
                     // If adapter or port changed, close and re-open.
@@ -109,7 +123,8 @@ impl DmxManager {
                         }
                         Err(e) => {
                             crate::system_log::error(format!(
-                                "DMX open output {} ({:?}): {}", port_name, adapter, e
+                                "DMX open output {} ({:?}): {}",
+                                port_name, adapter, e
                             ));
                         }
                     }
@@ -129,24 +144,36 @@ impl DmxManager {
                     self.close_output(node_id);
                     self.close_input(node_id);
                 }
-                DmxAction::StartListening { node_id, port_name, adapter } => {
-                    if self.inputs.contains_key(&node_id) { continue; }
+                DmxAction::StartListening {
+                    node_id,
+                    port_name,
+                    adapter,
+                } => {
+                    if self.inputs.contains_key(&node_id) {
+                        continue;
+                    }
                     if adapter != DmxAdapter::UsbPro {
                         crate::system_log::warn(
-                            "DMX In requires Enttec USB Pro; Open DMX adapters are output-only".to_string()
+                            "DMX In requires Enttec USB Pro; Open DMX adapters are output-only"
+                                .to_string(),
                         );
                         continue;
                     }
                     match open_input_thread(port_name.clone()) {
-                        Ok(active) => { self.inputs.insert(node_id, active); }
+                        Ok(active) => {
+                            self.inputs.insert(node_id, active);
+                        }
                         Err(e) => {
                             crate::system_log::error(format!(
-                                "DMX open input {}: {}", port_name, e
+                                "DMX open input {}: {}",
+                                port_name, e
                             ));
                         }
                     }
                 }
-                DmxAction::StopListening { node_id } => { self.close_input(node_id); }
+                DmxAction::StopListening { node_id } => {
+                    self.close_input(node_id);
+                }
             }
         }
     }
@@ -217,7 +244,9 @@ fn open_output_thread(
             while !stop_t.load(Ordering::Relaxed) {
                 let snapshot: [u8; 513] = match universe_t.lock() {
                     Ok(g) => *g,
-                    Err(_) => { return; } // poisoned — bail
+                    Err(_) => {
+                        return;
+                    } // poisoned — bail
                 };
                 let send_result = match adapter {
                     DmxAdapter::UsbPro => send_frame_usb_pro(&mut *port, &snapshot[1..]),
@@ -234,7 +263,11 @@ fn open_output_thread(
         })
         .map_err(|e| format!("spawn DMX sender thread: {}", e))?;
 
-    Ok(ActiveOutput { universe, stop, _thread: handle })
+    Ok(ActiveOutput {
+        universe,
+        stop,
+        _thread: handle,
+    })
 }
 
 fn open_input_thread(port_name: String) -> Result<ActiveInput, String> {
@@ -281,7 +314,11 @@ fn open_input_thread(port_name: String) -> Result<ActiveInput, String> {
         })
         .map_err(|e| format!("spawn DMX listener thread: {}", e))?;
 
-    Ok(ActiveInput { stop, rx, _thread: handle })
+    Ok(ActiveInput {
+        stop,
+        rx,
+        _thread: handle,
+    })
 }
 
 fn send_frame_usb_pro(port: &mut dyn SerialPort, channels: &[u8]) -> std::io::Result<()> {
@@ -305,15 +342,19 @@ fn send_frame_open_dmx(port: &mut dyn SerialPort, full: &[u8; 513]) -> std::io::
     Ok(())
 }
 
-fn write_usb_pro_packet(port: &mut dyn SerialPort, label: u8, data: &[u8]) -> std::io::Result<usize> {
+fn write_usb_pro_packet(
+    port: &mut dyn SerialPort,
+    label: u8,
+    data: &[u8],
+) -> std::io::Result<usize> {
     let len = data.len() as u16;
     let mut buf = Vec::with_capacity(5 + data.len());
-    buf.push(0x7E);              // start of message
-    buf.push(label);              // label
+    buf.push(0x7E); // start of message
+    buf.push(label); // label
     buf.push((len & 0xFF) as u8); // length LSB
-    buf.push((len >> 8) as u8);   // length MSB
+    buf.push((len >> 8) as u8); // length MSB
     buf.extend_from_slice(data);
-    buf.push(0xE7);              // end of message
+    buf.push(0xE7); // end of message
     port.write_all(&buf)?;
     Ok(buf.len())
 }
@@ -335,7 +376,9 @@ fn read_usb_pro_packet(port: &mut dyn SerialPort) -> std::io::Result<Option<UsbP
         match port.read(&mut byte) {
             Ok(0) => return Ok(None),
             Ok(_) => {
-                if byte[0] == 0x7E { break; }
+                if byte[0] == 0x7E {
+                    break;
+                }
             }
             Err(e) if e.kind() == std::io::ErrorKind::TimedOut => return Ok(None),
             Err(e) => return Err(e),
@@ -343,17 +386,27 @@ fn read_usb_pro_packet(port: &mut dyn SerialPort) -> std::io::Result<Option<UsbP
     }
     // Read label + length.
     let mut header = [0u8; 3];
-    if read_exact_or_none(port, &mut header)?.is_none() { return Ok(None); }
+    if read_exact_or_none(port, &mut header)?.is_none() {
+        return Ok(None);
+    }
     let label = header[0];
     let len = u16::from_le_bytes([header[1], header[2]]) as usize;
-    if len > 600 { return Ok(None); } // sanity cap
+    if len > 600 {
+        return Ok(None);
+    } // sanity cap
     let mut data = vec![0u8; len];
     if !data.is_empty() {
-        if read_exact_or_none(port, &mut data)?.is_none() { return Ok(None); }
+        if read_exact_or_none(port, &mut data)?.is_none() {
+            return Ok(None);
+        }
     }
     let mut end = [0u8; 1];
-    if read_exact_or_none(port, &mut end)?.is_none() { return Ok(None); }
-    if end[0] != 0xE7 { return Ok(None); }
+    if read_exact_or_none(port, &mut end)?.is_none() {
+        return Ok(None);
+    }
+    if end[0] != 0xE7 {
+        return Ok(None);
+    }
     Ok(Some(UsbProFrame { label, data }))
 }
 

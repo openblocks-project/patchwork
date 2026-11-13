@@ -13,7 +13,9 @@ pub fn render(
     current_zoom: f32,
 ) -> Option<f32> {
     // If input port is connected, use that value
-    let connected = connections.iter().any(|c| c.to_node == node_id && c.to_port == 0);
+    let connected = connections
+        .iter()
+        .any(|c| c.to_node == node_id && c.to_port == 0);
     if connected {
         let v = Graph::static_input_value(connections, values, node_id, 0);
         let input_zoom = v.as_float().clamp(0.1, 5.0);
@@ -30,7 +32,7 @@ pub fn render(
         let resp = ui.add(
             egui::Slider::new(&mut z, 0.1..=5.0)
                 .logarithmic(true)
-                .show_value(false)
+                .show_value(false),
         );
         if resp.changed() {
             *zoom_value = z;
@@ -39,9 +41,18 @@ pub fn render(
     });
 
     ui.horizontal(|ui| {
-        if ui.small_button("50%").clicked() { *zoom_value = 0.5; new_zoom = Some(0.5); }
-        if ui.small_button("100%").clicked() { *zoom_value = 1.0; new_zoom = Some(1.0); }
-        if ui.small_button("200%").clicked() { *zoom_value = 2.0; new_zoom = Some(2.0); }
+        if ui.small_button("50%").clicked() {
+            *zoom_value = 0.5;
+            new_zoom = Some(0.5);
+        }
+        if ui.small_button("100%").clicked() {
+            *zoom_value = 1.0;
+            new_zoom = Some(1.0);
+        }
+        if ui.small_button("200%").clicked() {
+            *zoom_value = 2.0;
+            new_zoom = Some(2.0);
+        }
     });
 
     new_zoom

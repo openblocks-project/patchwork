@@ -49,7 +49,11 @@ pub fn render(
     ui.horizontal(|ui| {
         ui.label("Port:");
         egui::ComboBox::from_id_salt(egui::Id::new(("dmx_out_port", node_id)))
-            .selected_text(if port_name.is_empty() { "<select>".to_string() } else { port_name.clone() })
+            .selected_text(if port_name.is_empty() {
+                "<select>".to_string()
+            } else {
+                port_name.clone()
+            })
             .width(150.0)
             .show_ui(ui, |ui| {
                 for p in serial_ports {
@@ -74,7 +78,10 @@ pub fn render(
     ui.horizontal(|ui| {
         ui.label("Rate:");
         let mut hz = *frame_rate_hz as u32;
-        if ui.add(egui::DragValue::new(&mut hz).range(10..=44).suffix(" Hz")).changed() {
+        if ui
+            .add(egui::DragValue::new(&mut hz).range(10..=44).suffix(" Hz"))
+            .changed()
+        {
             *frame_rate_hz = hz.clamp(10, 44) as u8;
         }
     });
@@ -92,7 +99,10 @@ pub fn render(
         }
         ui.label("from");
         let mut s = *start_at as u32;
-        if ui.add(egui::DragValue::new(&mut s).range(1..=512)).changed() {
+        if ui
+            .add(egui::DragValue::new(&mut s).range(1..=512))
+            .changed()
+        {
             *start_at = s.clamp(1, 512) as u16;
         }
     });
@@ -102,8 +112,15 @@ pub fn render(
     for i in 0..*channel_count {
         ui.horizontal(|ui| {
             super::inline_port_circle(
-                ui, node_id, i, true, connections,
-                port_positions, dragging_from, pending_disconnects, PortKind::Normalized,
+                ui,
+                node_id,
+                i,
+                true,
+                connections,
+                port_positions,
+                dragging_from,
+                pending_disconnects,
+                PortKind::Normalized,
             );
             let ch = (*start_at as usize) + i;
             let v = Graph::static_input_value(connections, values, node_id, i).as_float();
@@ -122,7 +139,10 @@ pub fn render(
             }
         } else {
             let enable = !port_name.is_empty();
-            if ui.add_enabled(enable, egui::Button::new("\u{25B6} Start")).clicked() {
+            if ui
+                .add_enabled(enable, egui::Button::new("\u{25B6} Start"))
+                .clicked()
+            {
                 *active = true;
                 dmx_actions.push(DmxAction::OpenOutput {
                     node_id,
@@ -135,12 +155,16 @@ pub fn render(
     });
 
     // ── Push current frame to manager ──────────────────────────
-    if !*active { return; }
+    if !*active {
+        return;
+    }
     let start_idx = (*start_at as usize).saturating_sub(1).min(511);
     let mut data = vec![0u8; 512];
     for i in 0..*channel_count {
         let ch_idx = start_idx + i;
-        if ch_idx >= 512 { break; }
+        if ch_idx >= 512 {
+            break;
+        }
         let v = Graph::static_input_value(connections, values, node_id, i).as_float();
         data[ch_idx] = (v.clamp(0.0, 1.0) * 255.0) as u8;
     }

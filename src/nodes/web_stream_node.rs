@@ -48,7 +48,7 @@ use crate::nodes::web_stream_h264::{H264Encoder, NalSink};
 use crate::nodes::web_stream_rtc::{PeerStatus, WebStreamShared};
 
 // ── Pinned port indices ──────────────────────────────────────────────────────
-const HTML_PORT_IDX:  usize = 0;
+const HTML_PORT_IDX: usize = 0;
 const AUDIO_PORT_IDX: usize = 1;
 const IMAGE_PORT_IDX: usize = 2;
 /// Dynamic typed ports start here.
@@ -74,19 +74,31 @@ pub enum WebPortType {
 
 impl WebPortType {
     fn as_letter(self) -> &'static str {
-        match self { Self::Float => "f", Self::Text => "t", Self::Bool => "b" }
+        match self {
+            Self::Float => "f",
+            Self::Text => "t",
+            Self::Bool => "b",
+        }
     }
     fn from_letter(s: &str) -> Self {
-        match s { "t" | "text" => Self::Text, "b" | "bool" => Self::Bool, _ => Self::Float }
+        match s {
+            "t" | "text" => Self::Text,
+            "b" | "bool" => Self::Bool,
+            _ => Self::Float,
+        }
     }
     fn label(self) -> &'static str {
-        match self { Self::Float => "Float", Self::Text => "Text", Self::Bool => "Button" }
+        match self {
+            Self::Float => "Float",
+            Self::Text => "Text",
+            Self::Bool => "Button",
+        }
     }
     fn port_kind(self) -> PortKind {
         match self {
             Self::Float => PortKind::Number,
-            Self::Text  => PortKind::Text,
-            Self::Bool  => PortKind::Gate,
+            Self::Text => PortKind::Text,
+            Self::Bool => PortKind::Gate,
         }
     }
 }
@@ -446,7 +458,7 @@ fn compute_hash(s: &str) -> u64 {
 fn push_json_escaped(out: &mut String, s: &str) {
     for c in s.chars() {
         match c {
-            '"'  => out.push_str("\\\""),
+            '"' => out.push_str("\\\""),
             '\\' => out.push_str("\\\\"),
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
@@ -466,18 +478,26 @@ fn start_http_server(state: SharedServerState, rtc: Arc<WebStreamShared>) -> u16
                 crate::system_log::error(format!("Web Stream server bind failed: {}", e));
                 return 0;
             }
-        }
+        },
     };
     let port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
-    if let Ok(mut s) = state.lock() { s.port = port; s.is_running = true; }
+    if let Ok(mut s) = state.lock() {
+        s.port = port;
+        s.is_running = true;
+    }
     crate::system_log::log(format!("Web Stream server started on port {}", port));
 
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { continue };
             let mut buf = [0u8; 8192];
-            let n = match stream.read(&mut buf) { Ok(n) => n, Err(_) => continue };
-            if n == 0 { continue; }
+            let n = match stream.read(&mut buf) {
+                Ok(n) => n,
+                Err(_) => continue,
+            };
+            if n == 0 {
+                continue;
+            }
             let request = String::from_utf8_lossy(&buf[..n]).to_string();
 
             if request.starts_with("OPTIONS ") {
@@ -494,39 +514,49 @@ fn start_http_server(state: SharedServerState, rtc: Arc<WebStreamShared>) -> u16
                     Ok(answer) => {
                         let resp = format!(
                             "HTTP/1.1 200 OK\r\nContent-Type: application/sdp\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\n\r\n{}",
-                            answer.len(), answer);
+                            answer.len(),
+                            answer
+                        );
                         let _ = stream.write_all(resp.as_bytes());
                     }
                     Err(e) => {
                         let body = format!("offer error: {e}");
                         let resp = format!(
                             "HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\n\r\n{}",
-                            body.len(), body);
+                            body.len(),
+                            body
+                        );
                         let _ = stream.write_all(resp.as_bytes());
                     }
                 }
                 let _ = stream.flush();
                 continue;
             } else if request.contains("GET /hash") {
-                let hash = state.lock()
+                let hash = state
+                    .lock()
                     .map(|s| s.html_hash ^ s.kick.rotate_left(31))
                     .unwrap_or(0);
                 let body = format!("{}", hash);
                 let resp = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nAccess-Control-Allow-Origin: *\r\nCache-Control: no-cache\r\nContent-Length: {}\r\n\r\n{}",
-                    body.len(), body);
+                    body.len(),
+                    body
+                );
                 let _ = stream.write_all(resp.as_bytes());
             } else if request.contains("GET /raw") {
                 let html = state.lock().map(|s| s.html.clone()).unwrap_or_default();
                 let resp = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nAccess-Control-Allow-Origin: *\r\nCache-Control: no-cache\r\nContent-Length: {}\r\n\r\n{}",
-                    html.len(), html);
+                    html.len(),
+                    html
+                );
                 let _ = stream.write_all(resp.as_bytes());
             } else {
                 // Serve full page with bridge injected at <body> start
                 // (so eager inline scripts see webstream.* defined —
                 // same fix as Web App's Phase 2.5 commit).
-                let (html, hash) = state.lock()
+                let (html, hash) = state
+                    .lock()
                     .map(|s| (s.html.clone(), s.html_hash))
                     .unwrap_or_default();
                 let bridge = PATCHWORK_RTC_BRIDGE.replace("__HASH__", &hash.to_string());
@@ -537,13 +567,18 @@ fn start_http_server(state: SharedServerState, rtc: Arc<WebStreamShared>) -> u16
                 } else if html.contains("</html>") {
                     html.replace("</html>", &format!("{}</html>", bridge))
                 } else {
-                    format!("<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>Web Stream</title>\
+                    format!(
+                        "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>Web Stream</title>\
                         <style>body{{margin:0;padding:16px;font-family:sans-serif;background:#0e0e1a;color:#eee;}}</style>\
-                        </head><body>{}{}</body></html>", bridge, html)
+                        </head><body>{}{}</body></html>",
+                        bridge, html
+                    )
                 };
                 let resp = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nCache-Control: no-cache\r\nContent-Length: {}\r\n\r\n{}",
-                    page.len(), page);
+                    page.len(),
+                    page
+                );
                 let _ = stream.write_all(resp.as_bytes());
             }
             let _ = stream.flush();
@@ -647,29 +682,49 @@ impl Default for WebStreamNode {
 }
 
 impl NodeBehavior for WebStreamNode {
-    fn title(&self)      -> &str   { "Web Stream [WIP]" }
-    fn type_tag(&self)   -> &str   { "web_stream" }
-    fn color_hint(&self) -> [u8;3] { [220, 110, 90] }
-    fn min_width(&self)  -> Option<f32> { Some(260.0) }
-    fn inline_ports(&self) -> bool { true }
+    fn title(&self) -> &str {
+        "Web Stream [WIP]"
+    }
+    fn type_tag(&self) -> &str {
+        "web_stream"
+    }
+    fn color_hint(&self) -> [u8; 3] {
+        [220, 110, 90]
+    }
+    fn min_width(&self) -> Option<f32> {
+        Some(260.0)
+    }
+    fn inline_ports(&self) -> bool {
+        true
+    }
 
     fn inputs(&self) -> Vec<PortDef> {
         let mut ports = vec![
-            PortDef::new("HTML",  PortKind::Text),
+            PortDef::new("HTML", PortKind::Text),
             PortDef::new("Audio", PortKind::Audio),
             PortDef::new("Image", PortKind::Image),
         ];
         for (i, name) in self.input_names.iter().enumerate() {
-            let ty = self.input_types.get(i).copied().unwrap_or(WebPortType::Float);
+            let ty = self
+                .input_types
+                .get(i)
+                .copied()
+                .unwrap_or(WebPortType::Float);
             ports.push(PortDef::dynamic(name.clone(), ty.port_kind()));
         }
         ports
     }
 
     fn outputs(&self) -> Vec<PortDef> {
-        self.output_names.iter().enumerate()
+        self.output_names
+            .iter()
+            .enumerate()
             .map(|(i, n)| {
-                let ty = self.output_types.get(i).copied().unwrap_or(WebPortType::Float);
+                let ty = self
+                    .output_types
+                    .get(i)
+                    .copied()
+                    .unwrap_or(WebPortType::Float);
                 PortDef::dynamic(n.clone(), ty.port_kind())
             })
             .collect()
@@ -677,12 +732,17 @@ impl NodeBehavior for WebStreamNode {
 
     fn evaluate(&mut self, inputs: &[PortValue]) -> Vec<(usize, PortValue)> {
         self.input_values.resize(self.input_names.len(), 0.0);
-        self.input_text_values.resize(self.input_names.len(), String::new());
+        self.input_text_values
+            .resize(self.input_names.len(), String::new());
         // Dispatch on type. Float / Bool ports both store an f32; Text
         // ports store a String. Unwired ports keep their last value.
         for i in 0..self.input_names.len() {
             let port_idx = NUMERIC_BASE_IDX + i;
-            let ty = self.input_types.get(i).copied().unwrap_or(WebPortType::Float);
+            let ty = self
+                .input_types
+                .get(i)
+                .copied()
+                .unwrap_or(WebPortType::Float);
             match ty {
                 WebPortType::Float | WebPortType::Bool => {
                     if let Some(PortValue::Float(f)) = inputs.get(port_idx) {
@@ -730,7 +790,8 @@ impl NodeBehavior for WebStreamNode {
             Some(PortValue::GpuImage(_)) => {
                 if self.image_status.is_empty() {
                     self.image_status = "GPU image not yet supported — \
-                        insert a Crop/Resize/etc. before Web Stream".into();
+                        insert a Crop/Resize/etc. before Web Stream"
+                        .into();
                 }
                 self.encoder = None;
                 self.encoder_dims = None;
@@ -751,8 +812,14 @@ impl NodeBehavior for WebStreamNode {
         if self.rtc.status() == PeerStatus::Connected {
             let mut json = String::from(r#"{"inputs":["#);
             for (i, name) in self.input_names.iter().enumerate() {
-                if i > 0 { json.push(','); }
-                let ty = self.input_types.get(i).copied().unwrap_or(WebPortType::Float);
+                if i > 0 {
+                    json.push(',');
+                }
+                let ty = self
+                    .input_types
+                    .get(i)
+                    .copied()
+                    .unwrap_or(WebPortType::Float);
                 json.push_str(r#"{"n":""#);
                 push_json_escaped(&mut json, name);
                 json.push_str(r#"","t":""#);
@@ -779,8 +846,14 @@ impl NodeBehavior for WebStreamNode {
             }
             json.push_str(r#"],"outputs":["#);
             for (i, name) in self.output_names.iter().enumerate() {
-                if i > 0 { json.push(','); }
-                let ty = self.output_types.get(i).copied().unwrap_or(WebPortType::Float);
+                if i > 0 {
+                    json.push(',');
+                }
+                let ty = self
+                    .output_types
+                    .get(i)
+                    .copied()
+                    .unwrap_or(WebPortType::Float);
                 json.push_str(r#"{"n":""#);
                 push_json_escaped(&mut json, name);
                 json.push_str(r#"","t":""#);
@@ -803,8 +876,7 @@ impl NodeBehavior for WebStreamNode {
                                 if let Some(f) = v.as_f64() {
                                     s.output_values.insert(k.clone(), f as f32);
                                 } else if let Some(b) = v.as_bool() {
-                                    s.output_values.insert(k.clone(),
-                                        if b { 1.0 } else { 0.0 });
+                                    s.output_values.insert(k.clone(), if b { 1.0 } else { 0.0 });
                                 } else if let Some(t) = v.as_str() {
                                     s.output_text_values.insert(k.clone(), t.to_string());
                                 }
@@ -818,7 +890,11 @@ impl NodeBehavior for WebStreamNode {
                 s.input_names = self.input_names.clone();
                 s.output_names = self.output_names.clone();
                 for (i, name) in self.output_names.iter().enumerate() {
-                    let ty = self.output_types.get(i).copied().unwrap_or(WebPortType::Float);
+                    let ty = self
+                        .output_types
+                        .get(i)
+                        .copied()
+                        .unwrap_or(WebPortType::Float);
                     match ty {
                         WebPortType::Float | WebPortType::Bool => {
                             let v = s.output_values.get(name).copied().unwrap_or(0.0);
@@ -857,7 +933,7 @@ impl NodeBehavior for WebStreamNode {
 
     fn render_with_context(&mut self, ui: &mut egui::Ui, ctx: &mut RenderContext) {
         let node_id = ctx.node_id;
-        let dim   = egui::Color32::from_rgb(110, 110, 120);
+        let dim = egui::Color32::from_rgb(110, 110, 120);
         let green = egui::Color32::from_rgb(80, 200, 120);
         let amber = egui::Color32::from_rgb(220, 160, 80);
 
@@ -880,7 +956,9 @@ impl NodeBehavior for WebStreamNode {
         }
 
         // ── Encoder lifecycle: drop on Image unwire ──────────────────────
-        let image_wired = ctx.connections.iter()
+        let image_wired = ctx
+            .connections
+            .iter()
             .any(|c| c.to_node == node_id && c.to_port == IMAGE_PORT_IDX);
         if !image_wired && self.encoder.is_some() {
             self.encoder = None;
@@ -889,7 +967,9 @@ impl NodeBehavior for WebStreamNode {
         }
 
         // ── Audio port lifecycle: register / unregister tap processor ────
-        let audio_wired = ctx.connections.iter()
+        let audio_wired = ctx
+            .connections
+            .iter()
             .any(|c| c.to_node == node_id && c.to_port == AUDIO_PORT_IDX);
         if audio_wired && !self.audio_registered {
             // Spawn opus pump first — gives us the SPSC ring buffer
@@ -935,21 +1015,34 @@ impl NodeBehavior for WebStreamNode {
         ui.horizontal(|ui| {
             let status = self.rtc.status();
             let (dot_color, label) = match status {
-                PeerStatus::Connected   => (green, "● Connected"),
-                PeerStatus::Connecting  => (amber, "● Connecting…"),
+                PeerStatus::Connected => (green, "● Connected"),
+                PeerStatus::Connecting => (amber, "● Connecting…"),
                 PeerStatus::Negotiating => (amber, "● Negotiating…"),
-                PeerStatus::Failed      => (egui::Color32::from_rgb(220, 80, 80), "● Failed"),
-                PeerStatus::Disconnected=> (dim,   "○ Disconnected"),
-                PeerStatus::Idle        => (if self.server_port > 0 { green } else { dim },
-                                            if self.server_port > 0 { "● Ready" } else { "○ Stopped" }),
+                PeerStatus::Failed => (egui::Color32::from_rgb(220, 80, 80), "● Failed"),
+                PeerStatus::Disconnected => (dim, "○ Disconnected"),
+                PeerStatus::Idle => (
+                    if self.server_port > 0 { green } else { dim },
+                    if self.server_port > 0 {
+                        "● Ready"
+                    } else {
+                        "○ Stopped"
+                    },
+                ),
             };
             ui.label(RichText::new(label).small().color(dot_color));
             if !primary_url.is_empty() {
-                ui.label(RichText::new(&primary_url).small().monospace()
-                    .color(egui::Color32::from_rgb(100, 220, 200)));
+                ui.label(
+                    RichText::new(&primary_url)
+                        .small()
+                        .monospace()
+                        .color(egui::Color32::from_rgb(100, 220, 200)),
+                );
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.small_button("⤴").on_hover_text("Open in browser").clicked()
+                if ui
+                    .small_button("⤴")
+                    .on_hover_text("Open in browser")
+                    .clicked()
                     && !primary_url.is_empty()
                 {
                     open_in_browser(&primary_url);
@@ -959,7 +1052,8 @@ impl NodeBehavior for WebStreamNode {
                 {
                     ui.ctx().copy_text(primary_url.clone());
                 }
-                if ui.small_button("↻")
+                if ui
+                    .small_button("↻")
                     .on_hover_text("Refresh: close peer + reload phone page")
                     .clicked()
                 {
@@ -982,8 +1076,11 @@ impl NodeBehavior for WebStreamNode {
 
         // QR
         if !primary_url.is_empty() {
-            let cache_hit = self.qr_texture.as_ref()
-                .map(|(u, _)| u == &primary_url).unwrap_or(false);
+            let cache_hit = self
+                .qr_texture
+                .as_ref()
+                .map(|(u, _)| u == &primary_url)
+                .unwrap_or(false);
             if !cache_hit {
                 if let Some(img) = url_qr_image(&primary_url) {
                     let handle = ui.ctx().load_texture(
@@ -1006,21 +1103,42 @@ impl NodeBehavior for WebStreamNode {
         ui.add_space(2.0);
 
         // ── HTML port row ────────────────────────────────────────────────
-        let html_connected = ctx.connections.iter()
+        let html_connected = ctx
+            .connections
+            .iter()
             .any(|c| c.to_node == node_id && c.to_port == HTML_PORT_IDX);
         ui.horizontal(|ui| {
-            crate::nodes::inline_port_circle(ui, node_id, HTML_PORT_IDX, true,
-                ctx.connections, ctx.port_positions, ctx.dragging_from,
-                ctx.pending_disconnects, PortKind::Text);
-            ui.label(RichText::new(if html_connected { "HTML ✓" } else { "HTML" }).small()
-                .color(if html_connected { green } else { dim }));
+            crate::nodes::inline_port_circle(
+                ui,
+                node_id,
+                HTML_PORT_IDX,
+                true,
+                ctx.connections,
+                ctx.port_positions,
+                ctx.dragging_from,
+                ctx.pending_disconnects,
+                PortKind::Text,
+            );
+            ui.label(
+                RichText::new(if html_connected { "HTML ✓" } else { "HTML" })
+                    .small()
+                    .color(if html_connected { green } else { dim }),
+            );
         });
 
         // ── Audio port row ───────────────────────────────────────────────
         ui.horizontal(|ui| {
-            crate::nodes::inline_port_circle(ui, node_id, AUDIO_PORT_IDX, true,
-                ctx.connections, ctx.port_positions, ctx.dragging_from,
-                ctx.pending_disconnects, PortKind::Audio);
+            crate::nodes::inline_port_circle(
+                ui,
+                node_id,
+                AUDIO_PORT_IDX,
+                true,
+                ctx.connections,
+                ctx.port_positions,
+                ctx.dragging_from,
+                ctx.pending_disconnects,
+                PortKind::Audio,
+            );
             let (label, color) = if !self.audio_status.is_empty() {
                 ("Audio ⚠", amber)
             } else if self.audio_registered {
@@ -1036,9 +1154,17 @@ impl NodeBehavior for WebStreamNode {
 
         // ── Image port row ───────────────────────────────────────────────
         ui.horizontal(|ui| {
-            crate::nodes::inline_port_circle(ui, node_id, IMAGE_PORT_IDX, true,
-                ctx.connections, ctx.port_positions, ctx.dragging_from,
-                ctx.pending_disconnects, PortKind::Image);
+            crate::nodes::inline_port_circle(
+                ui,
+                node_id,
+                IMAGE_PORT_IDX,
+                true,
+                ctx.connections,
+                ctx.port_positions,
+                ctx.dragging_from,
+                ctx.pending_disconnects,
+                PortKind::Image,
+            );
             let (label, color) = if !self.image_status.is_empty() {
                 ("Image ⚠", amber)
             } else if self.encoder.is_some() {
@@ -1050,7 +1176,12 @@ impl NodeBehavior for WebStreamNode {
             };
             ui.label(RichText::new(label).small().color(color));
             if let Some((w, h)) = self.encoder_dims {
-                ui.label(RichText::new(format!("{}×{}", w, h)).small().monospace().color(dim));
+                ui.label(
+                    RichText::new(format!("{}×{}", w, h))
+                        .small()
+                        .monospace()
+                        .color(dim),
+                );
             }
         });
         if !self.image_status.is_empty() {
@@ -1089,34 +1220,74 @@ impl NodeBehavior for WebStreamNode {
         let mut type_changed: Option<(usize, WebPortType)> = None;
         for i in 0..self.input_names.len() {
             let port_idx = NUMERIC_BASE_IDX + i;
-            let port_wired = ctx.connections.iter().any(|c| c.to_node == node_id && c.to_port == port_idx);
-            let ty = self.input_types.get(i).copied().unwrap_or(WebPortType::Float);
+            let port_wired = ctx
+                .connections
+                .iter()
+                .any(|c| c.to_node == node_id && c.to_port == port_idx);
+            let ty = self
+                .input_types
+                .get(i)
+                .copied()
+                .unwrap_or(WebPortType::Float);
             ui.horizontal(|ui| {
-                crate::nodes::inline_port_circle(ui, node_id, port_idx, true,
-                    ctx.connections, ctx.port_positions, ctx.dragging_from,
-                    ctx.pending_disconnects, ty.port_kind());
-                ui.add(egui::TextEdit::singleline(&mut self.input_names[i])
-                    .desired_width(48.0).font(egui::TextStyle::Small));
+                crate::nodes::inline_port_circle(
+                    ui,
+                    node_id,
+                    port_idx,
+                    true,
+                    ctx.connections,
+                    ctx.port_positions,
+                    ctx.dragging_from,
+                    ctx.pending_disconnects,
+                    ty.port_kind(),
+                );
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.input_names[i])
+                        .desired_width(48.0)
+                        .font(egui::TextStyle::Small),
+                );
                 let mut new_ty = ty;
                 egui::ComboBox::from_id_salt(egui::Id::new(("ws_in_ty", node_id, i)))
                     .selected_text(ty.as_letter())
                     .width(28.0)
                     .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut new_ty, WebPortType::Float, WebPortType::Float.label());
-                        ui.selectable_value(&mut new_ty, WebPortType::Text,  WebPortType::Text.label());
-                        ui.selectable_value(&mut new_ty, WebPortType::Bool,  WebPortType::Bool.label());
+                        ui.selectable_value(
+                            &mut new_ty,
+                            WebPortType::Float,
+                            WebPortType::Float.label(),
+                        );
+                        ui.selectable_value(
+                            &mut new_ty,
+                            WebPortType::Text,
+                            WebPortType::Text.label(),
+                        );
+                        ui.selectable_value(
+                            &mut new_ty,
+                            WebPortType::Bool,
+                            WebPortType::Bool.label(),
+                        );
                     });
-                if new_ty != ty { type_changed = Some((i, new_ty)); }
+                if new_ty != ty {
+                    type_changed = Some((i, new_ty));
+                }
                 // Inline value preview / manual editor based on type.
                 match ty {
                     WebPortType::Float => {
                         if port_wired {
                             let v = self.input_values.get(i).copied().unwrap_or(0.0);
-                            ui.label(RichText::new(format!("{:.2}", v)).small().monospace()
-                                .color(egui::Color32::from_rgb(100, 180, 240)));
+                            ui.label(
+                                RichText::new(format!("{:.2}", v))
+                                    .small()
+                                    .monospace()
+                                    .color(egui::Color32::from_rgb(100, 180, 240)),
+                            );
                         } else if i < self.input_values.len() {
-                            ui.add(egui::DragValue::new(&mut self.input_values[i])
-                                .speed(0.01).range(0.0..=1.0).max_decimals(2));
+                            ui.add(
+                                egui::DragValue::new(&mut self.input_values[i])
+                                    .speed(0.01)
+                                    .range(0.0..=1.0)
+                                    .max_decimals(2),
+                            );
                         }
                     }
                     WebPortType::Bool => {
@@ -1129,15 +1300,21 @@ impl NodeBehavior for WebStreamNode {
                     }
                     WebPortType::Text => {
                         if i < self.input_text_values.len() {
-                            ui.add(egui::TextEdit::singleline(&mut self.input_text_values[i])
-                                .desired_width(60.0).font(egui::TextStyle::Small));
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.input_text_values[i])
+                                    .desired_width(60.0)
+                                    .font(egui::TextStyle::Small),
+                            );
                         }
                     }
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if self.input_names.len() > 1
-                        && ui.small_button(RichText::new("−")
-                            .color(egui::Color32::from_rgb(220, 80, 80))).clicked()
+                        && ui
+                            .small_button(
+                                RichText::new("−").color(egui::Color32::from_rgb(220, 80, 80)),
+                            )
+                            .clicked()
                     {
                         remove_idx = Some(i);
                     }
@@ -1148,13 +1325,20 @@ impl NodeBehavior for WebStreamNode {
             self.input_types[i] = new_ty;
             // Port kind changed → drop any wire on this slot so the
             // user doesn't end up with a Number-source on a Text port.
-            ctx.pending_disconnects.push((node_id, NUMERIC_BASE_IDX + i));
+            ctx.pending_disconnects
+                .push((node_id, NUMERIC_BASE_IDX + i));
         }
         if let Some(idx) = remove_idx {
             self.input_names.remove(idx);
-            if idx < self.input_values.len() { self.input_values.remove(idx); }
-            if idx < self.input_text_values.len() { self.input_text_values.remove(idx); }
-            if idx < self.input_types.len() { self.input_types.remove(idx); }
+            if idx < self.input_values.len() {
+                self.input_values.remove(idx);
+            }
+            if idx < self.input_text_values.len() {
+                self.input_text_values.remove(idx);
+            }
+            if idx < self.input_types.len() {
+                self.input_types.remove(idx);
+            }
             let port_idx = NUMERIC_BASE_IDX + idx;
             let old_max = NUMERIC_BASE_IDX + self.input_names.len(); // pre-remove last
             for p in port_idx..=old_max {
@@ -1181,46 +1365,93 @@ impl NodeBehavior for WebStreamNode {
         let mut remove_out_idx: Option<usize> = None;
         let mut out_type_changed: Option<(usize, WebPortType)> = None;
         for i in 0..self.output_names.len() {
-            let ty = self.output_types.get(i).copied().unwrap_or(WebPortType::Float);
+            let ty = self
+                .output_types
+                .get(i)
+                .copied()
+                .unwrap_or(WebPortType::Float);
             ui.horizontal(|ui| {
-                crate::nodes::inline_port_circle(ui, node_id, i, false,
-                    ctx.connections, ctx.port_positions, ctx.dragging_from,
-                    ctx.pending_disconnects, ty.port_kind());
-                ui.add(egui::TextEdit::singleline(&mut self.output_names[i])
-                    .desired_width(60.0).font(egui::TextStyle::Small));
+                crate::nodes::inline_port_circle(
+                    ui,
+                    node_id,
+                    i,
+                    false,
+                    ctx.connections,
+                    ctx.port_positions,
+                    ctx.dragging_from,
+                    ctx.pending_disconnects,
+                    ty.port_kind(),
+                );
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.output_names[i])
+                        .desired_width(60.0)
+                        .font(egui::TextStyle::Small),
+                );
                 let mut new_ty = ty;
                 egui::ComboBox::from_id_salt(egui::Id::new(("ws_out_ty", node_id, i)))
                     .selected_text(ty.as_letter())
                     .width(28.0)
                     .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut new_ty, WebPortType::Float, WebPortType::Float.label());
-                        ui.selectable_value(&mut new_ty, WebPortType::Text,  WebPortType::Text.label());
-                        ui.selectable_value(&mut new_ty, WebPortType::Bool,  WebPortType::Bool.label());
+                        ui.selectable_value(
+                            &mut new_ty,
+                            WebPortType::Float,
+                            WebPortType::Float.label(),
+                        );
+                        ui.selectable_value(
+                            &mut new_ty,
+                            WebPortType::Text,
+                            WebPortType::Text.label(),
+                        );
+                        ui.selectable_value(
+                            &mut new_ty,
+                            WebPortType::Bool,
+                            WebPortType::Bool.label(),
+                        );
                     });
-                if new_ty != ty { out_type_changed = Some((i, new_ty)); }
+                if new_ty != ty {
+                    out_type_changed = Some((i, new_ty));
+                }
                 // Live value preview from whatever the phone sent.
                 match ty {
                     WebPortType::Float | WebPortType::Bool => {
                         let v = self.output_cache.get(i).copied().unwrap_or(0.0);
-                        ui.label(RichText::new(format!("{:.2}", v)).small().monospace()
-                            .color(egui::Color32::from_rgb(100, 220, 200)));
+                        ui.label(
+                            RichText::new(format!("{:.2}", v))
+                                .small()
+                                .monospace()
+                                .color(egui::Color32::from_rgb(100, 220, 200)),
+                        );
                     }
                     WebPortType::Text => {
-                        let preview = self.server_state.as_ref()
-                            .and_then(|s| s.lock().ok()
-                                .and_then(|g| g.output_text_values.get(&self.output_names[i]).cloned()))
+                        let preview = self
+                            .server_state
+                            .as_ref()
+                            .and_then(|s| {
+                                s.lock().ok().and_then(|g| {
+                                    g.output_text_values.get(&self.output_names[i]).cloned()
+                                })
+                            })
                             .unwrap_or_default();
                         let trim = if preview.chars().count() > 16 {
                             let head: String = preview.chars().take(16).collect();
                             format!("{}…", head)
-                        } else { preview };
-                        ui.label(RichText::new(format!("\"{}\"", trim)).small().monospace()
-                            .color(egui::Color32::from_rgb(100, 220, 200)));
+                        } else {
+                            preview
+                        };
+                        ui.label(
+                            RichText::new(format!("\"{}\"", trim))
+                                .small()
+                                .monospace()
+                                .color(egui::Color32::from_rgb(100, 220, 200)),
+                        );
                     }
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.small_button(RichText::new("−")
-                        .color(egui::Color32::from_rgb(220, 80, 80))).clicked()
+                    if ui
+                        .small_button(
+                            RichText::new("−").color(egui::Color32::from_rgb(220, 80, 80)),
+                        )
+                        .clicked()
                     {
                         remove_out_idx = Some(i);
                     }
@@ -1234,8 +1465,12 @@ impl NodeBehavior for WebStreamNode {
         }
         if let Some(idx) = remove_out_idx {
             self.output_names.remove(idx);
-            if idx < self.output_cache.len() { self.output_cache.remove(idx); }
-            if idx < self.output_types.len() { self.output_types.remove(idx); }
+            if idx < self.output_cache.len() {
+                self.output_cache.remove(idx);
+            }
+            if idx < self.output_types.len() {
+                self.output_types.remove(idx);
+            }
             for p in idx..self.output_names.len() + 1 {
                 ctx.pending_disconnects.push((node_id, p));
             }
@@ -1252,11 +1487,15 @@ impl NodeBehavior for WebStreamNode {
                 .id_salt(egui::Id::new(("webstream_code", node_id)))
                 .max_height(150.0)
                 .show_pannable(ui, |ui| {
-                    ui.add(egui::TextEdit::multiline(&mut self.html_code)
-                        .desired_rows(4)
-                        .desired_width(f32::INFINITY)
-                        .font(egui::TextStyle::Monospace)).changed()
-                }).inner;
+                    ui.add(
+                        egui::TextEdit::multiline(&mut self.html_code)
+                            .desired_rows(4)
+                            .desired_width(f32::INFINITY)
+                            .font(egui::TextStyle::Monospace),
+                    )
+                    .changed()
+                })
+                .inner;
             if changed {
                 if let Some(ref state) = self.server_state {
                     if let Ok(mut s) = state.lock() {
@@ -1285,7 +1524,8 @@ impl NodeBehavior for WebStreamNode {
 
     fn load_state(&mut self, state: &serde_json::Value) {
         if let Some(names) = state.get("input_names").and_then(|v| v.as_array()) {
-            self.input_names = names.iter()
+            self.input_names = names
+                .iter()
                 .filter_map(|v| v.as_str().map(String::from))
                 .collect();
             self.input_values = vec![0.0; self.input_names.len()];
@@ -1296,27 +1536,38 @@ impl NodeBehavior for WebStreamNode {
         // length is enforced here; render_with_context truncates /
         // pads as the names Vec grows.
         if let Some(types) = state.get("input_types").and_then(|v| v.as_array()) {
-            self.input_types = types.iter()
+            self.input_types = types
+                .iter()
                 .filter_map(|v| v.as_str().map(WebPortType::from_letter))
                 .collect();
         } else {
             self.input_types = vec![WebPortType::Float; self.input_names.len()];
         }
         if let Some(names) = state.get("output_names").and_then(|v| v.as_array()) {
-            self.output_names = names.iter()
+            self.output_names = names
+                .iter()
                 .filter_map(|v| v.as_str().map(String::from))
                 .collect();
             self.output_cache = vec![0.0; self.output_names.len()];
         }
         if let Some(types) = state.get("output_types").and_then(|v| v.as_array()) {
-            self.output_types = types.iter()
+            self.output_types = types
+                .iter()
                 .filter_map(|v| v.as_str().map(WebPortType::from_letter))
                 .collect();
         } else {
             // Old saves: keep the historical default (last is Bool if
             // it's named exactly "button", everything else Float).
-            self.output_types = self.output_names.iter()
-                .map(|n| if n == "button" { WebPortType::Bool } else { WebPortType::Float })
+            self.output_types = self
+                .output_names
+                .iter()
+                .map(|n| {
+                    if n == "button" {
+                        WebPortType::Bool
+                    } else {
+                        WebPortType::Float
+                    }
+                })
                 .collect();
         }
         if let Some(html) = state.get("html_code").and_then(|v| v.as_str()) {

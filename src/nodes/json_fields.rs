@@ -1,8 +1,8 @@
-use std::collections::HashSet;
-use eframe::egui::{self, RichText};
-use crate::nodes::ScrollAreaExt;
 use crate::graph::{PortDef, PortKind, PortValue};
 use crate::node_trait::{NodeBehavior, RenderContext};
+use crate::nodes::ScrollAreaExt;
+use eframe::egui::{self, RichText};
+use std::collections::HashSet;
 
 // ── JsonFieldsNode ────────────────────────────────────────────────────────────
 //
@@ -32,9 +32,9 @@ impl Default for JsonFieldsNode {
     fn default() -> Self {
         Self {
             pinned_paths: Vec::new(),
-            parsed:       None,
-            output_vals:  Vec::new(),
-            expanded:     HashSet::new(),
+            parsed: None,
+            output_vals: Vec::new(),
+            expanded: HashSet::new(),
         }
     }
 }
@@ -64,7 +64,10 @@ fn get_value_at_path<'a>(root: &'a serde_json::Value, path: &str) -> Option<&'a 
     Some(cur)
 }
 
-enum Seg<'a> { Key(&'a str), Idx(usize) }
+enum Seg<'a> {
+    Key(&'a str),
+    Idx(usize),
+}
 
 fn path_segments(path: &str) -> Vec<Seg<'_>> {
     let mut segs = Vec::new();
@@ -77,14 +80,18 @@ fn path_segments(path: &str) -> Vec<Seg<'_>> {
                 segs.push(Seg::Idx(i));
             }
             remaining = &remaining[end + 1..];
-            if remaining.starts_with('.') { remaining = &remaining[1..]; }
+            if remaining.starts_with('.') {
+                remaining = &remaining[1..];
+            }
         } else {
             let dot = remaining.find('.').unwrap_or(remaining.len());
             let bracket = remaining.find('[').unwrap_or(remaining.len());
             let end = dot.min(bracket);
             segs.push(Seg::Key(&remaining[..end]));
             remaining = &remaining[end..];
-            if remaining.starts_with('.') { remaining = &remaining[1..]; }
+            if remaining.starts_with('.') {
+                remaining = &remaining[1..];
+            }
         }
     }
     segs
@@ -92,11 +99,11 @@ fn path_segments(path: &str) -> Vec<Seg<'_>> {
 
 fn leaf_value_str(v: &serde_json::Value) -> Option<String> {
     match v {
-        serde_json::Value::Null       => Some("null".into()),
-        serde_json::Value::Bool(b)    => Some(b.to_string()),
-        serde_json::Value::Number(n)  => Some(n.to_string()),
-        serde_json::Value::String(s)  => Some(s.clone()),
-        _                             => None,
+        serde_json::Value::Null => Some("null".into()),
+        serde_json::Value::Bool(b) => Some(b.to_string()),
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        serde_json::Value::String(s) => Some(s.clone()),
+        _ => None,
     }
 }
 
@@ -107,8 +114,8 @@ fn is_numeric_str(s: &str) -> bool {
 fn child_count(v: &serde_json::Value) -> usize {
     match v {
         serde_json::Value::Object(m) => m.len(),
-        serde_json::Value::Array(a)  => a.len(),
-        _                            => 0,
+        serde_json::Value::Array(a) => a.len(),
+        _ => 0,
     }
 }
 
@@ -116,24 +123,32 @@ fn child_count(v: &serde_json::Value) -> usize {
 
 impl JsonFieldsNode {
     fn emit_pinned_vals(&self) -> Vec<(usize, PortValue)> {
-        self.pinned_paths.iter().enumerate().map(|(i, _)| {
-            let val_str = self.output_vals.get(i).map(|s| s.as_str()).unwrap_or("0");
-            let pv = if let Ok(f) = val_str.parse::<f64>() {
-                PortValue::Float(f as f32)
-            } else {
-                PortValue::Text(val_str.to_string())
-            };
-            (i, pv)
-        }).collect()
+        self.pinned_paths
+            .iter()
+            .enumerate()
+            .map(|(i, _)| {
+                let val_str = self.output_vals.get(i).map(|s| s.as_str()).unwrap_or("0");
+                let pv = if let Ok(f) = val_str.parse::<f64>() {
+                    PortValue::Float(f as f32)
+                } else {
+                    PortValue::Text(val_str.to_string())
+                };
+                (i, pv)
+            })
+            .collect()
     }
 
     fn refresh_output_vals(&mut self) {
         if let Some(ref root) = self.parsed {
-            self.output_vals = self.pinned_paths.iter().map(|path| {
-                get_value_at_path(root, path)
-                    .and_then(|v| leaf_value_str(v))
-                    .unwrap_or_else(|| "0".to_string())
-            }).collect();
+            self.output_vals = self
+                .pinned_paths
+                .iter()
+                .map(|path| {
+                    get_value_at_path(root, path)
+                        .and_then(|v| leaf_value_str(v))
+                        .unwrap_or_else(|| "0".to_string())
+                })
+                .collect();
         }
     }
 
@@ -145,8 +160,13 @@ impl JsonFieldsNode {
                     // Expand root + any single-child paths
                     self.expanded.insert("".to_string());
                     for (k, v) in map {
-                        if !matches!(v, serde_json::Value::Null | serde_json::Value::Bool(_)
-                            | serde_json::Value::Number(_) | serde_json::Value::String(_)) {
+                        if !matches!(
+                            v,
+                            serde_json::Value::Null
+                                | serde_json::Value::Bool(_)
+                                | serde_json::Value::Number(_)
+                                | serde_json::Value::String(_)
+                        ) {
                             self.expanded.insert(k.clone());
                         }
                     }
@@ -162,16 +182,17 @@ impl JsonFieldsNode {
 
 // ── Tree rendering ────────────────────────────────────────────────────────────
 
-type PortPositions = std::collections::HashMap<(crate::graph::NodeId, usize, bool), eframe::egui::Pos2>;
+type PortPositions =
+    std::collections::HashMap<(crate::graph::NodeId, usize, bool), eframe::egui::Pos2>;
 
 struct TreeCtx<'a> {
-    node_id:      crate::graph::NodeId,
+    node_id: crate::graph::NodeId,
     pinned_paths: &'a mut Vec<String>,
-    output_vals:  &'a mut Vec<String>,
-    expanded:     &'a mut HashSet<String>,
-    pin_req:      &'a mut Option<(String, String)>,  // (path, leaf_val) to pin
-    remove_req:   &'a mut Option<String>,            // path to unpin
-    connections:  &'a [crate::graph::Connection],
+    output_vals: &'a mut Vec<String>,
+    expanded: &'a mut HashSet<String>,
+    pin_req: &'a mut Option<(String, String)>, // (path, leaf_val) to pin
+    remove_req: &'a mut Option<String>,        // path to unpin
+    connections: &'a [crate::graph::Connection],
     port_positions: &'a mut PortPositions,
     dragging_from: &'a mut Option<(crate::graph::NodeId, usize, bool)>,
     pending_disconnects: &'a mut Vec<(crate::graph::NodeId, usize)>,
@@ -180,14 +201,14 @@ struct TreeCtx<'a> {
 fn render_tree(
     ui: &mut egui::Ui,
     val: &serde_json::Value,
-    path: &str,       // dotted path so far (empty = root)
-    key_label: &str,  // display label for this node
+    path: &str,      // dotted path so far (empty = root)
+    key_label: &str, // display label for this node
     depth: usize,
     ctx: &mut TreeCtx<'_>,
 ) {
-    let dim    = egui::Color32::from_rgb(110, 110, 120);
-    let green  = egui::Color32::from_rgb(80, 210, 130);
-    let blue   = egui::Color32::from_rgb(120, 180, 255);
+    let dim = egui::Color32::from_rgb(110, 110, 120);
+    let green = egui::Color32::from_rgb(80, 210, 130);
+    let blue = egui::Color32::from_rgb(120, 180, 255);
     let orange = egui::Color32::from_rgb(255, 190, 80);
     let indent = depth as f32 * 12.0;
 
@@ -199,14 +220,23 @@ fn render_tree(
         | serde_json::Value::String(_) => {
             let val_str = leaf_value_str(val).unwrap_or_default();
             let is_pinned = ctx.pinned_paths.contains(&path.to_string());
-            let is_num    = is_numeric_str(&val_str);
-            let val_color = if is_num { orange } else { egui::Color32::from_rgb(200,200,200) };
+            let is_num = is_numeric_str(&val_str);
+            let val_color = if is_num {
+                orange
+            } else {
+                egui::Color32::from_rgb(200, 200, 200)
+            };
 
             ui.horizontal(|ui| {
                 ui.add_space(indent);
                 // Pin toggle
                 if is_pinned {
-                    if ui.small_button(RichText::new("−").color(egui::Color32::from_rgb(255,100,100))).clicked() {
+                    if ui
+                        .small_button(
+                            RichText::new("−").color(egui::Color32::from_rgb(255, 100, 100)),
+                        )
+                        .clicked()
+                    {
                         *ctx.remove_req = Some(path.to_string());
                     }
                 } else if ui.small_button(RichText::new("+").color(green)).clicked() {
@@ -216,17 +246,31 @@ fn render_tree(
                 let key_col = if is_pinned { green } else { blue };
                 ui.label(RichText::new(key_label).small().monospace().color(key_col));
                 ui.label(RichText::new(":").small().color(dim));
-                ui.label(RichText::new(truncate(&val_str, 18)).small().monospace().color(val_color));
+                ui.label(
+                    RichText::new(truncate(&val_str, 18))
+                        .small()
+                        .monospace()
+                        .color(val_color),
+                );
 
                 // If pinned, show the output port circle at right
                 if is_pinned {
                     if let Some(port_idx) = ctx.pinned_paths.iter().position(|p| p == path) {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             crate::nodes::inline_port_circle(
-                                ui, ctx.node_id, port_idx, false,
-                                ctx.connections, ctx.port_positions,
-                                ctx.dragging_from, ctx.pending_disconnects,
-                                if is_num { PortKind::Number } else { PortKind::Text },
+                                ui,
+                                ctx.node_id,
+                                port_idx,
+                                false,
+                                ctx.connections,
+                                ctx.port_positions,
+                                ctx.dragging_from,
+                                ctx.pending_disconnects,
+                                if is_num {
+                                    PortKind::Number
+                                } else {
+                                    PortKind::Text
+                                },
                             );
                         });
                     }
@@ -249,7 +293,13 @@ fn render_tree(
                         ctx.expanded.insert(path.to_string());
                     }
                 }
-                ui.label(RichText::new(key_label).small().monospace().strong().color(blue));
+                ui.label(
+                    RichText::new(key_label)
+                        .small()
+                        .monospace()
+                        .strong()
+                        .color(blue),
+                );
                 ui.label(RichText::new(format!(" {{{}}}", n)).small().color(dim));
             });
 
@@ -280,7 +330,13 @@ fn render_tree(
                         ctx.expanded.insert(path.to_string());
                     }
                 }
-                ui.label(RichText::new(key_label).small().monospace().strong().color(blue));
+                ui.label(
+                    RichText::new(key_label)
+                        .small()
+                        .monospace()
+                        .strong()
+                        .color(blue),
+                );
                 ui.label(RichText::new(format!(" [{}]", n)).small().color(dim));
             });
 
@@ -295,7 +351,12 @@ fn render_tree(
                 if n > 20 {
                     ui.horizontal(|ui| {
                         ui.add_space(indent + 12.0);
-                        ui.label(RichText::new(format!("… {} more", n - 20)).small().color(dim).italics());
+                        ui.label(
+                            RichText::new(format!("… {} more", n - 20))
+                                .small()
+                                .color(dim)
+                                .italics(),
+                        );
                     });
                 }
             }
@@ -306,23 +367,45 @@ fn render_tree(
 // ── NodeBehavior ──────────────────────────────────────────────────────────────
 
 impl NodeBehavior for JsonFieldsNode {
-    fn title(&self)      -> &str   { "Unpack (JSON)" }
-    fn type_tag(&self)   -> &str   { "json_fields" }
-    fn color_hint(&self) -> [u8;3] { [80, 160, 220] }
-    fn min_width(&self)  -> Option<f32> { Some(260.0) }
-    fn inline_ports(&self) -> bool { true }
+    fn title(&self) -> &str {
+        "Unpack (JSON)"
+    }
+    fn type_tag(&self) -> &str {
+        "json_fields"
+    }
+    fn color_hint(&self) -> [u8; 3] {
+        [80, 160, 220]
+    }
+    fn min_width(&self) -> Option<f32> {
+        Some(260.0)
+    }
+    fn inline_ports(&self) -> bool {
+        true
+    }
 
     fn inputs(&self) -> Vec<PortDef> {
         vec![PortDef::new("JSON", PortKind::Text)]
     }
 
     fn outputs(&self) -> Vec<PortDef> {
-        self.pinned_paths.iter().enumerate().map(|(i, path)| {
-            let kind = self.output_vals.get(i)
-                .map(|v| if is_numeric_str(v) { PortKind::Number } else { PortKind::Text })
-                .unwrap_or(PortKind::Text);
-            PortDef::dynamic(path.clone(), kind)
-        }).collect()
+        self.pinned_paths
+            .iter()
+            .enumerate()
+            .map(|(i, path)| {
+                let kind = self
+                    .output_vals
+                    .get(i)
+                    .map(|v| {
+                        if is_numeric_str(v) {
+                            PortKind::Number
+                        } else {
+                            PortKind::Text
+                        }
+                    })
+                    .unwrap_or(PortKind::Text);
+                PortDef::dynamic(path.clone(), kind)
+            })
+            .collect()
     }
 
     fn evaluate(&mut self, inputs: &[PortValue]) -> Vec<(usize, PortValue)> {
@@ -343,18 +426,25 @@ impl NodeBehavior for JsonFieldsNode {
 
     fn render_with_context(&mut self, ui: &mut egui::Ui, ctx: &mut RenderContext) {
         let node_id = ctx.node_id;
-        let dim  = egui::Color32::from_rgb(110, 110, 120);
+        let dim = egui::Color32::from_rgb(110, 110, 120);
         let blue = egui::Color32::from_rgb(80, 180, 255);
 
         // ── JSON input port ───────────────────────────────────────────────
-        let json_connected = ctx.connections.iter()
+        let json_connected = ctx
+            .connections
+            .iter()
             .any(|c| c.to_node == node_id && c.to_port == 0);
 
         ui.horizontal(|ui| {
             crate::nodes::inline_port_circle(
-                ui, node_id, 0, true,
-                ctx.connections, ctx.port_positions,
-                ctx.dragging_from, ctx.pending_disconnects,
+                ui,
+                node_id,
+                0,
+                true,
+                ctx.connections,
+                ctx.port_positions,
+                ctx.dragging_from,
+                ctx.pending_disconnects,
                 PortKind::Text,
             );
             let lbl = if json_connected { "JSON ✓" } else { "JSON" };
@@ -363,9 +453,8 @@ impl NodeBehavior for JsonFieldsNode {
         });
 
         // Live parse from connected input
-        let json_val = crate::graph::Graph::static_input_value(
-            ctx.connections, ctx.values, node_id, 0,
-        );
+        let json_val =
+            crate::graph::Graph::static_input_value(ctx.connections, ctx.values, node_id, 0);
         if let PortValue::Text(ref s) = json_val {
             if !s.is_empty() {
                 let was_empty = self.parsed.is_none();
@@ -387,8 +476,14 @@ impl NodeBehavior for JsonFieldsNode {
         match &self.parsed {
             None => {
                 ui.label(
-                    RichText::new(if json_connected { "Waiting for data…" } else { "Connect a JSON source" })
-                        .small().color(dim).italics()
+                    RichText::new(if json_connected {
+                        "Waiting for data…"
+                    } else {
+                        "Connect a JSON source"
+                    })
+                    .small()
+                    .color(dim)
+                    .italics(),
                 );
             }
             Some(_) => {
@@ -396,8 +491,12 @@ impl NodeBehavior for JsonFieldsNode {
                 let root = self.parsed.clone().unwrap();
                 let total_leaves = count_leaves(&root);
 
-                ui.label(RichText::new(format!("JSON tree  ({} fields)", total_leaves))
-                    .small().strong().color(dim));
+                ui.label(
+                    RichText::new(format!("JSON tree  ({} fields)", total_leaves))
+                        .small()
+                        .strong()
+                        .color(dim),
+                );
                 ui.add_space(2.0);
 
                 // Collapse/expand all buttons
@@ -420,14 +519,14 @@ impl NodeBehavior for JsonFieldsNode {
                     .show_pannable(ui, |ui| {
                         let mut tree_ctx = TreeCtx {
                             node_id,
-                            pinned_paths:        &mut self.pinned_paths,
-                            output_vals:         &mut self.output_vals,
-                            expanded:            &mut self.expanded,
-                            pin_req:             &mut pin_req,
-                            remove_req:          &mut remove_req,
-                            connections:         ctx.connections,
-                            port_positions:      ctx.port_positions,
-                            dragging_from:       ctx.dragging_from,
+                            pinned_paths: &mut self.pinned_paths,
+                            output_vals: &mut self.output_vals,
+                            expanded: &mut self.expanded,
+                            pin_req: &mut pin_req,
+                            remove_req: &mut remove_req,
+                            connections: ctx.connections,
+                            port_positions: ctx.port_positions,
+                            dragging_from: ctx.dragging_from,
                             pending_disconnects: ctx.pending_disconnects,
                         };
 
@@ -438,20 +537,31 @@ impl NodeBehavior for JsonFieldsNode {
                                 let is_root_expanded = tree_ctx.expanded.contains("");
                                 let chevron = if is_root_expanded { "▼" } else { "▶" };
                                 ui.horizontal(|ui| {
-                                    if ui.small_button(
-                                        RichText::new(chevron)
-                                            .color(egui::Color32::from_rgb(110,110,120))
-                                    ).clicked() {
+                                    if ui
+                                        .small_button(
+                                            RichText::new(chevron)
+                                                .color(egui::Color32::from_rgb(110, 110, 120)),
+                                        )
+                                        .clicked()
+                                    {
                                         if is_root_expanded {
                                             tree_ctx.expanded.remove("");
                                         } else {
                                             tree_ctx.expanded.insert("".to_string());
                                         }
                                     }
-                                    ui.label(RichText::new("{ }").small().monospace().strong()
-                                        .color(egui::Color32::from_rgb(120,180,255)));
-                                    ui.label(RichText::new(format!(" {} keys", n))
-                                        .small().color(egui::Color32::from_rgb(110,110,120)));
+                                    ui.label(
+                                        RichText::new("{ }")
+                                            .small()
+                                            .monospace()
+                                            .strong()
+                                            .color(egui::Color32::from_rgb(120, 180, 255)),
+                                    );
+                                    ui.label(
+                                        RichText::new(format!(" {} keys", n))
+                                            .small()
+                                            .color(egui::Color32::from_rgb(110, 110, 120)),
+                                    );
                                 });
                                 if is_root_expanded {
                                     for (k, v) in map {
@@ -464,20 +574,31 @@ impl NodeBehavior for JsonFieldsNode {
                                 let is_root_expanded = tree_ctx.expanded.contains("");
                                 let chevron = if is_root_expanded { "▼" } else { "▶" };
                                 ui.horizontal(|ui| {
-                                    if ui.small_button(
-                                        RichText::new(chevron)
-                                            .color(egui::Color32::from_rgb(110,110,120))
-                                    ).clicked() {
+                                    if ui
+                                        .small_button(
+                                            RichText::new(chevron)
+                                                .color(egui::Color32::from_rgb(110, 110, 120)),
+                                        )
+                                        .clicked()
+                                    {
                                         if is_root_expanded {
                                             tree_ctx.expanded.remove("");
                                         } else {
                                             tree_ctx.expanded.insert("".to_string());
                                         }
                                     }
-                                    ui.label(RichText::new("[ ]").small().monospace().strong()
-                                        .color(egui::Color32::from_rgb(120,180,255)));
-                                    ui.label(RichText::new(format!(" {} items", n))
-                                        .small().color(egui::Color32::from_rgb(110,110,120)));
+                                    ui.label(
+                                        RichText::new("[ ]")
+                                            .small()
+                                            .monospace()
+                                            .strong()
+                                            .color(egui::Color32::from_rgb(120, 180, 255)),
+                                    );
+                                    ui.label(
+                                        RichText::new(format!(" {} items", n))
+                                            .small()
+                                            .color(egui::Color32::from_rgb(110, 110, 120)),
+                                    );
                                 });
                                 if is_root_expanded {
                                     let show = n.min(20);
@@ -491,8 +612,12 @@ impl NodeBehavior for JsonFieldsNode {
                             // Root is scalar (unlikely but handled)
                             leaf => {
                                 let val_str = leaf_value_str(leaf).unwrap_or_default();
-                                ui.label(RichText::new(&val_str).small().monospace()
-                                    .color(egui::Color32::from_rgb(200,200,200)));
+                                ui.label(
+                                    RichText::new(&val_str)
+                                        .small()
+                                        .monospace()
+                                        .color(egui::Color32::from_rgb(200, 200, 200)),
+                                );
                             }
                         }
                     });
@@ -525,29 +650,47 @@ impl NodeBehavior for JsonFieldsNode {
                     for (i, path) in self.pinned_paths.iter().enumerate() {
                         let val = self.output_vals.get(i).map(|s| s.as_str()).unwrap_or("0");
                         ui.horizontal(|ui| {
-                            if ui.small_button(
-                                RichText::new("−").color(egui::Color32::from_rgb(255,100,100))
-                            ).clicked() {
+                            if ui
+                                .small_button(
+                                    RichText::new("−")
+                                        .color(egui::Color32::from_rgb(255, 100, 100)),
+                                )
+                                .clicked()
+                            {
                                 remove_pinned = Some(i);
                             }
                             ui.label(
                                 RichText::new(truncate(path, 22))
-                                    .small().monospace()
-                                    .color(egui::Color32::from_rgb(180, 220, 255))
+                                    .small()
+                                    .monospace()
+                                    .color(egui::Color32::from_rgb(180, 220, 255)),
                             );
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                crate::nodes::inline_port_circle(
-                                    ui, node_id, i, false,
-                                    ctx.connections, ctx.port_positions,
-                                    ctx.dragging_from, ctx.pending_disconnects,
-                                    if is_numeric_str(val) { PortKind::Number } else { PortKind::Text },
-                                );
-                                ui.label(
-                                    RichText::new(truncate(val, 14))
-                                        .small().monospace()
-                                        .color(egui::Color32::from_rgb(80, 210, 130))
-                                );
-                            });
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    crate::nodes::inline_port_circle(
+                                        ui,
+                                        node_id,
+                                        i,
+                                        false,
+                                        ctx.connections,
+                                        ctx.port_positions,
+                                        ctx.dragging_from,
+                                        ctx.pending_disconnects,
+                                        if is_numeric_str(val) {
+                                            PortKind::Number
+                                        } else {
+                                            PortKind::Text
+                                        },
+                                    );
+                                    ui.label(
+                                        RichText::new(truncate(val, 14))
+                                            .small()
+                                            .monospace()
+                                            .color(egui::Color32::from_rgb(80, 210, 130)),
+                                    );
+                                },
+                            );
                         });
                     }
                     if let Some(idx) = remove_pinned {
@@ -569,7 +712,8 @@ impl NodeBehavior for JsonFieldsNode {
 
     fn load_state(&mut self, state: &serde_json::Value) {
         if let Some(arr) = state.get("pinned_paths").and_then(|v| v.as_array()) {
-            self.pinned_paths = arr.iter()
+            self.pinned_paths = arr
+                .iter()
                 .filter_map(|v| v.as_str().map(|s| s.to_string()))
                 .collect();
             self.output_vals = vec!["0".to_string(); self.pinned_paths.len()];
@@ -582,8 +726,8 @@ impl NodeBehavior for JsonFieldsNode {
 fn count_leaves(val: &serde_json::Value) -> usize {
     match val {
         serde_json::Value::Object(map) => map.values().map(count_leaves).sum(),
-        serde_json::Value::Array(arr)  => arr.iter().map(count_leaves).sum(),
-        _                              => 1,
+        serde_json::Value::Array(arr) => arr.iter().map(count_leaves).sum(),
+        _ => 1,
     }
 }
 
@@ -592,7 +736,11 @@ fn collect_all_paths(val: &serde_json::Value, prefix: &str, out: &mut HashSet<St
         serde_json::Value::Object(map) => {
             out.insert(prefix.to_string());
             for (k, v) in map {
-                let child = if prefix.is_empty() { k.clone() } else { format!("{}.{}", prefix, k) };
+                let child = if prefix.is_empty() {
+                    k.clone()
+                } else {
+                    format!("{}.{}", prefix, k)
+                };
                 collect_all_paths(v, &child, out);
             }
         }

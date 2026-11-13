@@ -75,18 +75,27 @@ pub fn mtl_to_wgpu_texture(
     };
     let desc = wgpu::TextureDescriptor {
         label: Some("syphon-imported"),
-        size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format: wgpu_format,
         // Syphon textures are published as render attachments; mark
         // them readable for our downstream TEXTURE_BINDING consumers.
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC
-             | wgpu::TextureUsages::RENDER_ATTACHMENT,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_SRC
+            | wgpu::TextureUsages::RENDER_ATTACHMENT,
         view_formats: &[],
     };
-    let copy_size = wgpu_hal::CopyExtent { width, height, depth: 1 };
+    let copy_size = wgpu_hal::CopyExtent {
+        width,
+        height,
+        depth: 1,
+    };
     unsafe {
         let hal_tex = wgpu_hal::metal::Device::texture_from_raw(
             mtl_tex,

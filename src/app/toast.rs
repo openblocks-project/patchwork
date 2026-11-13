@@ -67,7 +67,12 @@ impl super::PatchworkApp {
                 return;
             }
         }
-        self.toasts.push(Toast { text, severity, spawned_at: now, duration });
+        self.toasts.push(Toast {
+            text,
+            severity,
+            spawned_at: now,
+            duration,
+        });
     }
 
     /// Drop expired toasts and render the rest at top-center, stacked.
@@ -80,7 +85,9 @@ impl super::PatchworkApp {
             Some(d) => now < t.spawned_at + d,
             None => true,
         });
-        if self.toasts.is_empty() { return; }
+        if self.toasts.is_empty() {
+            return;
+        }
         // Repaint while toasts are live so the fade-out animates and
         // auto-dismiss fires even on an idle canvas.
         ctx.request_repaint();
@@ -107,7 +114,10 @@ impl super::PatchworkApp {
                         (220.0 * alpha) as u8,
                     ),
                     egui::Color32::from_rgba_unmultiplied(
-                        accent[0], accent[1], accent[2], (160.0 * alpha) as u8,
+                        accent[0],
+                        accent[1],
+                        accent[2],
+                        (160.0 * alpha) as u8,
                     ),
                 ),
                 ToastSeverity::Warn => (
@@ -137,7 +147,10 @@ impl super::PatchworkApp {
                             ui.horizontal(|ui| {
                                 ui.colored_label(fg, &toast.text);
                                 ui.add_space(8.0);
-                                if ui.small_button(egui::RichText::new("✕").color(fg)).clicked() {
+                                if ui
+                                    .small_button(egui::RichText::new("✕").color(fg))
+                                    .clicked()
+                                {
                                     close_index = Some(i);
                                 }
                             });

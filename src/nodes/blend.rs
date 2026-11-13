@@ -1,15 +1,24 @@
-use crate::graph::*;
 use crate::gpu_image::GpuBlendCallback;
+use crate::graph::*;
 use crate::node_trait::{NodeBehavior, RenderContext};
 use crate::nodes::{inline_port_circle, output_port_row};
 use eframe::egui;
 use eframe::egui_wgpu;
 use eframe::egui_wgpu::wgpu;
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-const BLEND_MODES: &[&str] = &["Normal", "Multiply", "Screen", "Overlay", "Add", "Difference", "Soft Light", "Hard Light"];
+const BLEND_MODES: &[&str] = &[
+    "Normal",
+    "Multiply",
+    "Screen",
+    "Overlay",
+    "Add",
+    "Difference",
+    "Soft Light",
+    "Hard Light",
+];
 
 // ── Node struct ───────────────────────────────────────────────────────────────
 
@@ -21,21 +30,37 @@ pub struct BlendNode {
     pub mix: f32,
 }
 
-fn default_half() -> f32 { 0.5 }
+fn default_half() -> f32 {
+    0.5
+}
 
 impl Default for BlendNode {
-    fn default() -> Self { Self { mode: 0, mix: 0.5 } }
+    fn default() -> Self {
+        Self { mode: 0, mix: 0.5 }
+    }
 }
 
 impl NodeBehavior for BlendNode {
-    fn title(&self)        -> &str    { "Blend" }
-    fn type_tag(&self)     -> &str    { "blend" }
-    fn color_hint(&self)   -> [u8; 3] { [160, 100, 180] }
-    fn inline_ports(&self) -> bool    { true }
+    fn title(&self) -> &str {
+        "Blend"
+    }
+    fn type_tag(&self) -> &str {
+        "blend"
+    }
+    fn color_hint(&self) -> [u8; 3] {
+        [160, 100, 180]
+    }
+    fn inline_ports(&self) -> bool {
+        true
+    }
 
-    fn needs_cpu_image_input(&self, _port: usize) -> bool { false }
+    fn needs_cpu_image_input(&self, _port: usize) -> bool {
+        false
+    }
 
-    fn blend_params(&self) -> Option<(u8, f32)> { Some((self.mode, self.mix)) }
+    fn blend_params(&self) -> Option<(u8, f32)> {
+        Some((self.mode, self.mix))
+    }
 
     fn evaluate_with_ctx(
         &mut self,
@@ -43,19 +68,34 @@ impl NodeBehavior for BlendNode {
         ctx: &mut crate::node_trait::EvalCtx<'_>,
     ) -> Vec<(usize, PortValue)> {
         // Read Mix from port 2 if wired, else use stored value
-        let mix = if inputs.get(2).map(|v| !matches!(v, PortValue::None)).unwrap_or(false) {
-            inputs.get(2).map(|v| v.as_float().clamp(0.0, 1.0)).unwrap_or(self.mix)
+        let mix = if inputs
+            .get(2)
+            .map(|v| !matches!(v, PortValue::None))
+            .unwrap_or(false)
+        {
+            inputs
+                .get(2)
+                .map(|v| v.as_float().clamp(0.0, 1.0))
+                .unwrap_or(self.mix)
         } else {
             self.mix
         };
 
         // Extract image refs from inputs (CPU Image or GPU stub)
         let stub_a: Option<ImageData> = match inputs.first() {
-            Some(PortValue::GpuImage(h)) => Some(ImageData { width: h.width, height: h.height, pixels: Vec::new() }),
+            Some(PortValue::GpuImage(h)) => Some(ImageData {
+                width: h.width,
+                height: h.height,
+                pixels: Vec::new(),
+            }),
             _ => None,
         };
         let stub_b: Option<ImageData> = match inputs.get(1) {
-            Some(PortValue::GpuImage(h)) => Some(ImageData { width: h.width, height: h.height, pixels: Vec::new() }),
+            Some(PortValue::GpuImage(h)) => Some(ImageData {
+                width: h.width,
+                height: h.height,
+                pixels: Vec::new(),
+            }),
             _ => None,
         };
         let a: Option<&ImageData> = match inputs.first() {
@@ -75,8 +115,15 @@ impl NodeBehavior for BlendNode {
                 let gpu_src_a = ctx.input_sources.first().copied().flatten();
                 let gpu_src_b = ctx.input_sources.get(1).copied().flatten();
                 if let Some(val) = process_gpu_cached(
-                    a, b, self.mode, mix, ctx.node_id, rs,
-                    ctx.gpu_tex_cache, gpu_src_a, gpu_src_b,
+                    a,
+                    b,
+                    self.mode,
+                    mix,
+                    ctx.node_id,
+                    rs,
+                    ctx.gpu_tex_cache,
+                    gpu_src_a,
+                    gpu_src_b,
                     ctx.needs_readback,
                 ) {
                     return vec![(0, val)];
@@ -92,8 +139,8 @@ impl NodeBehavior for BlendNode {
 
     fn inputs(&self) -> Vec<PortDef> {
         vec![
-            PortDef::new("A",   PortKind::Image),
-            PortDef::new("B",   PortKind::Image),
+            PortDef::new("A", PortKind::Image),
+            PortDef::new("B", PortKind::Image),
             PortDef::new("Mix", PortKind::Normalized),
         ]
     }
@@ -107,12 +154,17 @@ impl NodeBehavior for BlendNode {
     }
 
     fn load_state(&mut self, state: &serde_json::Value) {
-        if let Some(m) = state.get("mode").and_then(|v| v.as_u64()) { self.mode = m as u8; }
-        if let Some(m) = state.get("mix").and_then(|v| v.as_f64())  { self.mix = m as f32; }
+        if let Some(m) = state.get("mode").and_then(|v| v.as_u64()) {
+            self.mode = m as u8;
+        }
+        if let Some(m) = state.get("mix").and_then(|v| v.as_f64()) {
+            self.mix = m as f32;
+        }
     }
 
     fn render_with_context(&mut self, ui: &mut egui::Ui, ctx: &mut RenderContext) {
-        let target_format = ctx.wgpu_render_state
+        let target_format = ctx
+            .wgpu_render_state
             .map(|rs| rs.target_format)
             .unwrap_or(eframe::egui_wgpu::wgpu::TextureFormat::Bgra8UnormSrgb);
         render(
@@ -155,8 +207,9 @@ pub fn render(
     dragging_from: &mut Option<(NodeId, usize, bool)>,
     pending_disconnects: &mut Vec<(NodeId, usize)>,
 ) {
-
-    let mix_wired = connections.iter().any(|c| c.to_node == node_id && c.to_port == 2);
+    let mix_wired = connections
+        .iter()
+        .any(|c| c.to_node == node_id && c.to_port == 2);
 
     // When Mix port is wired, use the wired value for display; the eval loop
     // reads it ephemerally from port values, so we only update the local copy here.
@@ -179,30 +232,81 @@ pub fn render(
 
     // Port 0: Image A
     ui.horizontal(|ui| {
-        inline_port_circle(ui, node_id, 0, true, connections, port_positions, dragging_from, pending_disconnects, PortKind::Image);
+        inline_port_circle(
+            ui,
+            node_id,
+            0,
+            true,
+            connections,
+            port_positions,
+            dragging_from,
+            pending_disconnects,
+            PortKind::Image,
+        );
         ui.label(egui::RichText::new("A:").small());
         match dim_label(&a) {
-            Some((w, h)) => { ui.label(egui::RichText::new(format!("[{}x{}]", w, h)).small().color(egui::Color32::from_rgb(80, 170, 255))); }
-            None => { ui.label(egui::RichText::new("—").small().color(egui::Color32::GRAY)); }
+            Some((w, h)) => {
+                ui.label(
+                    egui::RichText::new(format!("[{}x{}]", w, h))
+                        .small()
+                        .color(egui::Color32::from_rgb(80, 170, 255)),
+                );
+            }
+            None => {
+                ui.label(egui::RichText::new("—").small().color(egui::Color32::GRAY));
+            }
         }
     });
 
     // Port 1: Image B
     ui.horizontal(|ui| {
-        inline_port_circle(ui, node_id, 1, true, connections, port_positions, dragging_from, pending_disconnects, PortKind::Image);
+        inline_port_circle(
+            ui,
+            node_id,
+            1,
+            true,
+            connections,
+            port_positions,
+            dragging_from,
+            pending_disconnects,
+            PortKind::Image,
+        );
         ui.label(egui::RichText::new("B:").small());
         match dim_label(&b) {
-            Some((w, h)) => { ui.label(egui::RichText::new(format!("[{}x{}]", w, h)).small().color(egui::Color32::from_rgb(80, 170, 255))); }
-            None => { ui.label(egui::RichText::new("—").small().color(egui::Color32::GRAY)); }
+            Some((w, h)) => {
+                ui.label(
+                    egui::RichText::new(format!("[{}x{}]", w, h))
+                        .small()
+                        .color(egui::Color32::from_rgb(80, 170, 255)),
+                );
+            }
+            None => {
+                ui.label(egui::RichText::new("—").small().color(egui::Color32::GRAY));
+            }
         }
     });
 
     // Port 2: Mix — inline_port_circle + slider or wired value
     ui.horizontal(|ui| {
-        inline_port_circle(ui, node_id, 2, true, connections, port_positions, dragging_from, pending_disconnects, PortKind::Normalized);
+        inline_port_circle(
+            ui,
+            node_id,
+            2,
+            true,
+            connections,
+            port_positions,
+            dragging_from,
+            pending_disconnects,
+            PortKind::Normalized,
+        );
         ui.label(egui::RichText::new("Mix:").small());
         if mix_wired {
-            ui.label(egui::RichText::new(format!("{:.2}", *mix)).small().monospace().color(egui::Color32::from_rgb(80, 170, 255)));
+            ui.label(
+                egui::RichText::new(format!("{:.2}", *mix))
+                    .small()
+                    .monospace()
+                    .color(egui::Color32::from_rgb(80, 170, 255)),
+            );
         }
     });
     if !mix_wired {
@@ -234,20 +338,29 @@ pub fn render(
             let preview_w = ui.available_width().min(250.0);
             let aspect = img_a.height as f32 / img_a.width as f32;
             let preview_h = preview_w * aspect;
-            let (rect, _) = ui.allocate_exact_size(egui::vec2(preview_w, preview_h), egui::Sense::hover());
+            let (rect, _) =
+                ui.allocate_exact_size(egui::vec2(preview_w, preview_h), egui::Sense::hover());
 
             let target_format = target_format;
             ui.painter().add(egui_wgpu::Callback::new_paint_callback(
                 rect,
                 GpuBlendCallback {
-                    node_id, mode: *mode as u32, mix: *mix,
-                    img_a: img_a.clone(), img_b: img_b.clone(), target_format,
+                    node_id,
+                    mode: *mode as u32,
+                    mix: *mix,
+                    img_a: img_a.clone(),
+                    img_b: img_b.clone(),
+                    target_format,
                 },
             ));
         }
     } else {
-        if !has_a { ui.colored_label(egui::Color32::GRAY, "Connect Image A"); }
-        if !has_b { ui.colored_label(egui::Color32::GRAY, "Connect Image B"); }
+        if !has_a {
+            ui.colored_label(egui::Color32::GRAY, "Connect Image A");
+        }
+        if !has_b {
+            ui.colored_label(egui::Color32::GRAY, "Connect Image B");
+        }
     }
 
     // Output port
@@ -257,7 +370,18 @@ pub fn render(
         Some(PortValue::GpuImage(h)) => format!("[{}x{}]", h.width, h.height),
         _ => "—".into(),
     };
-    output_port_row(ui, "Image", &out_val, node_id, 0, port_positions, dragging_from, connections, pending_disconnects, PortKind::Image);
+    output_port_row(
+        ui,
+        "Image",
+        &out_val,
+        node_id,
+        0,
+        port_positions,
+        dragging_from,
+        connections,
+        pending_disconnects,
+        PortKind::Image,
+    );
 }
 
 /// Blend two images. Called during evaluation.
@@ -279,7 +403,9 @@ pub fn process(a: &ImageData, b: &ImageData, mode: u8, mix: f32) -> Arc<ImageDat
     let out_bytes = (w * h * 4) as usize;
     let mut pixels: Vec<u8> = Vec::with_capacity(out_bytes);
     // SAFETY: every output pixel is written via the u32 store below.
-    unsafe { pixels.set_len(out_bytes); }
+    unsafe {
+        pixels.set_len(out_bytes);
+    }
 
     let src_a: &[u32] = bytemuck::cast_slice(&a.pixels);
     let src_b: &[u32] = bytemuck::cast_slice(&b.pixels);
@@ -316,15 +442,29 @@ pub fn process(a: &ImageData, b: &ImageData, mode: u8, mix: f32) -> Arc<ImageDat
                     0 => vb,
                     1 => va * vb,
                     2 => 1.0 - (1.0 - va) * (1.0 - vb),
-                    3 => if va < 0.5 { 2.0 * va * vb } else { 1.0 - 2.0 * (1.0 - va) * (1.0 - vb) },
+                    3 => {
+                        if va < 0.5 {
+                            2.0 * va * vb
+                        } else {
+                            1.0 - 2.0 * (1.0 - va) * (1.0 - vb)
+                        }
+                    }
                     4 => (va + vb).min(1.0),
                     5 => (va - vb).abs(),
-                    6 => if vb < 0.5 {
+                    6 => {
+                        if vb < 0.5 {
                             va - (1.0 - 2.0 * vb) * va * (1.0 - va)
-                         } else {
+                        } else {
                             va + (2.0 * vb - 1.0) * (va.sqrt() - va)
-                         },
-                    7 => if vb < 0.5 { 2.0 * va * vb } else { 1.0 - 2.0 * (1.0 - va) * (1.0 - vb) },
+                        }
+                    }
+                    7 => {
+                        if vb < 0.5 {
+                            2.0 * va * vb
+                        } else {
+                            1.0 - 2.0 * (1.0 - va) * (1.0 - vb)
+                        }
+                    }
                     _ => vb,
                 }
             }
@@ -343,7 +483,11 @@ pub fn process(a: &ImageData, b: &ImageData, mode: u8, mix: f32) -> Arc<ImageDat
             dst_u32[ro + x] = 0xFF00_0000 | (bb << 16) | (gb << 8) | rb;
         }
     }
-    Arc::new(ImageData { width: w, height: h, pixels })
+    Arc::new(ImageData {
+        width: w,
+        height: h,
+        pixels,
+    })
 }
 
 // ── GPU-accelerated blend ───────────────────────────────────────────────────
@@ -425,18 +569,19 @@ struct BlendGpuStore {
 /// so `process_gpu_cached` can ensure the pipeline without falling back
 /// to the CPU-upload-heavy `process_gpu` path, which would corrupt
 /// stub `GpuImage` inputs (empty pixels) into solid black textures.
-fn ensure_pipeline(
-    node_id: NodeId,
-    render_state: &egui_wgpu::RenderState,
-) -> bool {
+fn ensure_pipeline(node_id: NodeId, render_state: &egui_wgpu::RenderState) -> bool {
     let device = &render_state.device;
     let already = {
         let renderer = render_state.renderer.read();
-        renderer.callback_resources.get::<BlendGpuStore>()
+        renderer
+            .callback_resources
+            .get::<BlendGpuStore>()
             .and_then(|s| s.nodes.get(&node_id))
             .is_some()
     };
-    if already { return true; }
+    if already {
+        return true;
+    }
 
     device.push_error_scope(wgpu::ErrorFilter::Validation);
 
@@ -449,22 +594,38 @@ fn ensure_pipeline(
         label: Some("blend_gpu_bgl"),
         entries: &[
             wgpu::BindGroupLayoutEntry {
-                binding: 0, visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
                 count: None,
             },
             wgpu::BindGroupLayoutEntry {
-                binding: 1, visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
                 count: None,
             },
             wgpu::BindGroupLayoutEntry {
-                binding: 2, visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+                binding: 2,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
                 count: None,
             },
             wgpu::BindGroupLayoutEntry {
-                binding: 3, visibility: wgpu::ShaderStages::FRAGMENT,
+                binding: 3,
+                visibility: wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                 count: None,
             },
@@ -472,28 +633,57 @@ fn ensure_pipeline(
     });
 
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: None, bind_group_layouts: &[&bind_group_layout], push_constant_ranges: &[],
+        label: None,
+        bind_group_layouts: &[&bind_group_layout],
+        push_constant_ranges: &[],
     });
 
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("blend_gpu_pipeline"),
         layout: Some(&pipeline_layout),
-        vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs_main"), buffers: &[], compilation_options: wgpu::PipelineCompilationOptions::default() },
-        fragment: Some(wgpu::FragmentState { module: &shader, entry_point: Some("fs_main"), targets: &[Some(wgpu::TextureFormat::Rgba8UnormSrgb.into())], compilation_options: wgpu::PipelineCompilationOptions::default() }),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs_main"),
+            buffers: &[],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs_main"),
+            targets: &[Some(wgpu::TextureFormat::Rgba8UnormSrgb.into())],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        }),
         primitive: wgpu::PrimitiveState::default(),
-        depth_stencil: None, multisample: wgpu::MultisampleState::default(), multiview: None, cache: None,
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview: None,
+        cache: None,
     });
 
     let error = pollster::block_on(device.pop_error_scope());
-    if error.is_some() { return false; }
+    if error.is_some() {
+        return false;
+    }
 
     let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("blend_gpu_ub"), size: 16, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false,
+        label: Some("blend_gpu_ub"),
+        size: 16,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
     });
 
-    let sampler = device.create_sampler(&wgpu::SamplerDescriptor { mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, ..Default::default() });
+    let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        ..Default::default()
+    });
 
-    let gpu = BlendGpu { pipeline, bind_group_layout, uniform_buffer, sampler };
+    let gpu = BlendGpu {
+        pipeline,
+        bind_group_layout,
+        uniform_buffer,
+        sampler,
+    };
     let mut renderer = render_state.renderer.write();
     if let Some(store) = renderer.callback_resources.get_mut::<BlendGpuStore>() {
         store.nodes.insert(node_id, gpu);
@@ -507,8 +697,10 @@ fn ensure_pipeline(
 
 #[allow(dead_code)]
 pub fn process_gpu(
-    a: &ImageData, b: &ImageData,
-    mode: u8, mix: f32,
+    a: &ImageData,
+    b: &ImageData,
+    mode: u8,
+    mix: f32,
     node_id: NodeId,
     render_state: &egui_wgpu::RenderState,
 ) -> Option<Arc<ImageData>> {
@@ -516,9 +708,13 @@ pub fn process_gpu(
     let queue = &render_state.queue;
     let w = a.width.min(b.width);
     let h = a.height.min(b.height);
-    if w == 0 || h == 0 { return None; }
+    if w == 0 || h == 0 {
+        return None;
+    }
 
-    if !ensure_pipeline(node_id, render_state) { return None; }
+    if !ensure_pipeline(node_id, render_state) {
+        return None;
+    }
 
     let tex_a = crate::gpu_image::upload_texture(device, queue, a, "blend_a");
     let tex_b = crate::gpu_image::upload_texture(device, queue, b, "blend_b");
@@ -526,8 +722,15 @@ pub fn process_gpu(
     let view_b = tex_b.create_view(&Default::default());
 
     let output_tex = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("blend_output"), size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-        mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
+        label: Some("blend_output"),
+        size: wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
         format: wgpu::TextureFormat::Rgba8UnormSrgb,
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
         view_formats: &[],
@@ -542,12 +745,25 @@ pub fn process_gpu(
     queue.write_buffer(&gpu.uniform_buffer, 0, bytemuck::cast_slice(&params));
 
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: None, layout: &gpu.bind_group_layout,
+        label: None,
+        layout: &gpu.bind_group_layout,
         entries: &[
-            wgpu::BindGroupEntry { binding: 0, resource: gpu.uniform_buffer.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&view_a) },
-            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&view_b) },
-            wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&gpu.sampler) },
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: gpu.uniform_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(&view_a),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::TextureView(&view_b),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: wgpu::BindingResource::Sampler(&gpu.sampler),
+            },
         ],
     });
 
@@ -556,10 +772,15 @@ pub fn process_gpu(
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("blend_gpu_pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &output_view, resolve_target: None,
-                ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
+                view: &output_view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Store,
+                },
             })],
-            depth_stencil_attachment: None, ..Default::default()
+            depth_stencil_attachment: None,
+            ..Default::default()
         });
         pass.set_pipeline(&gpu.pipeline);
         pass.set_bind_group(0, &bind_group, &[]);
@@ -568,12 +789,22 @@ pub fn process_gpu(
     queue.submit(Some(encoder.finish()));
     drop(renderer);
 
-    Some(crate::gpu_image::readback_texture(device, queue, &output_tex, w, h))
+    Some(crate::gpu_image::readback_texture(
+        device,
+        queue,
+        &output_tex,
+        w,
+        h,
+    ))
 }
 
 pub fn process_gpu_cached(
-    a: &ImageData, b: &ImageData, mode: u8, mix: f32,
-    node_id: NodeId, render_state: &egui_wgpu::RenderState,
+    a: &ImageData,
+    b: &ImageData,
+    mode: u8,
+    mix: f32,
+    node_id: NodeId,
+    render_state: &egui_wgpu::RenderState,
     tex_cache: &mut crate::gpu_image::GpuTextureCache,
     gpu_source_a: Option<(NodeId, usize)>,
     gpu_source_b: Option<(NodeId, usize)>,
@@ -583,7 +814,9 @@ pub fn process_gpu_cached(
     let queue = &render_state.queue;
     let w = a.width.min(b.width);
     let h = a.height.min(b.height);
-    if w == 0 || h == 0 { return None; }
+    if w == 0 || h == 0 {
+        return None;
+    }
 
     // Ensure pipeline exists. We must NOT fall back to `process_gpu` here:
     // it CPU-uploads `a`/`b` via `upload_texture`, which silently produces a
@@ -592,7 +825,9 @@ pub fn process_gpu_cached(
     // bug — on the first frame after load, the upstream WGSL Viewer hands
     // Blend a stub, the no-pipeline branch black-uploads it, and the
     // result poisons the param-cache for the rest of the session.
-    if !ensure_pipeline(node_id, render_state) { return None; }
+    if !ensure_pipeline(node_id, render_state) {
+        return None;
+    }
 
     // Bind both inputs from the upstream GPU cache when available; only
     // upload from CPU as a fallback. Each input is checked independently.
@@ -626,10 +861,18 @@ pub fn process_gpu_cached(
 
     let output_tex = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("blend_output"),
-        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-        mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
+        size: wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
         format: wgpu::TextureFormat::Rgba8UnormSrgb,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::TEXTURE_BINDING,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::COPY_SRC
+            | wgpu::TextureUsages::TEXTURE_BINDING,
         view_formats: &[],
     });
     let output_view = output_tex.create_view(&Default::default());
@@ -642,12 +885,25 @@ pub fn process_gpu_cached(
     queue.write_buffer(&gpu.uniform_buffer, 0, bytemuck::cast_slice(&params));
 
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: None, layout: &gpu.bind_group_layout,
+        label: None,
+        layout: &gpu.bind_group_layout,
         entries: &[
-            wgpu::BindGroupEntry { binding: 0, resource: gpu.uniform_buffer.as_entire_binding() },
-            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&view_a) },
-            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&view_b) },
-            wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&gpu.sampler) },
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: gpu.uniform_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(&view_a),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::TextureView(&view_b),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: wgpu::BindingResource::Sampler(&gpu.sampler),
+            },
         ],
     });
 
@@ -656,10 +912,15 @@ pub fn process_gpu_cached(
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("blend_gpu_pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &output_view, resolve_target: None,
-                ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
+                view: &output_view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Store,
+                },
             })],
-            depth_stencil_attachment: None, ..Default::default()
+            depth_stencil_attachment: None,
+            ..Default::default()
         });
         pass.set_pipeline(&gpu.pipeline);
         pass.set_bind_group(0, &bind_group, &[]);
@@ -700,9 +961,7 @@ pub(crate) fn cleanup_node(
 /// `GpuTextureCache::clear_all` when a new project is loaded so VRAM
 /// from the previous project doesn't leak forever (and node-id
 /// collisions can't reuse stale pipelines).
-pub(crate) fn cleanup_all(
-    callback_resources: &mut eframe::egui_wgpu::CallbackResources,
-) {
+pub(crate) fn cleanup_all(callback_resources: &mut eframe::egui_wgpu::CallbackResources) {
     if let Some(store) = callback_resources.get_mut::<BlendGpuStore>() {
         store.nodes.clear();
     }

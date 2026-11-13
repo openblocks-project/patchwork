@@ -44,7 +44,10 @@ struct JpegSlotState {
 impl JpegSlot {
     pub fn new() -> Self {
         Self {
-            state: Mutex::new(JpegSlotState { generation: 0, bytes: None }),
+            state: Mutex::new(JpegSlotState {
+                generation: 0,
+                bytes: None,
+            }),
             cond: Condvar::new(),
         }
     }
@@ -62,11 +65,7 @@ impl JpegSlot {
     /// until `timeout` elapses. Returns the new `(generation, bytes)`
     /// when a fresh frame is available; `None` on timeout (with no new
     /// frame to send — caller decides whether to keep the connection open).
-    pub fn wait_next(
-        &self,
-        last_seen: u64,
-        timeout: Duration,
-    ) -> Option<(u64, Arc<Vec<u8>>)> {
+    pub fn wait_next(&self, last_seen: u64, timeout: Duration) -> Option<(u64, Arc<Vec<u8>>)> {
         let s = match self.state.lock() {
             Ok(s) => s,
             Err(_) => return None,
@@ -76,7 +75,10 @@ impl JpegSlot {
                 return Some((s.generation, b.clone()));
             }
         }
-        let res = self.cond.wait_timeout_while(s, timeout, |st| st.generation == last_seen).ok()?;
+        let res = self
+            .cond
+            .wait_timeout_while(s, timeout, |st| st.generation == last_seen)
+            .ok()?;
         let s = res.0;
         if res.1.timed_out() {
             return None;
@@ -86,7 +88,9 @@ impl JpegSlot {
 }
 
 impl Default for JpegSlot {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// 1×1 black JPEG sent immediately on `/stream` connect so the
@@ -157,19 +161,31 @@ impl MjpegEncoder {
         let mut cmd = Command::new("ffmpeg");
         cmd.args([
             "-hide_banner",
-            "-loglevel", "error",
-            "-f", "rawvideo",
-            "-pix_fmt", "rgba",
-            "-s", &dims,
-            "-framerate", &fps_str,
-            "-i", "pipe:0",
-            "-c:v", "mjpeg",
-            "-q:v", &quality_str,
-            "-f", "mjpeg",
-            "-flush_packets", "1",
+            "-loglevel",
+            "error",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgba",
+            "-s",
+            &dims,
+            "-framerate",
+            &fps_str,
+            "-i",
+            "pipe:0",
+            "-c:v",
+            "mjpeg",
+            "-q:v",
+            &quality_str,
+            "-f",
+            "mjpeg",
+            "-flush_packets",
+            "1",
             "pipe:1",
         ]);
-        cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        cmd.stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
 
         let mut process = match cmd.spawn() {
             Ok(p) => p,
@@ -179,11 +195,17 @@ impl MjpegEncoder {
             Err(e) => return Err(format!("failed to spawn ffmpeg: {e}")),
         };
 
-        let stdin = process.stdin.take()
+        let stdin = process
+            .stdin
+            .take()
             .ok_or_else(|| "ffmpeg stdin pipe missing".to_string())?;
-        let stdout = process.stdout.take()
+        let stdout = process
+            .stdout
+            .take()
             .ok_or_else(|| "ffmpeg stdout pipe missing".to_string())?;
-        let stderr = process.stderr.take()
+        let stderr = process
+            .stderr
+            .take()
             .ok_or_else(|| "ffmpeg stderr pipe missing".to_string())?;
 
         // Stderr drain — same shape as `file_recorder.rs:223–231`. If
@@ -198,7 +220,9 @@ impl MjpegEncoder {
             for line in reader.lines().map_while(|l| l.ok()) {
                 if let Ok(mut log) = stderr_log_clone.lock() {
                     if log.len() < 1024 {
-                        if !log.is_empty() { log.push('\n'); }
+                        if !log.is_empty() {
+                            log.push('\n');
+                        }
                         log.push_str(&line);
                     }
                 }
@@ -255,12 +279,18 @@ impl MjpegEncoder {
                 Ok(())
             }
             Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {
-                let stderr = self.stderr_log
-                    .lock().map(|s| s.clone()).unwrap_or_default();
+                let stderr = self
+                    .stderr_log
+                    .lock()
+                    .map(|s| s.clone())
+                    .unwrap_or_default();
                 Err(format!(
                     "ffmpeg exited{}",
-                    if stderr.is_empty() { String::new() }
-                    else { format!(": {}", stderr) }
+                    if stderr.is_empty() {
+                        String::new()
+                    } else {
+                        format!(": {}", stderr)
+                    }
                 ))
             }
             Err(e) => Err(format!("write_frame failed: {e}")),
@@ -296,8 +326,8 @@ fn stdout_reader_loop<R: Read>(mut stdout: R, slot: Arc<JpegSlot>) {
 
     loop {
         match stdout.read(&mut chunk) {
-            Ok(0) => break,                  // EOF — ffmpeg exited
-            Err(_) => break,                 // pipe error — same path
+            Ok(0) => break,  // EOF — ffmpeg exited
+            Err(_) => break, // pipe error — same path
             Ok(n) => {
                 buf.extend_from_slice(&chunk[..n]);
 

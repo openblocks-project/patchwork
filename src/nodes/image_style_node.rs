@@ -1,12 +1,12 @@
 //! ImageStyleNode — Blur, Pixelate, Sharpen for images (GPU-accelerated).
 
-use crate::graph::{PortDef, PortKind, PortValue, ImageData};
+use crate::graph::{ImageData, PortDef, PortKind, PortValue};
 use crate::node_trait::{NodeBehavior, RenderContext};
-use serde::{Serialize, Deserialize};
 use eframe::egui;
 use eframe::egui_wgpu::wgpu;
-use std::sync::Arc;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum StyleMode {
@@ -16,7 +16,9 @@ pub enum StyleMode {
 }
 
 impl Default for StyleMode {
-    fn default() -> Self { StyleMode::Blur }
+    fn default() -> Self {
+        StyleMode::Blur
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -27,11 +29,16 @@ pub struct ImageStyleNode {
     pub amount: f32,
 }
 
-fn default_amount() -> f32 { 3.0 }
+fn default_amount() -> f32 {
+    3.0
+}
 
 impl Default for ImageStyleNode {
     fn default() -> Self {
-        Self { mode: StyleMode::Blur, amount: 3.0 }
+        Self {
+            mode: StyleMode::Blur,
+            amount: 3.0,
+        }
     }
 }
 
@@ -114,11 +121,15 @@ fn ensure_pipeline(
     let device = &render_state.device;
     let already = {
         let renderer = render_state.renderer.read();
-        renderer.callback_resources.get::<ImageStyleStore>()
+        renderer
+            .callback_resources
+            .get::<ImageStyleStore>()
             .and_then(|s| s.nodes.get(&node_id))
             .is_some()
     };
-    if already { return true; }
+    if already {
+        return true;
+    }
 
     device.push_error_scope(wgpu::ErrorFilter::Validation);
 
@@ -206,14 +217,21 @@ fn ensure_pipeline(
         ..Default::default()
     });
 
-    let gpu = ImageStyleGpu { pipeline, bind_group_layout, uniform_buffer, sampler };
+    let gpu = ImageStyleGpu {
+        pipeline,
+        bind_group_layout,
+        uniform_buffer,
+        sampler,
+    };
     let mut renderer = render_state.renderer.write();
     if let Some(store) = renderer.callback_resources.get_mut::<ImageStyleStore>() {
         store.nodes.insert(node_id, gpu);
     } else {
         let mut nodes = HashMap::new();
         nodes.insert(node_id, gpu);
-        renderer.callback_resources.insert(ImageStyleStore { nodes });
+        renderer
+            .callback_resources
+            .insert(ImageStyleStore { nodes });
     }
     true
 }
@@ -230,9 +248,13 @@ impl ImageStyleNode {
         let queue = &render_state.queue;
         let w = img.width;
         let h = img.height;
-        if w == 0 || h == 0 { return None; }
+        if w == 0 || h == 0 {
+            return None;
+        }
 
-        if !ensure_pipeline(node_id, render_state) { return None; }
+        if !ensure_pipeline(node_id, render_state) {
+            return None;
+        }
 
         // Upload input image as texture
         let input_tex = crate::gpu_image::upload_texture(device, queue, img, "image_style_input");
@@ -241,7 +263,11 @@ impl ImageStyleNode {
         // Create output texture
         let output_tex = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("image_style_output"),
-            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -271,9 +297,18 @@ impl ImageStyleNode {
             label: None,
             layout: &gpu.bind_group_layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: gpu.uniform_buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&input_view) },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&gpu.sampler) },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: gpu.uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&input_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&gpu.sampler),
+                },
             ],
         });
 
@@ -299,7 +334,13 @@ impl ImageStyleNode {
         queue.submit(Some(encoder.finish()));
         drop(renderer);
 
-        Some(crate::gpu_image::readback_texture(device, queue, &output_tex, w, h))
+        Some(crate::gpu_image::readback_texture(
+            device,
+            queue,
+            &output_tex,
+            w,
+            h,
+        ))
     }
 
     /// GPU processing with output caching for zero-copy display.
@@ -321,7 +362,9 @@ impl ImageStyleNode {
         let queue = &render_state.queue;
         let w = img.width;
         let h = img.height;
-        if w == 0 || h == 0 { return None; }
+        if w == 0 || h == 0 {
+            return None;
+        }
 
         // Ensure pipeline exists. We must NOT fall back to `process_gpu`:
         // it CPU-uploads `img` via `upload_texture`, which silently
@@ -330,7 +373,9 @@ impl ImageStyleNode {
         // an upstream GPU node like WGSL Viewer or Blend). The black
         // result then poisons the per-node `("dyn_img_cache", id)`
         // param cache for the rest of the session.
-        if !ensure_pipeline(node_id, render_state) { return None; }
+        if !ensure_pipeline(node_id, render_state) {
+            return None;
+        }
 
         // Bind input from upstream GPU cache when available; only upload from
         // CPU as a fallback. Saves one CPU→GPU upload per frame in fully GPU
@@ -354,7 +399,11 @@ impl ImageStyleNode {
         // Output texture — TEXTURE_BINDING so the display callback can sample it
         let output_tex = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("image_style_output_cached"),
-            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -382,9 +431,18 @@ impl ImageStyleNode {
             label: None,
             layout: &gpu.bind_group_layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: gpu.uniform_buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&input_view) },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&gpu.sampler) },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: gpu.uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&input_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&gpu.sampler),
+                },
             ],
         });
 
@@ -416,13 +474,15 @@ impl ImageStyleNode {
             Some(crate::graph::PortValue::Image(result))
         } else {
             tex_cache.publish(node_id, 0, output_tex, w, h, render_state);
-            Some(crate::graph::PortValue::GpuImage(crate::graph::GpuImageHandle {
-                node_id,
-                port: 0,
-                width: w,
-                height: h,
-                frame_stamp: tex_cache.frame_stamp(node_id, 0),
-            }))
+            Some(crate::graph::PortValue::GpuImage(
+                crate::graph::GpuImageHandle {
+                    node_id,
+                    port: 0,
+                    width: w,
+                    height: h,
+                    frame_stamp: tex_cache.frame_stamp(node_id, 0),
+                },
+            ))
         }
     }
 }
@@ -430,19 +490,29 @@ impl ImageStyleNode {
 // ── NodeBehavior ────────────────────────────────────────────────────────────
 
 impl NodeBehavior for ImageStyleNode {
-    fn title(&self) -> &str { "Image Style" }
+    fn title(&self) -> &str {
+        "Image Style"
+    }
     fn inputs(&self) -> Vec<PortDef> {
         vec![
             PortDef::new("Image", PortKind::Image),
             PortDef::new("Amount", PortKind::Number),
         ]
     }
-    fn outputs(&self) -> Vec<PortDef> { vec![PortDef::new("Image", PortKind::Image)] }
-    fn color_hint(&self) -> [u8; 3] { [200, 120, 180] }
-    fn inline_ports(&self) -> bool { true }
+    fn outputs(&self) -> Vec<PortDef> {
+        vec![PortDef::new("Image", PortKind::Image)]
+    }
+    fn color_hint(&self) -> [u8; 3] {
+        [200, 120, 180]
+    }
+    fn inline_ports(&self) -> bool {
+        true
+    }
 
     /// GPU-native node: receives GpuImage inputs directly (no readback).
-    fn needs_cpu_image_input(&self, _port: usize) -> bool { false }
+    fn needs_cpu_image_input(&self, _port: usize) -> bool {
+        false
+    }
 
     fn evaluate(&mut self, inputs: &[PortValue]) -> Vec<(usize, PortValue)> {
         // CPU-only fallback: apply port inputs and pass through the image.
@@ -478,7 +548,9 @@ impl NodeBehavior for ImageStyleNode {
         // 2. Extract image dimensions from either CPU Image or GPU stub
         let stub_owned: Option<ImageData> = match inputs.first() {
             Some(PortValue::GpuImage(h)) => Some(ImageData {
-                width: h.width, height: h.height, pixels: Vec::new(),
+                width: h.width,
+                height: h.height,
+                pixels: Vec::new(),
             }),
             _ => None,
         };
@@ -497,8 +569,12 @@ impl NodeBehavior for ImageStyleNode {
         if let Some(rs) = ctx.render_state {
             let gpu_src = ctx.input_sources.first().copied().flatten();
             if let Some(val) = self.process_gpu_cached(
-                img, ctx.node_id, rs, ctx.gpu_tex_cache,
-                gpu_src, ctx.needs_readback,
+                img,
+                ctx.node_id,
+                rs,
+                ctx.gpu_tex_cache,
+                gpu_src,
+                ctx.needs_readback,
             ) {
                 return vec![(0, val)];
             }
@@ -508,17 +584,32 @@ impl NodeBehavior for ImageStyleNode {
         self.evaluate(inputs)
     }
 
-    fn type_tag(&self) -> &str { "image_style" }
-    fn save_state(&self) -> serde_json::Value { serde_json::to_value(self).unwrap_or_default() }
+    fn type_tag(&self) -> &str {
+        "image_style"
+    }
+    fn save_state(&self) -> serde_json::Value {
+        serde_json::to_value(self).unwrap_or_default()
+    }
     fn load_state(&mut self, state: &serde_json::Value) {
-        if let Ok(l) = serde_json::from_value::<ImageStyleNode>(state.clone()) { *self = l; }
+        if let Ok(l) = serde_json::from_value::<ImageStyleNode>(state.clone()) {
+            *self = l;
+        }
     }
 
     fn render_with_context(&mut self, ui: &mut egui::Ui, ctx: &mut RenderContext) {
         // Image input
         ui.horizontal(|ui| {
-            crate::nodes::inline_port_circle(ui, ctx.node_id, 0, true, ctx.connections,
-                ctx.port_positions, ctx.dragging_from, ctx.pending_disconnects, PortKind::Image);
+            crate::nodes::inline_port_circle(
+                ui,
+                ctx.node_id,
+                0,
+                true,
+                ctx.connections,
+                ctx.port_positions,
+                ctx.dragging_from,
+                ctx.pending_disconnects,
+                PortKind::Image,
+            );
             ui.label(egui::RichText::new("Image").small());
         });
 
@@ -540,21 +631,40 @@ impl NodeBehavior for ImageStyleNode {
         });
 
         // Amount slider with port
-        let amt_wired = ctx.connections.iter().any(|c| c.to_node == ctx.node_id && c.to_port == 1);
+        let amt_wired = ctx
+            .connections
+            .iter()
+            .any(|c| c.to_node == ctx.node_id && c.to_port == 1);
         let (range, step, label) = match self.mode {
             StyleMode::Blur => (1.0..=20.0, 1.0, "Radius"),
             StyleMode::Pixelate => (2.0..=64.0, 1.0, "Block"),
             StyleMode::Sharpen => (0.1..=5.0, 0.1, "Strength"),
         };
         ui.horizontal(|ui| {
-            crate::nodes::inline_port_circle(ui, ctx.node_id, 1, true, ctx.connections,
-                ctx.port_positions, ctx.dragging_from, ctx.pending_disconnects, PortKind::Number);
+            crate::nodes::inline_port_circle(
+                ui,
+                ctx.node_id,
+                1,
+                true,
+                ctx.connections,
+                ctx.port_positions,
+                ctx.dragging_from,
+                ctx.pending_disconnects,
+                PortKind::Number,
+            );
             ui.label(egui::RichText::new(label).small());
             if amt_wired {
-                ui.label(egui::RichText::new(format!("{:.1}", self.amount)).small()
-                    .color(egui::Color32::from_rgb(80, 170, 255)));
+                ui.label(
+                    egui::RichText::new(format!("{:.1}", self.amount))
+                        .small()
+                        .color(egui::Color32::from_rgb(80, 170, 255)),
+                );
             } else {
-                ui.add(egui::Slider::new(&mut self.amount, range).step_by(step as f64).show_value(true));
+                ui.add(
+                    egui::Slider::new(&mut self.amount, range)
+                        .step_by(step as f64)
+                        .show_value(true),
+                );
             }
         });
 
@@ -563,19 +673,35 @@ impl NodeBehavior for ImageStyleNode {
         ui.label(egui::RichText::new("⚡ GPU").small().color(dim));
 
         ui.separator();
-        crate::nodes::audio_port_row(ui, "Image", ctx.node_id, 0, false, ctx.port_positions,
-            ctx.dragging_from, ctx.connections, ctx.pending_disconnects, PortKind::Image);
-                    if ctx.connections.iter().any(|c| c.to_node == ctx.node_id && c.to_port == 0) {
+        crate::nodes::audio_port_row(
+            ui,
+            "Image",
+            ctx.node_id,
+            0,
+            false,
+            ctx.port_positions,
+            ctx.dragging_from,
+            ctx.connections,
+            ctx.pending_disconnects,
+            PortKind::Image,
+        );
+        if ctx
+            .connections
+            .iter()
+            .any(|c| c.to_node == ctx.node_id && c.to_port == 0)
+        {
             ui.ctx().request_repaint();
         }
-
     }
 }
 
 pub fn register(registry: &mut crate::node_trait::NodeRegistryInner) {
     registry.register("image_style", |state| {
-        if let Ok(n) = serde_json::from_value::<ImageStyleNode>(state.clone()) { Box::new(n) }
-        else { Box::new(ImageStyleNode::default()) }
+        if let Ok(n) = serde_json::from_value::<ImageStyleNode>(state.clone()) {
+            Box::new(n)
+        } else {
+            Box::new(ImageStyleNode::default())
+        }
     });
 }
 
@@ -593,9 +719,7 @@ pub(crate) fn cleanup_node(
 
 /// Wipe every Image Style GPU pipeline. See
 /// `GpuTextureCache::clear_all`.
-pub(crate) fn cleanup_all(
-    callback_resources: &mut eframe::egui_wgpu::CallbackResources,
-) {
+pub(crate) fn cleanup_all(callback_resources: &mut eframe::egui_wgpu::CallbackResources) {
     if let Some(store) = callback_resources.get_mut::<ImageStyleStore>() {
         store.nodes.clear();
     }

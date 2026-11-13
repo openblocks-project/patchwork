@@ -1,7 +1,7 @@
-use crate::graph::{PortDef, PortKind, PortValue, Graph};
+use crate::graph::{Graph, PortDef, PortKind, PortValue};
 use crate::node_trait::{NodeBehavior, RenderContext};
-use serde::{Serialize, Deserialize};
 use eframe::egui;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ColorNode {
@@ -12,12 +12,18 @@ pub struct ColorNode {
 
 impl Default for ColorNode {
     fn default() -> Self {
-        Self { r: 128, g: 128, b: 255 }
+        Self {
+            r: 128,
+            g: 128,
+            b: 255,
+        }
     }
 }
 
 impl NodeBehavior for ColorNode {
-    fn title(&self) -> &str { "Color" }
+    fn title(&self) -> &str {
+        "Color"
+    }
 
     fn inputs(&self) -> Vec<PortDef> {
         vec![
@@ -35,9 +41,13 @@ impl NodeBehavior for ColorNode {
         ]
     }
 
-    fn color_hint(&self) -> [u8; 3] { [self.r, self.g, self.b] }
+    fn color_hint(&self) -> [u8; 3] {
+        [self.r, self.g, self.b]
+    }
 
-    fn inline_ports(&self) -> bool { true }
+    fn inline_ports(&self) -> bool {
+        true
+    }
 
     fn evaluate(&mut self, inputs: &[PortValue]) -> Vec<(usize, PortValue)> {
         // Override from connected inputs
@@ -58,7 +68,9 @@ impl NodeBehavior for ColorNode {
         ]
     }
 
-    fn type_tag(&self) -> &str { "color" }
+    fn type_tag(&self) -> &str {
+        "color"
+    }
 
     fn save_state(&self) -> serde_json::Value {
         serde_json::to_value(self).unwrap_or_default()
@@ -88,7 +100,8 @@ impl NodeBehavior for ColorNode {
         let mut color = egui::Color32::from_rgb(self.r, self.g, self.b);
         let hex_id = egui::Id::new(("color_hex_d", ctx.node_id));
         let mut hex_str = ui.ctx().data_mut(|d| {
-            d.get_temp::<String>(hex_id).unwrap_or_else(|| format!("{:02X}{:02X}{:02X}", self.r, self.g, self.b))
+            d.get_temp::<String>(hex_id)
+                .unwrap_or_else(|| format!("{:02X}{:02X}{:02X}", self.r, self.g, self.b))
         });
 
         ui.horizontal(|ui| {
@@ -101,7 +114,11 @@ impl NodeBehavior for ColorNode {
                     .char_limit(6),
             );
             if resp.changed() || resp.lost_focus() {
-                let clean: String = hex_str.chars().filter(|c| c.is_ascii_hexdigit()).take(6).collect();
+                let clean: String = hex_str
+                    .chars()
+                    .filter(|c| c.is_ascii_hexdigit())
+                    .take(6)
+                    .collect();
                 if clean.len() == 6 {
                     if let Ok(val) = u32::from_str_radix(&clean, 16) {
                         color = egui::Color32::from_rgb(
@@ -125,21 +142,39 @@ impl NodeBehavior for ColorNode {
         // Channel rows: input port | label + DragValue | output port
         let channels = ["R", "G", "B"];
         for i in 0..3 {
-            let is_wired = ctx.connections.iter().any(|c| c.to_node == ctx.node_id && c.to_port == i);
+            let is_wired = ctx
+                .connections
+                .iter()
+                .any(|c| c.to_node == ctx.node_id && c.to_port == i);
             ui.horizontal(|ui| {
                 // Input port
                 crate::nodes::inline_port_circle(
-                    ui, ctx.node_id, i, true, ctx.connections,
-                    ctx.port_positions, ctx.dragging_from, ctx.pending_disconnects,
+                    ui,
+                    ctx.node_id,
+                    i,
+                    true,
+                    ctx.connections,
+                    ctx.port_positions,
+                    ctx.dragging_from,
+                    ctx.pending_disconnects,
                     PortKind::Color,
                 );
 
-                let val = match i { 0 => self.r, 1 => self.g, 2 => self.b, _ => 0 };
+                let val = match i {
+                    0 => self.r,
+                    1 => self.g,
+                    2 => self.b,
+                    _ => 0,
+                };
                 if is_wired {
                     ui.label(egui::RichText::new(format!("{} {}", channels[i], val)).monospace());
                 } else {
                     let mut v = val as i32;
-                    ui.add(egui::DragValue::new(&mut v).range(0..=255).prefix(format!("{} ", channels[i])));
+                    ui.add(
+                        egui::DragValue::new(&mut v)
+                            .range(0..=255)
+                            .prefix(format!("{} ", channels[i])),
+                    );
                     let new_val = v.clamp(0, 255) as u8;
                     match i {
                         0 => self.r = new_val,
@@ -151,8 +186,14 @@ impl NodeBehavior for ColorNode {
 
                 // Output port
                 crate::nodes::inline_port_circle(
-                    ui, ctx.node_id, i, false, ctx.connections,
-                    ctx.port_positions, ctx.dragging_from, ctx.pending_disconnects,
+                    ui,
+                    ctx.node_id,
+                    i,
+                    false,
+                    ctx.connections,
+                    ctx.port_positions,
+                    ctx.dragging_from,
+                    ctx.pending_disconnects,
                     PortKind::Color,
                 );
             });

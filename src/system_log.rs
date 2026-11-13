@@ -31,7 +31,11 @@ fn push(level: LogLevel, message: String) {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as u64;
-        log.push(LogEntry { timestamp_ms, level, message });
+        log.push(LogEntry {
+            timestamp_ms,
+            level,
+            message,
+        });
         if log.len() > MAX_ENTRIES {
             let excess = log.len() - MAX_ENTRIES;
             log.drain(..excess);

@@ -81,20 +81,24 @@ impl Codec {
     fn encoder_args(self) -> Vec<&'static str> {
         match self {
             Self::H264Sw => vec![
-                "-c:v", "libx264",
-                "-preset", "veryfast",
-                "-crf", "20",
-                "-pix_fmt", "yuv420p", // Quicktime / web compatibility
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt",
+                "yuv420p", // Quicktime / web compatibility
             ],
             Self::HevcVt => vec![
-                "-c:v", "hevc_videotoolbox",
-                "-q:v", "60",          // VT scale 1–100; ~60 ≈ visually lossless
-                "-pix_fmt", "yuv420p",
-                "-tag:v", "hvc1",      // QuickTime needs hvc1 (not hev1)
+                "-c:v",
+                "hevc_videotoolbox",
+                "-q:v",
+                "60", // VT scale 1–100; ~60 ≈ visually lossless
+                "-pix_fmt",
+                "yuv420p",
+                "-tag:v",
+                "hvc1", // QuickTime needs hvc1 (not hev1)
             ],
             Self::ProResVt => vec![
-                "-c:v", "prores_videotoolbox",
-                "-profile:v", "3",     // ProRes 422 HQ
+                "-c:v",
+                "prores_videotoolbox",
+                "-profile:v",
+                "3", // ProRes 422 HQ
             ],
         }
     }
@@ -178,17 +182,23 @@ impl FileRecorder {
         cmd.args([
             "-y",
             "-hide_banner",
-            "-loglevel", "error",
-            "-f", "rawvideo",
-            "-pix_fmt", "rgba",
-            "-s", &format!("{w}x{h}"),
+            "-loglevel",
+            "error",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgba",
+            "-s",
+            &format!("{w}x{h}"),
             // -framerate must match the wall-clock rate at which we
             // call write_frame. We throttle in the caller (see
             // last_write_at gating below), so each pushed byte block
             // is 1/fps seconds of media — output duration = wall-clock
             // duration.
-            "-framerate", &fps_str,
-            "-i", "pipe:0",
+            "-framerate",
+            &fps_str,
+            "-i",
+            "pipe:0",
         ]);
         cmd.args(codec.encoder_args());
         // Lock output framerate to the same value so ffmpeg doesn't
@@ -202,7 +212,9 @@ impl FileRecorder {
             cmd.args(["-movflags", "+faststart+frag_keyframe+empty_moov"]);
         }
         cmd.arg(path.as_os_str());
-        cmd.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped());
+        cmd.stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped());
 
         let mut process = match cmd.spawn() {
             Ok(p) => p,
@@ -212,9 +224,13 @@ impl FileRecorder {
             Err(e) => return Err(format!("failed to spawn ffmpeg: {e}")),
         };
 
-        let stdin = process.stdin.take()
+        let stdin = process
+            .stdin
+            .take()
             .ok_or_else(|| "ffmpeg stdin pipe missing".to_string())?;
-        let stderr = process.stderr.take()
+        let stderr = process
+            .stderr
+            .take()
             .ok_or_else(|| "ffmpeg stderr pipe missing".to_string())?;
 
         // Drain stderr on a sibling thread — same shape as
@@ -303,16 +319,14 @@ impl FileRecorder {
                 self.last_write_at = Some(now);
                 Ok(())
             }
-            Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {
-                Err(format!(
-                    "ffmpeg exited unexpectedly{}",
-                    if self.stderr_log.is_empty() {
-                        String::new()
-                    } else {
-                        format!(": {}", self.stderr_log)
-                    },
-                ))
-            }
+            Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Err(format!(
+                "ffmpeg exited unexpectedly{}",
+                if self.stderr_log.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {}", self.stderr_log)
+                },
+            )),
             Err(e) => Err(format!("write_frame failed: {e}")),
         }
     }
@@ -480,11 +494,13 @@ mod tests {
 
         const W: u32 = 160;
         const H: u32 = 120;
-        let mut rec = FileRecorder::new(&tmp, Codec::H264Sw, W, H)
-            .expect("spawn ffmpeg");
+        let mut rec = FileRecorder::new(&tmp, Codec::H264Sw, W, H).expect("spawn ffmpeg");
         let mut frame = vec![0u8; (W * H * 4) as usize];
         for px in frame.chunks_exact_mut(4) {
-            px[0] = 220; px[1] = 30; px[2] = 30; px[3] = 255;
+            px[0] = 220;
+            px[1] = 30;
+            px[2] = 30;
+            px[3] = 255;
         }
         for _ in 0..30 {
             rec.write_frame(&frame, W, H).expect("write_frame");

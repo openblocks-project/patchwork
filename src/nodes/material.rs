@@ -6,44 +6,67 @@
 // Composes for free with String Format / Text Editor / AI Request / network
 // nodes — anything that produces conformant JSON can drive 3D Render directly.
 
-use crate::graph::{Graph, NodeId, PortDef, PortKind, PortValue};
 use crate::gpu_mesh::vertex_buffer_layout;
+use crate::graph::{Graph, NodeId, PortDef, PortKind, PortValue};
 use crate::material::{MaterialDef, MaterialMaps, MaterialTexRef, ShaderType};
 use crate::mesh::primitive_sphere;
 use crate::node_trait::{NodeBehavior, RenderContext};
 use crate::nodes::inline_port_circle;
 use eframe::egui;
-use eframe::egui_wgpu::{self, wgpu};
 use eframe::egui_wgpu::wgpu::util::DeviceExt;
+use eframe::egui_wgpu::{self, wgpu};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MaterialNode {
-    #[serde(default)]                       pub shader_type: ShaderType,
-    #[serde(default = "default_albedo_r")] pub albedo_r: f32,
-    #[serde(default = "default_albedo_g")] pub albedo_g: f32,
-    #[serde(default = "default_albedo_b")] pub albedo_b: f32,
-    #[serde(default = "default_roughness")] pub roughness: f32,
-    #[serde(default)]                       pub metallic:  f32,
-    #[serde(default)]                       pub emission_r: f32,
-    #[serde(default)]                       pub emission_g: f32,
-    #[serde(default)]                       pub emission_b: f32,
-    #[serde(default)]                       pub double_sided: bool,
+    #[serde(default)]
+    pub shader_type: ShaderType,
+    #[serde(default = "default_albedo_r")]
+    pub albedo_r: f32,
+    #[serde(default = "default_albedo_g")]
+    pub albedo_g: f32,
+    #[serde(default = "default_albedo_b")]
+    pub albedo_b: f32,
+    #[serde(default = "default_roughness")]
+    pub roughness: f32,
+    #[serde(default)]
+    pub metallic: f32,
+    #[serde(default)]
+    pub emission_r: f32,
+    #[serde(default)]
+    pub emission_g: f32,
+    #[serde(default)]
+    pub emission_b: f32,
+    #[serde(default)]
+    pub double_sided: bool,
 }
 
-fn default_albedo_r() -> f32 { 0.85 }
-fn default_albedo_g() -> f32 { 0.20 }
-fn default_albedo_b() -> f32 { 0.20 }
-fn default_roughness() -> f32 { 0.5 }
+fn default_albedo_r() -> f32 {
+    0.85
+}
+fn default_albedo_g() -> f32 {
+    0.20
+}
+fn default_albedo_b() -> f32 {
+    0.20
+}
+fn default_roughness() -> f32 {
+    0.5
+}
 
 impl Default for MaterialNode {
     fn default() -> Self {
         Self {
             shader_type: ShaderType::Lit,
-            albedo_r: 0.85, albedo_g: 0.20, albedo_b: 0.20,
-            roughness: 0.5, metallic: 0.0,
-            emission_r: 0.0, emission_g: 0.0, emission_b: 0.0,
+            albedo_r: 0.85,
+            albedo_g: 0.20,
+            albedo_b: 0.20,
+            roughness: 0.5,
+            metallic: 0.0,
+            emission_r: 0.0,
+            emission_g: 0.0,
+            emission_b: 0.0,
             double_sided: false,
         }
     }
@@ -53,36 +76,52 @@ impl Default for MaterialNode {
 //   0..7   : 8 scalar inputs (Albedo RGB / Roughness / Metallic / Emission RGB)
 //   8..12  : 5 Image inputs (Albedo / Roughness / Metallic / AO / Emission Tex)
 const FLOAT_PORTS: [&str; 8] = [
-    "Albedo R", "Albedo G", "Albedo B",
-    "Roughness", "Metallic",
-    "Emission R", "Emission G", "Emission B",
+    "Albedo R",
+    "Albedo G",
+    "Albedo B",
+    "Roughness",
+    "Metallic",
+    "Emission R",
+    "Emission G",
+    "Emission B",
 ];
-const ALBEDO_TEX_PORT:    usize = 8;
+const ALBEDO_TEX_PORT: usize = 8;
 const ROUGHNESS_TEX_PORT: usize = 9;
-const METALLIC_TEX_PORT:  usize = 10;
-const AO_TEX_PORT:        usize = 11;
-const EMISSION_TEX_PORT:  usize = 12;
+const METALLIC_TEX_PORT: usize = 10;
+const AO_TEX_PORT: usize = 11;
+const EMISSION_TEX_PORT: usize = 12;
 
 /// Each map port: name + port index, paired with its slot in `MaterialMaps`.
 /// Names are the full common terms used by glTF / Unreal / Blender, not the
 /// jargon abbreviations — keeps the Maps section readable to artists and
 /// matches the scalar header naming above ("Base Color" rather than "Albedo").
 const MAP_PORTS: [(usize, &str); 5] = [
-    (ALBEDO_TEX_PORT,    "Base Color Texture"),
+    (ALBEDO_TEX_PORT, "Base Color Texture"),
     (ROUGHNESS_TEX_PORT, "Roughness Texture"),
-    (METALLIC_TEX_PORT,  "Metallic Texture"),
-    (AO_TEX_PORT,        "Ambient Occlusion Texture"),
-    (EMISSION_TEX_PORT,  "Emission Texture"),
+    (METALLIC_TEX_PORT, "Metallic Texture"),
+    (AO_TEX_PORT, "Ambient Occlusion Texture"),
+    (EMISSION_TEX_PORT, "Emission Texture"),
 ];
 
 impl NodeBehavior for MaterialNode {
-    fn title(&self)        -> &str    { "Material" }
-    fn type_tag(&self)     -> &str    { "material" }
-    fn color_hint(&self)   -> [u8; 3] { [220, 180, 80] }
-    fn inline_ports(&self) -> bool    { true }
+    fn title(&self) -> &str {
+        "Material"
+    }
+    fn type_tag(&self) -> &str {
+        "material"
+    }
+    fn color_hint(&self) -> [u8; 3] {
+        [220, 180, 80]
+    }
+    fn inline_ports(&self) -> bool {
+        true
+    }
 
     fn inputs(&self) -> Vec<PortDef> {
-        let mut v: Vec<PortDef> = FLOAT_PORTS.iter().map(|n| PortDef::new(n, PortKind::Number)).collect();
+        let mut v: Vec<PortDef> = FLOAT_PORTS
+            .iter()
+            .map(|n| PortDef::new(n, PortKind::Number))
+            .collect();
         for (_, name) in MAP_PORTS {
             v.push(PortDef::new(name, PortKind::Image));
         }
@@ -115,20 +154,20 @@ impl NodeBehavior for MaterialNode {
             match inputs.get(port) {
                 Some(PortValue::GpuImage(h)) => Some(MaterialTexRef {
                     node_id: h.node_id,
-                    port:    h.port,
-                    width:   h.width,
-                    height:  h.height,
+                    port: h.port,
+                    width: h.width,
+                    height: h.height,
                 }),
                 _ => None,
             }
         };
 
         let maps = MaterialMaps {
-            albedo:    resolve_tex(ALBEDO_TEX_PORT),
+            albedo: resolve_tex(ALBEDO_TEX_PORT),
             roughness: resolve_tex(ROUGHNESS_TEX_PORT),
-            metallic:  resolve_tex(METALLIC_TEX_PORT),
-            ao:        resolve_tex(AO_TEX_PORT),
-            emission:  resolve_tex(EMISSION_TEX_PORT),
+            metallic: resolve_tex(METALLIC_TEX_PORT),
+            ao: resolve_tex(AO_TEX_PORT),
+            emission: resolve_tex(EMISSION_TEX_PORT),
         };
 
         let mat = MaterialDef {
@@ -140,7 +179,7 @@ impl NodeBehavior for MaterialNode {
                 1.0,
             ],
             roughness: read(3, self.roughness).clamp(0.04, 1.0),
-            metallic:  read(4, self.metallic).clamp(0.0, 1.0),
+            metallic: read(4, self.metallic).clamp(0.0, 1.0),
             emission: [
                 read(5, self.emission_r).max(0.0),
                 read(6, self.emission_g).max(0.0),
@@ -157,7 +196,9 @@ impl NodeBehavior for MaterialNode {
     }
 
     fn load_state(&mut self, state: &serde_json::Value) {
-        if let Ok(l) = serde_json::from_value::<MaterialNode>(state.clone()) { *self = l; }
+        if let Ok(l) = serde_json::from_value::<MaterialNode>(state.clone()) {
+            *self = l;
+        }
     }
 
     fn render_with_context(&mut self, ui: &mut egui::Ui, ctx: &mut RenderContext) {
@@ -179,13 +220,12 @@ impl NodeBehavior for MaterialNode {
         // is for color / shader / lighting feedback, not per-pixel test.
         if let Some(rs) = ctx.wgpu_render_state {
             let preview_size = 96.0_f32.min(ui.available_width());
-            let (rect, _) = ui.allocate_exact_size(
-                egui::vec2(preview_size, preview_size),
-                egui::Sense::hover(),
-            );
+            let (rect, _) = ui
+                .allocate_exact_size(egui::vec2(preview_size, preview_size), egui::Sense::hover());
             // Background fill so the area outside the sphere reads as a
             // solid swatch, not whatever was previously painted.
-            ui.painter().rect_filled(rect, 4.0, egui::Color32::from_gray(18));
+            ui.painter()
+                .rect_filled(rect, 4.0, egui::Color32::from_gray(18));
             let uniforms = build_preview_uniforms(self);
             ui.painter().add(egui_wgpu::Callback::new_paint_callback(
                 rect,
@@ -205,10 +245,28 @@ impl NodeBehavior for MaterialNode {
 
         // ── Surface scalars first (cheap rows). ──
         if should_render(pbr_active, 3, ctx) {
-            scalar_row(ui, ctx, "Roughness", 3, &mut self.roughness, 0.01, 0.04..=1.0, pbr_active);
+            scalar_row(
+                ui,
+                ctx,
+                "Roughness",
+                3,
+                &mut self.roughness,
+                0.01,
+                0.04..=1.0,
+                pbr_active,
+            );
         }
         if should_render(pbr_active, 4, ctx) {
-            scalar_row(ui, ctx, "Metallic",  4, &mut self.metallic,  0.01, 0.0..=1.0, pbr_active);
+            scalar_row(
+                ui,
+                ctx,
+                "Metallic",
+                4,
+                &mut self.metallic,
+                0.01,
+                0.0..=1.0,
+                pbr_active,
+            );
         }
 
         // ── Base Color: swatch header + single 3-cell RGB row. ──
@@ -220,17 +278,24 @@ impl NodeBehavior for MaterialNode {
             (self.albedo_g * 255.0) as u8,
             (self.albedo_b * 255.0) as u8,
         );
-        let base_tex_wired = ctx.connections.iter()
+        let base_tex_wired = ctx
+            .connections
+            .iter()
             .any(|c| c.to_node == ctx.node_id && c.to_port == ALBEDO_TEX_PORT);
         ui.horizontal(|ui| {
             let (rect, _) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
             ui.painter().rect_filled(rect, 3.0, base_color);
             ui.painter().rect_stroke(
-                rect, 3.0,
+                rect,
+                3.0,
                 egui::Stroke::new(1.0, egui::Color32::from_gray(80)),
                 egui::epaint::StrokeKind::Outside,
             );
-            let label = if base_tex_wired { "Base Color (× tex)" } else { "Base Color" };
+            let label = if base_tex_wired {
+                "Base Color (× tex)"
+            } else {
+                "Base Color"
+            };
             ui.label(egui::RichText::new(label).small());
         });
         ui.horizontal(|ui| {
@@ -252,7 +317,9 @@ impl NodeBehavior for MaterialNode {
         // All 5 ports always exist in the graph regardless of whether this
         // section is open, so wires never break on collapse/expand.
         let any_map_wired = MAP_PORTS.iter().any(|(p, _)| {
-            ctx.connections.iter().any(|c| c.to_node == ctx.node_id && c.to_port == *p)
+            ctx.connections
+                .iter()
+                .any(|c| c.to_node == ctx.node_id && c.to_port == *p)
         });
         let header = if any_map_wired { "Maps •" } else { "Maps" };
         egui::CollapsingHeader::new(egui::RichText::new(header).small())
@@ -267,14 +334,24 @@ impl NodeBehavior for MaterialNode {
                         ROUGHNESS_TEX_PORT | METALLIC_TEX_PORT => pbr_active,
                         _ => true,
                     };
-                    if !should_render(map_active, port_idx, ctx) { continue; }
+                    if !should_render(map_active, port_idx, ctx) {
+                        continue;
+                    }
                     ui.horizontal(|ui| {
                         inline_port_circle(
-                            ui, ctx.node_id, port_idx, true,
-                            ctx.connections, ctx.port_positions, ctx.dragging_from, ctx.pending_disconnects,
+                            ui,
+                            ctx.node_id,
+                            port_idx,
+                            true,
+                            ctx.connections,
+                            ctx.port_positions,
+                            ctx.dragging_from,
+                            ctx.pending_disconnects,
                             PortKind::Image,
                         );
-                        let wired = ctx.connections.iter()
+                        let wired = ctx
+                            .connections
+                            .iter()
                             .any(|c| c.to_node == ctx.node_id && c.to_port == port_idx);
                         let color = if !map_active {
                             INACTIVE_TEXT_COLOR
@@ -288,15 +365,24 @@ impl NodeBehavior for MaterialNode {
                 }
             });
 
-        ui.checkbox(&mut self.double_sided, egui::RichText::new("Double-sided").small());
+        ui.checkbox(
+            &mut self.double_sided,
+            egui::RichText::new("Double-sided").small(),
+        );
 
         ui.separator();
 
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("Material (JSON)").small());
             inline_port_circle(
-                ui, ctx.node_id, 0, false,
-                ctx.connections, ctx.port_positions, ctx.dragging_from, ctx.pending_disconnects,
+                ui,
+                ctx.node_id,
+                0,
+                false,
+                ctx.connections,
+                ctx.port_positions,
+                ctx.dragging_from,
+                ctx.pending_disconnects,
                 PortKind::Text,
             );
         });
@@ -333,8 +419,12 @@ fn shader_uses_pbr(s: ShaderType) -> bool {
 ///   endpoint stays visible; underlying graph connection is preserved.
 /// - inactive and unwired → don't render at all (UI cleanup).
 fn should_render(active: bool, port_idx: usize, ctx: &RenderContext) -> bool {
-    if active { return true; }
-    ctx.connections.iter().any(|c| c.to_node == ctx.node_id && c.to_port == port_idx)
+    if active {
+        return true;
+    }
+    ctx.connections
+        .iter()
+        .any(|c| c.to_node == ctx.node_id && c.to_port == port_idx)
 }
 
 /// One labelled scalar row: port circle + full label + DragValue (or
@@ -353,21 +443,47 @@ fn scalar_row(
     range: std::ops::RangeInclusive<f32>,
     active: bool,
 ) {
-    let wired = ctx.connections.iter().any(|c| c.to_node == ctx.node_id && c.to_port == port_idx);
-    let label_color = if active { ui.visuals().text_color() } else { INACTIVE_TEXT_COLOR };
-    let value_color = if active { ui.visuals().hyperlink_color } else { INACTIVE_TEXT_COLOR };
+    let wired = ctx
+        .connections
+        .iter()
+        .any(|c| c.to_node == ctx.node_id && c.to_port == port_idx);
+    let label_color = if active {
+        ui.visuals().text_color()
+    } else {
+        INACTIVE_TEXT_COLOR
+    };
+    let value_color = if active {
+        ui.visuals().hyperlink_color
+    } else {
+        INACTIVE_TEXT_COLOR
+    };
     ui.horizontal(|ui| {
         inline_port_circle(
-            ui, ctx.node_id, port_idx, true,
-            ctx.connections, ctx.port_positions, ctx.dragging_from, ctx.pending_disconnects,
+            ui,
+            ctx.node_id,
+            port_idx,
+            true,
+            ctx.connections,
+            ctx.port_positions,
+            ctx.dragging_from,
+            ctx.pending_disconnects,
             PortKind::Number,
         );
         ui.label(egui::RichText::new(label).small().color(label_color));
         if wired {
             let v = Graph::static_input_value(ctx.connections, ctx.values, ctx.node_id, port_idx);
-            ui.label(egui::RichText::new(format!("{}", v)).small().color(value_color));
+            ui.label(
+                egui::RichText::new(format!("{}", v))
+                    .small()
+                    .color(value_color),
+            );
         } else {
-            ui.add(egui::DragValue::new(value).speed(speed).range(range).fixed_decimals(2));
+            ui.add(
+                egui::DragValue::new(value)
+                    .speed(speed)
+                    .range(range)
+                    .fixed_decimals(2),
+            );
         }
     });
 }
@@ -386,25 +502,49 @@ fn rgb_cell(
     range: std::ops::RangeInclusive<f32>,
     active: bool,
 ) {
-    let label_color = if active { ui.visuals().text_color() } else { INACTIVE_TEXT_COLOR };
-    let value_color = if active { ui.visuals().hyperlink_color } else { INACTIVE_TEXT_COLOR };
+    let label_color = if active {
+        ui.visuals().text_color()
+    } else {
+        INACTIVE_TEXT_COLOR
+    };
+    let value_color = if active {
+        ui.visuals().hyperlink_color
+    } else {
+        INACTIVE_TEXT_COLOR
+    };
     inline_port_circle(
-        ui, ctx.node_id, port_idx, true,
-        ctx.connections, ctx.port_positions, ctx.dragging_from, ctx.pending_disconnects,
+        ui,
+        ctx.node_id,
+        port_idx,
+        true,
+        ctx.connections,
+        ctx.port_positions,
+        ctx.dragging_from,
+        ctx.pending_disconnects,
         PortKind::Number,
     );
     ui.label(egui::RichText::new(label).small().color(label_color));
-    let wired = ctx.connections.iter().any(|c| c.to_node == ctx.node_id && c.to_port == port_idx);
+    let wired = ctx
+        .connections
+        .iter()
+        .any(|c| c.to_node == ctx.node_id && c.to_port == port_idx);
     if wired {
         let v = Graph::static_input_value(ctx.connections, ctx.values, ctx.node_id, port_idx)
             .as_float();
-        ui.label(egui::RichText::new(format!("{:.2}", v)).small().color(value_color));
+        ui.label(
+            egui::RichText::new(format!("{:.2}", v))
+                .small()
+                .color(value_color),
+        );
     } else {
         // Compact DragValue (~46px) so 3 cells fit comfortably across the
         // node body. `fixed_decimals(2)` keeps the displayed text bounded.
         ui.add_sized(
             [46.0, 18.0],
-            egui::DragValue::new(value).speed(speed).range(range).fixed_decimals(2),
+            egui::DragValue::new(value)
+                .speed(speed)
+                .range(range)
+                .fixed_decimals(2),
         );
     }
 }
@@ -491,11 +631,11 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct PreviewUniforms {
-    view_proj:  [[f32; 4]; 4],
-    light_dir:  [f32; 4],
+    view_proj: [[f32; 4]; 4],
+    light_dir: [f32; 4],
     base_color: [f32; 4],
-    emission:   [f32; 4],
-    pbr:        [f32; 4],
+    emission: [f32; 4],
+    pbr: [f32; 4],
 }
 
 const PREVIEW_UNIFORM_SIZE: u64 = 256;
@@ -507,19 +647,19 @@ struct PreviewSharedGpu {
     /// some). Cached per-format on first use.
     pipelines: HashMap<wgpu::TextureFormat, wgpu::RenderPipeline>,
     sphere_vertex: wgpu::Buffer,
-    sphere_index:  wgpu::Buffer,
+    sphere_index: wgpu::Buffer,
     sphere_index_count: u32,
 }
 
 struct PreviewNodeGpu {
     uniform_buffer: wgpu::Buffer,
-    bind_group:     wgpu::BindGroup,
+    bind_group: wgpu::BindGroup,
 }
 
 #[derive(Default)]
 struct MaterialPreviewStore {
     shared: Option<PreviewSharedGpu>,
-    nodes:  HashMap<NodeId, PreviewNodeGpu>,
+    nodes: HashMap<NodeId, PreviewNodeGpu>,
 }
 
 fn create_shared_gpu(device: &wgpu::Device) -> PreviewSharedGpu {
@@ -638,7 +778,8 @@ impl egui_wgpu::CallbackTrait for MaterialPreviewCallback {
         {
             let shared = store.shared.as_mut().unwrap();
             if !shared.pipelines.contains_key(&self.target_format) {
-                let p = create_preview_pipeline(device, &shared.bind_group_layout, self.target_format);
+                let p =
+                    create_preview_pipeline(device, &shared.bind_group_layout, self.target_format);
                 shared.pipelines.insert(self.target_format, p);
             }
         }
@@ -660,7 +801,13 @@ impl egui_wgpu::CallbackTrait for MaterialPreviewCallback {
                     resource: uniform_buffer.as_entire_binding(),
                 }],
             });
-            store.nodes.insert(self.node_id, PreviewNodeGpu { uniform_buffer, bind_group });
+            store.nodes.insert(
+                self.node_id,
+                PreviewNodeGpu {
+                    uniform_buffer,
+                    bind_group,
+                },
+            );
         }
 
         // Upload this frame's uniforms.
@@ -676,10 +823,18 @@ impl egui_wgpu::CallbackTrait for MaterialPreviewCallback {
         render_pass: &mut wgpu::RenderPass<'static>,
         cr: &egui_wgpu::CallbackResources,
     ) {
-        let Some(store) = cr.get::<MaterialPreviewStore>() else { return };
-        let Some(shared) = store.shared.as_ref() else { return };
-        let Some(pipeline) = shared.pipelines.get(&self.target_format) else { return };
-        let Some(node) = store.nodes.get(&self.node_id) else { return };
+        let Some(store) = cr.get::<MaterialPreviewStore>() else {
+            return;
+        };
+        let Some(shared) = store.shared.as_ref() else {
+            return;
+        };
+        let Some(pipeline) = shared.pipelines.get(&self.target_format) else {
+            return;
+        };
+        let Some(node) = store.nodes.get(&self.node_id) else {
+            return;
+        };
 
         render_pass.set_pipeline(pipeline);
         render_pass.set_bind_group(0, &node.bind_group, &[]);
@@ -704,9 +859,9 @@ fn build_preview_uniforms(node: &MaterialNode) -> PreviewUniforms {
     let light_dir = glam::Vec3::new(-0.4, 0.8, 0.5).normalize();
     PreviewUniforms {
         view_proj,
-        light_dir:  [light_dir.x, light_dir.y, light_dir.z, 0.0],
+        light_dir: [light_dir.x, light_dir.y, light_dir.z, 0.0],
         base_color: [node.albedo_r, node.albedo_g, node.albedo_b, 1.0],
-        emission:   [node.emission_r, node.emission_g, node.emission_b, 0.0],
+        emission: [node.emission_r, node.emission_g, node.emission_b, 0.0],
         pbr: [
             node.roughness.clamp(0.04, 1.0),
             node.metallic.clamp(0.0, 1.0),

@@ -19,8 +19,8 @@ use super::super::processor::{AudioProcessor, ProcessContext, ProcessorKind};
 use super::super::smoothed::SmoothedParam;
 
 // ── Constants ───────────────────────────────────────────────────────────────
-const MAX_DELAY_MS: f32 = 1000.0;   // 1 s — covers longest echo + safety
-const PITCH_DELAY_MS: f32 = 200.0;  // 200 ms ring buffer for pitch shifter
+const MAX_DELAY_MS: f32 = 1000.0; // 1 s — covers longest echo + safety
+const PITCH_DELAY_MS: f32 = 200.0; // 200 ms ring buffer for pitch shifter
 
 // Schroeder reverb delay lengths in samples at 44.1 kHz. Scaled to actual SR
 // in prepare(). Using pairwise-prime lengths reduces comb resonances.
@@ -34,18 +34,28 @@ struct DelayLine {
 }
 
 impl DelayLine {
-    fn new() -> Self { Self { buf: Vec::new(), write: 0 } }
+    fn new() -> Self {
+        Self {
+            buf: Vec::new(),
+            write: 0,
+        }
+    }
 
     fn resize(&mut self, len: usize) {
         self.buf = vec![0.0; len.max(1)];
         self.write = 0;
     }
 
-    fn clear(&mut self) { self.buf.fill(0.0); self.write = 0; }
+    fn clear(&mut self) {
+        self.buf.fill(0.0);
+        self.write = 0;
+    }
 
     #[inline]
     fn push(&mut self, x: f32) {
-        if self.buf.is_empty() { return; }
+        if self.buf.is_empty() {
+            return;
+        }
         self.buf[self.write] = x;
         self.write = (self.write + 1) % self.buf.len();
     }
@@ -53,7 +63,9 @@ impl DelayLine {
     /// Read `delay_samples` behind the write head with linear interpolation.
     #[inline]
     fn read(&self, delay_samples: f32) -> f32 {
-        if self.buf.is_empty() { return 0.0; }
+        if self.buf.is_empty() {
+            return 0.0;
+        }
         let len = self.buf.len();
         let d = delay_samples.clamp(0.0, (len - 1) as f32);
         let read_f = self.write as f32 - d - 1.0;
@@ -76,7 +88,15 @@ struct Comb {
 }
 
 impl Comb {
-    fn new() -> Self { Self { buf: Vec::new(), idx: 0, feedback: 0.5, damp: 0.5, filter_state: 0.0 } }
+    fn new() -> Self {
+        Self {
+            buf: Vec::new(),
+            idx: 0,
+            feedback: 0.5,
+            damp: 0.5,
+            filter_state: 0.0,
+        }
+    }
 
     fn resize(&mut self, len: usize) {
         self.buf = vec![0.0; len.max(1)];
@@ -92,7 +112,9 @@ impl Comb {
 
     #[inline]
     fn tick(&mut self, x: f32) -> f32 {
-        if self.buf.is_empty() { return 0.0; }
+        if self.buf.is_empty() {
+            return 0.0;
+        }
         let out = self.buf[self.idx];
         // one-pole lowpass in the feedback path — higher `damp` → darker tail.
         self.filter_state = out * (1.0 - self.damp) + self.filter_state * self.damp;
@@ -110,18 +132,29 @@ struct AllPass {
 }
 
 impl AllPass {
-    fn new() -> Self { Self { buf: Vec::new(), idx: 0, coeff: 0.5 } }
+    fn new() -> Self {
+        Self {
+            buf: Vec::new(),
+            idx: 0,
+            coeff: 0.5,
+        }
+    }
 
     fn resize(&mut self, len: usize) {
         self.buf = vec![0.0; len.max(1)];
         self.idx = 0;
     }
 
-    fn clear(&mut self) { self.buf.fill(0.0); self.idx = 0; }
+    fn clear(&mut self) {
+        self.buf.fill(0.0);
+        self.idx = 0;
+    }
 
     #[inline]
     fn tick(&mut self, x: f32) -> f32 {
-        if self.buf.is_empty() { return x; }
+        if self.buf.is_empty() {
+            return x;
+        }
         let bufout = self.buf[self.idx];
         let out = -x + bufout;
         self.buf[self.idx] = x + bufout * self.coeff;
@@ -133,7 +166,7 @@ impl AllPass {
 // ── The processor ───────────────────────────────────────────────────────────
 pub struct VoiceEffectsProcessor {
     // Control params (5 total)
-    effect: SmoothedParam,   // 0..7, quantized to int per block
+    effect: SmoothedParam, // 0..7, quantized to int per block
     p1: SmoothedParam,
     p2: SmoothedParam,
     p3: SmoothedParam,
@@ -193,22 +226,37 @@ impl VoiceEffectsProcessor {
             pitch_head_b: 0.0,
         }
     }
-
 }
 
 impl AudioProcessor for VoiceEffectsProcessor {
-    fn type_id(&self) -> &str { "voice_effects" }
-    fn kind(&self) -> ProcessorKind { ProcessorKind::Effect }
-
-    fn set_params(&mut self, params: &[f32]) {
-        if let Some(&v) = params.first() { self.effect.set(v); }
-        if let Some(&v) = params.get(1) { self.p1.set(v); }
-        if let Some(&v) = params.get(2) { self.p2.set(v); }
-        if let Some(&v) = params.get(3) { self.p3.set(v); }
-        if let Some(&v) = params.get(4) { self.mix.set(v); }
+    fn type_id(&self) -> &str {
+        "voice_effects"
+    }
+    fn kind(&self) -> ProcessorKind {
+        ProcessorKind::Effect
     }
 
-    fn param_count(&self) -> usize { 5 }
+    fn set_params(&mut self, params: &[f32]) {
+        if let Some(&v) = params.first() {
+            self.effect.set(v);
+        }
+        if let Some(&v) = params.get(1) {
+            self.p1.set(v);
+        }
+        if let Some(&v) = params.get(2) {
+            self.p2.set(v);
+        }
+        if let Some(&v) = params.get(3) {
+            self.p3.set(v);
+        }
+        if let Some(&v) = params.get(4) {
+            self.mix.set(v);
+        }
+    }
+
+    fn param_count(&self) -> usize {
+        5
+    }
 
     fn prepare(&mut self, sample_rate: f32, _max_block_size: usize) {
         self.sample_rate = sample_rate;
@@ -247,8 +295,12 @@ impl AudioProcessor for VoiceEffectsProcessor {
     fn reset(&mut self) {
         self.echo_delay.clear();
         self.chorus_delay.clear();
-        for c in &mut self.combs { c.clear(); }
-        for a in &mut self.allpasses { a.clear(); }
+        for c in &mut self.combs {
+            c.clear();
+        }
+        for a in &mut self.allpasses {
+            a.clear();
+        }
         self.meg_hpf.reset();
         self.meg_lpf_state = 0.0;
         self.lfo_phase = 0.0;
@@ -275,7 +327,7 @@ impl AudioProcessor for VoiceEffectsProcessor {
                 1 => self.tick_echo(x, p1, p2),
                 2 => self.tick_chorus(x, p1, p2),
                 3 => self.tick_megaphone(x, p1, p2),
-                4 => self.tick_pitchshift(x, p1, p2),   // Chipmunk/Demon
+                4 => self.tick_pitchshift(x, p1, p2), // Chipmunk/Demon
                 5 => self.tick_robot(x, p1, p2),
                 6 => self.tick_alien(x, p1, p2),
                 7 => self.tick_ghost(x, p1, p2),
@@ -329,7 +381,9 @@ impl VoiceEffectsProcessor {
     fn tick_chorus(&mut self, x: f32, rate: f32, depth: f32) -> f32 {
         let rate = rate.clamp(0.1, 6.0);
         self.lfo_phase += rate / self.sample_rate;
-        if self.lfo_phase >= 1.0 { self.lfo_phase -= 1.0; }
+        if self.lfo_phase >= 1.0 {
+            self.lfo_phase -= 1.0;
+        }
         let lfo1 = (self.lfo_phase * std::f32::consts::TAU).sin();
         let lfo2 = ((self.lfo_phase + 0.25) * std::f32::consts::TAU).sin();
 
@@ -357,7 +411,7 @@ impl VoiceEffectsProcessor {
         // Simple one-pole LPF as the tone control.
         let a = 0.1 + tone * 0.75;
         self.meg_lpf_state = a * driven + (1.0 - a) * self.meg_lpf_state;
-        self.meg_lpf_state * 0.6  // pad gain back after drive
+        self.meg_lpf_state * 0.6 // pad gain back after drive
     }
 
     /// Pitch shifter (Chipmunk/Demon) — naive varispeed with two crossfaded
@@ -366,7 +420,9 @@ impl VoiceEffectsProcessor {
     /// p2 = formant/tone (0..1 → brighter..darker tilt EQ)
     fn tick_pitchshift(&mut self, x: f32, semitones: f32, tone: f32) -> f32 {
         let ratio = 2f32.powf(semitones.clamp(-12.0, 12.0) / 12.0);
-        if self.pitch_buf.is_empty() { return x; }
+        if self.pitch_buf.is_empty() {
+            return x;
+        }
         let len = self.pitch_buf.len() as f32;
 
         self.pitch_buf[self.pitch_write] = x;
@@ -402,7 +458,9 @@ impl VoiceEffectsProcessor {
     fn tick_robot(&mut self, x: f32, freq: f32, drive: f32) -> f32 {
         let freq = freq.clamp(40.0, 800.0);
         self.rm_phase += freq / self.sample_rate;
-        if self.rm_phase >= 1.0 { self.rm_phase -= 1.0; }
+        if self.rm_phase >= 1.0 {
+            self.rm_phase -= 1.0;
+        }
         let carrier = (self.rm_phase * std::f32::consts::TAU).sin();
         let rm = x * carrier;
         let d = 1.0 + drive.clamp(0.0, 1.0) * 6.0;
@@ -418,7 +476,9 @@ impl VoiceEffectsProcessor {
         let rate = rate.clamp(0.1, 3.0);
         let amt = amount.clamp(0.0, 1.0);
         self.lfo_phase += rate / self.sample_rate;
-        if self.lfo_phase >= 1.0 { self.lfo_phase -= 1.0; }
+        if self.lfo_phase >= 1.0 {
+            self.lfo_phase -= 1.0;
+        }
         let lfo = (self.lfo_phase * std::f32::consts::TAU).sin();
         // Vibrato via a modulated tap on the chorus delay.
         let center_ms = 10.0;
@@ -429,7 +489,9 @@ impl VoiceEffectsProcessor {
 
         // Mild ring mod on top (freq scales with amount so "0" = clean vibrato).
         self.rm_phase += (40.0 + amt * 120.0) / self.sample_rate;
-        if self.rm_phase >= 1.0 { self.rm_phase -= 1.0; }
+        if self.rm_phase >= 1.0 {
+            self.rm_phase -= 1.0;
+        }
         let carrier = 0.5 + 0.5 * (self.rm_phase * std::f32::consts::TAU).sin();
         tap * (1.0 - amt * 0.5) + (tap * carrier) * (amt * 0.5)
     }
@@ -446,7 +508,9 @@ impl VoiceEffectsProcessor {
         // This shares state with Chipmunk mode — if the user just switched
         // from Chipmunk the buffer contents will be stale for a brief
         // moment, which is musically fine for a ghostly tail.
-        if self.pitch_buf.is_empty() { return self.tick_hall(x, sz, 0.3); }
+        if self.pitch_buf.is_empty() {
+            return self.tick_hall(x, sz, 0.3);
+        }
         let len = self.pitch_buf.len() as f32;
         self.pitch_buf[self.pitch_write] = x;
         self.pitch_write = (self.pitch_write + 1) % self.pitch_buf.len();
@@ -471,7 +535,9 @@ impl VoiceEffectsProcessor {
 #[inline]
 fn read_interp(buf: &[f32], pos: f32) -> f32 {
     let len = buf.len();
-    if len == 0 { return 0.0; }
+    if len == 0 {
+        return 0.0;
+    }
     let i0 = pos.floor() as usize % len;
     let i1 = (i0 + 1) % len;
     let frac = pos - pos.floor();

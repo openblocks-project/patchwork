@@ -94,24 +94,30 @@ pub fn setup(ctx: &egui::Context) {
     // Load Satoshi Regular as the primary UI font
     fonts.font_data.insert(
         SATOSHI_FAMILY.to_string(),
-        std::sync::Arc::new(egui::FontData::from_static(include_bytes!("../assets/fonts/Satoshi-Regular.ttf"))),
+        std::sync::Arc::new(egui::FontData::from_static(include_bytes!(
+            "../assets/fonts/Satoshi-Regular.ttf"
+        ))),
     );
 
     // Load the Phosphor icon font
     fonts.font_data.insert(
         FONT_FAMILY.to_string(),
-        std::sync::Arc::new(egui::FontData::from_static(include_bytes!("../assets/fonts/Phosphor.ttf"))),
+        std::sync::Arc::new(egui::FontData::from_static(include_bytes!(
+            "../assets/fonts/Phosphor.ttf"
+        ))),
     );
 
     // Proportional: Satoshi first (primary text), then Phosphor (icon fallback), then system defaults
-    let proportional = fonts.families
+    let proportional = fonts
+        .families
         .entry(egui::FontFamily::Proportional)
         .or_default();
     proportional.insert(0, SATOSHI_FAMILY.to_string());
     proportional.push(FONT_FAMILY.to_string());
 
     // Monospace: keep system default but add Satoshi as fallback for missing glyphs
-    let monospace = fonts.families
+    let monospace = fonts
+        .families
         .entry(egui::FontFamily::Monospace)
         .or_default();
     monospace.push(SATOSHI_FAMILY.to_string());
@@ -185,7 +191,7 @@ pub fn node_icon(label: &str) -> &'static str {
         "Text Editor" => TEXT_T,
         // Output
         "Display" => CHART_LINE,
-        "HTML Viewer" => CODE,  // HTML = code
+        "HTML Viewer" => CODE, // HTML = code
         // Shader
         "WGSL Viewer" => DIAMOND_FOUR,
         // MIDI
@@ -222,7 +228,7 @@ pub fn node_icon(label: &str) -> &'static str {
         // Image
         "Image" => IMAGE,
         "Image Effects" => FADERS,
-        "Blend" => COPY,  // two layers
+        "Blend" => COPY, // two layers
         "Color Curves" => CHART_LINE,
         // Video
         "Video Player" => FILM_STRIP,

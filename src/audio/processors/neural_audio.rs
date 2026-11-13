@@ -21,26 +21,36 @@ pub struct NeuralAudioProcessor {
 
 impl NeuralAudioProcessor {
     pub fn new(output_buffer: Arc<LiveInputBuffer>, input_buffer: Arc<LiveInputBuffer>) -> Self {
-        Self { output_buffer, input_buffer }
+        Self {
+            output_buffer,
+            input_buffer,
+        }
     }
 }
 
 impl AudioProcessor for NeuralAudioProcessor {
-    fn type_id(&self) -> &str { "neural_audio" }
-    fn kind(&self) -> ProcessorKind { ProcessorKind::Source }
+    fn type_id(&self) -> &str {
+        "neural_audio"
+    }
+    fn kind(&self) -> ProcessorKind {
+        ProcessorKind::Source
+    }
 
     fn process_block(&mut self, input: &[f32], output: &mut [f32], ctx: &ProcessContext) {
         // Capture upstream audio for the encoder (silently no-op if empty).
         // The engine fills `input` with zeros when no upstream connection
         // exists; the inference thread's gate drops empty/silent blocks.
         if !input.is_empty() {
-            self.input_buffer.write(&input[..ctx.block_size.min(input.len())]);
+            self.input_buffer
+                .write(&input[..ctx.block_size.min(input.len())]);
         }
         self.output_buffer.read_into(output, ctx.block_size);
     }
 
     fn set_params(&mut self, _params: &[f32]) {}
-    fn param_count(&self) -> usize { 0 }
+    fn param_count(&self) -> usize {
+        0
+    }
     fn prepare(&mut self, _sample_rate: f32, _max_block_size: usize) {}
     fn reset(&mut self) {}
 }

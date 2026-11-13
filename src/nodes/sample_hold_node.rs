@@ -16,12 +16,12 @@
 //!   - Image → clones the Arc<ImageData> (GpuImage inputs are pre-readback
 //!             to CPU by the image eval loop via `needs_cpu_image_input`)
 
+use crate::graph::{Graph, ImageData, PortDef, PortKind, PortValue};
+use crate::node_trait::{NodeBehavior, RenderContext};
+use eframe::egui;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Instant;
-use crate::graph::{ImageData, PortDef, PortKind, PortValue, Graph};
-use crate::node_trait::{NodeBehavior, RenderContext};
-use serde::{Serialize, Deserialize};
-use eframe::egui;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SampleHoldNode {
@@ -70,28 +70,46 @@ pub struct SampleHoldNode {
 impl Default for SampleHoldNode {
     fn default() -> Self {
         Self {
-            held_float: 0.0, held_text: String::new(),
-            held_image: None, hold_kind: 0, is_text: false,
-            last_trigger: 0.0, history: Vec::new(),
-            auto_interval_secs: 0.0, last_auto_capture: None,
-            capture_seq: 0, processed_seq: 0,
+            held_float: 0.0,
+            held_text: String::new(),
+            held_image: None,
+            hold_kind: 0,
+            is_text: false,
+            last_trigger: 0.0,
+            history: Vec::new(),
+            auto_interval_secs: 0.0,
+            last_auto_capture: None,
+            capture_seq: 0,
+            processed_seq: 0,
         }
     }
 }
 
 impl NodeBehavior for SampleHoldNode {
-    fn title(&self) -> &str { "Sample & Hold" }
+    fn title(&self) -> &str {
+        "Sample & Hold"
+    }
 
     fn inputs(&self) -> Vec<PortDef> {
-        vec![PortDef::new("Value", PortKind::Generic), PortDef::new("Trigger", PortKind::Trigger)]
+        vec![
+            PortDef::new("Value", PortKind::Generic),
+            PortDef::new("Trigger", PortKind::Trigger),
+        ]
     }
 
     fn outputs(&self) -> Vec<PortDef> {
-        vec![PortDef::new("Out", PortKind::Generic), PortDef::new("Trigger", PortKind::Trigger)]
+        vec![
+            PortDef::new("Out", PortKind::Generic),
+            PortDef::new("Trigger", PortKind::Trigger),
+        ]
     }
 
-    fn color_hint(&self) -> [u8; 3] { [120, 200, 160] }
-    fn inline_ports(&self) -> bool { true }
+    fn color_hint(&self) -> [u8; 3] {
+        [120, 200, 160]
+    }
+    fn inline_ports(&self) -> bool {
+        true
+    }
 
     /// Force the image eval loop to readback any GpuImage upstream into a
     /// CPU `PortValue::Image` before calling our evaluate(). Sample & Hold
@@ -99,7 +117,9 @@ impl NodeBehavior for SampleHoldNode {
     /// — the 2-frame LRU on `gpu_tex_cache` would evict the texture well
     /// before the next capture. Small one-time readback cost per capture;
     /// no cost on frames where we're just emitting the held value.
-    fn needs_cpu_image_input(&self, _port: usize) -> bool { true }
+    fn needs_cpu_image_input(&self, _port: usize) -> bool {
+        true
+    }
 
     fn evaluate(&mut self, inputs: &[PortValue]) -> Vec<(usize, PortValue)> {
         let trigger_val = inputs.get(1).map(|v| v.as_float()).unwrap_or(0.0);
@@ -141,7 +161,9 @@ impl NodeBehavior for SampleHoldNode {
                         self.hold_kind = 0;
                         self.is_text = false;
                         self.history.push(*f);
-                        if self.history.len() > 40 { self.history.remove(0); }
+                        if self.history.len() > 40 {
+                            self.history.remove(0);
+                        }
                     }
                     PortValue::Text(t) => {
                         self.held_text = t.clone();
@@ -181,8 +203,12 @@ impl NodeBehavior for SampleHoldNode {
         ]
     }
 
-    fn type_tag(&self) -> &str { "sample_hold" }
-    fn save_state(&self) -> serde_json::Value { serde_json::to_value(self).unwrap_or_default() }
+    fn type_tag(&self) -> &str {
+        "sample_hold"
+    }
+    fn save_state(&self) -> serde_json::Value {
+        serde_json::to_value(self).unwrap_or_default()
+    }
     fn load_state(&mut self, state: &serde_json::Value) {
         if let Ok(l) = serde_json::from_value::<SampleHoldNode>(state.clone()) {
             self.held_float = l.held_float;
@@ -193,9 +219,13 @@ impl NodeBehavior for SampleHoldNode {
             // If `hold_kind` is 0 but `is_text` is true, it's a legacy
             // project — migrate.
             self.is_text = l.is_text;
-            self.hold_kind = if l.hold_kind != 0 { l.hold_kind }
-                             else if l.is_text { 1 }
-                             else { 0 };
+            self.hold_kind = if l.hold_kind != 0 {
+                l.hold_kind
+            } else if l.is_text {
+                1
+            } else {
+                0
+            };
             self.history = l.history;
             self.auto_interval_secs = l.auto_interval_secs;
             self.capture_seq = l.capture_seq;
@@ -208,8 +238,14 @@ impl NodeBehavior for SampleHoldNode {
         let accent = ui.visuals().hyperlink_color;
         let dim = ui.visuals().widgets.noninteractive.fg_stroke.color;
 
-        let val_wired = ctx.connections.iter().any(|c| c.to_node == ctx.node_id && c.to_port == 0);
-        let trig_wired = ctx.connections.iter().any(|c| c.to_node == ctx.node_id && c.to_port == 1);
+        let val_wired = ctx
+            .connections
+            .iter()
+            .any(|c| c.to_node == ctx.node_id && c.to_port == 0);
+        let trig_wired = ctx
+            .connections
+            .iter()
+            .any(|c| c.to_node == ctx.node_id && c.to_port == 1);
 
         // Peek at the currently-wired input value — tells us what type is
         // about to be captured so we can label the button ("Capture Image"
@@ -221,25 +257,38 @@ impl NodeBehavior for SampleHoldNode {
         };
         let live_kind: &'static str = match &live_val {
             PortValue::Float(_) => "Number",
-            PortValue::Text(_)  => "Text",
+            PortValue::Text(_) => "Text",
             PortValue::Image(_) => "Image",
-            PortValue::GpuImage(_) => "Image",  // shouldn't arrive; needs_cpu_image_input handles
+            PortValue::GpuImage(_) => "Image", // shouldn't arrive; needs_cpu_image_input handles
             PortValue::Mesh(_) | PortValue::GpuMesh(_) => "Mesh",
             PortValue::None => "—",
         };
 
         // Value input
         ui.horizontal(|ui| {
-            crate::nodes::inline_port_circle(ui, ctx.node_id, 0, true, ctx.connections,
-                ctx.port_positions, ctx.dragging_from, ctx.pending_disconnects, PortKind::Generic);
+            crate::nodes::inline_port_circle(
+                ui,
+                ctx.node_id,
+                0,
+                true,
+                ctx.connections,
+                ctx.port_positions,
+                ctx.dragging_from,
+                ctx.pending_disconnects,
+                PortKind::Generic,
+            );
             ui.label(egui::RichText::new("Value:").small());
             if val_wired {
                 let s = match &live_val {
                     PortValue::Float(f) => format!("{:.3}", f),
-                    PortValue::Text(t) => if t.chars().count() > 16 {
-                        let head: String = t.chars().take(16).collect();
-                        format!("\"{}...\"", head)
-                    } else { format!("\"{}\"", t) },
+                    PortValue::Text(t) => {
+                        if t.chars().count() > 16 {
+                            let head: String = t.chars().take(16).collect();
+                            format!("\"{}...\"", head)
+                        } else {
+                            format!("\"{}\"", t)
+                        }
+                    }
                     PortValue::Image(img) => format!("[{}×{}]", img.width, img.height),
                     PortValue::GpuImage(h) => format!("[{}×{}]", h.width, h.height),
                     _ => "—".into(),
@@ -252,12 +301,26 @@ impl NodeBehavior for SampleHoldNode {
 
         // Trigger input
         ui.horizontal(|ui| {
-            crate::nodes::inline_port_circle(ui, ctx.node_id, 1, true, ctx.connections,
-                ctx.port_positions, ctx.dragging_from, ctx.pending_disconnects, PortKind::Trigger);
+            crate::nodes::inline_port_circle(
+                ui,
+                ctx.node_id,
+                1,
+                true,
+                ctx.connections,
+                ctx.port_positions,
+                ctx.dragging_from,
+                ctx.pending_disconnects,
+                PortKind::Trigger,
+            );
             ui.label(egui::RichText::new("Trigger:").small());
             if trig_wired {
-                let t = Graph::static_input_value(ctx.connections, ctx.values, ctx.node_id, 1).as_float();
-                let col = if t > 0.5 { egui::Color32::from_rgb(255, 200, 60) } else { dim };
+                let t = Graph::static_input_value(ctx.connections, ctx.values, ctx.node_id, 1)
+                    .as_float();
+                let col = if t > 0.5 {
+                    egui::Color32::from_rgb(255, 200, 60)
+                } else {
+                    dim
+                };
                 ui.label(egui::RichText::new(format!("{:.1}", t)).small().color(col));
             } else {
                 ui.label(egui::RichText::new("—").small().color(dim));
@@ -270,12 +333,20 @@ impl NodeBehavior for SampleHoldNode {
         // Button label reflects what's about to be captured so the user
         // isn't surprised ("Sample & Hold" node holding an image feels
         // different than holding a number).
-        let trigger_val = Graph::static_input_value(ctx.connections, ctx.values, ctx.node_id, 1).as_float();
+        let trigger_val =
+            Graph::static_input_value(ctx.connections, ctx.values, ctx.node_id, 1).as_float();
         let rising_edge = trigger_val > 0.5 && self.last_trigger <= 0.5;
 
         ui.horizontal(|ui| {
-            let btn_label = if val_wired { format!("Capture {}", live_kind) } else { "Capture".into() };
-            if ui.add_enabled(val_wired, egui::Button::new(btn_label)).clicked() {
+            let btn_label = if val_wired {
+                format!("Capture {}", live_kind)
+            } else {
+                "Capture".into()
+            };
+            if ui
+                .add_enabled(val_wired, egui::Button::new(btn_label))
+                .clicked()
+            {
                 // Bump the counter — evaluate() on the next eval pass will
                 // notice the mismatch and do the capture. We don't mutate
                 // held_* here directly because image capture may need
@@ -283,8 +354,17 @@ impl NodeBehavior for SampleHoldNode {
                 self.capture_seq = self.capture_seq.wrapping_add(1);
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                crate::nodes::inline_port_circle(ui, ctx.node_id, 1, false, ctx.connections,
-                    ctx.port_positions, ctx.dragging_from, ctx.pending_disconnects, PortKind::Trigger);
+                crate::nodes::inline_port_circle(
+                    ui,
+                    ctx.node_id,
+                    1,
+                    false,
+                    ctx.connections,
+                    ctx.port_positions,
+                    ctx.dragging_from,
+                    ctx.pending_disconnects,
+                    PortKind::Trigger,
+                );
             });
         });
 
@@ -313,24 +393,46 @@ impl NodeBehavior for SampleHoldNode {
         // trigger or button), giving visual confirmation.
         let capturing_now = rising_edge || self.capture_seq != self.processed_seq;
         ui.horizontal(|ui| {
-            let dot_color = if capturing_now { egui::Color32::from_rgb(255, 220, 60) } else { dim };
-            let (dot_rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
-            ui.painter().circle_filled(dot_rect.center(), if capturing_now { 5.0 } else { 3.0 }, dot_color);
+            let dot_color = if capturing_now {
+                egui::Color32::from_rgb(255, 220, 60)
+            } else {
+                dim
+            };
+            let (dot_rect, _) =
+                ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+            ui.painter().circle_filled(
+                dot_rect.center(),
+                if capturing_now { 5.0 } else { 3.0 },
+                dot_color,
+            );
 
             ui.label(egui::RichText::new("Held:").small().strong());
             match self.hold_kind {
                 2 => match &self.held_image {
-                    Some(img) => ui.label(egui::RichText::new(format!("[{}×{}]", img.width, img.height))
-                        .small().color(egui::Color32::from_rgb(160, 200, 255))),
+                    Some(img) => ui.label(
+                        egui::RichText::new(format!("[{}×{}]", img.width, img.height))
+                            .small()
+                            .color(egui::Color32::from_rgb(160, 200, 255)),
+                    ),
                     None => ui.label(egui::RichText::new("(no image yet)").small().color(dim)),
                 },
                 1 => {
-                    let display = if self.held_text.len() > 20 { format!("\"{}...\"", &self.held_text[..20]) }
-                        else { format!("\"{}\"", &self.held_text) };
-                    ui.label(egui::RichText::new(display).small().color(egui::Color32::from_rgb(80, 220, 80)))
+                    let display = if self.held_text.len() > 20 {
+                        format!("\"{}...\"", &self.held_text[..20])
+                    } else {
+                        format!("\"{}\"", &self.held_text)
+                    };
+                    ui.label(
+                        egui::RichText::new(display)
+                            .small()
+                            .color(egui::Color32::from_rgb(80, 220, 80)),
+                    )
                 }
-                _ => ui.label(egui::RichText::new(format!("{:.4}", self.held_float)).strong()
-                    .color(egui::Color32::from_rgb(255, 220, 80))),
+                _ => ui.label(
+                    egui::RichText::new(format!("{:.4}", self.held_float))
+                        .strong()
+                        .color(egui::Color32::from_rgb(255, 220, 80)),
+                ),
             }
         });
 
@@ -342,16 +444,27 @@ impl NodeBehavior for SampleHoldNode {
         if self.hold_kind == 0 {
             if !self.history.is_empty() {
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(format!("{} samples", self.history.len())).small().color(dim));
-                    if ui.small_button("Clear").clicked() { self.history.clear(); }
+                    ui.label(
+                        egui::RichText::new(format!("{} samples", self.history.len()))
+                            .small()
+                            .color(dim),
+                    );
+                    if ui.small_button("Clear").clicked() {
+                        self.history.clear();
+                    }
                 });
 
-                let (rect, _) = ui.allocate_exact_size(egui::vec2(150.0, 60.0), egui::Sense::hover());
+                let (rect, _) =
+                    ui.allocate_exact_size(egui::vec2(150.0, 60.0), egui::Sense::hover());
                 let painter = ui.painter();
                 painter.rect_filled(rect, 4.0, ui.visuals().extreme_bg_color);
 
                 let min_v = self.history.iter().cloned().fold(f32::INFINITY, f32::min);
-                let max_v = self.history.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+                let max_v = self
+                    .history
+                    .iter()
+                    .cloned()
+                    .fold(f32::NEG_INFINITY, f32::max);
                 let range = (max_v - min_v).max(0.01);
                 let lo = min_v - range * 0.1;
                 let hi = max_v + range * 0.1;
@@ -362,14 +475,29 @@ impl NodeBehavior for SampleHoldNode {
                 let stair_color = egui::Color32::from_rgb(80, 200, 120);
                 for (i, val) in self.history.iter().enumerate() {
                     let x = rect.left() + pad + i as f32 * step_w;
-                    let y = rect.bottom() - pad - ((val - lo) / (hi - lo)) * (rect.height() - pad * 2.0);
+                    let y = rect.bottom()
+                        - pad
+                        - ((val - lo) / (hi - lo)) * (rect.height() - pad * 2.0);
                     let y = y.clamp(rect.top() + pad, rect.bottom() - pad);
-                    painter.line_segment([egui::pos2(x, y), egui::pos2(x + step_w, y)],
-                        egui::Stroke::new(2.0, stair_color));
+                    painter.line_segment(
+                        [egui::pos2(x, y), egui::pos2(x + step_w, y)],
+                        egui::Stroke::new(2.0, stair_color),
+                    );
                     if i + 1 < n {
-                        let next_y = rect.bottom() - pad - ((self.history[i + 1] - lo) / (hi - lo)) * (rect.height() - pad * 2.0);
-                        painter.line_segment([egui::pos2(x + step_w, y), egui::pos2(x + step_w, next_y.clamp(rect.top() + pad, rect.bottom() - pad))],
-                            egui::Stroke::new(1.0, stair_color.gamma_multiply(0.4)));
+                        let next_y = rect.bottom()
+                            - pad
+                            - ((self.history[i + 1] - lo) / (hi - lo))
+                                * (rect.height() - pad * 2.0);
+                        painter.line_segment(
+                            [
+                                egui::pos2(x + step_w, y),
+                                egui::pos2(
+                                    x + step_w,
+                                    next_y.clamp(rect.top() + pad, rect.bottom() - pad),
+                                ),
+                            ],
+                            egui::Stroke::new(1.0, stair_color.gamma_multiply(0.4)),
+                        );
                     }
                 }
             } else {
@@ -385,18 +513,38 @@ impl NodeBehavior for SampleHoldNode {
                 Some(img) => format!("[{}×{}]", img.width, img.height),
                 None => "none".into(),
             },
-            1 => format!("\"{}\"", if self.held_text.len() > 10 { &self.held_text[..10] } else { &self.held_text }),
+            1 => format!(
+                "\"{}\"",
+                if self.held_text.len() > 10 {
+                    &self.held_text[..10]
+                } else {
+                    &self.held_text
+                }
+            ),
             _ => format!("{:.3}", self.held_float),
         };
-        crate::nodes::output_port_row(ui, "Out", &out_val, ctx.node_id, 0,
-            ctx.port_positions, ctx.dragging_from, ctx.connections, ctx.pending_disconnects, PortKind::Generic);
+        crate::nodes::output_port_row(
+            ui,
+            "Out",
+            &out_val,
+            ctx.node_id,
+            0,
+            ctx.port_positions,
+            ctx.dragging_from,
+            ctx.connections,
+            ctx.pending_disconnects,
+            PortKind::Generic,
+        );
     }
 }
 
 #[allow(dead_code)]
 pub fn register(registry: &mut crate::node_trait::NodeRegistryInner) {
     registry.register("sample_hold", |state| {
-        if let Ok(n) = serde_json::from_value::<SampleHoldNode>(state.clone()) { Box::new(n) }
-        else { Box::new(SampleHoldNode::default()) }
+        if let Ok(n) = serde_json::from_value::<SampleHoldNode>(state.clone()) {
+            Box::new(n)
+        } else {
+            Box::new(SampleHoldNode::default())
+        }
     });
 }

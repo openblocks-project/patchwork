@@ -1,7 +1,7 @@
 use crate::graph::*;
 use crate::node_trait::{NodeBehavior, RenderContext};
 use eframe::egui;
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
 
 /// Detect single uppercase letters A-Z used as variables in the formula
@@ -25,21 +25,46 @@ fn evaluate_formula(formula: &str, var_values: &HashMap<char, f64>) -> Result<f6
     let mut engine = rhai::Engine::new();
     engine.set_max_operations(10000);
 
-    engine.register_fn("map", |val: f64, in_min: f64, in_max: f64, out_min: f64, out_max: f64| -> f64 {
-        let t = (val - in_min) / (in_max - in_min);
-        out_min + t * (out_max - out_min)
-    });
+    engine.register_fn(
+        "map",
+        |val: f64, in_min: f64, in_max: f64, out_min: f64, out_max: f64| -> f64 {
+            let t = (val - in_min) / (in_max - in_min);
+            out_min + t * (out_max - out_min)
+        },
+    );
     engine.register_fn("lerp", |a: f64, b: f64, t: f64| -> f64 { a + (b - a) * t });
-    engine.register_fn("clamp", |val: f64, min: f64, max: f64| -> f64 { val.max(min).min(max) });
-    engine.register_fn("sign", |val: f64| -> f64 { if val > 0.0 { 1.0 } else if val < 0.0 { -1.0 } else { 0.0 } });
-    engine.register_fn("deg", |rad: f64| -> f64 { rad * 180.0 / std::f64::consts::PI });
-    engine.register_fn("rad", |deg: f64| -> f64 { deg * std::f64::consts::PI / 180.0 });
+    engine.register_fn("clamp", |val: f64, min: f64, max: f64| -> f64 {
+        val.max(min).min(max)
+    });
+    engine.register_fn("sign", |val: f64| -> f64 {
+        if val > 0.0 {
+            1.0
+        } else if val < 0.0 {
+            -1.0
+        } else {
+            0.0
+        }
+    });
+    engine.register_fn("deg", |rad: f64| -> f64 {
+        rad * 180.0 / std::f64::consts::PI
+    });
+    engine.register_fn("rad", |deg: f64| -> f64 {
+        deg * std::f64::consts::PI / 180.0
+    });
     engine.register_fn("quantize", |val: f64, step: f64| -> f64 {
-        if step.abs() < 1e-10 { val } else { (val / step).round() * step }
+        if step.abs() < 1e-10 {
+            val
+        } else {
+            (val / step).round() * step
+        }
     });
     engine.register_fn("wrap", |val: f64, min: f64, max: f64| -> f64 {
         let range = max - min;
-        if range.abs() < 1e-10 { min } else { min + ((val - min) % range + range) % range }
+        if range.abs() < 1e-10 {
+            min
+        } else {
+            min + ((val - min) % range + range) % range
+        }
     });
     engine.register_fn("pow", |base: f64, exp: f64| -> f64 { base.powf(exp) });
     engine.register_fn("sqrt", |val: f64| -> f64 { val.sqrt() });
@@ -62,8 +87,12 @@ fn evaluate_formula(formula: &str, var_values: &HashMap<char, f64>) -> Result<f6
                 let next_alpha = i + 1 < chars_vec.len() && chars_vec[i + 1].is_ascii_alphabetic();
                 if !prev_alpha && !next_alpha {
                     result.push_str(&to);
-                } else { result.push(c); }
-            } else { result.push(c); }
+                } else {
+                    result.push(c);
+                }
+            } else {
+                result.push(c);
+            }
         }
         expr = result;
     }
@@ -81,9 +110,13 @@ fn evaluate_formula(formula: &str, var_values: &HashMap<char, f64>) -> Result<f6
 
     match engine.eval_expression_with_scope::<rhai::Dynamic>(&mut scope, &expr) {
         Ok(val) => {
-            if let Some(f) = val.as_float().ok() { Ok(f) }
-            else if let Some(i) = val.as_int().ok() { Ok(i as f64) }
-            else { Err("Non-numeric result".into()) }
+            if let Some(f) = val.as_float().ok() {
+                Ok(f)
+            } else if let Some(i) = val.as_int().ok() {
+                Ok(i as f64)
+            } else {
+                Err("Non-numeric result".into())
+            }
         }
         Err(e) => Err(format!("{}", e)),
     }
@@ -97,26 +130,56 @@ struct PresetGroup {
 }
 
 const PRESET_GROUPS: &[PresetGroup] = &[
-    PresetGroup { name: "Basic", presets: &[
-        ("+", "A + B"), ("−", "A - B"), ("×", "A * B"), ("÷", "A / B"), ("%", "A % B"),
-    ]},
-    PresetGroup { name: "Shape", presets: &[
-        ("abs", "abs_val(A)"), ("sign", "sign(A)"), ("round", "A.round()"),
-        ("floor", "A.floor()"), ("ceil", "A.ceiling()"),
-    ]},
-    PresetGroup { name: "Range", presets: &[
-        ("clamp", "clamp(A, 0.0, 1.0)"), ("wrap", "wrap(A, 0.0, 1.0)"),
-        ("map", "map(A, 0.0, 1.0, 0.0, 100.0)"), ("lerp", "lerp(A, B, C)"),
-        ("quant", "quantize(A, 0.25)"),
-    ]},
-    PresetGroup { name: "Trig", presets: &[
-        ("sin", "sin(A)"), ("cos", "cos(A)"), ("tan", "tan(A)"),
-        ("deg", "deg(A)"), ("rad", "rad(A)"),
-    ]},
-    PresetGroup { name: "Power", presets: &[
-        ("pow", "pow(A, B)"), ("sqrt", "sqrt(A)"), ("log", "ln(A)"),
-        ("min", "if A < B { A } else { B }"), ("max", "if A > B { A } else { B }"),
-    ]},
+    PresetGroup {
+        name: "Basic",
+        presets: &[
+            ("+", "A + B"),
+            ("−", "A - B"),
+            ("×", "A * B"),
+            ("÷", "A / B"),
+            ("%", "A % B"),
+        ],
+    },
+    PresetGroup {
+        name: "Shape",
+        presets: &[
+            ("abs", "abs_val(A)"),
+            ("sign", "sign(A)"),
+            ("round", "A.round()"),
+            ("floor", "A.floor()"),
+            ("ceil", "A.ceiling()"),
+        ],
+    },
+    PresetGroup {
+        name: "Range",
+        presets: &[
+            ("clamp", "clamp(A, 0.0, 1.0)"),
+            ("wrap", "wrap(A, 0.0, 1.0)"),
+            ("map", "map(A, 0.0, 1.0, 0.0, 100.0)"),
+            ("lerp", "lerp(A, B, C)"),
+            ("quant", "quantize(A, 0.25)"),
+        ],
+    },
+    PresetGroup {
+        name: "Trig",
+        presets: &[
+            ("sin", "sin(A)"),
+            ("cos", "cos(A)"),
+            ("tan", "tan(A)"),
+            ("deg", "deg(A)"),
+            ("rad", "rad(A)"),
+        ],
+    },
+    PresetGroup {
+        name: "Power",
+        presets: &[
+            ("pow", "pow(A, B)"),
+            ("sqrt", "sqrt(A)"),
+            ("log", "ln(A)"),
+            ("min", "if A < B { A } else { B }"),
+            ("max", "if A > B { A } else { B }"),
+        ],
+    },
 ];
 
 // ── Node struct ───────────────────────────────────────────────────────────────
@@ -133,15 +196,17 @@ pub struct MathNode {
     pub error: String,
 }
 
-fn default_formula() -> String { "A + B".to_string() }
+fn default_formula() -> String {
+    "A + B".to_string()
+}
 
 impl Default for MathNode {
     fn default() -> Self {
         Self {
-            formula:   "A + B".to_string(),
+            formula: "A + B".to_string(),
             variables: vec!['A', 'B'],
-            result:    0.0,
-            error:     String::new(),
+            result: 0.0,
+            error: String::new(),
         }
     }
 }
@@ -149,14 +214,25 @@ impl Default for MathNode {
 // ── NodeBehavior ──────────────────────────────────────────────────────────────
 
 impl NodeBehavior for MathNode {
-    fn title(&self)      -> &str    { "Math" }
-    fn type_tag(&self)   -> &str    { "math" }
-    fn color_hint(&self) -> [u8; 3] { [200, 160, 80] }
-    fn no_title(&self)   -> bool    { true }
-    fn inline_ports(&self) -> bool  { true }
+    fn title(&self) -> &str {
+        "Math"
+    }
+    fn type_tag(&self) -> &str {
+        "math"
+    }
+    fn color_hint(&self) -> [u8; 3] {
+        [200, 160, 80]
+    }
+    fn no_title(&self) -> bool {
+        true
+    }
+    fn inline_ports(&self) -> bool {
+        true
+    }
 
     fn inputs(&self) -> Vec<PortDef> {
-        self.variables.iter()
+        self.variables
+            .iter()
             .map(|c| PortDef::dynamic(c.to_string(), PortKind::Number))
             .collect()
     }
@@ -236,7 +312,11 @@ fn render_content(
     // ── Preset buttons ────────────────────────────────────────
     for group in PRESET_GROUPS {
         ui.horizontal_wrapped(|ui| {
-            ui.label(egui::RichText::new(format!("{}:", group.name)).small().color(dim));
+            ui.label(
+                egui::RichText::new(format!("{}:", group.name))
+                    .small()
+                    .color(dim),
+            );
             for (label, preset_formula) in group.presets.iter() {
                 let is_current = formula.trim() == *preset_formula;
                 let text = if is_current {
@@ -245,8 +325,14 @@ fn render_content(
                     egui::RichText::new(*label).small().strong()
                 };
                 let btn = ui.add(
-                    egui::Button::new(text).small().frame(true)
-                        .fill(if is_current { accent.gamma_multiply(0.2) } else { ui.visuals().widgets.inactive.bg_fill })
+                    egui::Button::new(text)
+                        .small()
+                        .frame(true)
+                        .fill(if is_current {
+                            accent.gamma_multiply(0.2)
+                        } else {
+                            ui.visuals().widgets.inactive.bg_fill
+                        }),
                 );
                 if btn.clicked() {
                     *formula = preset_formula.to_string();
@@ -281,16 +367,34 @@ fn render_content(
 
     // ── Input ports (one per detected variable) ───────────────
     for (i, &ch) in variables.iter().enumerate() {
-        let is_wired = ctx.connections.iter().any(|c| c.to_node == node_id && c.to_port == i);
+        let is_wired = ctx
+            .connections
+            .iter()
+            .any(|c| c.to_node == node_id && c.to_port == i);
         // Display the value that evaluate() already computed this frame.
-        let val = Graph::static_input_value(ctx.connections, ctx.values, node_id, i).as_float() as f64;
+        let val =
+            Graph::static_input_value(ctx.connections, ctx.values, node_id, i).as_float() as f64;
 
         ui.horizontal(|ui| {
-            super::inline_port_circle(ui, node_id, i, true, ctx.connections,
-                ctx.port_positions, ctx.dragging_from, ctx.pending_disconnects, PortKind::Number);
+            super::inline_port_circle(
+                ui,
+                node_id,
+                i,
+                true,
+                ctx.connections,
+                ctx.port_positions,
+                ctx.dragging_from,
+                ctx.pending_disconnects,
+                PortKind::Number,
+            );
             ui.label(egui::RichText::new(format!("{}", ch)).strong());
             if is_wired {
-                ui.label(egui::RichText::new(format!("{:.3}", val)).monospace().small().color(accent));
+                ui.label(
+                    egui::RichText::new(format!("{:.3}", val))
+                        .monospace()
+                        .small()
+                        .color(accent),
+                );
             } else {
                 ui.label(egui::RichText::new("0").monospace().small().color(dim));
             }
@@ -306,9 +410,18 @@ fn render_content(
 
     // ── Result output port ────────────────────────────────────
     if error.is_empty() {
-        super::output_port_row(ui, "=", &format!("{:.4}", result),
-            node_id, 0, ctx.port_positions, ctx.dragging_from,
-            ctx.connections, ctx.pending_disconnects, PortKind::Number);
+        super::output_port_row(
+            ui,
+            "=",
+            &format!("{:.4}", result),
+            node_id,
+            0,
+            ctx.port_positions,
+            ctx.dragging_from,
+            ctx.connections,
+            ctx.pending_disconnects,
+            PortKind::Number,
+        );
     } else {
         ui.colored_label(
             egui::Color32::from_rgb(255, 100, 100),

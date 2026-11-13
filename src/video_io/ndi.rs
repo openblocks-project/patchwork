@@ -53,9 +53,12 @@ use std::time::Duration;
 
 // ─── FFI types: opaque instance handles ─────────────────────────────────────
 
-#[allow(non_camel_case_types)] pub type NDIlib_send_instance_t = *mut c_void;
-#[allow(non_camel_case_types)] pub type NDIlib_recv_instance_t = *mut c_void;
-#[allow(non_camel_case_types)] pub type NDIlib_find_instance_t = *mut c_void;
+#[allow(non_camel_case_types)]
+pub type NDIlib_send_instance_t = *mut c_void;
+#[allow(non_camel_case_types)]
+pub type NDIlib_recv_instance_t = *mut c_void;
+#[allow(non_camel_case_types)]
+pub type NDIlib_find_instance_t = *mut c_void;
 
 // ─── FFI types: enums (FourCC / frame type / format / color / bandwidth) ───
 //
@@ -72,9 +75,9 @@ use std::time::Duration;
 pub enum NDIlib_FourCC_video_type_e {
     BGRA = 0x41524742, // little-endian 'BGRA'
     BGRX = 0x58524742, // 'BGRX'
-    // v1 doesn't emit others, but senders on the network can. We treat
-    // any non-BGRA/BGRX frame as a capture error in M5 rather than
-    // trying to decode YUV / 10-bit / P-format variants.
+                       // v1 doesn't emit others, but senders on the network can. We treat
+                       // any non-BGRA/BGRX frame as a capture error in M5 rather than
+                       // trying to decode YUV / 10-bit / P-format variants.
 }
 
 /// `NDIlib_frame_format_type_e`. We only send progressive; receivers
@@ -209,44 +212,49 @@ const _: () = assert!(std::mem::size_of::<NDIlib_video_frame_v2_t>() == 72);
 // Raw `fn` pointers (not `libloading::Symbol<T>`) so they have `'static`
 // lifetime once loaded — we copy them out of Symbol in `NdiLibrary::load`.
 
-#[allow(non_camel_case_types)] type Fn_initialize =
-    unsafe extern "C" fn() -> bool;
-#[allow(non_camel_case_types)] type Fn_destroy =
-    unsafe extern "C" fn();
-#[allow(non_camel_case_types)] type Fn_is_supported_cpu =
-    unsafe extern "C" fn() -> bool;
+#[allow(non_camel_case_types)]
+type Fn_initialize = unsafe extern "C" fn() -> bool;
+#[allow(non_camel_case_types)]
+type Fn_destroy = unsafe extern "C" fn();
+#[allow(non_camel_case_types)]
+type Fn_is_supported_cpu = unsafe extern "C" fn() -> bool;
 
-#[allow(non_camel_case_types)] type Fn_find_create_v2 =
+#[allow(non_camel_case_types)]
+type Fn_find_create_v2 =
     unsafe extern "C" fn(*const NDIlib_find_create_t) -> NDIlib_find_instance_t;
-#[allow(non_camel_case_types)] type Fn_find_destroy =
-    unsafe extern "C" fn(NDIlib_find_instance_t);
-#[allow(non_camel_case_types)] type Fn_find_get_current_sources =
+#[allow(non_camel_case_types)]
+type Fn_find_destroy = unsafe extern "C" fn(NDIlib_find_instance_t);
+#[allow(non_camel_case_types)]
+type Fn_find_get_current_sources =
     unsafe extern "C" fn(NDIlib_find_instance_t, *mut u32) -> *const NDIlib_source_t;
-#[allow(non_camel_case_types)] type Fn_find_wait_for_sources =
-    unsafe extern "C" fn(NDIlib_find_instance_t, u32) -> bool;
+#[allow(non_camel_case_types)]
+type Fn_find_wait_for_sources = unsafe extern "C" fn(NDIlib_find_instance_t, u32) -> bool;
 
-#[allow(non_camel_case_types)] type Fn_send_create =
-    unsafe extern "C" fn(*const NDIlib_send_create_t) -> NDIlib_send_instance_t;
-#[allow(non_camel_case_types)] type Fn_send_destroy =
-    unsafe extern "C" fn(NDIlib_send_instance_t);
-#[allow(non_camel_case_types)] type Fn_send_send_video_v2 =
+#[allow(non_camel_case_types)]
+type Fn_send_create = unsafe extern "C" fn(*const NDIlib_send_create_t) -> NDIlib_send_instance_t;
+#[allow(non_camel_case_types)]
+type Fn_send_destroy = unsafe extern "C" fn(NDIlib_send_instance_t);
+#[allow(non_camel_case_types)]
+type Fn_send_send_video_v2 =
     unsafe extern "C" fn(NDIlib_send_instance_t, *const NDIlib_video_frame_v2_t);
-#[allow(non_camel_case_types)] type Fn_send_get_no_connections =
-    unsafe extern "C" fn(NDIlib_send_instance_t, u32) -> c_int;
+#[allow(non_camel_case_types)]
+type Fn_send_get_no_connections = unsafe extern "C" fn(NDIlib_send_instance_t, u32) -> c_int;
 
-#[allow(non_camel_case_types)] type Fn_recv_create_v3 =
+#[allow(non_camel_case_types)]
+type Fn_recv_create_v3 =
     unsafe extern "C" fn(*const NDIlib_recv_create_v3_t) -> NDIlib_recv_instance_t;
-#[allow(non_camel_case_types)] type Fn_recv_destroy =
-    unsafe extern "C" fn(NDIlib_recv_instance_t);
-#[allow(non_camel_case_types)] type Fn_recv_capture_v3 =
-    unsafe extern "C" fn(
-        NDIlib_recv_instance_t,
-        *mut NDIlib_video_frame_v2_t,
-        *mut c_void, // audio frame — we pass null
-        *mut c_void, // metadata frame — we pass null
-        u32,         // timeout_ms
-    ) -> NDIlib_frame_type_e;
-#[allow(non_camel_case_types)] type Fn_recv_free_video_v2 =
+#[allow(non_camel_case_types)]
+type Fn_recv_destroy = unsafe extern "C" fn(NDIlib_recv_instance_t);
+#[allow(non_camel_case_types)]
+type Fn_recv_capture_v3 = unsafe extern "C" fn(
+    NDIlib_recv_instance_t,
+    *mut NDIlib_video_frame_v2_t,
+    *mut c_void, // audio frame — we pass null
+    *mut c_void, // metadata frame — we pass null
+    u32,         // timeout_ms
+) -> NDIlib_frame_type_e;
+#[allow(non_camel_case_types)]
+type Fn_recv_free_video_v2 =
     unsafe extern "C" fn(NDIlib_recv_instance_t, *const NDIlib_video_frame_v2_t);
 
 // ─── NdiLibrary ──────────────────────────────────────────────────────────────
@@ -298,7 +306,10 @@ static NDI_LIB: OnceLock<Result<NdiLibrary, String>> = OnceLock::new();
 /// The `&str` is shaped for direct user display — tooltip, status row,
 /// log line. Callers should avoid wrapping / re-formatting it.
 pub fn library() -> Result<&'static NdiLibrary, &'static str> {
-    NDI_LIB.get_or_init(load_library).as_ref().map_err(|s| s.as_str())
+    NDI_LIB
+        .get_or_init(load_library)
+        .as_ref()
+        .map_err(|s| s.as_str())
 }
 
 fn load_library() -> Result<NdiLibrary, String> {
@@ -354,26 +365,22 @@ impl NdiLibrary {
         let is_supported_cpu =
             unsafe { sym::<Fn_is_supported_cpu>(&lib, b"NDIlib_is_supported_CPU")? };
 
-        let find_create_v2 =
-            unsafe { sym::<Fn_find_create_v2>(&lib, b"NDIlib_find_create_v2")? };
+        let find_create_v2 = unsafe { sym::<Fn_find_create_v2>(&lib, b"NDIlib_find_create_v2")? };
         let find_destroy = unsafe { sym::<Fn_find_destroy>(&lib, b"NDIlib_find_destroy")? };
         let find_get_current_sources = unsafe {
             sym::<Fn_find_get_current_sources>(&lib, b"NDIlib_find_get_current_sources")?
         };
-        let find_wait_for_sources = unsafe {
-            sym::<Fn_find_wait_for_sources>(&lib, b"NDIlib_find_wait_for_sources")?
-        };
+        let find_wait_for_sources =
+            unsafe { sym::<Fn_find_wait_for_sources>(&lib, b"NDIlib_find_wait_for_sources")? };
 
         let send_create = unsafe { sym::<Fn_send_create>(&lib, b"NDIlib_send_create")? };
         let send_destroy = unsafe { sym::<Fn_send_destroy>(&lib, b"NDIlib_send_destroy")? };
         let send_send_video_v2 =
             unsafe { sym::<Fn_send_send_video_v2>(&lib, b"NDIlib_send_send_video_v2")? };
-        let send_get_no_connections = unsafe {
-            sym::<Fn_send_get_no_connections>(&lib, b"NDIlib_send_get_no_connections")?
-        };
+        let send_get_no_connections =
+            unsafe { sym::<Fn_send_get_no_connections>(&lib, b"NDIlib_send_get_no_connections")? };
 
-        let recv_create_v3 =
-            unsafe { sym::<Fn_recv_create_v3>(&lib, b"NDIlib_recv_create_v3")? };
+        let recv_create_v3 = unsafe { sym::<Fn_recv_create_v3>(&lib, b"NDIlib_recv_create_v3")? };
         let recv_destroy = unsafe { sym::<Fn_recv_destroy>(&lib, b"NDIlib_recv_destroy")? };
         let recv_capture_v3 =
             unsafe { sym::<Fn_recv_capture_v3>(&lib, b"NDIlib_recv_capture_v3")? };
@@ -491,7 +498,9 @@ impl NdiFinder {
     /// during the window, `false` on timeout. Not required before
     /// calling `sources()` — that one returns whatever's known.
     pub fn wait_for_sources(&self, timeout: Duration) -> bool {
-        let Ok(lib) = library() else { return false; };
+        let Ok(lib) = library() else {
+            return false;
+        };
         let ms = timeout.as_millis().min(u32::MAX as u128) as u32;
         unsafe { (lib.find_wait_for_sources)(self.raw, ms) }
     }
@@ -503,7 +512,9 @@ impl NdiFinder {
     /// array being replaced on the next call. Cheap — a handful of
     /// strdups per invocation.
     pub fn sources(&self) -> Vec<NdiSourceInfo> {
-        let Ok(lib) = library() else { return Vec::new(); };
+        let Ok(lib) = library() else {
+            return Vec::new();
+        };
         let mut count: u32 = 0;
         let ptr = unsafe { (lib.find_get_current_sources)(self.raw, &mut count) };
         if ptr.is_null() || count == 0 {
@@ -547,8 +558,7 @@ unsafe impl Send for NdiSender {}
 impl NdiSender {
     pub fn new(name: &str) -> Result<Self, String> {
         let lib = library()?;
-        let name_c =
-            CString::new(name).map_err(|_| "sender name contains NUL byte".to_string())?;
+        let name_c = CString::new(name).map_err(|_| "sender name contains NUL byte".to_string())?;
         let opts = NDIlib_send_create_t {
             p_ndi_name: name_c.as_ptr(),
             p_groups: ptr::null(),
@@ -564,7 +574,10 @@ impl NdiSender {
                 name
             ));
         }
-        Ok(Self { raw, name: name.to_string() })
+        Ok(Self {
+            raw,
+            name: name.to_string(),
+        })
     }
 
     pub fn name(&self) -> &str {
@@ -576,7 +589,9 @@ impl NdiSender {
     /// blocks up to that many ms waiting for a subscriber to appear.
     /// Used by `VideoOutNode`'s UI state indicator.
     pub fn connection_count(&self, timeout_ms: u32) -> i32 {
-        let Ok(lib) = library() else { return 0; };
+        let Ok(lib) = library() else {
+            return 0;
+        };
         unsafe { (lib.send_get_no_connections)(self.raw, timeout_ms) as i32 }
     }
 
@@ -696,8 +711,8 @@ impl NdiReceiver {
             .map_err(|_| "source name contains NUL".to_string())?;
         let addr_c = CString::new(source.address.as_str())
             .map_err(|_| "source address contains NUL".to_string())?;
-        let recv_name_c = CString::new(recv_name)
-            .map_err(|_| "recv name contains NUL".to_string())?;
+        let recv_name_c =
+            CString::new(recv_name).map_err(|_| "recv name contains NUL".to_string())?;
         let opts = NDIlib_recv_create_v3_t {
             source_to_connect_to: NDIlib_source_t {
                 p_ndi_name: name_c.as_ptr(),
@@ -908,7 +923,7 @@ mod tests {
         let mut bgra = vec![0u8; (W * H * 4) as usize];
         for px in bgra.chunks_exact_mut(4) {
             px[0] = 255; // B
-            px[1] = 0;   // G
+            px[1] = 0; // G
             px[2] = 255; // R (magenta: B=255, G=0, R=255)
             px[3] = 255;
         }
@@ -938,8 +953,7 @@ mod tests {
             }
         };
 
-        let recv = NdiReceiver::new(&info, "patchwork-loopback-recv")
-            .expect("NdiReceiver::new");
+        let recv = NdiReceiver::new(&info, "patchwork-loopback-recv").expect("NdiReceiver::new");
 
         // Capture one video frame. NDI typically delivers the first
         // within 0.5–2 s on localhost.

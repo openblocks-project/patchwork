@@ -1,24 +1,28 @@
-use crate::graph::{PortDef, PortKind, PortValue, Graph};
+use crate::graph::{Graph, PortDef, PortKind, PortValue};
 use crate::node_trait::{NodeBehavior, RenderContext};
-use serde::{Serialize, Deserialize};
-use eframe::egui;
 use crate::nodes::ScrollAreaExt;
+use eframe::egui;
+use serde::{Deserialize, Serialize};
 use std::process::Stdio;
-use std::sync::{Arc, Mutex};
 use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
 
 // ── Runtime state (non-Clone, lives in egui temp data) ───────────────────────
 
 struct TerminalRuntime {
-    sender:     mpsc::Sender<(String, String)>,
-    receiver:   mpsc::Receiver<(String, String)>,
+    sender: mpsc::Sender<(String, String)>,
+    receiver: mpsc::Receiver<(String, String)>,
     is_running: bool,
 }
 
 impl Default for TerminalRuntime {
     fn default() -> Self {
         let (tx, rx) = mpsc::channel();
-        Self { sender: tx, receiver: rx, is_running: false }
+        Self {
+            sender: tx,
+            receiver: rx,
+            is_running: false,
+        }
     }
 }
 
@@ -32,7 +36,9 @@ fn run_command(cmd: String, working_dir: String, tx: mpsc::Sender<(String, Strin
         let (sh, flag) = ("sh", "-c");
 
         let mut builder = std::process::Command::new(sh);
-        builder.arg(flag).arg(&cmd)
+        builder
+            .arg(flag)
+            .arg(&cmd)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         if !working_dir.is_empty() {
@@ -44,7 +50,9 @@ fn run_command(cmd: String, working_dir: String, tx: mpsc::Sender<(String, Strin
                 let mut out = String::from_utf8_lossy(&o.stdout).into_owned();
                 let err = String::from_utf8_lossy(&o.stderr);
                 if !err.is_empty() {
-                    if !out.is_empty() { out.push('\n'); }
+                    if !out.is_empty() {
+                        out.push('\n');
+                    }
                     out.push_str(&err);
                 }
                 out.trim_end().to_string()
@@ -62,31 +70,36 @@ fn run_command(cmd: String, working_dir: String, tx: mpsc::Sender<(String, Strin
 pub struct TerminalNode {
     // ── Persisted ──
     #[serde(default)]
-    pub history:     Vec<(String, String)>,  // (command, stdout+stderr)
+    pub history: Vec<(String, String)>, // (command, stdout+stderr)
     #[serde(default)]
     pub working_dir: String,
     #[serde(default)]
     pub last_output: String,
 
     // ── Runtime only ──
-    #[serde(skip)] pub input_buf:          String,
-    #[serde(skip)] pub last_send_trigger:  f32,
-    #[serde(skip)] pub done_pulse:         bool,
-    #[serde(skip)] pub scroll_to_bottom:   bool,
-    #[serde(skip)] pub queued_injection:   Option<String>,
+    #[serde(skip)]
+    pub input_buf: String,
+    #[serde(skip)]
+    pub last_send_trigger: f32,
+    #[serde(skip)]
+    pub done_pulse: bool,
+    #[serde(skip)]
+    pub scroll_to_bottom: bool,
+    #[serde(skip)]
+    pub queued_injection: Option<String>,
 }
 
 impl Default for TerminalNode {
     fn default() -> Self {
         Self {
-            history:            Vec::new(),
-            working_dir:        String::new(),
-            last_output:        String::new(),
-            input_buf:          String::new(),
-            last_send_trigger:  0.0,
-            done_pulse:         false,
-            scroll_to_bottom:   false,
-            queued_injection:   None,
+            history: Vec::new(),
+            working_dir: String::new(),
+            last_output: String::new(),
+            input_buf: String::new(),
+            last_send_trigger: 0.0,
+            done_pulse: false,
+            scroll_to_bottom: false,
+            queued_injection: None,
         }
     }
 }
@@ -94,15 +107,25 @@ impl Default for TerminalNode {
 // ── NodeBehavior ──────────────────────────────────────────────────────────────
 
 impl NodeBehavior for TerminalNode {
-    fn title(&self)      -> &str        { "Terminal" }
-    fn type_tag(&self)   -> &str        { "terminal" }
-    fn color_hint(&self) -> [u8; 3]     { [30, 160, 80] }
-    fn inline_ports(&self) -> bool      { true }
-    fn min_width(&self)  -> Option<f32> { Some(300.0) }
+    fn title(&self) -> &str {
+        "Terminal"
+    }
+    fn type_tag(&self) -> &str {
+        "terminal"
+    }
+    fn color_hint(&self) -> [u8; 3] {
+        [30, 160, 80]
+    }
+    fn inline_ports(&self) -> bool {
+        true
+    }
+    fn min_width(&self) -> Option<f32> {
+        Some(300.0)
+    }
 
     fn inputs(&self) -> Vec<PortDef> {
         vec![
-            PortDef::new("Cmd",  PortKind::Text),
+            PortDef::new("Cmd", PortKind::Text),
             PortDef::new("Send", PortKind::Trigger),
         ]
     }
@@ -110,7 +133,7 @@ impl NodeBehavior for TerminalNode {
     fn outputs(&self) -> Vec<PortDef> {
         vec![
             PortDef::new("Output", PortKind::Text),
-            PortDef::new("Done",   PortKind::Trigger),
+            PortDef::new("Done", PortKind::Trigger),
         ]
     }
 
@@ -146,7 +169,8 @@ impl NodeBehavior for TerminalNode {
 
     fn load_state(&mut self, state: &serde_json::Value) {
         if let Some(arr) = state.get("history").and_then(|v| v.as_array()) {
-            self.history = arr.iter()
+            self.history = arr
+                .iter()
                 .filter_map(|v| {
                     let cmd = v.get(0).and_then(|s| s.as_str())?.to_string();
                     let out = v.get(1).and_then(|s| s.as_str())?.to_string();
@@ -168,14 +192,15 @@ impl NodeBehavior for TerminalNode {
     fn render_with_context(&mut self, ui: &mut egui::Ui, ctx: &mut RenderContext) {
         let dim = ui.visuals().widgets.noninteractive.fg_stroke.color;
         let green = egui::Color32::from_rgb(100, 210, 120);
-        let blue  = egui::Color32::from_rgb(80, 170, 255);
+        let blue = egui::Color32::from_rgb(80, 170, 255);
 
         // ── Acquire / initialise runtime state ────────────────────────────
         let rt_id = egui::Id::new(("terminal_rt", ctx.node_id));
         let runtime: Arc<Mutex<TerminalRuntime>> = ui.ctx().data_mut(|d| {
             d.get_temp_mut_or_insert_with(rt_id, || {
                 Arc::new(Mutex::new(TerminalRuntime::default()))
-            }).clone()
+            })
+            .clone()
         });
 
         // ── Poll channel for completed commands ───────────────────────────
@@ -205,12 +230,27 @@ impl NodeBehavior for TerminalNode {
         }
 
         // ── Input ports (inline) ──────────────────────────────────────────
-        let cmd_wired  = ctx.connections.iter().any(|c| c.to_node == ctx.node_id && c.to_port == 0);
-        let send_wired = ctx.connections.iter().any(|c| c.to_node == ctx.node_id && c.to_port == 1);
+        let cmd_wired = ctx
+            .connections
+            .iter()
+            .any(|c| c.to_node == ctx.node_id && c.to_port == 0);
+        let send_wired = ctx
+            .connections
+            .iter()
+            .any(|c| c.to_node == ctx.node_id && c.to_port == 1);
 
         ui.horizontal(|ui| {
-            crate::nodes::inline_port_circle(ui, ctx.node_id, 0, true, ctx.connections,
-                ctx.port_positions, ctx.dragging_from, ctx.pending_disconnects, PortKind::Text);
+            crate::nodes::inline_port_circle(
+                ui,
+                ctx.node_id,
+                0,
+                true,
+                ctx.connections,
+                ctx.port_positions,
+                ctx.dragging_from,
+                ctx.pending_disconnects,
+                PortKind::Text,
+            );
             ui.label(egui::RichText::new("Cmd").small().strong());
             if cmd_wired {
                 let v = Graph::static_input_value(ctx.connections, ctx.values, ctx.node_id, 0);
@@ -224,13 +264,31 @@ impl NodeBehavior for TerminalNode {
         });
 
         ui.horizontal(|ui| {
-            crate::nodes::inline_port_circle(ui, ctx.node_id, 1, true, ctx.connections,
-                ctx.port_positions, ctx.dragging_from, ctx.pending_disconnects, PortKind::Trigger);
+            crate::nodes::inline_port_circle(
+                ui,
+                ctx.node_id,
+                1,
+                true,
+                ctx.connections,
+                ctx.port_positions,
+                ctx.dragging_from,
+                ctx.pending_disconnects,
+                PortKind::Trigger,
+            );
             ui.label(egui::RichText::new("Send").small().strong());
             if send_wired {
-                let v = Graph::static_input_value(ctx.connections, ctx.values, ctx.node_id, 1).as_float();
-                let col = if v > 0.5 { egui::Color32::from_rgb(255, 160, 40) } else { dim };
-                ui.label(egui::RichText::new(if v > 0.5 { "▶ high" } else { "low" }).small().color(col));
+                let v = Graph::static_input_value(ctx.connections, ctx.values, ctx.node_id, 1)
+                    .as_float();
+                let col = if v > 0.5 {
+                    egui::Color32::from_rgb(255, 160, 40)
+                } else {
+                    dim
+                };
+                ui.label(
+                    egui::RichText::new(if v > 0.5 { "▶ high" } else { "low" })
+                        .small()
+                        .color(col),
+                );
             }
         });
 
@@ -239,10 +297,12 @@ impl NodeBehavior for TerminalNode {
         // ── Working directory ─────────────────────────────────────────────
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("Dir:").small().color(dim));
-            ui.add(egui::TextEdit::singleline(&mut self.working_dir)
-                .hint_text("(current dir)")
-                .font(egui::TextStyle::Monospace)
-                .desired_width(ui.available_width()));
+            ui.add(
+                egui::TextEdit::singleline(&mut self.working_dir)
+                    .hint_text("(current dir)")
+                    .font(egui::TextStyle::Monospace)
+                    .desired_width(ui.available_width()),
+            );
         });
 
         ui.add_space(2.0);
@@ -259,32 +319,47 @@ impl NodeBehavior for TerminalNode {
         }
 
         let bg = ui.visuals().extreme_bg_color;
-        egui::Frame::new().fill(bg).corner_radius(4.0).show(ui, |ui| {
-            scroll.show_pannable(ui, |ui| {
-                ui.set_min_width(280.0);
-                if self.history.is_empty() {
-                    ui.add_space(6.0);
-                    ui.label(egui::RichText::new("No output yet.").small().italics().color(dim));
-                    ui.add_space(6.0);
-                } else {
-                    ui.add_space(4.0);
-                    for (cmd, output) in &self.history {
-                        ui.label(egui::RichText::new(format!("$ {}", cmd))
-                            .monospace().size(11.0).color(green));
-                        if !output.is_empty() {
-                            ui.label(egui::RichText::new(output).monospace().size(11.0));
+        egui::Frame::new()
+            .fill(bg)
+            .corner_radius(4.0)
+            .show(ui, |ui| {
+                scroll.show_pannable(ui, |ui| {
+                    ui.set_min_width(280.0);
+                    if self.history.is_empty() {
+                        ui.add_space(6.0);
+                        ui.label(
+                            egui::RichText::new("No output yet.")
+                                .small()
+                                .italics()
+                                .color(dim),
+                        );
+                        ui.add_space(6.0);
+                    } else {
+                        ui.add_space(4.0);
+                        for (cmd, output) in &self.history {
+                            ui.label(
+                                egui::RichText::new(format!("$ {}", cmd))
+                                    .monospace()
+                                    .size(11.0)
+                                    .color(green),
+                            );
+                            if !output.is_empty() {
+                                ui.label(egui::RichText::new(output).monospace().size(11.0));
+                            }
+                            ui.add_space(2.0);
                         }
-                        ui.add_space(2.0);
                     }
-                }
-                if is_running {
-                    ui.add_space(2.0);
-                    ui.label(egui::RichText::new("⏳ Running…")
-                        .small().color(egui::Color32::from_rgb(255, 180, 60)));
-                }
-                ui.add_space(4.0);
+                    if is_running {
+                        ui.add_space(2.0);
+                        ui.label(
+                            egui::RichText::new("⏳ Running…")
+                                .small()
+                                .color(egui::Color32::from_rgb(255, 180, 60)),
+                        );
+                    }
+                    ui.add_space(4.0);
+                });
             });
-        });
 
         self.scroll_to_bottom = false;
 
@@ -307,7 +382,9 @@ impl NodeBehavior for TerminalNode {
                 run_command(cmd, self.working_dir.clone(), rt.sender.clone());
             }
             // Re-focus the input after Enter so user can keep typing
-            if enter { resp.request_focus(); }
+            if enter {
+                resp.request_focus();
+            }
         });
 
         // ── Controls row ──────────────────────────────────────────────────
@@ -316,11 +393,21 @@ impl NodeBehavior for TerminalNode {
                 self.history.clear();
                 self.last_output.clear();
             }
-            ui.label(egui::RichText::new(format!("{} cmd{}", self.history.len(),
-                if self.history.len() == 1 { "" } else { "s" })).small().color(dim));
+            ui.label(
+                egui::RichText::new(format!(
+                    "{} cmd{}",
+                    self.history.len(),
+                    if self.history.len() == 1 { "" } else { "s" }
+                ))
+                .small()
+                .color(dim),
+            );
             if is_running {
-                ui.label(egui::RichText::new("● running")
-                    .small().color(egui::Color32::from_rgb(255, 180, 60)));
+                ui.label(
+                    egui::RichText::new("● running")
+                        .small()
+                        .color(egui::Color32::from_rgb(255, 180, 60)),
+                );
             }
         });
 
@@ -332,17 +419,36 @@ impl NodeBehavior for TerminalNode {
         } else {
             crate::nodes::truncate_chars(&self.last_output, 18)
         };
-        crate::nodes::output_port_row(ui, "Output", &out_preview,
-            ctx.node_id, 0, ctx.port_positions, ctx.dragging_from,
-            ctx.connections, ctx.pending_disconnects, PortKind::Text);
+        crate::nodes::output_port_row(
+            ui,
+            "Output",
+            &out_preview,
+            ctx.node_id,
+            0,
+            ctx.port_positions,
+            ctx.dragging_from,
+            ctx.connections,
+            ctx.pending_disconnects,
+            PortKind::Text,
+        );
 
-        crate::nodes::output_port_row(ui, "Done",
+        crate::nodes::output_port_row(
+            ui,
+            "Done",
             if self.done_pulse { "1" } else { "0" },
-            ctx.node_id, 1, ctx.port_positions, ctx.dragging_from,
-            ctx.connections, ctx.pending_disconnects, PortKind::Trigger);
+            ctx.node_id,
+            1,
+            ctx.port_positions,
+            ctx.dragging_from,
+            ctx.connections,
+            ctx.pending_disconnects,
+            PortKind::Trigger,
+        );
 
         // Keep repainting while a command is running
-        if is_running { ui.ctx().request_repaint(); }
+        if is_running {
+            ui.ctx().request_repaint();
+        }
     }
 }
 

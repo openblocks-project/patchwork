@@ -1,9 +1,8 @@
 use crate::graph::*;
-use eframe::egui;
 use crate::nodes::ScrollAreaExt;
+use eframe::egui;
 use std::collections::HashMap;
 use std::path::PathBuf;
-
 
 /// Build status from background compilation thread
 #[derive(Clone, Debug)]
@@ -23,8 +22,14 @@ pub fn render(
     _connections: &[Connection],
 ) {
     let (input_names, output_names, code, error, last_values) = match node_type {
-        NodeType::RustPlugin { input_names, output_names, code, error, last_values, .. } =>
-            (input_names, output_names, code, error, last_values),
+        NodeType::RustPlugin {
+            input_names,
+            output_names,
+            code,
+            error,
+            last_values,
+            ..
+        } => (input_names, output_names, code, error, last_values),
         _ => return,
     };
 
@@ -38,11 +43,15 @@ pub fn render(
     let mut rm = None;
     for i in 0..input_names.len() {
         ui.horizontal(|ui| {
-            if ui.small_button("-").clicked() { rm = Some(i); }
+            if ui.small_button("-").clicked() {
+                rm = Some(i);
+            }
             ui.add(egui::TextEdit::singleline(&mut input_names[i]).desired_width(80.0));
         });
     }
-    if let Some(i) = rm { input_names.remove(i); }
+    if let Some(i) = rm {
+        input_names.remove(i);
+    }
 
     ui.separator();
     ui.horizontal(|ui| {
@@ -55,22 +64,34 @@ pub fn render(
     let mut rm = None;
     for i in 0..output_names.len() {
         ui.horizontal(|ui| {
-            if ui.small_button("-").clicked() { rm = Some(i); }
+            if ui.small_button("-").clicked() {
+                rm = Some(i);
+            }
             ui.add(egui::TextEdit::singleline(&mut output_names[i]).desired_width(80.0));
             if let Some(v) = last_values.get(i) {
-                ui.label(egui::RichText::new(format!("= {:.3}", v)).small().color(egui::Color32::from_rgb(120, 200, 120)));
+                ui.label(
+                    egui::RichText::new(format!("= {:.3}", v))
+                        .small()
+                        .color(egui::Color32::from_rgb(120, 200, 120)),
+                );
             }
         });
     }
     if let Some(i) = rm {
         output_names.remove(i);
-        if i < last_values.len() { last_values.remove(i); }
+        if i < last_values.len() {
+            last_values.remove(i);
+        }
     }
 
     // ── Code editor ──
     ui.separator();
     ui.label(egui::RichText::new("Rust Code").small().strong());
-    ui.label(egui::RichText::new("Write a process() function body. inputs[] → outputs[]").small().color(egui::Color32::GRAY));
+    ui.label(
+        egui::RichText::new("Write a process() function body. inputs[] → outputs[]")
+            .small()
+            .color(egui::Color32::GRAY),
+    );
 
     // Show template hint
     if code.is_empty() {
@@ -85,18 +106,23 @@ pub fn render(
                 egui::TextEdit::multiline(code)
                     .desired_rows(6)
                     .desired_width(f32::INFINITY)
-                    .font(egui::TextStyle::Monospace)
+                    .font(egui::TextStyle::Monospace),
             );
         });
 
     // Open in external editor
-    if ui.small_button(egui::RichText::new("Open in editor").small()).clicked() {
+    if ui
+        .small_button(egui::RichText::new("Open in editor").small())
+        .clicked()
+    {
         let tmp = std::env::temp_dir().join(format!("patchwork_rust_{}.rs", node_id));
         if std::fs::write(&tmp, code.as_str()).is_ok() {
             #[cfg(target_os = "macos")]
             let _ = std::process::Command::new("open").arg(&tmp).spawn();
             #[cfg(target_os = "windows")]
-            let _ = std::process::Command::new("cmd").args(["/C", "start", "", &tmp.display().to_string()]).spawn();
+            let _ = std::process::Command::new("cmd")
+                .args(["/C", "start", "", &tmp.display().to_string()])
+                .spawn();
             #[cfg(target_os = "linux")]
             let _ = std::process::Command::new("xdg-open").arg(&tmp).spawn();
         }
@@ -109,19 +135,23 @@ pub fn render(
     // clicks Build on code that isn't yet in `~/.patchwork/trusted_plugins.json`.
     // Reset on Cancel or after the user grants trust.
     let pending_trust_id = egui::Id::new(("rust_pending_trust", node_id));
-    let status: BuildStatus = ui.ctx().data_mut(|d| d.get_temp::<BuildStatus>(build_status_id).unwrap_or(BuildStatus::Idle));
+    let status: BuildStatus = ui.ctx().data_mut(|d| {
+        d.get_temp::<BuildStatus>(build_status_id)
+            .unwrap_or(BuildStatus::Idle)
+    });
 
     // Closure shared by the "trusted → build directly" and "Trust & Build (after
     // confirmation)" paths so the background-build logic isn't duplicated.
-    let start_build = |ctx: egui::Context, code_owned: String, ins: Vec<String>, outs: Vec<String>| {
+    let start_build = |ctx: egui::Context,
+                       code_owned: String,
+                       ins: Vec<String>,
+                       outs: Vec<String>| {
         ctx.data_mut(|d| d.insert_temp(build_status_id, BuildStatus::Building));
         std::thread::spawn(move || {
             let result = build_rust_plugin(&code_owned, &ins, &outs, node_id);
-            ctx.data_mut(|d| {
-                match result {
-                    Ok(dylib_path) => d.insert_temp(build_status_id, BuildStatus::Success(dylib_path)),
-                    Err(e) => d.insert_temp(build_status_id, BuildStatus::Error(e)),
-                }
+            ctx.data_mut(|d| match result {
+                Ok(dylib_path) => d.insert_temp(build_status_id, BuildStatus::Success(dylib_path)),
+                Err(e) => d.insert_temp(build_status_id, BuildStatus::Error(e)),
             });
             ctx.request_repaint();
         });
@@ -129,7 +159,10 @@ pub fn render(
 
     ui.horizontal(|ui| {
         let building = matches!(status, BuildStatus::Building);
-        if ui.add_enabled(!building, egui::Button::new("🔨 Build")).clicked() {
+        if ui
+            .add_enabled(!building, egui::Button::new("🔨 Build"))
+            .clicked()
+        {
             // P0-1: never auto-compile arbitrary Rust source. The threat is a
             // poisoned `project.json` from another user with embedded code —
             // one click on Build would otherwise compile + libloading-load it
@@ -137,9 +170,15 @@ pub fn render(
             // through, defer to a confirmation banner.
             let sha = crate::plugin_trust::source_hash(code);
             if crate::plugin_trust::is_trusted(&sha) {
-                start_build(ui.ctx().clone(), code.clone(), input_names.clone(), output_names.clone());
+                start_build(
+                    ui.ctx().clone(),
+                    code.clone(),
+                    input_names.clone(),
+                    output_names.clone(),
+                );
             } else {
-                ui.ctx().data_mut(|d| d.insert_temp::<String>(pending_trust_id, sha));
+                ui.ctx()
+                    .data_mut(|d| d.insert_temp::<String>(pending_trust_id, sha));
             }
         }
 
@@ -147,20 +186,37 @@ pub fn render(
         // the current source is already in their allow-list.
         let current_sha = crate::plugin_trust::source_hash(code);
         if crate::plugin_trust::is_trusted(&current_sha) {
-            ui.label(egui::RichText::new("🔒 trusted")
-                .small()
-                .color(egui::Color32::from_rgb(120, 180, 120)));
+            ui.label(
+                egui::RichText::new("🔒 trusted")
+                    .small()
+                    .color(egui::Color32::from_rgb(120, 180, 120)),
+            );
         } else if !code.trim().is_empty() {
-            ui.label(egui::RichText::new("⚠ untrusted")
-                .small()
-                .color(egui::Color32::from_rgb(200, 160, 80)));
+            ui.label(
+                egui::RichText::new("⚠ untrusted")
+                    .small()
+                    .color(egui::Color32::from_rgb(200, 160, 80)),
+            );
         }
 
         match &status {
-            BuildStatus::Idle => { ui.label(egui::RichText::new("Not built").small().color(egui::Color32::GRAY)); }
-            BuildStatus::Building => { ui.spinner(); ui.label("Compiling..."); }
-            BuildStatus::Success(_) => { ui.colored_label(egui::Color32::from_rgb(80, 200, 80), "✅ Built"); }
-            BuildStatus::Error(_) => { ui.colored_label(egui::Color32::from_rgb(255, 100, 100), "❌ Failed"); }
+            BuildStatus::Idle => {
+                ui.label(
+                    egui::RichText::new("Not built")
+                        .small()
+                        .color(egui::Color32::GRAY),
+                );
+            }
+            BuildStatus::Building => {
+                ui.spinner();
+                ui.label("Compiling...");
+            }
+            BuildStatus::Success(_) => {
+                ui.colored_label(egui::Color32::from_rgb(80, 200, 80), "✅ Built");
+            }
+            BuildStatus::Error(_) => {
+                ui.colored_label(egui::Color32::from_rgb(255, 100, 100), "❌ Failed");
+            }
         }
     });
 
@@ -168,33 +224,56 @@ pub fn render(
     // whose SHA256 isn't in `~/.patchwork/trusted_plugins.json`. Prevents the
     // "open friend's project → click Build → arbitrary RCE" path: nothing
     // compiles until the user explicitly accepts THIS code's hash.
-    let pending_sha: Option<String> = ui.ctx().data_mut(|d| d.get_temp::<String>(pending_trust_id));
+    let pending_sha: Option<String> = ui
+        .ctx()
+        .data_mut(|d| d.get_temp::<String>(pending_trust_id));
     if let Some(sha) = pending_sha {
         ui.add_space(4.0);
         egui::Frame::group(ui.style())
-            .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(220, 160, 80)))
+            .stroke(egui::Stroke::new(
+                1.0,
+                egui::Color32::from_rgb(220, 160, 80),
+            ))
             .show(ui, |ui| {
-                ui.label(egui::RichText::new("⚠ Confirm: trust and build this code")
-                    .strong()
-                    .color(egui::Color32::from_rgb(220, 160, 80)));
-                ui.label(egui::RichText::new(
-                    "Building runs `cargo` and loads the compiled dylib in-process. \
-                     Only continue if you wrote this code or trust its source.")
-                    .small());
-                ui.label(egui::RichText::new(format!(
-                    "SHA256: {}…  (full hash stored in ~/.patchwork/trusted_plugins.json)",
-                    crate::plugin_trust::short_hash(&sha)
-                ))
-                    .small().monospace().color(egui::Color32::GRAY));
+                ui.label(
+                    egui::RichText::new("⚠ Confirm: trust and build this code")
+                        .strong()
+                        .color(egui::Color32::from_rgb(220, 160, 80)),
+                );
+                ui.label(
+                    egui::RichText::new(
+                        "Building runs `cargo` and loads the compiled dylib in-process. \
+                     Only continue if you wrote this code or trust its source.",
+                    )
+                    .small(),
+                );
+                ui.label(
+                    egui::RichText::new(format!(
+                        "SHA256: {}…  (full hash stored in ~/.patchwork/trusted_plugins.json)",
+                        crate::plugin_trust::short_hash(&sha)
+                    ))
+                    .small()
+                    .monospace()
+                    .color(egui::Color32::GRAY),
+                );
                 ui.horizontal(|ui| {
-                    if ui.button(egui::RichText::new("Trust & Build")
-                        .color(egui::Color32::from_rgb(80, 200, 80))).clicked()
+                    if ui
+                        .button(
+                            egui::RichText::new("Trust & Build")
+                                .color(egui::Color32::from_rgb(80, 200, 80)),
+                        )
+                        .clicked()
                     {
                         crate::plugin_trust::add_trust(
                             sha.clone(),
                             format!("RustPlugin node #{}", node_id),
                         );
-                        start_build(ui.ctx().clone(), code.clone(), input_names.clone(), output_names.clone());
+                        start_build(
+                            ui.ctx().clone(),
+                            code.clone(),
+                            input_names.clone(),
+                            output_names.clone(),
+                        );
                         ui.ctx().data_mut(|d| d.remove::<String>(pending_trust_id));
                     }
                     if ui.button("Cancel").clicked() {
@@ -206,29 +285,42 @@ pub fn render(
 
     // Show build error
     if let BuildStatus::Error(e) = &status {
-        egui::ScrollArea::vertical().max_height(80.0).show_pannable(ui, |ui| {
-            ui.colored_label(egui::Color32::from_rgb(255, 100, 100),
-                egui::RichText::new(e).small().monospace());
-        });
+        egui::ScrollArea::vertical()
+            .max_height(80.0)
+            .show_pannable(ui, |ui| {
+                ui.colored_label(
+                    egui::Color32::from_rgb(255, 100, 100),
+                    egui::RichText::new(e).small().monospace(),
+                );
+            });
     }
 
     // Show error from runtime
     if !error.is_empty() {
-        ui.colored_label(egui::Color32::from_rgb(255, 180, 80), egui::RichText::new(&*error).small());
+        ui.colored_label(
+            egui::Color32::from_rgb(255, 180, 80),
+            egui::RichText::new(&*error).small(),
+        );
     }
 
     // ── Load/Save ──
     ui.separator();
     ui.horizontal(|ui| {
         if ui.small_button("Load...").clicked() {
-            if let Some(path) = rfd::FileDialog::new().add_filter("Rust", &["rs"]).pick_file() {
+            if let Some(path) = rfd::FileDialog::new()
+                .add_filter("Rust", &["rs"])
+                .pick_file()
+            {
                 if let Ok(content) = std::fs::read_to_string(&path) {
                     *code = content;
                 }
             }
         }
         if ui.small_button("Save...").clicked() {
-            if let Some(path) = rfd::FileDialog::new().add_filter("Rust", &["rs"]).save_file() {
+            if let Some(path) = rfd::FileDialog::new()
+                .add_filter("Rust", &["rs"])
+                .save_file()
+            {
                 let full = generate_full_source(code, input_names, output_names);
                 let _ = std::fs::write(&path, full);
             }
@@ -237,8 +329,13 @@ pub fn render(
 }
 
 /// Generate the full Rust library source for compilation
-fn generate_full_source(user_code: &str, _input_names: &[String], _output_names: &[String]) -> String {
-    format!(r#"
+fn generate_full_source(
+    user_code: &str,
+    _input_names: &[String],
+    _output_names: &[String],
+) -> String {
+    format!(
+        r#"
 #[no_mangle]
 pub extern "C" fn process(inputs_ptr: *const f64, inputs_len: usize, outputs_ptr: *mut f64, outputs_len: usize) {{
     let inputs: &[f64] = unsafe {{ std::slice::from_raw_parts(inputs_ptr, inputs_len) }};
@@ -252,11 +349,18 @@ pub extern "C" fn process(inputs_ptr: *const f64, inputs_len: usize, outputs_ptr
         }}
     }}
 }}
-"#, user_code = user_code)
+"#,
+        user_code = user_code
+    )
 }
 
 /// Build the plugin as a .dylib in a temp directory
-fn build_rust_plugin(code: &str, input_names: &[String], output_names: &[String], node_id: NodeId) -> Result<PathBuf, String> {
+fn build_rust_plugin(
+    code: &str,
+    input_names: &[String],
+    output_names: &[String],
+    node_id: NodeId,
+) -> Result<PathBuf, String> {
     let plugin_dir = std::env::temp_dir().join(format!("patchwork_plugin_{}", node_id));
     let src_dir = plugin_dir.join("src");
     std::fs::create_dir_all(&src_dir).map_err(|e| format!("mkdir: {}", e))?;
@@ -270,7 +374,8 @@ edition = "2021"
 [lib]
 crate-type = ["cdylib"]
 "#;
-    std::fs::write(plugin_dir.join("Cargo.toml"), cargo_toml).map_err(|e| format!("write Cargo.toml: {}", e))?;
+    std::fs::write(plugin_dir.join("Cargo.toml"), cargo_toml)
+        .map_err(|e| format!("write Cargo.toml: {}", e))?;
 
     // Write lib.rs
     let source = generate_full_source(code, input_names, output_names);
@@ -286,7 +391,8 @@ crate-type = ["cdylib"]
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         // Extract just the error lines, not the full cargo output
-        let errors: Vec<&str> = stderr.lines()
+        let errors: Vec<&str> = stderr
+            .lines()
             .filter(|l| l.contains("error") || l.contains("warning") || l.starts_with("  "))
             .take(20)
             .collect();
@@ -322,19 +428,28 @@ pub fn evaluate(
     ctx_data: &egui::Context,
 ) -> Vec<(usize, PortValue)> {
     let (output_names, last_values, error) = match node_type {
-        NodeType::RustPlugin { output_names, last_values, error, .. } =>
-            (output_names, last_values, error),
+        NodeType::RustPlugin {
+            output_names,
+            last_values,
+            error,
+            ..
+        } => (output_names, last_values, error),
         _ => return vec![],
     };
 
     let build_status_id = egui::Id::new(("rust_build_status", node_id));
-    let status: BuildStatus = ctx_data.data_mut(|d| d.get_temp::<BuildStatus>(build_status_id).unwrap_or(BuildStatus::Idle));
+    let status: BuildStatus = ctx_data.data_mut(|d| {
+        d.get_temp::<BuildStatus>(build_status_id)
+            .unwrap_or(BuildStatus::Idle)
+    });
 
     let dylib_path = match &status {
         BuildStatus::Success(p) => p.clone(),
         _ => {
             // Output last known values
-            return last_values.iter().enumerate()
+            return last_values
+                .iter()
+                .enumerate()
                 .map(|(i, v)| (i, PortValue::Float(*v as f32)))
                 .collect();
         }
@@ -351,7 +466,9 @@ pub fn evaluate(
     unsafe {
         match libloading::Library::new(&dylib_path) {
             Ok(lib) => {
-                match lib.get::<unsafe extern "C" fn(*const f64, usize, *mut f64, usize)>(b"process") {
+                match lib
+                    .get::<unsafe extern "C" fn(*const f64, usize, *mut f64, usize)>(b"process")
+                {
                     Ok(process_fn) => {
                         process_fn(
                             input_f64.as_ptr(),
@@ -380,7 +497,9 @@ pub fn evaluate(
         }
     }
 
-    output_f64.iter().enumerate()
+    output_f64
+        .iter()
+        .enumerate()
         .map(|(i, v)| (i, PortValue::Float(*v as f32)))
         .collect()
 }

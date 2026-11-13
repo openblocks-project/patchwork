@@ -17,55 +17,83 @@
 use crate::graph::{PortDef, PortKind, PortValue};
 use crate::node_trait::{NodeBehavior, RenderContext};
 use crate::nodes::ai_shared::{
-    build_custom_request, list_config_names, load_config, models_for, provider_key_hint,
-    provider_label, resolve_key, save_config, ConfigBundle, ConfigPayload,
+    ConfigBundle, ConfigPayload, build_custom_request, list_config_names, load_config, models_for,
+    provider_key_hint, provider_label, resolve_key, save_config,
 };
 use crate::settings::ProviderKeys;
 use eframe::egui;
 use serde::{Deserialize, Serialize};
 
-fn default_profile() -> String { "default".into() }
-fn default_anthropic_text_model() -> String { "claude-sonnet-4-20250514".into() }
-fn default_openai_image_model() -> String { "dall-e-3".into() }
+fn default_profile() -> String {
+    "default".into()
+}
+fn default_anthropic_text_model() -> String {
+    "claude-sonnet-4-20250514".into()
+}
+fn default_openai_image_model() -> String {
+    "dall-e-3".into()
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AiConfigNode {
-    #[serde(default)] pub label: String,
-    #[serde(default = "default_profile")] pub profile: String,
+    #[serde(default)]
+    pub label: String,
+    #[serde(default = "default_profile")]
+    pub profile: String,
 
-    #[serde(default = "default_anthropic_text_model_provider")] pub text_provider: String,
-    #[serde(default = "default_anthropic_text_model")] pub text_model: String,
+    #[serde(default = "default_anthropic_text_model_provider")]
+    pub text_provider: String,
+    #[serde(default = "default_anthropic_text_model")]
+    pub text_model: String,
 
-    #[serde(default = "default_openai_image_provider")] pub image_provider: String,
-    #[serde(default = "default_openai_image_model")] pub image_model: String,
+    #[serde(default = "default_openai_image_provider")]
+    pub image_provider: String,
+    #[serde(default = "default_openai_image_model")]
+    pub image_model: String,
 
-    #[serde(default = "default_anthropic_text_model_provider")] pub code_provider: String,
-    #[serde(default = "default_anthropic_text_model")] pub code_model: String,
+    #[serde(default = "default_anthropic_text_model_provider")]
+    pub code_provider: String,
+    #[serde(default = "default_anthropic_text_model")]
+    pub code_model: String,
 
     // Custom endpoint details (used when any of the three providers is "custom").
-    #[serde(default)] pub custom_base_url: String,
-    #[serde(default)] pub custom_auth_header: String,
-    #[serde(default)] pub custom_auth_format: String,
+    #[serde(default)]
+    pub custom_base_url: String,
+    #[serde(default)]
+    pub custom_auth_header: String,
+    #[serde(default)]
+    pub custom_auth_format: String,
 
     /// Cached keys for the active profile. NEVER serialized — populated
     /// at load / UI-render time from `~/.patchwork/settings.json`.
-    #[serde(skip)] cached_keys: ProviderKeys,
+    #[serde(skip)]
+    cached_keys: ProviderKeys,
     /// Which providers are currently covered by env-var fallback (UI hint).
-    #[serde(skip)] env_fallback: Vec<String>,
+    #[serde(skip)]
+    env_fallback: Vec<String>,
     /// Track pending key edits in the UI before Save.
-    #[serde(skip)] editing_keys: ProviderKeys,
+    #[serde(skip)]
+    editing_keys: ProviderKeys,
     /// Dirty flag for the Save button.
-    #[serde(skip)] dirty: bool,
+    #[serde(skip)]
+    dirty: bool,
     /// Known profiles, refreshed on UI render.
-    #[serde(skip)] known_profiles: Vec<String>,
+    #[serde(skip)]
+    known_profiles: Vec<String>,
     /// New-profile input field state.
-    #[serde(skip)] new_profile_name: String,
+    #[serde(skip)]
+    new_profile_name: String,
     /// Show the "new profile" input.
-    #[serde(skip)] adding_profile: bool,
+    #[serde(skip)]
+    adding_profile: bool,
 }
 
-fn default_anthropic_text_model_provider() -> String { "anthropic".into() }
-fn default_openai_image_provider() -> String { "openai".into() }
+fn default_anthropic_text_model_provider() -> String {
+    "anthropic".into()
+}
+fn default_openai_image_provider() -> String {
+    "openai".into()
+}
 
 impl Default for AiConfigNode {
     fn default() -> Self {
@@ -106,7 +134,9 @@ impl AiConfigNode {
         self.env_fallback.clear();
         for provider in ["anthropic", "openai", "google", "custom"] {
             let (_, from_env) = resolve_key(provider, &self.cached_keys);
-            if from_env { self.env_fallback.push(provider.into()); }
+            if from_env {
+                self.env_fallback.push(provider.into());
+            }
         }
         self.dirty = false;
     }
@@ -150,7 +180,9 @@ impl AiConfigNode {
         self.env_fallback.clear();
         for provider in ["anthropic", "openai", "google", "custom"] {
             let (_, from_env) = resolve_key(provider, &self.cached_keys);
-            if from_env { self.env_fallback.push(provider.into()); }
+            if from_env {
+                self.env_fallback.push(provider.into());
+            }
         }
         Ok(())
     }
@@ -165,7 +197,9 @@ impl NodeBehavior for AiConfigNode {
         "AI Config"
     }
 
-    fn inputs(&self) -> Vec<PortDef> { vec![] }
+    fn inputs(&self) -> Vec<PortDef> {
+        vec![]
+    }
 
     fn outputs(&self) -> Vec<PortDef> {
         vec![
@@ -175,16 +209,26 @@ impl NodeBehavior for AiConfigNode {
         ]
     }
 
-    fn color_hint(&self) -> [u8; 3] { [110, 160, 220] }
+    fn color_hint(&self) -> [u8; 3] {
+        [110, 160, 220]
+    }
 
     /// Renders ports inline via `output_port_row` — opt out of the
     /// framework's default top/bottom port rendering so we don't double up.
-    fn inline_ports(&self) -> bool { true }
+    fn inline_ports(&self) -> bool {
+        true
+    }
 
     fn evaluate(&mut self, _inputs: &[PortValue]) -> Vec<(usize, PortValue)> {
-        let text = self.build_payload(&self.text_provider, &self.text_model).to_port_string();
-        let image = self.build_payload(&self.image_provider, &self.image_model).to_port_string();
-        let code = self.build_payload(&self.code_provider, &self.code_model).to_port_string();
+        let text = self
+            .build_payload(&self.text_provider, &self.text_model)
+            .to_port_string();
+        let image = self
+            .build_payload(&self.image_provider, &self.image_model)
+            .to_port_string();
+        let code = self
+            .build_payload(&self.code_provider, &self.code_model)
+            .to_port_string();
         vec![
             (0, PortValue::Text(text)),
             (1, PortValue::Text(image)),
@@ -192,7 +236,9 @@ impl NodeBehavior for AiConfigNode {
         ]
     }
 
-    fn type_tag(&self) -> &str { "ai_config" }
+    fn type_tag(&self) -> &str {
+        "ai_config"
+    }
 
     fn save_state(&self) -> serde_json::Value {
         // Explicitly serialise only the project-safe fields. Never
@@ -284,9 +330,7 @@ impl NodeBehavior for AiConfigNode {
                         .desired_width(120.0)
                         .hint_text("e.g. work, dev, prod"),
                 );
-                if ui.small_button("Add").clicked()
-                    && !self.new_profile_name.trim().is_empty()
-                {
+                if ui.small_button("Add").clicked() && !self.new_profile_name.trim().is_empty() {
                     let name = self.new_profile_name.trim().to_string();
                     if load_config(&name).is_none() {
                         let _ = save_config(&name, &ConfigBundle::seeded());
@@ -306,9 +350,30 @@ impl NodeBehavior for AiConfigNode {
         ui.separator();
 
         // ── Per-kind sections ────────────────────────────────────
-        section(ui, ctx.node_id, "Text", &mut self.text_provider, &mut self.text_model, 0);
-        section(ui, ctx.node_id, "Image", &mut self.image_provider, &mut self.image_model, 1);
-        section(ui, ctx.node_id, "Code", &mut self.code_provider, &mut self.code_model, 0);
+        section(
+            ui,
+            ctx.node_id,
+            "Text",
+            &mut self.text_provider,
+            &mut self.text_model,
+            0,
+        );
+        section(
+            ui,
+            ctx.node_id,
+            "Image",
+            &mut self.image_provider,
+            &mut self.image_model,
+            1,
+        );
+        section(
+            ui,
+            ctx.node_id,
+            "Code",
+            &mut self.code_provider,
+            &mut self.code_model,
+            0,
+        );
 
         // ── Custom endpoint (only if any provider is "custom") ───
         let any_custom = self.text_provider == "custom"
@@ -346,8 +411,11 @@ impl NodeBehavior for AiConfigNode {
         ui.separator();
 
         // ── API keys (per-provider, masked, in editing buffer) ───
-        ui.label(egui::RichText::new(format!("API keys — profile “{}”", self.profile))
-            .small().strong());
+        ui.label(
+            egui::RichText::new(format!("API keys — profile “{}”", self.profile))
+                .small()
+                .strong(),
+        );
         for provider in ["anthropic", "openai", "google", "custom"] {
             let hint = provider_key_hint(provider);
             let slot = match provider {
@@ -359,10 +427,7 @@ impl NodeBehavior for AiConfigNode {
             };
             let prev = slot.clone();
             ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new(format!("{:>9}", provider_label(provider)))
-                        .small(),
-                );
+                ui.label(egui::RichText::new(format!("{:>9}", provider_label(provider))).small());
                 let resp = ui.add(
                     egui::TextEdit::singleline(slot)
                         .password(true)
@@ -405,18 +470,39 @@ impl NodeBehavior for AiConfigNode {
 
         // ── Output ports ─────────────────────────────────────────
         crate::nodes::output_port_row(
-            ui, "Text Config", "—", ctx.node_id, 0,
-            ctx.port_positions, ctx.dragging_from, ctx.connections, ctx.pending_disconnects,
+            ui,
+            "Text Config",
+            "—",
+            ctx.node_id,
+            0,
+            ctx.port_positions,
+            ctx.dragging_from,
+            ctx.connections,
+            ctx.pending_disconnects,
             PortKind::Text,
         );
         crate::nodes::output_port_row(
-            ui, "Image Config", "—", ctx.node_id, 1,
-            ctx.port_positions, ctx.dragging_from, ctx.connections, ctx.pending_disconnects,
+            ui,
+            "Image Config",
+            "—",
+            ctx.node_id,
+            1,
+            ctx.port_positions,
+            ctx.dragging_from,
+            ctx.connections,
+            ctx.pending_disconnects,
             PortKind::Text,
         );
         crate::nodes::output_port_row(
-            ui, "Code Config", "—", ctx.node_id, 2,
-            ctx.port_positions, ctx.dragging_from, ctx.connections, ctx.pending_disconnects,
+            ui,
+            "Code Config",
+            "—",
+            ctx.node_id,
+            2,
+            ctx.port_positions,
+            ctx.dragging_from,
+            ctx.connections,
+            ctx.pending_disconnects,
             PortKind::Text,
         );
     }
@@ -512,10 +598,16 @@ mod tests {
         n.editing_keys.openai = "sk-openai-VERY-SECRET".into();
         n.cached_keys = n.editing_keys.clone();
         let s = n.save_state().to_string();
-        assert!(!s.contains("sk-ant-VERY-SECRET"),
-            "anthropic key leaked into serialized state: {}", s);
-        assert!(!s.contains("sk-openai-VERY-SECRET"),
-            "openai key leaked into serialized state: {}", s);
+        assert!(
+            !s.contains("sk-ant-VERY-SECRET"),
+            "anthropic key leaked into serialized state: {}",
+            s
+        );
+        assert!(
+            !s.contains("sk-openai-VERY-SECRET"),
+            "openai key leaked into serialized state: {}",
+            s
+        );
         assert!(!s.contains("\"editing_keys\""));
         assert!(!s.contains("\"cached_keys\""));
     }

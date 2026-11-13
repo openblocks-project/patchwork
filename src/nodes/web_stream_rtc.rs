@@ -25,32 +25,30 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use tokio::runtime::Runtime;
-use webrtc::api::media_engine::MediaEngine;
-use webrtc::api::interceptor_registry::register_default_interceptors;
 use webrtc::api::APIBuilder;
+use webrtc::api::interceptor_registry::register_default_interceptors;
+use webrtc::api::media_engine::MediaEngine;
 use webrtc::data_channel::RTCDataChannel;
 use webrtc::data_channel::data_channel_message::DataChannelMessage;
 use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::interceptor::registry::Registry;
 use webrtc::media::Sample;
+use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
-use webrtc::peer_connection::RTCPeerConnection;
+#[allow(unused_imports)]
+use webrtc::rtp_transceiver::RTCRtpTransceiver;
 use webrtc::rtp_transceiver::rtp_codec::{
     RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType,
 };
-use webrtc::track::track_local::track_local_static_sample::TrackLocalStaticSample;
 use webrtc::track::track_local::TrackLocal;
-#[allow(unused_imports)]
-use webrtc::rtp_transceiver::RTCRtpTransceiver;
+use webrtc::track::track_local::track_local_static_sample::TrackLocalStaticSample;
 
 /// Process-wide tokio runtime. Lazy-initialised on first use.
 fn runtime() -> &'static Runtime {
     static RT: OnceLock<Runtime> = OnceLock::new();
-    RT.get_or_init(|| {
-        Runtime::new().expect("failed to create tokio runtime for WebRTC")
-    })
+    RT.get_or_init(|| Runtime::new().expect("failed to create tokio runtime for WebRTC"))
 }
 
 /// Strip `a=candidate:` lines that webrtc-rs 0.17 can't parse — those
@@ -69,7 +67,8 @@ pub(crate) fn sanitize_offer_sdp(offer: &str) -> (String, Vec<String>) {
     for line in offer.lines() {
         // Both `a=candidate:` (in-SDP) and bare `candidate:` lines
         // (rare but legal in some SDP fragments).
-        let value = line.strip_prefix("a=candidate:")
+        let value = line
+            .strip_prefix("a=candidate:")
             .or_else(|| line.strip_prefix("candidate:"));
         if let Some(rest) = value {
             let tokens: Vec<&str> = rest.split_whitespace().collect();
@@ -136,14 +135,13 @@ impl WebStreamShared {
     pub fn handle_offer(self: &Arc<Self>, offer_sdp: &str) -> Result<String, String> {
         let this = self.clone();
         let offer_str = offer_sdp.to_string();
-        runtime().block_on(async move {
-            this.handle_offer_async(offer_str).await
-        })
+        runtime().block_on(async move { this.handle_offer_async(offer_str).await })
     }
 
     async fn handle_offer_async(self: &Arc<Self>, offer_sdp: String) -> Result<String, String> {
         crate::system_log::log(format!(
-            "Web Stream /offer received ({} bytes)", offer_sdp.len()
+            "Web Stream /offer received ({} bytes)",
+            offer_sdp.len()
         ));
         // Tear down old peer first.
         self.close_peer_async().await;
@@ -152,37 +150,41 @@ impl WebStreamShared {
         // ── Build API with H264 + Opus codecs ────────────────────
         let mut media_engine = MediaEngine::default();
         // Opus 48k mono.
-        media_engine.register_codec(
-            RTCRtpCodecParameters {
-                capability: RTCRtpCodecCapability {
-                    mime_type: "audio/opus".into(),
-                    clock_rate: 48000,
-                    channels: 2,
-                    sdp_fmtp_line: "minptime=10;useinbandfec=1".into(),
-                    rtcp_feedback: vec![],
+        media_engine
+            .register_codec(
+                RTCRtpCodecParameters {
+                    capability: RTCRtpCodecCapability {
+                        mime_type: "audio/opus".into(),
+                        clock_rate: 48000,
+                        channels: 2,
+                        sdp_fmtp_line: "minptime=10;useinbandfec=1".into(),
+                        rtcp_feedback: vec![],
+                    },
+                    payload_type: 111,
+                    ..Default::default()
                 },
-                payload_type: 111,
-                ..Default::default()
-            },
-            RTPCodecType::Audio,
-        ).map_err(|e| format!("register opus: {e}"))?;
+                RTPCodecType::Audio,
+            )
+            .map_err(|e| format!("register opus: {e}"))?;
         // H264 baseline. Browsers all advertise this profile.
-        media_engine.register_codec(
-            RTCRtpCodecParameters {
-                capability: RTCRtpCodecCapability {
-                    mime_type: "video/H264".into(),
-                    clock_rate: 90000,
-                    channels: 0,
-                    sdp_fmtp_line:
-                        "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f"
-                            .into(),
-                    rtcp_feedback: vec![],
+        media_engine
+            .register_codec(
+                RTCRtpCodecParameters {
+                    capability: RTCRtpCodecCapability {
+                        mime_type: "video/H264".into(),
+                        clock_rate: 90000,
+                        channels: 0,
+                        sdp_fmtp_line:
+                            "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f"
+                                .into(),
+                        rtcp_feedback: vec![],
+                    },
+                    payload_type: 102,
+                    ..Default::default()
                 },
-                payload_type: 102,
-                ..Default::default()
-            },
-            RTPCodecType::Video,
-        ).map_err(|e| format!("register h264: {e}"))?;
+                RTPCodecType::Video,
+            )
+            .map_err(|e| format!("register h264: {e}"))?;
 
         let mut registry = Registry::new();
         registry = register_default_interceptors(registry, &mut media_engine)
@@ -199,8 +201,11 @@ impl WebStreamShared {
             ..Default::default()
         };
 
-        let pc = Arc::new(api.new_peer_connection(config).await
-            .map_err(|e| format!("new_peer_connection: {e}"))?);
+        let pc = Arc::new(
+            api.new_peer_connection(config)
+                .await
+                .map_err(|e| format!("new_peer_connection: {e}"))?,
+        );
 
         // ── Tracks ────────────────────────────────────────────────
         let video_track = Arc::new(TrackLocalStaticSample::new(
@@ -223,10 +228,12 @@ impl WebStreamShared {
             "patchwork-stream".into(),
         ));
 
-        let _video_sender = pc.add_track(Arc::clone(&video_track) as Arc<dyn TrackLocal + Send + Sync>)
+        let _video_sender = pc
+            .add_track(Arc::clone(&video_track) as Arc<dyn TrackLocal + Send + Sync>)
             .await
             .map_err(|e| format!("add_track video: {e}"))?;
-        let _audio_sender = pc.add_track(Arc::clone(&audio_track) as Arc<dyn TrackLocal + Send + Sync>)
+        let _audio_sender = pc
+            .add_track(Arc::clone(&audio_track) as Arc<dyn TrackLocal + Send + Sync>)
             .await
             .map_err(|e| format!("add_track audio: {e}"))?;
 
@@ -268,8 +275,9 @@ impl WebStreamShared {
             let shared = state_shared.clone();
             Box::pin(async move {
                 let new_status = match s {
-                    RTCPeerConnectionState::New
-                    | RTCPeerConnectionState::Connecting => PeerStatus::Connecting,
+                    RTCPeerConnectionState::New | RTCPeerConnectionState::Connecting => {
+                        PeerStatus::Connecting
+                    }
                     RTCPeerConnectionState::Connected => PeerStatus::Connected,
                     RTCPeerConnectionState::Disconnected => PeerStatus::Disconnected,
                     RTCPeerConnectionState::Failed => PeerStatus::Failed,
@@ -278,9 +286,9 @@ impl WebStreamShared {
                 };
                 *shared.state.lock().unwrap() = new_status;
                 crate::system_log::log(format!("Web Stream peer state: {:?}", s));
-                if matches!(s,
-                    RTCPeerConnectionState::Failed
-                    | RTCPeerConnectionState::Closed,
+                if matches!(
+                    s,
+                    RTCPeerConnectionState::Failed | RTCPeerConnectionState::Closed,
                 ) {
                     // Terminal — drop tracks so the encoder / pump stop
                     // hammering on a dead peer. Disconnected does NOT
@@ -355,16 +363,23 @@ impl WebStreamShared {
         }
         crate::system_log::log(format!(
             "Web Stream transceivers — audio: {}, video: {}, total: {}",
-            audio_kinds, video_kinds, txs.len()
+            audio_kinds,
+            video_kinds,
+            txs.len()
         ));
 
-        let answer = pc.create_answer(None).await
+        let answer = pc
+            .create_answer(None)
+            .await
             .map_err(|e| format!("create_answer: {e}"))?;
         let mut gather_complete = pc.gathering_complete_promise().await;
-        pc.set_local_description(answer).await
+        pc.set_local_description(answer)
+            .await
             .map_err(|e| format!("set_local: {e}"))?;
         let _ = gather_complete.recv().await;
-        let final_sdp = pc.local_description().await
+        let final_sdp = pc
+            .local_description()
+            .await
             .ok_or_else(|| "no local description after gathering".to_string())?;
 
         // ── Publish handles for sync writers ─────────────────────
@@ -403,11 +418,13 @@ impl WebStreamShared {
         runtime().spawn(async move {
             // ~33 ms per frame at 30fps; webrtc-rs handles RTP
             // packetisation + timestamping internally.
-            let _ = track.write_sample(&Sample {
-                data: bytes,
-                duration: Duration::from_millis(33),
-                ..Default::default()
-            }).await;
+            let _ = track
+                .write_sample(&Sample {
+                    data: bytes,
+                    duration: Duration::from_millis(33),
+                    ..Default::default()
+                })
+                .await;
         });
     }
 
@@ -419,11 +436,13 @@ impl WebStreamShared {
         };
         let bytes = bytes::Bytes::copy_from_slice(packet);
         runtime().spawn(async move {
-            let _ = track.write_sample(&Sample {
-                data: bytes,
-                duration,
-                ..Default::default()
-            }).await;
+            let _ = track
+                .write_sample(&Sample {
+                    data: bytes,
+                    duration,
+                    ..Default::default()
+                })
+                .await;
         });
     }
 

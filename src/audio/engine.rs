@@ -8,12 +8,12 @@
 //! processors' output buffers. 1-block latency between connected nodes (inaudible).
 //! No mutex, no topological sort, no compilation step.
 
-use std::collections::HashMap;
-use crossbeam_channel::Receiver;
-use crate::graph::NodeId;
-use super::processor::{AudioProcessor, ProcessorKind, ProcessContext};
 use super::analysis::AudioAnalysis;
 use super::params::AtomicF32;
+use super::processor::{AudioProcessor, ProcessContext, ProcessorKind};
+use crate::graph::NodeId;
+use crossbeam_channel::Receiver;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 // ── Commands (UI → Audio Thread) ─────────────────────────────────────────────
@@ -28,9 +28,7 @@ pub enum AudioCommand {
         params: Arc<Vec<AtomicF32>>,
     },
     /// Remove a processor and all its connections.
-    RemoveProcessor {
-        node_id: NodeId,
-    },
+    RemoveProcessor { node_id: NodeId },
     /// Connect one processor's output to another's input port.
     Connect {
         from_node: NodeId,
@@ -38,15 +36,9 @@ pub enum AudioCommand {
         to_port: usize,
     },
     /// Disconnect an input port.
-    Disconnect {
-        to_node: NodeId,
-        to_port: usize,
-    },
+    Disconnect { to_node: NodeId, to_port: usize },
     /// Mark/unmark a processor as a speaker (mixes to master output).
-    SetSpeaker {
-        node_id: NodeId,
-        active: bool,
-    },
+    SetSpeaker { node_id: NodeId, active: bool },
     /// Hot-swap the band coefficients of an existing EQ processor.
     /// Used by `AudioEq` nodes when the user drags points on the curve —
     /// the alternative (remove + re-add the processor) would drop all
@@ -71,7 +63,7 @@ struct ProcessorSlot {
     output_channels: usize,
     /// Input connections: port index → source node ID.
     /// The engine reads from the source node's output_buffer.
-    inputs: Vec<Option<NodeId>>,  // indexed by port
+    inputs: Vec<Option<NodeId>>, // indexed by port
     /// Whether this processor is an active speaker (mixes to master).
     is_speaker: bool,
     /// Shared atomic parameters. UI writes, audio reads.
@@ -123,42 +115,53 @@ impl AudioEngine {
     //     }
     // }
 
-    pub fn new(commands: Receiver<AudioCommand>, sample_rate: f32, master_volume: Arc<AtomicF32>) -> Self {
-    let max_block_size = 4096;  // Large enough for any CPAL buffer
-    Self {
-        slots: HashMap::new(),
-        commands,
-        silence: vec![0.0f32; max_block_size],  // Now 4096
-        input_scratch: vec![0.0f32; max_block_size],  // Now 4096
-        sample_rate,
-        master_volume,
-        master_analysis: AudioAnalysis::default(),
-        max_block_size,
-        speaker_ids: Vec::new(),
-        processor_ids: Vec::new(),
-        ids_dirty: true,
+    pub fn new(
+        commands: Receiver<AudioCommand>,
+        sample_rate: f32,
+        master_volume: Arc<AtomicF32>,
+    ) -> Self {
+        let max_block_size = 4096; // Large enough for any CPAL buffer
+        Self {
+            slots: HashMap::new(),
+            commands,
+            silence: vec![0.0f32; max_block_size], // Now 4096
+            input_scratch: vec![0.0f32; max_block_size], // Now 4096
+            sample_rate,
+            master_volume,
+            master_analysis: AudioAnalysis::default(),
+            max_block_size,
+            speaker_ids: Vec::new(),
+            processor_ids: Vec::new(),
+            ids_dirty: true,
+        }
     }
-}
 
     /// Drain all pending commands from the UI (non-blocking).
     fn process_commands(&mut self) {
         while let Ok(cmd) = self.commands.try_recv() {
             match cmd {
-                AudioCommand::AddProcessor { node_id, mut processor, params } => {
+                AudioCommand::AddProcessor {
+                    node_id,
+                    mut processor,
+                    params,
+                } => {
                     processor.prepare(self.sample_rate, self.max_block_size);
                     processor.set_shared_params(params.clone());
                     let param_count = processor.param_count();
                     let is_speaker = processor.kind() == ProcessorKind::Output;
                     let output_channels = processor.output_channels();
-                    self.slots.insert(node_id, ProcessorSlot {
-                        processor,
-                        output_buffer: vec![0.0f32; self.max_block_size * output_channels],
-                        output_channels,
-                        inputs: Vec::new(),
-                        is_speaker,
-                        params,
-                        param_scratch: vec![0.0f32; param_count],
-                    });
+                    self.slots.insert(
+                        node_id,
+                        ProcessorSlot {
+                            processor,
+                            output_buffer: vec![0.0f32; self.max_block_size * output_channels],
+                            output_channels,
+                            inputs: Vec::new(),
+                            is_speaker,
+                            params,
+                            param_scratch: vec![0.0f32; param_count],
+                        },
+                    );
                     self.ids_dirty = true;
                 }
                 AudioCommand::RemoveProcessor { node_id } => {
@@ -173,7 +176,11 @@ impl AudioEngine {
                     }
                     self.ids_dirty = true;
                 }
-                AudioCommand::Connect { from_node, to_node, to_port } => {
+                AudioCommand::Connect {
+                    from_node,
+                    to_node,
+                    to_port,
+                } => {
                     if let Some(slot) = self.slots.get_mut(&to_node) {
                         // Grow inputs vec if needed
                         while slot.inputs.len() <= to_port {
@@ -195,7 +202,11 @@ impl AudioEngine {
                     }
                     self.ids_dirty = true;
                 }
-                AudioCommand::UpdateEqBands { node_id, bands, hash } => {
+                AudioCommand::UpdateEqBands {
+                    node_id,
+                    bands,
+                    hash,
+                } => {
                     if let Some(slot) = self.slots.get_mut(&node_id) {
                         slot.processor.set_eq_bands(bands, hash);
                     }
@@ -206,7 +217,9 @@ impl AudioEngine {
         // Rebuild cached ID lists if topology changed
         if self.ids_dirty {
             self.processor_ids = self.slots.keys().copied().collect();
-            self.speaker_ids = self.slots.iter()
+            self.speaker_ids = self
+                .slots
+                .iter()
                 .filter(|(_, slot)| slot.is_speaker)
                 .map(|(&id, _)| id)
                 .collect();
@@ -222,7 +235,9 @@ impl AudioEngine {
     /// 4. Clamp and analyze
     pub fn execute(&mut self, data: &mut [f32], channels: usize) {
         let num_frames = data.len() / channels;
-        if num_frames == 0 { return; }
+        if num_frames == 0 {
+            return;
+        }
 
         // Zero master output
         data.fill(0.0);
@@ -256,10 +271,18 @@ impl AudioEngine {
             if let Some(slot) = self.slots.get(&node_id) {
                 let is_mixer = slot.processor.kind() == ProcessorKind::Mixer;
                 for (i, src) in slot.inputs.iter().enumerate() {
-                    if i >= MAX_INPUTS { break; }
+                    if i >= MAX_INPUTS {
+                        break;
+                    }
                     let gain = if is_mixer {
-                        if i < slot.params.len() { slot.params[i].load() } else { 1.0 }
-                    } else { 1.0 };
+                        if i < slot.params.len() {
+                            slot.params[i].load()
+                        } else {
+                            1.0
+                        }
+                    } else {
+                        1.0
+                    };
                     conn_buf[i] = (*src, gain);
                     conn_count = i + 1;
                 }
@@ -299,7 +322,8 @@ impl AudioEngine {
                     &self.silence[..num_frames]
                 };
                 let out_len = num_frames * slot.output_channels;
-                slot.processor.process_block(input, &mut slot.output_buffer[..out_len], &ctx);
+                slot.processor
+                    .process_block(input, &mut slot.output_buffer[..out_len], &ctx);
             }
         }
 
@@ -315,23 +339,41 @@ impl AudioEngine {
                 if let Some(slot) = self.slots.get(&spk_id) {
                     let l = slot.inputs.get(0).and_then(|id| *id);
                     let r = slot.inputs.get(1).and_then(|id| *id);
-                    let vol = if slot.params.len() > 0 { slot.params[0].load().clamp(0.0, 1.0) } else { 0.8 };
-                    let act = if slot.params.len() > 1 { slot.params[1].load() > 0.5 } else { true };
-                    let pan = if slot.params.len() > 2 { slot.params[2].load().clamp(-1.0, 1.0) } else { 0.0 };
+                    let vol = if slot.params.len() > 0 {
+                        slot.params[0].load().clamp(0.0, 1.0)
+                    } else {
+                        0.8
+                    };
+                    let act = if slot.params.len() > 1 {
+                        slot.params[1].load() > 0.5
+                    } else {
+                        true
+                    };
+                    let pan = if slot.params.len() > 2 {
+                        slot.params[2].load().clamp(-1.0, 1.0)
+                    } else {
+                        0.0
+                    };
                     // Channel offset: round to even number (channel pairs)
                     let offset = if slot.params.len() > 3 {
                         let raw = slot.params[3].load() as usize;
-                        raw & !1  // round down to even
-                    } else { 0 };
+                        raw & !1 // round down to even
+                    } else {
+                        0
+                    };
                     (l, r, vol, act, pan, offset)
                 } else {
                     continue;
                 }
             };
 
-            if !active { continue; }
+            if !active {
+                continue;
+            }
             // Skip if channel offset is beyond device capability
-            if ch_offset >= channels { continue; }
+            if ch_offset >= channels {
+                continue;
+            }
 
             // Get L and R source buffers (mono)
             let l_buf = l_source.and_then(|id| self.slots.get(&id).map(|s| &s.output_buffer));
@@ -375,6 +417,7 @@ impl AudioEngine {
         }
 
         // 5. Master analysis
-        self.master_analysis.update(data, channels, self.sample_rate);
+        self.master_analysis
+            .update(data, channels, self.sample_rate);
     }
 }

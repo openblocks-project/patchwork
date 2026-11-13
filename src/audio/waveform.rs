@@ -12,7 +12,13 @@ pub enum Waveform {
 
 impl Waveform {
     pub fn all() -> &'static [Waveform] {
-        &[Waveform::Sine, Waveform::Saw, Waveform::Square, Waveform::Triangle, Waveform::Noise]
+        &[
+            Waveform::Sine,
+            Waveform::Saw,
+            Waveform::Square,
+            Waveform::Triangle,
+            Waveform::Noise,
+        ]
     }
 
     pub fn name(&self) -> &'static str {
@@ -30,11 +36,21 @@ impl Waveform {
         match self {
             Waveform::Sine => (phase * std::f32::consts::TAU).sin(),
             Waveform::Saw => 2.0 * phase - 1.0,
-            Waveform::Square => if phase < 0.5 { 1.0 } else { -1.0 },
+            Waveform::Square => {
+                if phase < 0.5 {
+                    1.0
+                } else {
+                    -1.0
+                }
+            }
             Waveform::Triangle => {
-                if phase < 0.25 { phase * 4.0 }
-                else if phase < 0.75 { 2.0 - phase * 4.0 }
-                else { phase * 4.0 - 4.0 }
+                if phase < 0.25 {
+                    phase * 4.0
+                } else if phase < 0.75 {
+                    2.0 - phase * 4.0
+                } else {
+                    phase * 4.0 - 4.0
+                }
             }
             Waveform::Noise => fastrand_f32() * 2.0 - 1.0,
         }

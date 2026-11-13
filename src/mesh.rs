@@ -18,14 +18,19 @@ use std::sync::Arc;
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct Vertex {
     pub position: [f32; 3],
-    pub normal:   [f32; 3],
-    pub uv:       [f32; 2],
-    pub tangent:  [f32; 4],
+    pub normal: [f32; 3],
+    pub uv: [f32; 2],
+    pub tangent: [f32; 4],
 }
 
 impl Vertex {
     pub const fn new(position: [f32; 3], normal: [f32; 3], uv: [f32; 2]) -> Self {
-        Self { position, normal, uv, tangent: [1.0, 0.0, 0.0, 1.0] }
+        Self {
+            position,
+            normal,
+            uv,
+            tangent: [1.0, 0.0, 0.0, 1.0],
+        }
     }
 
     pub fn layout() -> wgpu::VertexBufferLayout<'static> {
@@ -33,10 +38,26 @@ impl Vertex {
             array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
             step_mode: wgpu::VertexStepMode::Vertex,
             attributes: &[
-                wgpu::VertexAttribute { offset: 0,  shader_location: 0, format: wgpu::VertexFormat::Float32x3 },
-                wgpu::VertexAttribute { offset: 12, shader_location: 1, format: wgpu::VertexFormat::Float32x3 },
-                wgpu::VertexAttribute { offset: 24, shader_location: 2, format: wgpu::VertexFormat::Float32x2 },
-                wgpu::VertexAttribute { offset: 32, shader_location: 3, format: wgpu::VertexFormat::Float32x4 },
+                wgpu::VertexAttribute {
+                    offset: 0,
+                    shader_location: 0,
+                    format: wgpu::VertexFormat::Float32x3,
+                },
+                wgpu::VertexAttribute {
+                    offset: 12,
+                    shader_location: 1,
+                    format: wgpu::VertexFormat::Float32x3,
+                },
+                wgpu::VertexAttribute {
+                    offset: 24,
+                    shader_location: 2,
+                    format: wgpu::VertexFormat::Float32x2,
+                },
+                wgpu::VertexAttribute {
+                    offset: 32,
+                    shader_location: 3,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
             ],
         }
     }
@@ -57,8 +78,12 @@ impl Aabb {
         let mut max = min;
         for v in &verts[1..] {
             for i in 0..3 {
-                if v.position[i] < min[i] { min[i] = v.position[i]; }
-                if v.position[i] > max[i] { max[i] = v.position[i]; }
+                if v.position[i] < min[i] {
+                    min[i] = v.position[i];
+                }
+                if v.position[i] > max[i] {
+                    max[i] = v.position[i];
+                }
             }
         }
         Aabb { min, max }
@@ -76,22 +101,27 @@ impl Aabb {
         let dx = self.max[0] - self.min[0];
         let dy = self.max[1] - self.min[1];
         let dz = self.max[2] - self.min[2];
-        (dx*dx + dy*dy + dz*dz).sqrt() * 0.5
+        (dx * dx + dy * dy + dz * dz).sqrt() * 0.5
     }
 }
 
 #[derive(Debug)]
 pub struct MeshData {
     pub vertices: Vec<Vertex>,
-    pub indices:  Vec<u32>,
-    pub bounds:   Aabb,
-    pub name:     Option<String>,
+    pub indices: Vec<u32>,
+    pub bounds: Aabb,
+    pub name: Option<String>,
 }
 
 impl MeshData {
     pub fn new(vertices: Vec<Vertex>, indices: Vec<u32>, name: Option<String>) -> Arc<Self> {
         let bounds = Aabb::from_vertices(&vertices);
-        Arc::new(Self { vertices, indices, bounds, name })
+        Arc::new(Self {
+            vertices,
+            indices,
+            bounds,
+            name,
+        })
     }
 }
 
@@ -110,7 +140,10 @@ pub struct PlacedMesh {
 
 impl PlacedMesh {
     pub fn new(mesh: Arc<MeshData>) -> Arc<Self> {
-        Arc::new(Self { mesh, transform: identity_mat4() })
+        Arc::new(Self {
+            mesh,
+            transform: identity_mat4(),
+        })
     }
 
     pub fn with_transform(mesh: Arc<MeshData>, transform: [[f32; 4]; 4]) -> Arc<Self> {
@@ -119,17 +152,19 @@ impl PlacedMesh {
 }
 
 pub fn identity_mat4() -> [[f32; 4]; 4] {
-    [[1.0, 0.0, 0.0, 0.0],
-     [0.0, 1.0, 0.0, 0.0],
-     [0.0, 0.0, 1.0, 0.0],
-     [0.0, 0.0, 0.0, 1.0]]
+    [
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
 }
 
 /// Build a model matrix from translation, scale, and Euler rotation
 /// (degrees, applied as Y → X → Z so "yaw, pitch, roll" reads naturally).
 pub fn build_model_matrix(
     position: [f32; 3],
-    scale:    [f32; 3],
+    scale: [f32; 3],
     rotation_deg: [f32; 3],
 ) -> [[f32; 4]; 4] {
     let t = glam::Mat4::from_translation(glam::Vec3::from_array(position));
@@ -156,23 +191,23 @@ pub fn build_normal_matrix(model: [[f32; 4]; 4]) -> [[f32; 4]; 4] {
 
 #[derive(Copy, Clone, Debug)]
 pub struct CameraParams {
-    pub eye:    [f32; 3],
+    pub eye: [f32; 3],
     pub target: [f32; 3],
-    pub up:     [f32; 3],
+    pub up: [f32; 3],
     pub fov_y_deg: f32,
-    pub near:   f32,
-    pub far:    f32,
+    pub near: f32,
+    pub far: f32,
 }
 
 impl Default for CameraParams {
     fn default() -> Self {
         Self {
-            eye:        [3.0, 2.0, 4.0],
-            target:     [0.0, 0.0, 0.0],
-            up:         [0.0, 1.0, 0.0],
-            fov_y_deg:  45.0,
-            near:       0.1,
-            far:        100.0,
+            eye: [3.0, 2.0, 4.0],
+            target: [0.0, 0.0, 0.0],
+            up: [0.0, 1.0, 0.0],
+            fov_y_deg: 45.0,
+            near: 0.1,
+            far: 100.0,
         }
     }
 }
@@ -201,26 +236,26 @@ pub fn primitive_cube(size: f32) -> Arc<MeshData> {
     let h = size * 0.5;
     let mut verts = Vec::with_capacity(24);
     let faces: [([f32; 3], [f32; 3], [f32; 3]); 6] = [
-        ([ 0.0, 0.0, 1.0], [ 1.0, 0.0, 0.0], [0.0, 1.0, 0.0]), // +Z front
-        ([ 0.0, 0.0,-1.0], [-1.0, 0.0, 0.0], [0.0, 1.0, 0.0]), // -Z back
-        ([ 1.0, 0.0, 0.0], [ 0.0, 0.0,-1.0], [0.0, 1.0, 0.0]), // +X right
-        ([-1.0, 0.0, 0.0], [ 0.0, 0.0, 1.0], [0.0, 1.0, 0.0]), // -X left
-        ([ 0.0, 1.0, 0.0], [ 1.0, 0.0, 0.0], [0.0, 0.0,-1.0]), // +Y top
-        ([ 0.0,-1.0, 0.0], [ 1.0, 0.0, 0.0], [0.0, 0.0, 1.0]), // -Y bottom
+        ([0.0, 0.0, 1.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]), // +Z front
+        ([0.0, 0.0, -1.0], [-1.0, 0.0, 0.0], [0.0, 1.0, 0.0]), // -Z back
+        ([1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]), // +X right
+        ([-1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]), // -X left
+        ([0.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, -1.0]), // +Y top
+        ([0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]), // -Y bottom
     ];
     for (n, u_axis, v_axis) in faces {
-        let center = [n[0]*h, n[1]*h, n[2]*h];
+        let center = [n[0] * h, n[1] * h, n[2] * h];
         let corners = [
             (-1.0, -1.0, [0.0, 0.0]),
-            ( 1.0, -1.0, [1.0, 0.0]),
-            ( 1.0,  1.0, [1.0, 1.0]),
-            (-1.0,  1.0, [0.0, 1.0]),
+            (1.0, -1.0, [1.0, 0.0]),
+            (1.0, 1.0, [1.0, 1.0]),
+            (-1.0, 1.0, [0.0, 1.0]),
         ];
         for (uu, vv, uv) in corners {
             let p = [
-                center[0] + u_axis[0]*uu*h + v_axis[0]*vv*h,
-                center[1] + u_axis[1]*uu*h + v_axis[1]*vv*h,
-                center[2] + u_axis[2]*uu*h + v_axis[2]*vv*h,
+                center[0] + u_axis[0] * uu * h + v_axis[0] * vv * h,
+                center[1] + u_axis[1] * uu * h + v_axis[1] * vv * h,
+                center[2] + u_axis[2] * uu * h + v_axis[2] * vv * h,
             ];
             verts.push(Vertex::new(p, n, uv));
         }
@@ -228,7 +263,7 @@ pub fn primitive_cube(size: f32) -> Arc<MeshData> {
     let mut indices = Vec::with_capacity(36);
     for f in 0..6u32 {
         let b = f * 4;
-        indices.extend_from_slice(&[b, b+1, b+2, b, b+2, b+3]);
+        indices.extend_from_slice(&[b, b + 1, b + 2, b, b + 2, b + 3]);
     }
     MeshData::new(verts, indices, Some("Cube".into()))
 }
@@ -238,9 +273,9 @@ pub fn primitive_plane(size: f32) -> Arc<MeshData> {
     let n = [0.0, 1.0, 0.0];
     let verts = vec![
         Vertex::new([-h, 0.0, -h], n, [0.0, 0.0]),
-        Vertex::new([ h, 0.0, -h], n, [1.0, 0.0]),
-        Vertex::new([ h, 0.0,  h], n, [1.0, 1.0]),
-        Vertex::new([-h, 0.0,  h], n, [0.0, 1.0]),
+        Vertex::new([h, 0.0, -h], n, [1.0, 0.0]),
+        Vertex::new([h, 0.0, h], n, [1.0, 1.0]),
+        Vertex::new([-h, 0.0, h], n, [0.0, 1.0]),
     ];
     let indices = vec![0, 1, 2, 0, 2, 3];
     MeshData::new(verts, indices, Some("Plane".into()))
@@ -290,7 +325,7 @@ pub fn load_gltf_or_glb(path: &str) -> Option<Arc<MeshData>> {
     let (doc, buffers, _images) = gltf::import(path).ok()?;
 
     let mut all_vertices: Vec<Vertex> = Vec::new();
-    let mut all_indices:  Vec<u32>    = Vec::new();
+    let mut all_indices: Vec<u32> = Vec::new();
 
     for mesh in doc.meshes() {
         for prim in mesh.primitives() {
@@ -300,16 +335,21 @@ pub fn load_gltf_or_glb(path: &str) -> Option<Arc<MeshData>> {
                 Some(it) => it.collect(),
                 None => continue, // skip primitives without positions
             };
-            if positions.is_empty() { continue; }
+            if positions.is_empty() {
+                continue;
+            }
 
-            let normals: Vec<[f32; 3]> = reader.read_normals()
+            let normals: Vec<[f32; 3]> = reader
+                .read_normals()
                 .map(|it| it.collect())
                 .unwrap_or_else(|| vec![[0.0, 1.0, 0.0]; positions.len()]);
-            let uvs: Vec<[f32; 2]> = reader.read_tex_coords(0)
+            let uvs: Vec<[f32; 2]> = reader
+                .read_tex_coords(0)
                 .map(|it| it.into_f32().collect())
                 .unwrap_or_else(|| vec![[0.0, 0.0]; positions.len()]);
 
-            let local_indices: Vec<u32> = reader.read_indices()
+            let local_indices: Vec<u32> = reader
+                .read_indices()
                 .map(|it| it.into_u32().collect())
                 .unwrap_or_else(|| (0..positions.len() as u32).collect());
 
@@ -325,7 +365,9 @@ pub fn load_gltf_or_glb(path: &str) -> Option<Arc<MeshData>> {
         }
     }
 
-    if all_vertices.is_empty() { return None; }
+    if all_vertices.is_empty() {
+        return None;
+    }
 
     let name = std::path::Path::new(path)
         .file_stem()
@@ -334,7 +376,12 @@ pub fn load_gltf_or_glb(path: &str) -> Option<Arc<MeshData>> {
     Some(MeshData::new(all_vertices, all_indices, name))
 }
 
-pub fn primitive_torus(major_radius: f32, minor_radius: f32, ring_segments: u32, tube_segments: u32) -> Arc<MeshData> {
+pub fn primitive_torus(
+    major_radius: f32,
+    minor_radius: f32,
+    ring_segments: u32,
+    tube_segments: u32,
+) -> Arc<MeshData> {
     let r = ring_segments.max(3);
     let t = tube_segments.max(3);
     let mut verts = Vec::with_capacity(((r + 1) * (t + 1)) as usize);

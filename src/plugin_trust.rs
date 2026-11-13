@@ -83,7 +83,10 @@ pub fn short_hash(sha_hex: &str) -> String {
 }
 
 pub fn is_trusted(sha: &str) -> bool {
-    store().lock().map(|s| s.entries.contains_key(sha)).unwrap_or(false)
+    store()
+        .lock()
+        .map(|s| s.entries.contains_key(sha))
+        .unwrap_or(false)
 }
 
 /// Grant trust for the given source hash. Idempotent (re-granting overwrites
@@ -120,7 +123,12 @@ pub fn revoke_trust(sha: &str) -> bool {
 pub fn list_trusted() -> Vec<(String, TrustEntry)> {
     store()
         .lock()
-        .map(|s| s.entries.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+        .map(|s| {
+            s.entries
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -128,9 +136,7 @@ fn persist(store: &TrustStore) {
     let path = store_path();
     if let Ok(json) = serde_json::to_string_pretty(store) {
         if let Err(e) = std::fs::write(&path, json) {
-            crate::system_log::warn(format!(
-                "Failed to persist trusted_plugins.json: {}", e
-            ));
+            crate::system_log::warn(format!("Failed to persist trusted_plugins.json: {}", e));
             return;
         }
         // Mode 0600 on Unix so other users on a shared machine can't audit
@@ -138,10 +144,7 @@ fn persist(store: &TrustStore) {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(
-                &path,
-                std::fs::Permissions::from_mode(0o600),
-            );
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
         }
     }
 }

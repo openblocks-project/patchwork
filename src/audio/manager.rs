@@ -1,10 +1,10 @@
+use super::buffers::{FilePlayerBuffer, LiveInputBuffer};
+use super::decode::{decode_file_thread, probe_file_duration};
+use crate::graph::NodeId;
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use crate::graph::NodeId;
-use super::buffers::{LiveInputBuffer, FilePlayerBuffer};
-use super::decode::{decode_file_thread, probe_file_duration};
 
 // ── Secondary Output (for per-speaker device routing) ────────────────────────
 
@@ -29,7 +29,7 @@ pub struct AudioManager {
     file_threads: HashMap<NodeId, std::thread::JoinHandle<()>>,
     file_looping: HashMap<NodeId, Arc<AtomicBool>>,
     pub file_playing: HashMap<NodeId, bool>,
-    pub file_durations: HashMap<NodeId, f64>,  // seconds
+    pub file_durations: HashMap<NodeId, f64>, // seconds
     // Live audio input streams (one per AudioInput node)
     input_streams: HashMap<NodeId, cpal::Stream>,
     pub input_buffers: HashMap<NodeId, Arc<LiveInputBuffer>>,
@@ -106,8 +106,10 @@ impl AudioManager {
             audio_error: Arc::new(AtomicBool::new(false)),
             dropout_count: Arc::new(AtomicU32::new(0)),
             master_volume: Arc::new(super::params::AtomicF32::new(0.8)),
-            engine_tx: None, node_params: HashMap::new(),
-            engine_sample_rate: 44100.0, engine_needs_rebuild: false,
+            engine_tx: None,
+            node_params: HashMap::new(),
+            engine_sample_rate: 44100.0,
+            engine_needs_rebuild: false,
             analyzer_results: HashMap::new(),
             spectrum_results: HashMap::new(),
             clap_gui_handles: HashMap::new(),
@@ -140,8 +142,10 @@ impl AudioManager {
             audio_error: Arc::new(AtomicBool::new(false)),
             dropout_count: Arc::new(AtomicU32::new(0)),
             master_volume: Arc::new(super::params::AtomicF32::new(0.8)),
-            engine_tx: None, node_params: HashMap::new(),
-            engine_sample_rate: 44100.0, engine_needs_rebuild: false,
+            engine_tx: None,
+            node_params: HashMap::new(),
+            engine_sample_rate: 44100.0,
+            engine_needs_rebuild: false,
             analyzer_results: HashMap::new(),
             spectrum_results: HashMap::new(),
             clap_gui_handles: HashMap::new(),
@@ -164,14 +168,16 @@ impl AudioManager {
             for d in devs {
                 if let Ok(name) = d.name() {
                     if let Ok(cfg) = d.default_output_config() {
-                        self.device_channel_counts.insert(name.clone(), cfg.channels() as usize);
+                        self.device_channel_counts
+                            .insert(name.clone(), cfg.channels() as usize);
                     }
                     names.push(name);
                 }
             }
             self.cached_output_devices = names;
         }
-        self.cached_input_devices = host.input_devices()
+        self.cached_input_devices = host
+            .input_devices()
             .map(|devs| devs.filter_map(|d| d.name().ok()).collect())
             .unwrap_or_default();
     }
@@ -207,7 +213,6 @@ impl AudioManager {
     //     let channels = config.channels() as usize;
     //     self.engine_sample_rate = sample_rate;
     //     self.output_channel_count = channels;
-
 
     //     // Create command channel for the new engine.
     //     // Clear stale state from any previous engine — node_params pointed to
@@ -247,78 +252,86 @@ impl AudioManager {
     //     Ok(())
     // }
 
-
     pub fn start_output(&mut self, device_name: Option<&str>) -> Result<(), String> {
-    self.stream = None;
+        self.stream = None;
 
-    let host = cpal::default_host();
-    let device = if let Some(name) = device_name {
-        host.output_devices()
-            .map_err(|e| e.to_string())?
-            .find(|d| d.name().ok().as_deref() == Some(name))
-            .ok_or_else(|| format!("Device '{}' not found", name))?
-    } else {
-        host.default_output_device()
-            .ok_or("No default output device")?
-    };
+        let host = cpal::default_host();
+        let device = if let Some(name) = device_name {
+            host.output_devices()
+                .map_err(|e| e.to_string())?
+                .find(|d| d.name().ok().as_deref() == Some(name))
+                .ok_or_else(|| format!("Device '{}' not found", name))?
+        } else {
+            host.default_output_device()
+                .ok_or("No default output device")?
+        };
 
-    self.output_device_name = device.name().unwrap_or_default();
+        self.output_device_name = device.name().unwrap_or_default();
 
-    // ✅ Get device's native config
-    let config = device.default_output_config()
-        .map_err(|e| format!("No output config: {}", e))?;
+        // ✅ Get device's native config
+        let config = device
+            .default_output_config()
+            .map_err(|e| format!("No output config: {}", e))?;
 
-    // ✅ Log what we're using
-    eprintln!("[AUDIO] Windows device config:");
-    eprintln!("[AUDIO]   Device: {}", self.output_device_name);
-    eprintln!("[AUDIO]   Sample rate: {} Hz", config.sample_rate().0);
-    eprintln!("[AUDIO]   Channels: {}", config.channels());
+        // ✅ Log what we're using
+        eprintln!("[AUDIO] Windows device config:");
+        eprintln!("[AUDIO]   Device: {}", self.output_device_name);
+        eprintln!("[AUDIO]   Sample rate: {} Hz", config.sample_rate().0);
+        eprintln!("[AUDIO]   Channels: {}", config.channels());
 
-    let sample_rate = config.sample_rate().0 as f32;
-    let channels = config.channels() as usize;
-    self.engine_sample_rate = sample_rate;
-    self.output_channel_count = channels;
+        let sample_rate = config.sample_rate().0 as f32;
+        let channels = config.channels() as usize;
+        self.engine_sample_rate = sample_rate;
+        self.output_channel_count = channels;
 
-    let (tx, rx) = crossbeam_channel::unbounded();
-    self.engine_tx = Some(tx);
-    self.node_params.clear();
-    self.engine_needs_rebuild = true;
+        let (tx, rx) = crossbeam_channel::unbounded();
+        self.engine_tx = Some(tx);
+        self.node_params.clear();
+        self.engine_needs_rebuild = true;
 
-    let master_vol = self.master_volume.clone();
-    let mut engine = super::engine::AudioEngine::new(rx, sample_rate, master_vol);
+        let master_vol = self.master_volume.clone();
+        let mut engine = super::engine::AudioEngine::new(rx, sample_rate, master_vol);
 
-    // ✅ Use device's native config
-    let mut stream_config: cpal::StreamConfig = config.into();
-    // stream_config.buffer_size = cpal::BufferSize::Fixed(64);
-    stream_config.buffer_size = cpal::BufferSize::Default;
+        // ✅ Use device's native config
+        let mut stream_config: cpal::StreamConfig = config.into();
+        // stream_config.buffer_size = cpal::BufferSize::Fixed(64);
+        stream_config.buffer_size = cpal::BufferSize::Default;
 
-    eprintln!("[AUDIO] Building output stream...");
+        eprintln!("[AUDIO] Building output stream...");
 
-    let stream = device.build_output_stream(
-        &stream_config,
-        move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-            engine.execute(data, channels);
-        },
-        {
-            let error_flag = self.audio_error.clone();
-            move |err| {
-                crate::system_log::error(format!("Audio error: {}", err));
-                error_flag.store(true, Ordering::Relaxed);
-            }
-        },
-        None,
-    ).map_err(|e| {
-        eprintln!("[AUDIO] ✗ FAILED: {}", e);
-        format!("Build stream failed: {}", e)
-    })?;
+        let stream = device
+            .build_output_stream(
+                &stream_config,
+                move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                    engine.execute(data, channels);
+                },
+                {
+                    let error_flag = self.audio_error.clone();
+                    move |err| {
+                        crate::system_log::error(format!("Audio error: {}", err));
+                        error_flag.store(true, Ordering::Relaxed);
+                    }
+                },
+                None,
+            )
+            .map_err(|e| {
+                eprintln!("[AUDIO] ✗ FAILED: {}", e);
+                format!("Build stream failed: {}", e)
+            })?;
 
-    stream.play().map_err(|e| format!("Play failed: {}", e))?;
-    self.stream = Some(stream);
+        stream.play().map_err(|e| format!("Play failed: {}", e))?;
+        self.stream = Some(stream);
 
-    eprintln!("[AUDIO] ✓ DSP started: {} @ {}Hz", self.output_device_name, sample_rate);
-    crate::system_log::log(format!("DSP started: {} @ {}Hz", self.output_device_name, sample_rate));
-    Ok(())
-}
+        eprintln!(
+            "[AUDIO] ✓ DSP started: {} @ {}Hz",
+            self.output_device_name, sample_rate
+        );
+        crate::system_log::log(format!(
+            "DSP started: {} @ {}Hz",
+            self.output_device_name, sample_rate
+        ));
+        Ok(())
+    }
     /// Close all open CLAP plugin GUI windows. Call before stopping DSP.
     pub fn close_all_guis(&mut self) {
         for (_, handle) in &self.clap_gui_handles {
@@ -389,7 +402,11 @@ impl AudioManager {
 
     /// Connect one processor's output to another's input port.
     pub fn connect_audio(&self, from_node: NodeId, to_node: NodeId, to_port: usize) {
-        self.send_command(super::engine::AudioCommand::Connect { from_node, to_node, to_port });
+        self.send_command(super::engine::AudioCommand::Connect {
+            from_node,
+            to_node,
+            to_port,
+        });
     }
 
     /// Disconnect an input port.
@@ -428,12 +445,22 @@ impl AudioManager {
     }
 
     /// Create a processor for a given NodeType. Returns None for non-audio nodes.
-    pub fn create_processor_for_node(&mut self, node_type: &crate::graph::NodeType, nid: NodeId) -> Option<(Box<dyn super::processor::AudioProcessor>, usize)> {
-        use crate::graph::NodeType;
+    pub fn create_processor_for_node(
+        &mut self,
+        node_type: &crate::graph::NodeType,
+        nid: NodeId,
+    ) -> Option<(Box<dyn super::processor::AudioProcessor>, usize)> {
         use super::processors::*;
+        use crate::graph::NodeType;
 
         match node_type {
-            NodeType::Synth { waveform, frequency, amplitude, active, fm_depth } => {
+            NodeType::Synth {
+                waveform,
+                frequency,
+                amplitude,
+                active,
+                fm_depth,
+            } => {
                 let mut p = synth::SynthProcessor::new(*waveform, *frequency, *amplitude);
                 p.active = *active;
                 p.fm_depth = *fm_depth;
@@ -442,18 +469,24 @@ impl AudioManager {
             NodeType::Speaker { volume, .. } => {
                 Some((Box::new(speaker::SpeakerProcessor::new(*volume)), 4))
             }
-            NodeType::AudioDelay { time_ms, feedback } => {
-                Some((Box::new(effects::DelayProcessor::new(*time_ms, *feedback)), 2))
-            }
+            NodeType::AudioDelay { time_ms, feedback } => Some((
+                Box::new(effects::DelayProcessor::new(*time_ms, *feedback)),
+                2,
+            )),
             NodeType::AudioDistortion { drive } => {
                 Some((Box::new(effects::DistortionProcessor::new(*drive)), 1))
             }
             NodeType::AudioPitchShift { semitones } => {
                 Some((Box::new(effects::PitchShiftProcessor::new(*semitones)), 1))
             }
-            NodeType::AudioReverb { room_size, damping, mix } => {
-                Some((Box::new(effects::ReverbProcessor::new(*room_size, *damping, *mix)), 3))
-            }
+            NodeType::AudioReverb {
+                room_size,
+                damping,
+                mix,
+            } => Some((
+                Box::new(effects::ReverbProcessor::new(*room_size, *damping, *mix)),
+                3,
+            )),
             NodeType::AudioLowPass { cutoff } => {
                 Some((Box::new(effects::LowPassProcessor::new(*cutoff)), 1))
             }
@@ -503,7 +536,10 @@ impl AudioManager {
                 let na = any.downcast_ref::<crate::nodes::neural_audio_node::NeuralAudioNode>()?;
                 let out_buf = na.bridge.output_buffer.clone();
                 let in_buf = na.bridge.input_buffer.clone();
-                Some((Box::new(neural_audio::NeuralAudioProcessor::new(out_buf, in_buf)), 0))
+                Some((
+                    Box::new(neural_audio::NeuralAudioProcessor::new(out_buf, in_buf)),
+                    0,
+                ))
             }
             NodeType::Dynamic { inner } if inner.node.type_tag() == "noise_removal" => {
                 // Pull the node's current settings so the processor starts
@@ -512,30 +548,55 @@ impl AudioManager {
                 let params = inner.node.audio_params();
                 let cutoff = *params.first().unwrap_or(&80.0);
                 let thresh = *params.get(1).unwrap_or(&0.0);
-                Some((Box::new(effects::NoiseRemovalProcessor::new(cutoff, thresh)), 2))
+                Some((
+                    Box::new(effects::NoiseRemovalProcessor::new(cutoff, thresh)),
+                    2,
+                ))
             }
             NodeType::Dynamic { inner } if inner.node.type_tag() == "voice_effects" => {
                 let params = inner.node.audio_params();
                 let effect = *params.first().unwrap_or(&0.0);
-                let p1     = *params.get(1).unwrap_or(&0.6);
-                let p2     = *params.get(2).unwrap_or(&0.3);
-                let p3     = *params.get(3).unwrap_or(&0.0);
-                let mix    = *params.get(4).unwrap_or(&0.5);
-                Some((Box::new(voice_effects::VoiceEffectsProcessor::new(effect, p1, p2, p3, mix)), 5))
+                let p1 = *params.get(1).unwrap_or(&0.6);
+                let p2 = *params.get(2).unwrap_or(&0.3);
+                let p3 = *params.get(3).unwrap_or(&0.0);
+                let mix = *params.get(4).unwrap_or(&0.5);
+                Some((
+                    Box::new(voice_effects::VoiceEffectsProcessor::new(
+                        effect, p1, p2, p3, mix,
+                    )),
+                    5,
+                ))
             }
             NodeType::AudioInput { gain, .. } => {
                 if let Some(buf) = self.input_buffers.get(&nid) {
                     // 2 params: [0] gain, [1] agc_enabled (0/1). Using ::new()
                     // initializes AGC state correctly.
-                    Some((Box::new(input::LiveInputProcessor::new(buf.clone(), *gain)), 2))
-                } else { None }
+                    Some((
+                        Box::new(input::LiveInputProcessor::new(buf.clone(), *gain)),
+                        2,
+                    ))
+                } else {
+                    None
+                }
             }
             NodeType::AudioPlayer { volume, .. } => {
                 if let Some(buf) = self.file_buffers.get(&nid) {
-                    Some((Box::new(input::FilePlayerProcessor { buffer: buf.clone(), volume: *volume }), 1))
-                } else { None }
+                    Some((
+                        Box::new(input::FilePlayerProcessor {
+                            buffer: buf.clone(),
+                            volume: *volume,
+                        }),
+                        1,
+                    ))
+                } else {
+                    None
+                }
             }
-            NodeType::AudioSampler { volume, record_duration, .. } => {
+            NodeType::AudioSampler {
+                volume,
+                record_duration,
+                ..
+            } => {
                 // Make sure a buffer exists so the processor can be registered
                 // during auto-registration of newly-added nodes. Without this,
                 // a freshly created Sampler node has no processor/connections
@@ -544,7 +605,10 @@ impl AudioManager {
                     buf.clone()
                 } else {
                     let sr = self.engine_sample_rate as u32;
-                    let buf = std::sync::Arc::new(super::buffers::SamplerBuffer::new(sr, *record_duration));
+                    let buf = std::sync::Arc::new(super::buffers::SamplerBuffer::new(
+                        sr,
+                        *record_duration,
+                    ));
                     self.sampler_buffers.insert(nid, buf.clone());
                     buf
                 };
@@ -560,11 +624,14 @@ impl AudioManager {
         self.node_params.clear();
 
         for (&nid, node) in &graph.nodes {
-            if let Some((processor, param_count)) = self.create_processor_for_node(&node.node_type, nid) {
+            if let Some((processor, param_count)) =
+                self.create_processor_for_node(&node.node_type, nid)
+            {
                 self.add_processor(nid, processor, param_count);
                 if let crate::graph::NodeType::Speaker { active, .. } = &node.node_type {
                     self.send_command(super::engine::AudioCommand::SetSpeaker {
-                        node_id: nid, active: *active,
+                        node_id: nid,
+                        active: *active,
                     });
                 }
             }
@@ -578,15 +645,17 @@ impl AudioManager {
         // leave Video In's URL audio mute (the pump thread keeps writing
         // samples that nobody consumes). Detected by "buffer exists but
         // node_params doesn't" and patched in with a FilePlayerProcessor.
-        let orphan_buffers: Vec<(NodeId, Arc<FilePlayerBuffer>)> = self.file_buffers.iter()
+        let orphan_buffers: Vec<(NodeId, Arc<FilePlayerBuffer>)> = self
+            .file_buffers
+            .iter()
             .filter(|(nid, _)| !self.node_params.contains_key(nid))
             .map(|(nid, buf)| (*nid, buf.clone()))
             .collect();
         for (nid, buffer) in orphan_buffers {
             let processor = Box::new(super::processors::input::FilePlayerProcessor {
                 buffer,
-                volume: 1.0,  // current volume comes from atomics; render
-                              // pushes the actual value next frame.
+                volume: 1.0, // current volume comes from atomics; render
+                             // pushes the actual value next frame.
             });
             self.add_processor(nid, processor, 1);
             self.pending_connection_sync.insert(nid);
@@ -596,15 +665,21 @@ impl AudioManager {
         for conn in &graph.connections {
             let from_audio = self.node_params.contains_key(&conn.from_node);
             let to_audio = self.node_params.contains_key(&conn.to_node);
-            if !from_audio || !to_audio { continue; }
+            if !from_audio || !to_audio {
+                continue;
+            }
 
             // For mixer nodes: only connect audio ports (even indices: 0, 2, 4).
             // Odd indices (1, 3, 5) are gain control ports — handled by graph-layer
             // values, not engine connections.
-            let is_mixer = matches!(graph.nodes.get(&conn.to_node).map(|n| &n.node_type),
-                Some(crate::graph::NodeType::AudioMixer { .. }));
+            let is_mixer = matches!(
+                graph.nodes.get(&conn.to_node).map(|n| &n.node_type),
+                Some(crate::graph::NodeType::AudioMixer { .. })
+            );
             if is_mixer {
-                if conn.to_port % 2 != 0 { continue; } // skip gain ports
+                if conn.to_port % 2 != 0 {
+                    continue;
+                } // skip gain ports
                 self.connect_audio(conn.from_node, conn.to_node, conn.to_port / 2);
             } else {
                 self.connect_audio(conn.from_node, conn.to_node, conn.to_port);
@@ -616,7 +691,11 @@ impl AudioManager {
 
     /// Get or create a sampler buffer for the given node.
     /// Buffer capacity is based on record_duration × sample rate.
-    pub fn get_or_create_sampler_buffer(&mut self, node_id: NodeId, record_duration: f32) -> std::sync::Arc<super::buffers::SamplerBuffer> {
+    pub fn get_or_create_sampler_buffer(
+        &mut self,
+        node_id: NodeId,
+        record_duration: f32,
+    ) -> std::sync::Arc<super::buffers::SamplerBuffer> {
         if let Some(buf) = self.sampler_buffers.get(&node_id) {
             return buf.clone();
         }
@@ -626,7 +705,10 @@ impl AudioManager {
 
         // Register processor in the engine (if running)
         if self.engine_tx.is_some() && !self.has_processor(node_id) {
-            let processor = Box::new(super::processors::sampler::SamplerProcessor::new(buf.clone(), 1.0));
+            let processor = Box::new(super::processors::sampler::SamplerProcessor::new(
+                buf.clone(),
+                1.0,
+            ));
             self.add_processor(node_id, processor, 5);
         }
 
@@ -637,7 +719,11 @@ impl AudioManager {
 
     /// Start capturing audio from the named input device (or default).
     /// Creates a CPAL input stream that writes into a lock-free ring buffer.
-    pub fn start_input(&mut self, node_id: NodeId, device_name: Option<&str>) -> Result<(), String> {
+    pub fn start_input(
+        &mut self,
+        node_id: NodeId,
+        device_name: Option<&str>,
+    ) -> Result<(), String> {
         // Stop existing input for this node
         self.stop_input(node_id);
 
@@ -652,7 +738,8 @@ impl AudioManager {
                 .ok_or("No default input device")?
         };
 
-        let config = device.default_input_config()
+        let config = device
+            .default_input_config()
             .map_err(|e| format!("No input config: {}", e))?;
 
         let sample_rate = config.sample_rate().0 as usize;
@@ -662,18 +749,22 @@ impl AudioManager {
         let buffer = Arc::new(LiveInputBuffer::new(sample_rate));
         let buf_clone = buffer.clone();
 
-        let stream = device.build_input_stream(
-            &config.into(),
-            move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                buf_clone.write_interleaved(data, channels);
-            },
-            |err| {
-                crate::system_log::error(format!("Audio input error: {}", err));
-            },
-            None,
-        ).map_err(|e| format!("Build input stream failed: {}", e))?;
+        let stream = device
+            .build_input_stream(
+                &config.into(),
+                move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                    buf_clone.write_interleaved(data, channels);
+                },
+                |err| {
+                    crate::system_log::error(format!("Audio input error: {}", err));
+                },
+                None,
+            )
+            .map_err(|e| format!("Build input stream failed: {}", e))?;
 
-        stream.play().map_err(|e| format!("Input play failed: {}", e))?;
+        stream
+            .play()
+            .map_err(|e| format!("Input play failed: {}", e))?;
 
         self.input_streams.insert(node_id, stream);
         self.input_buffers.insert(node_id, buffer.clone());
@@ -755,7 +846,9 @@ impl AudioManager {
             // which would set FilePlayerProcessor::volume = 0.0 → silence.
             // Writing 1.0 here ensures the engine always reads 1.0.
             let tts_params = self.add_processor(node_id, processor, 1);
-            if let Some(p) = tts_params.get(0) { p.store(1.0); }
+            if let Some(p) = tts_params.get(0) {
+                p.store(1.0);
+            }
             self.pending_connection_sync.insert(node_id);
         }
 
@@ -841,18 +934,26 @@ impl AudioManager {
     /// playback once samples land in the ring buffer.
     ///
     /// Used by Video In for both its URL source and its File source.
-    pub fn play_pipe_audio(&mut self, node_id: NodeId, source: &str, start_time: f32) -> Result<(), String> {
+    pub fn play_pipe_audio(
+        &mut self,
+        node_id: NodeId,
+        source: &str,
+        start_time: f32,
+    ) -> Result<(), String> {
         // If we're already streaming on this node, stop the old pipeline
         // first so the new one starts clean.
         self.stop_file(node_id);
 
         let output_sr = self.engine_sample_rate;
 
-        let decoder = crate::nodes::video_player::AudioPipeDecoder::open_url(source, output_sr, start_time)?;
+        let decoder =
+            crate::nodes::video_player::AudioPipeDecoder::open_url(source, output_sr, start_time)?;
 
-        let capacity = (output_sr * 2.0) as usize;   // 2 s of slack — same as files
+        let capacity = (output_sr * 2.0) as usize; // 2 s of slack — same as files
         let buffer = Arc::new(FilePlayerBuffer::new(capacity));
-        buffer.file_sample_rate.store(output_sr as u32, Ordering::Release);
+        buffer
+            .file_sample_rate
+            .store(output_sr as u32, Ordering::Release);
 
         // Reader-pump thread: takes ownership of the AudioPipeDecoder, pulls
         // f32 sample chunks off its mpsc channel, writes them to the buffer.
@@ -878,9 +979,14 @@ impl AudioManager {
                         std::thread::sleep(std::time::Duration::from_millis(5));
                         continue;
                     }
-                    match decoder.samples_rx.recv_timeout(std::time::Duration::from_millis(200)) {
+                    match decoder
+                        .samples_rx
+                        .recv_timeout(std::time::Duration::from_millis(200))
+                    {
                         Ok(samples) => {
-                            buf_clone.decoded_position.fetch_add(samples.len(), Ordering::Relaxed);
+                            buf_clone
+                                .decoded_position
+                                .fetch_add(samples.len(), Ordering::Relaxed);
                             buf_clone.write(&samples);
                         }
                         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
@@ -933,7 +1039,9 @@ impl AudioManager {
 
         let capacity = (output_sr * 2.0) as usize;
         let buffer = Arc::new(FilePlayerBuffer::new(capacity));
-        buffer.file_sample_rate.store(output_sr as u32, Ordering::Release);
+        buffer
+            .file_sample_rate
+            .store(output_sr as u32, Ordering::Release);
 
         let buf_clone = buffer.clone();
         let handle = std::thread::Builder::new()
@@ -953,9 +1061,14 @@ impl AudioManager {
                         std::thread::sleep(std::time::Duration::from_millis(5));
                         continue;
                     }
-                    match decoder.samples_rx.recv_timeout(std::time::Duration::from_millis(200)) {
+                    match decoder
+                        .samples_rx
+                        .recv_timeout(std::time::Duration::from_millis(200))
+                    {
                         Ok(samples) => {
-                            buf_clone.decoded_position.fetch_add(samples.len(), Ordering::Relaxed);
+                            buf_clone
+                                .decoded_position
+                                .fetch_add(samples.len(), Ordering::Relaxed);
                             buf_clone.write(&samples);
                         }
                         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
@@ -1005,9 +1118,15 @@ impl AudioManager {
 
     /// Seek file playback to a specific position (seconds).
     /// Signals the decode thread to seek — no thread restart needed.
-    pub fn seek_file(&mut self, node_id: NodeId, _path: &str, position_secs: f64) -> Result<(), String> {
+    pub fn seek_file(
+        &mut self,
+        node_id: NodeId,
+        _path: &str,
+        position_secs: f64,
+    ) -> Result<(), String> {
         if let Some(buf) = self.file_buffers.get(&node_id) {
-            buf.seek_target_ms.store((position_secs * 1000.0) as usize, Ordering::Release);
+            buf.seek_target_ms
+                .store((position_secs * 1000.0) as usize, Ordering::Release);
             buf.seek_requested.store(true, Ordering::Release);
             self.file_playing.insert(node_id, true);
             Ok(())
@@ -1018,7 +1137,8 @@ impl AudioManager {
 
     /// Check if paused
     pub fn is_file_paused(&self, node_id: NodeId) -> bool {
-        self.file_buffers.get(&node_id)
+        self.file_buffers
+            .get(&node_id)
             .map(|b| b.paused.load(Ordering::Relaxed))
             .unwrap_or(false)
     }
@@ -1028,7 +1148,8 @@ impl AudioManager {
     /// samples that the audio callback hasn't consumed. Pair with
     /// `is_file_buffer_drained` to detect actual end-of-playback.
     pub fn is_file_finished(&self, node_id: NodeId) -> bool {
-        self.file_buffers.get(&node_id)
+        self.file_buffers
+            .get(&node_id)
             .map(|b| b.finished.load(Ordering::Relaxed))
             .unwrap_or(false)
     }
@@ -1041,7 +1162,8 @@ impl AudioManager {
     /// stopped milliseconds after Play — before any audio reaches the
     /// speaker.
     pub fn is_file_buffer_drained(&self, node_id: NodeId) -> bool {
-        self.file_buffers.get(&node_id)
+        self.file_buffers
+            .get(&node_id)
             .map(|b| b.buffered() == 0)
             .unwrap_or(true)
     }
@@ -1116,6 +1238,4 @@ impl AudioManager {
         self.spectrum_results.remove(&node_id);
         self.clap_gui_handles.remove(&node_id);
     }
-
 }
-

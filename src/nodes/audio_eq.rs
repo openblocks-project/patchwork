@@ -4,19 +4,60 @@ use std::collections::HashMap;
 
 /// Frequency labels for the EQ curve (log-spaced)
 const FREQ_LABELS: &[(f32, &str)] = &[
-    (0.07, "50"), (0.18, "100"), (0.29, "250"), (0.42, "500"),
-    (0.53, "1k"), (0.64, "2k"), (0.75, "5k"), (0.87, "10k"),
+    (0.07, "50"),
+    (0.18, "100"),
+    (0.29, "250"),
+    (0.42, "500"),
+    (0.53, "1k"),
+    (0.64, "2k"),
+    (0.75, "5k"),
+    (0.87, "10k"),
 ];
 
 /// EQ presets: (name, points)
 fn eq_preset(name: &str) -> Vec<[f32; 2]> {
     match name {
         "Flat" => vec![[0.0, 0.5], [0.25, 0.5], [0.5, 0.5], [0.75, 0.5], [1.0, 0.5]],
-        "Bass+" => vec![[0.0, 0.75], [0.15, 0.7], [0.3, 0.55], [0.5, 0.5], [0.75, 0.5], [1.0, 0.5]],
-        "Treble+" => vec![[0.0, 0.5], [0.25, 0.5], [0.5, 0.5], [0.7, 0.55], [0.85, 0.7], [1.0, 0.75]],
-        "Mid Scoop" => vec![[0.0, 0.6], [0.2, 0.55], [0.4, 0.35], [0.6, 0.35], [0.8, 0.55], [1.0, 0.6]],
-        "Presence" => vec![[0.0, 0.5], [0.3, 0.5], [0.5, 0.6], [0.65, 0.65], [0.8, 0.55], [1.0, 0.5]],
-        "Warmth" => vec![[0.0, 0.65], [0.2, 0.6], [0.4, 0.52], [0.6, 0.5], [0.8, 0.45], [1.0, 0.4]],
+        "Bass+" => vec![
+            [0.0, 0.75],
+            [0.15, 0.7],
+            [0.3, 0.55],
+            [0.5, 0.5],
+            [0.75, 0.5],
+            [1.0, 0.5],
+        ],
+        "Treble+" => vec![
+            [0.0, 0.5],
+            [0.25, 0.5],
+            [0.5, 0.5],
+            [0.7, 0.55],
+            [0.85, 0.7],
+            [1.0, 0.75],
+        ],
+        "Mid Scoop" => vec![
+            [0.0, 0.6],
+            [0.2, 0.55],
+            [0.4, 0.35],
+            [0.6, 0.35],
+            [0.8, 0.55],
+            [1.0, 0.6],
+        ],
+        "Presence" => vec![
+            [0.0, 0.5],
+            [0.3, 0.5],
+            [0.5, 0.6],
+            [0.65, 0.65],
+            [0.8, 0.55],
+            [1.0, 0.5],
+        ],
+        "Warmth" => vec![
+            [0.0, 0.65],
+            [0.2, 0.6],
+            [0.4, 0.52],
+            [0.6, 0.5],
+            [0.8, 0.45],
+            [1.0, 0.4],
+        ],
         _ => vec![[0.0, 0.5], [1.0, 0.5]],
     }
 }
@@ -31,11 +72,29 @@ pub fn render(
     pending_disconnects: &mut Vec<(NodeId, usize)>,
 ) {
     // Audio input port
-    crate::nodes::audio_port_row(ui, "Audio", node_id, 0, true, port_positions, dragging_from, connections, pending_disconnects, PortKind::Audio);
+    crate::nodes::audio_port_row(
+        ui,
+        "Audio",
+        node_id,
+        0,
+        true,
+        port_positions,
+        dragging_from,
+        connections,
+        pending_disconnects,
+        PortKind::Audio,
+    );
 
     // ── Presets ──────────────────────────────────────────────────
     ui.horizontal(|ui| {
-        for name in &["Flat", "Bass+", "Treble+", "Mid Scoop", "Presence", "Warmth"] {
+        for name in &[
+            "Flat",
+            "Bass+",
+            "Treble+",
+            "Mid Scoop",
+            "Presence",
+            "Warmth",
+        ] {
             if ui.small_button(*name).clicked() {
                 *points = eq_preset(name);
             }
@@ -45,7 +104,8 @@ pub fn render(
     // ── Curve editor ─────────────────────────────────────────────
     let curve_w = 240.0_f32.min(ui.available_width().max(120.0));
     let curve_h = 140.0;
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(curve_w, curve_h), egui::Sense::click_and_drag());
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(curve_w, curve_h), egui::Sense::click_and_drag());
     let painter = ui.painter();
 
     // Background
@@ -115,7 +175,8 @@ pub fn render(
                     egui::pos2(p0.x, p0.y.min(center_y)),
                     egui::pos2(p1.x, p0.y.max(center_y)),
                 ),
-                0.0, fill_color,
+                0.0,
+                fill_color,
             );
         }
     }
@@ -129,18 +190,37 @@ pub fn render(
         let py = rect.bottom() - point[1] * rect.height();
         let pt = egui::pos2(px, py);
         let is_dragging = dragging_idx == Some(i);
-        let is_hovered = response.hover_pos().map(|p| p.distance(pt) < 14.0).unwrap_or(false);
+        let is_hovered = response
+            .hover_pos()
+            .map(|p| p.distance(pt) < 14.0)
+            .unwrap_or(false);
 
         if is_dragging {
-            painter.circle_filled(pt, 12.0, egui::Color32::from_rgba_premultiplied(160, 120, 255, 30));
+            painter.circle_filled(
+                pt,
+                12.0,
+                egui::Color32::from_rgba_premultiplied(160, 120, 255, 30),
+            );
             painter.circle_filled(pt, 8.0, egui::Color32::WHITE);
-            painter.circle_stroke(pt, 8.0, egui::Stroke::new(2.0, egui::Color32::from_rgb(180, 140, 255)));
+            painter.circle_stroke(
+                pt,
+                8.0,
+                egui::Stroke::new(2.0, egui::Color32::from_rgb(180, 140, 255)),
+            );
         } else if is_hovered {
             painter.circle_filled(pt, 7.5, egui::Color32::from_rgb(230, 200, 255));
-            painter.circle_stroke(pt, 7.5, egui::Stroke::new(1.5, egui::Color32::from_rgb(180, 140, 255)));
+            painter.circle_stroke(
+                pt,
+                7.5,
+                egui::Stroke::new(1.5, egui::Color32::from_rgb(180, 140, 255)),
+            );
         } else {
             painter.circle_filled(pt, 6.5, egui::Color32::from_rgb(200, 160, 255));
-            painter.circle_stroke(pt, 6.5, egui::Stroke::new(1.0, egui::Color32::from_rgb(100, 80, 160)));
+            painter.circle_stroke(
+                pt,
+                6.5,
+                egui::Stroke::new(1.0, egui::Color32::from_rgb(100, 80, 160)),
+            );
         }
     }
 
@@ -222,7 +302,13 @@ pub fn render(
     }
 
     // ── dB labels (left side) ───────────────────────────────────
-    for &(db, label) in &[(-24.0, "-24"), (-12.0, "-12"), (0.0, "0"), (12.0, "+12"), (24.0, "+24")] {
+    for &(db, label) in &[
+        (-24.0, "-24"),
+        (-12.0, "-12"),
+        (0.0, "0"),
+        (12.0, "+12"),
+        (24.0, "+24"),
+    ] {
         let y_norm = (db + 24.0) / 48.0; // -24→0, 0→0.5, +24→1
         let y = rect.bottom() - y_norm * rect.height();
         painter.text(
@@ -237,21 +323,46 @@ pub fn render(
     ui.add_space(10.0); // Space for frequency labels
 
     // Audio output port
-    crate::nodes::audio_port_row(ui, "Audio", node_id, 0, false, port_positions, dragging_from, connections, pending_disconnects, PortKind::Audio);
+    crate::nodes::audio_port_row(
+        ui,
+        "Audio",
+        node_id,
+        0,
+        false,
+        port_positions,
+        dragging_from,
+        connections,
+        pending_disconnects,
+        PortKind::Audio,
+    );
 }
 
 /// Cubic Hermite interpolation of sorted curve points
 fn evaluate_curve(points: &[[f32; 2]], x: f32) -> f32 {
-    if points.is_empty() { return 0.5; }
-    if points.len() == 1 { return points[0][1]; }
-    if x <= points[0][0] { return points[0][1]; }
-    if let Some(last) = points.last() { if x >= last[0] { return last[1]; } }
+    if points.is_empty() {
+        return 0.5;
+    }
+    if points.len() == 1 {
+        return points[0][1];
+    }
+    if x <= points[0][0] {
+        return points[0][1];
+    }
+    if let Some(last) = points.last() {
+        if x >= last[0] {
+            return last[1];
+        }
+    }
 
     for i in 0..points.len() - 1 {
         let x0 = points[i][0];
         let x1 = points[i + 1][0];
         if x >= x0 && x <= x1 {
-            let t = if (x1 - x0).abs() < 1e-6 { 0.0 } else { (x - x0) / (x1 - x0) };
+            let t = if (x1 - x0).abs() < 1e-6 {
+                0.0
+            } else {
+                (x - x0) / (x1 - x0)
+            };
             let y0 = points[i][1];
             let y1 = points[i + 1][1];
             let t2 = t * t;

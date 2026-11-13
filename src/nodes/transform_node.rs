@@ -935,8 +935,6 @@
 //     }
 // }
 
-
-
 //! TransformNode — Scale (X/Y), Rotate, Flip for images.
 //!
 //! Phase 2.5: GPU-aware. Mirrors the Kaleidoscope template
@@ -947,11 +945,11 @@
 //! and emit `PortValue::GpuImage`. Without wgpu (headless / tests) we
 //! fall through to the existing CPU DDA path — unchanged.
 
-use crate::graph::{PortDef, PortKind, PortValue, ImageData};
+use crate::graph::{ImageData, PortDef, PortKind, PortValue};
 use crate::node_trait::{NodeBehavior, RenderContext};
-use serde::{Serialize, Deserialize};
 use eframe::egui;
 use eframe::egui_wgpu::wgpu;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -988,13 +986,22 @@ pub struct TransformNode {
     col_map: Vec<i32>,
 }
 
-fn default_one() -> f32 { 1.0 }
+fn default_one() -> f32 {
+    1.0
+}
 
 impl Default for TransformNode {
     fn default() -> Self {
         Self {
-            scale_x: 1.0, scale_y: 1.0, rotation: 0.0, flip_h: false, flip_v: false,
-            cache_in_ptr: 0, cache_param_key: 0,cache_content_key: 0, cache_out: None,
+            scale_x: 1.0,
+            scale_y: 1.0,
+            rotation: 0.0,
+            flip_h: false,
+            flip_v: false,
+            cache_in_ptr: 0,
+            cache_param_key: 0,
+            cache_content_key: 0,
+            cache_out: None,
             col_map: Vec::new(),
         }
     }
@@ -1010,7 +1017,9 @@ fn alloc_pixel_buf(bytes: usize) -> Vec<u8> {
     // patterns. Each caller fills every pixel via its inner loop below
     // — in-bounds source reads write the real pixel, out-of-bounds
     // branches explicitly write 0.
-    unsafe { v.set_len(bytes); }
+    unsafe {
+        v.set_len(bytes);
+    }
     v
 }
 
@@ -1033,7 +1042,9 @@ impl TransformNode {
             // Sample a few evenly-spaced bytes — cheap but catches motion.
             for i in 0..8 {
                 let idx = (n / 8) * i;
-                if idx < n { px[idx].hash(&mut h); }
+                if idx < n {
+                    px[idx].hash(&mut h);
+                }
             }
             px[n - 1].hash(&mut h);
         }
@@ -1042,8 +1053,8 @@ impl TransformNode {
     fn param_key(&self) -> u64 {
         let sx = (self.scale_x * 10_000.0) as i32 as u64;
         let sy = (self.scale_y * 10_000.0) as i32 as u64;
-        let r  = (self.rotation * 10_000.0) as i32 as u64;
-        let f  = (self.flip_h as u64) | ((self.flip_v as u64) << 1);
+        let r = (self.rotation * 10_000.0) as i32 as u64;
+        let f = (self.flip_h as u64) | ((self.flip_v as u64) << 1);
         (sx << 48) ^ (sy << 32) ^ (r << 16) ^ f
     }
 }
@@ -1087,8 +1098,8 @@ impl TransformNode {
             let src_y = if self.flip_v { h - 1 - dy } else { dy };
             let src_row_start = src_y * w;
             let dst_row_start = dy * w;
-            let src_row = &src[src_row_start .. src_row_start + w];
-            let dst_row = &mut dst[dst_row_start .. dst_row_start + w];
+            let src_row = &src[src_row_start..src_row_start + w];
+            let dst_row = &mut dst[dst_row_start..dst_row_start + w];
 
             if self.flip_h {
                 // iter+rev compiles cleanly to a reversed indexed loop
@@ -1100,7 +1111,11 @@ impl TransformNode {
                 dst_row.copy_from_slice(src_row);
             }
         }
-        Arc::new(ImageData { width: img.width, height: img.height, pixels })
+        Arc::new(ImageData {
+            width: img.width,
+            height: img.height,
+            pixels,
+        })
     }
 
     /// Scale-only (optional flip, no rotation). Precomputes the source
@@ -1127,7 +1142,9 @@ impl TransformNode {
         self.col_map.reserve(out_w as usize);
         for dx in 0..out_w {
             let mut sx = (dx as f32 - cx_out) * inv_sx + cx_in;
-            if self.flip_h { sx = img.width as f32 - 1.0 - sx; }
+            if self.flip_h {
+                sx = img.width as f32 - 1.0 - sx;
+            }
             self.col_map.push(sx as i32);
         }
 
@@ -1137,7 +1154,9 @@ impl TransformNode {
 
         for dy in 0..out_h {
             let mut sy = (dy as f32 - cy_out) * inv_sy + cy_in;
-            if self.flip_v { sy = img.height as f32 - 1.0 - sy; }
+            if self.flip_v {
+                sy = img.height as f32 - 1.0 - sy;
+            }
             let iy = sy as i32;
             let dst_row_start = dy as usize * out_w as usize;
 
@@ -1160,7 +1179,11 @@ impl TransformNode {
             }
         }
 
-        Arc::new(ImageData { width: out_w, height: out_h, pixels })
+        Arc::new(ImageData {
+            width: out_w,
+            height: out_h,
+            pixels,
+        })
     }
 
     fn transform_image(&mut self, img: &ImageData) -> Arc<ImageData> {
@@ -1208,14 +1231,22 @@ impl TransformNode {
         // optional flips by flipping the matrix rows directly.
         //   src_x = a*dx + b*dy + tx
         //   src_y = c*dx + d*dy + ty
-        let mut a =  cos_a * inv_sx;
-        let mut b =  sin_a * inv_sx;
+        let mut a = cos_a * inv_sx;
+        let mut b = sin_a * inv_sx;
         let mut c = -sin_a * inv_sy;
-        let mut d =  cos_a * inv_sy;
+        let mut d = cos_a * inv_sy;
         let mut tx = cx_in - a * cx_out - b * cy_out;
         let mut ty = cy_in - c * cx_out - d * cy_out;
-        if self.flip_h { a = -a; b = -b; tx = (w - 1.0) - tx; }
-        if self.flip_v { c = -c; d = -d; ty = (h - 1.0) - ty; }
+        if self.flip_h {
+            a = -a;
+            b = -b;
+            tx = (w - 1.0) - tx;
+        }
+        if self.flip_v {
+            c = -c;
+            d = -d;
+            ty = (h - 1.0) - ty;
+        }
 
         let in_w = img.width as i32;
         let in_h = img.height as i32;
@@ -1231,7 +1262,7 @@ impl TransformNode {
             let dst_row_start = dy as usize * out_w as usize;
 
             for dx in 0..out_w {
-                let ix = sx as i32;   // truncate is fine for nearest-neighbour
+                let ix = sx as i32; // truncate is fine for nearest-neighbour
                 let iy = sy as i32;
                 let di = dst_row_start + dx as usize;
 
@@ -1248,7 +1279,11 @@ impl TransformNode {
             }
         }
 
-        Arc::new(ImageData { width: out_w, height: out_h, pixels })
+        Arc::new(ImageData {
+            width: out_w,
+            height: out_h,
+            pixels,
+        })
     }
 }
 
@@ -1304,10 +1339,10 @@ struct Params {
 "#;
 
 struct TransformGpu {
-    pipeline:          wgpu::RenderPipeline,
+    pipeline: wgpu::RenderPipeline,
     bind_group_layout: wgpu::BindGroupLayout,
-    uniform_buffer:    wgpu::Buffer,
-    sampler:           wgpu::Sampler,
+    uniform_buffer: wgpu::Buffer,
+    sampler: wgpu::Sampler,
 }
 
 struct TransformStore {
@@ -1328,7 +1363,9 @@ fn ensure_pipeline(
             .and_then(|s| s.nodes.get(&node_id))
             .is_some()
     };
-    if already { return true; }
+    if already {
+        return true;
+    }
 
     device.push_error_scope(wgpu::ErrorFilter::Validation);
 
@@ -1440,7 +1477,12 @@ fn ensure_pipeline(
         ..Default::default()
     });
 
-    let gpu = TransformGpu { pipeline, bind_group_layout, uniform_buffer, sampler };
+    let gpu = TransformGpu {
+        pipeline,
+        bind_group_layout,
+        uniform_buffer,
+        sampler,
+    };
     let mut renderer = render_state.renderer.write();
     if let Some(store) = renderer.callback_resources.get_mut::<TransformStore>() {
         store.nodes.insert(node_id, gpu);
@@ -1472,14 +1514,22 @@ impl TransformNode {
         let inv_sx = 1.0 / self.scale_x;
         let inv_sy = 1.0 / self.scale_y;
 
-        let mut a =  cos_a * inv_sx;
-        let mut b =  sin_a * inv_sx;
+        let mut a = cos_a * inv_sx;
+        let mut b = sin_a * inv_sx;
         let mut c = -sin_a * inv_sy;
-        let mut d =  cos_a * inv_sy;
+        let mut d = cos_a * inv_sy;
         let mut tx = cx_in - a * cx_out - b * cy_out;
         let mut ty = cy_in - c * cx_out - d * cy_out;
-        if self.flip_h { a = -a; b = -b; tx = (w - 1.0) - tx; }
-        if self.flip_v { c = -c; d = -d; ty = (h - 1.0) - ty; }
+        if self.flip_h {
+            a = -a;
+            b = -b;
+            tx = (w - 1.0) - tx;
+        }
+        if self.flip_v {
+            c = -c;
+            d = -d;
+            ty = (h - 1.0) - ty;
+        }
         ([a, b, c, d, tx, ty], out_w, out_h)
     }
 
@@ -1499,10 +1549,14 @@ impl TransformNode {
         needs_readback: bool,
     ) -> Option<crate::graph::PortValue> {
         let device = &render_state.device;
-        let queue  = &render_state.queue;
-        if in_w == 0 || in_h == 0 { return None; }
+        let queue = &render_state.queue;
+        if in_w == 0 || in_h == 0 {
+            return None;
+        }
 
-        if !ensure_pipeline(node_id, render_state) { return None; }
+        if !ensure_pipeline(node_id, render_state) {
+            return None;
+        }
 
         // Prefer the upstream GPU-resident texture; only CPU-upload
         // when we have real pixels and no GPU source is available.
@@ -1513,7 +1567,8 @@ impl TransformNode {
             Some((view, _, _)) => (view, None),
             None => match cpu_img.filter(|i| !i.pixels.is_empty()) {
                 Some(img) => {
-                    let tex = crate::gpu_image::upload_texture(device, queue, img, "transform_input");
+                    let tex =
+                        crate::gpu_image::upload_texture(device, queue, img, "transform_input");
                     let v = tex.create_view(&Default::default());
                     (v, Some(tex))
                 }
@@ -1525,7 +1580,11 @@ impl TransformNode {
 
         let output_tex = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("transform_output"),
-            size: wgpu::Extent3d { width: out_w, height: out_h, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width: out_w,
+                height: out_h,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -1536,8 +1595,8 @@ impl TransformNode {
             // gamma conversions on sample and store don't cancel.
             format: wgpu::TextureFormat::Bgra8UnormSrgb,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                 | wgpu::TextureUsages::COPY_SRC
-                 | wgpu::TextureUsages::TEXTURE_BINDING,
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
         let output_view = output_tex.create_view(&Default::default());
@@ -1548,11 +1607,18 @@ impl TransformNode {
 
         // Pack uniforms (12 f32s, 48 bytes — std140 16-byte struct align).
         let params: [f32; 12] = [
-            m[0], m[1], m[2], m[3], // a b c d
-            m[4], m[5],             // tx ty
-            in_w as f32, in_h as f32,
-            out_w as f32, out_h as f32,
-            0.0, 0.0,               // pad
+            m[0],
+            m[1],
+            m[2],
+            m[3], // a b c d
+            m[4],
+            m[5], // tx ty
+            in_w as f32,
+            in_h as f32,
+            out_w as f32,
+            out_h as f32,
+            0.0,
+            0.0, // pad
         ];
         queue.write_buffer(&gpu.uniform_buffer, 0, bytemuck::cast_slice(&params));
 
@@ -1560,9 +1626,18 @@ impl TransformNode {
             label: None,
             layout: &gpu.bind_group_layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: gpu.uniform_buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&input_view) },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&gpu.sampler) },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: gpu.uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&input_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&gpu.sampler),
+                },
             ],
         });
 
@@ -1593,24 +1668,29 @@ impl TransformNode {
         drop(renderer);
 
         if needs_readback {
-            let result = crate::gpu_image::readback_texture(device, queue, &output_tex, out_w, out_h);
+            let result =
+                crate::gpu_image::readback_texture(device, queue, &output_tex, out_w, out_h);
             tex_cache.publish(node_id, 0, output_tex, out_w, out_h, render_state);
             Some(crate::graph::PortValue::Image(result))
         } else {
             tex_cache.publish(node_id, 0, output_tex, out_w, out_h, render_state);
-            Some(crate::graph::PortValue::GpuImage(crate::graph::GpuImageHandle {
-                node_id,
-                port: 0,
-                width: out_w,
-                height: out_h,
-                frame_stamp: tex_cache.frame_stamp(node_id, 0),
-            }))
+            Some(crate::graph::PortValue::GpuImage(
+                crate::graph::GpuImageHandle {
+                    node_id,
+                    port: 0,
+                    width: out_w,
+                    height: out_h,
+                    frame_stamp: tex_cache.frame_stamp(node_id, 0),
+                },
+            ))
         }
     }
 }
 
 impl NodeBehavior for TransformNode {
-    fn title(&self) -> &str { "Transform" }
+    fn title(&self) -> &str {
+        "Transform"
+    }
     fn inputs(&self) -> Vec<PortDef> {
         vec![
             PortDef::new("Image", PortKind::Image),
@@ -1619,15 +1699,23 @@ impl NodeBehavior for TransformNode {
             PortDef::new("Rotation", PortKind::Number),
         ]
     }
-    fn outputs(&self) -> Vec<PortDef> { vec![PortDef::new("Image", PortKind::Image)] }
-    fn color_hint(&self) -> [u8; 3] { [140, 180, 220] }
-    fn inline_ports(&self) -> bool { true }
+    fn outputs(&self) -> Vec<PortDef> {
+        vec![PortDef::new("Image", PortKind::Image)]
+    }
+    fn color_hint(&self) -> [u8; 3] {
+        [140, 180, 220]
+    }
+    fn inline_ports(&self) -> bool {
+        true
+    }
 
     /// Image input (port 0) is happy with a `GpuImage` handle —
     /// `evaluate_with_ctx` resolves it through the GPU texture cache.
     /// Keeps the zero-readback Syphon / Spout chain intact. Param
     /// ports (1..=3) stay CPU (Number values).
-    fn needs_cpu_image_input(&self, port: usize) -> bool { port != 0 }
+    fn needs_cpu_image_input(&self, port: usize) -> bool {
+        port != 0
+    }
 
     fn evaluate_with_ctx(
         &mut self,
@@ -1635,9 +1723,15 @@ impl NodeBehavior for TransformNode {
         ctx: &mut crate::node_trait::EvalCtx<'_>,
     ) -> Vec<(usize, PortValue)> {
         // Apply param-port overrides — same clamps as `evaluate`.
-        if let Some(PortValue::Float(v)) = inputs.get(1) { self.scale_x = v.clamp(0.1, 3.0); }
-        if let Some(PortValue::Float(v)) = inputs.get(2) { self.scale_y = v.clamp(0.1, 3.0); }
-        if let Some(PortValue::Float(v)) = inputs.get(3) { self.rotation = *v % 360.0; }
+        if let Some(PortValue::Float(v)) = inputs.get(1) {
+            self.scale_x = v.clamp(0.1, 3.0);
+        }
+        if let Some(PortValue::Float(v)) = inputs.get(2) {
+            self.scale_y = v.clamp(0.1, 3.0);
+        }
+        if let Some(PortValue::Float(v)) = inputs.get(3) {
+            self.rotation = *v % 360.0;
+        }
 
         // Resolve input dimensions from either a CPU `Image` or a GPU
         // handle. The cpu_img option lets `process_gpu` fall back to
@@ -1682,9 +1776,14 @@ impl NodeBehavior for TransformNode {
         if let Some(rs) = ctx.render_state {
             let gpu_src = ctx.input_sources.first().copied().flatten();
             if let Some(val) = self.process_gpu(
-                in_w, in_h, cpu_img,
-                ctx.node_id, rs, ctx.gpu_tex_cache,
-                gpu_src, ctx.needs_readback,
+                in_w,
+                in_h,
+                cpu_img,
+                ctx.node_id,
+                rs,
+                ctx.gpu_tex_cache,
+                gpu_src,
+                ctx.needs_readback,
             ) {
                 return vec![(0, val)];
             }
@@ -1696,15 +1795,19 @@ impl NodeBehavior for TransformNode {
     }
 
     fn evaluate(&mut self, inputs: &[PortValue]) -> Vec<(usize, PortValue)> {
-        if let Some(PortValue::Float(v)) = inputs.get(1) { self.scale_x = v.clamp(0.1, 3.0); }
-        if let Some(PortValue::Float(v)) = inputs.get(2) { self.scale_y = v.clamp(0.1, 3.0); }
-        if let Some(PortValue::Float(v)) = inputs.get(3) { self.rotation = *v % 360.0; }
+        if let Some(PortValue::Float(v)) = inputs.get(1) {
+            self.scale_x = v.clamp(0.1, 3.0);
+        }
+        if let Some(PortValue::Float(v)) = inputs.get(2) {
+            self.scale_y = v.clamp(0.1, 3.0);
+        }
+        if let Some(PortValue::Float(v)) = inputs.get(3) {
+            self.rotation = *v % 360.0;
+        }
 
         let result = match inputs.first() {
             // Identity passthrough — just clone the Arc, no pixel work.
-            Some(PortValue::Image(img)) if self.is_identity() => {
-                PortValue::Image(img.clone())
-            }
+            Some(PortValue::Image(img)) if self.is_identity() => PortValue::Image(img.clone()),
             // Some(PortValue::Image(img)) => {
             //     // Memoize across repaints: UI runs at ~60 Hz but Camera
             //     // emits at ~30 Hz, so we see the same input Arc twice.
@@ -1748,63 +1851,138 @@ impl NodeBehavior for TransformNode {
                 // identically every frame and froze on the first frame.
                 // Recompute each frame instead.
                 PortValue::Image(self.transform_image(img))
-
             }
             _ => PortValue::None,
         };
         vec![(0, result)]
     }
 
-    fn type_tag(&self) -> &str { "transform" }
-    fn save_state(&self) -> serde_json::Value { serde_json::to_value(self).unwrap_or_default() }
+    fn type_tag(&self) -> &str {
+        "transform"
+    }
+    fn save_state(&self) -> serde_json::Value {
+        serde_json::to_value(self).unwrap_or_default()
+    }
     fn load_state(&mut self, state: &serde_json::Value) {
-        if let Ok(l) = serde_json::from_value::<TransformNode>(state.clone()) { *self = l; }
+        if let Ok(l) = serde_json::from_value::<TransformNode>(state.clone()) {
+            *self = l;
+        }
     }
 
     fn render_with_context(&mut self, ui: &mut egui::Ui, ctx: &mut RenderContext) {
         // Image input
         ui.horizontal(|ui| {
-            crate::nodes::inline_port_circle(ui, ctx.node_id, 0, true, ctx.connections,
-                ctx.port_positions, ctx.dragging_from, ctx.pending_disconnects, PortKind::Image);
+            crate::nodes::inline_port_circle(
+                ui,
+                ctx.node_id,
+                0,
+                true,
+                ctx.connections,
+                ctx.port_positions,
+                ctx.dragging_from,
+                ctx.pending_disconnects,
+                PortKind::Image,
+            );
             ui.label(egui::RichText::new("Image").small());
         });
 
         // Scale X
-        let sx_wired = ctx.connections.iter().any(|c| c.to_node == ctx.node_id && c.to_port == 1);
+        let sx_wired = ctx
+            .connections
+            .iter()
+            .any(|c| c.to_node == ctx.node_id && c.to_port == 1);
         ui.horizontal(|ui| {
-            crate::nodes::inline_port_circle(ui, ctx.node_id, 1, true, ctx.connections,
-                ctx.port_positions, ctx.dragging_from, ctx.pending_disconnects, PortKind::Number);
+            crate::nodes::inline_port_circle(
+                ui,
+                ctx.node_id,
+                1,
+                true,
+                ctx.connections,
+                ctx.port_positions,
+                ctx.dragging_from,
+                ctx.pending_disconnects,
+                PortKind::Number,
+            );
             ui.label(egui::RichText::new("Scale X").small());
             if sx_wired {
-                ui.label(egui::RichText::new(format!("{:.2}", self.scale_x)).small().color(egui::Color32::from_rgb(80, 170, 255)));
+                ui.label(
+                    egui::RichText::new(format!("{:.2}", self.scale_x))
+                        .small()
+                        .color(egui::Color32::from_rgb(80, 170, 255)),
+                );
             } else {
-                ui.add(egui::Slider::new(&mut self.scale_x, 0.1..=3.0).step_by(0.01).show_value(true));
+                ui.add(
+                    egui::Slider::new(&mut self.scale_x, 0.1..=3.0)
+                        .step_by(0.01)
+                        .show_value(true),
+                );
             }
         });
 
         // Scale Y
-        let sy_wired = ctx.connections.iter().any(|c| c.to_node == ctx.node_id && c.to_port == 2);
+        let sy_wired = ctx
+            .connections
+            .iter()
+            .any(|c| c.to_node == ctx.node_id && c.to_port == 2);
         ui.horizontal(|ui| {
-            crate::nodes::inline_port_circle(ui, ctx.node_id, 2, true, ctx.connections,
-                ctx.port_positions, ctx.dragging_from, ctx.pending_disconnects, PortKind::Number);
+            crate::nodes::inline_port_circle(
+                ui,
+                ctx.node_id,
+                2,
+                true,
+                ctx.connections,
+                ctx.port_positions,
+                ctx.dragging_from,
+                ctx.pending_disconnects,
+                PortKind::Number,
+            );
             ui.label(egui::RichText::new("Scale Y").small());
             if sy_wired {
-                ui.label(egui::RichText::new(format!("{:.2}", self.scale_y)).small().color(egui::Color32::from_rgb(80, 170, 255)));
+                ui.label(
+                    egui::RichText::new(format!("{:.2}", self.scale_y))
+                        .small()
+                        .color(egui::Color32::from_rgb(80, 170, 255)),
+                );
             } else {
-                ui.add(egui::Slider::new(&mut self.scale_y, 0.1..=3.0).step_by(0.01).show_value(true));
+                ui.add(
+                    egui::Slider::new(&mut self.scale_y, 0.1..=3.0)
+                        .step_by(0.01)
+                        .show_value(true),
+                );
             }
         });
 
         // Rotation
-        let rot_wired = ctx.connections.iter().any(|c| c.to_node == ctx.node_id && c.to_port == 3);
+        let rot_wired = ctx
+            .connections
+            .iter()
+            .any(|c| c.to_node == ctx.node_id && c.to_port == 3);
         ui.horizontal(|ui| {
-            crate::nodes::inline_port_circle(ui, ctx.node_id, 3, true, ctx.connections,
-                ctx.port_positions, ctx.dragging_from, ctx.pending_disconnects, PortKind::Number);
+            crate::nodes::inline_port_circle(
+                ui,
+                ctx.node_id,
+                3,
+                true,
+                ctx.connections,
+                ctx.port_positions,
+                ctx.dragging_from,
+                ctx.pending_disconnects,
+                PortKind::Number,
+            );
             ui.label(egui::RichText::new("Rotate").small());
             if rot_wired {
-                ui.label(egui::RichText::new(format!("{:.0}°", self.rotation)).small().color(egui::Color32::from_rgb(80, 170, 255)));
+                ui.label(
+                    egui::RichText::new(format!("{:.0}°", self.rotation))
+                        .small()
+                        .color(egui::Color32::from_rgb(80, 170, 255)),
+                );
             } else {
-                ui.add(egui::Slider::new(&mut self.rotation, 0.0..=360.0).step_by(1.0).show_value(true).suffix("°"));
+                ui.add(
+                    egui::Slider::new(&mut self.rotation, 0.0..=360.0)
+                        .step_by(1.0)
+                        .show_value(true)
+                        .suffix("°"),
+                );
             }
         });
 
@@ -1820,15 +1998,28 @@ impl NodeBehavior for TransformNode {
         ui.label(egui::RichText::new("⚡ GPU").small().color(dim));
 
         ui.separator();
-        crate::nodes::audio_port_row(ui, "Image", ctx.node_id, 0, false, ctx.port_positions,
-            ctx.dragging_from, ctx.connections, ctx.pending_disconnects, PortKind::Image);
+        crate::nodes::audio_port_row(
+            ui,
+            "Image",
+            ctx.node_id,
+            0,
+            false,
+            ctx.port_positions,
+            ctx.dragging_from,
+            ctx.connections,
+            ctx.pending_disconnects,
+            PortKind::Image,
+        );
     }
 }
 
 pub fn register(registry: &mut crate::node_trait::NodeRegistryInner) {
     registry.register("transform", |state| {
-        if let Ok(n) = serde_json::from_value::<TransformNode>(state.clone()) { Box::new(n) }
-        else { Box::new(TransformNode::default()) }
+        if let Ok(n) = serde_json::from_value::<TransformNode>(state.clone()) {
+            Box::new(n)
+        } else {
+            Box::new(TransformNode::default())
+        }
     });
 }
 
@@ -1848,9 +2039,7 @@ pub(crate) fn cleanup_node(
 /// Wipe every per-node GPU entry. Called on project-load/reset so a
 /// fresh graph can't read back the previous project's textures via
 /// stale NodeId collisions.
-pub(crate) fn cleanup_all(
-    callback_resources: &mut eframe::egui_wgpu::CallbackResources,
-) {
+pub(crate) fn cleanup_all(callback_resources: &mut eframe::egui_wgpu::CallbackResources) {
     if let Some(store) = callback_resources.get_mut::<TransformStore>() {
         store.nodes.clear();
     }

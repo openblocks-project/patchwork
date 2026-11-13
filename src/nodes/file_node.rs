@@ -7,11 +7,11 @@
 //!
 //! One primary output port. Type adapts to content.
 
-use crate::graph::{PortDef, PortKind, PortValue, ImageData};
+use crate::graph::{ImageData, PortDef, PortKind, PortValue};
 use crate::node_trait::NodeBehavior;
-use serde::{Serialize, Deserialize};
-use eframe::egui;
 use crate::nodes::ScrollAreaExt;
+use eframe::egui;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
@@ -28,9 +28,9 @@ pub enum FileType {
 impl FileType {
     pub fn from_extension(ext: &str) -> Self {
         match ext.to_lowercase().as_str() {
-            "txt" | "md" | "json" | "toml" | "yaml" | "yml" | "csv" | "tsv"
-            | "xml" | "html" | "css" | "js" | "ts" | "rs" | "py" | "c" | "cpp"
-            | "h" | "wgsl" | "glsl" | "hlsl" | "lua" | "sh" | "bat" | "log" => FileType::Text,
+            "txt" | "md" | "json" | "toml" | "yaml" | "yml" | "csv" | "tsv" | "xml" | "html"
+            | "css" | "js" | "ts" | "rs" | "py" | "c" | "cpp" | "h" | "wgsl" | "glsl" | "hlsl"
+            | "lua" | "sh" | "bat" | "log" => FileType::Text,
             "png" | "jpg" | "jpeg" | "gif" | "bmp" | "webp" | "tga" | "tiff" => FileType::Image,
             "mp3" | "wav" | "ogg" | "flac" | "aac" | "m4a" | "aiff" => FileType::Audio,
             "mp4" | "mov" | "avi" | "webm" | "mkv" => FileType::Video,
@@ -93,7 +93,9 @@ pub struct FileNode {
     pub last_error: Option<String>,
 }
 
-fn default_true() -> bool { true }
+fn default_true() -> bool {
+    true
+}
 
 impl Default for FileNode {
     fn default() -> Self {
@@ -161,7 +163,9 @@ impl FileNode {
                         let rgba = img.to_rgba8();
                         let (w, h) = rgba.dimensions();
                         self.image_data = Some(Arc::new(ImageData {
-                            width: w, height: h, pixels: rgba.into_raw(),
+                            width: w,
+                            height: h,
+                            pixels: rgba.into_raw(),
                         }));
                         self.last_error = None;
                     }
@@ -185,8 +189,12 @@ impl FileNode {
 }
 
 impl NodeBehavior for FileNode {
-    fn title(&self) -> &str { "File" }
-    fn inputs(&self) -> Vec<PortDef> { vec![] }
+    fn title(&self) -> &str {
+        "File"
+    }
+    fn inputs(&self) -> Vec<PortDef> {
+        vec![]
+    }
 
     fn outputs(&self) -> Vec<PortDef> {
         vec![
@@ -195,7 +203,9 @@ impl NodeBehavior for FileNode {
         ]
     }
 
-    fn color_hint(&self) -> [u8; 3] { [180, 120, 200] }
+    fn color_hint(&self) -> [u8; 3] {
+        [180, 120, 200]
+    }
 
     fn evaluate(&mut self, _inputs: &[PortValue]) -> Vec<(usize, PortValue)> {
         // Auto-load on first evaluate if path is set but not loaded
@@ -234,21 +244,23 @@ impl NodeBehavior for FileNode {
                 }
             }
             FileType::Text | FileType::Unknown => {
-                if self.content.is_empty() { PortValue::None }
-                else { PortValue::Text(self.content.clone()) }
+                if self.content.is_empty() {
+                    PortValue::None
+                } else {
+                    PortValue::Text(self.content.clone())
+                }
             }
             FileType::Audio | FileType::Video | FileType::Data => {
                 PortValue::Text(self.path.clone())
             }
         };
 
-        vec![
-            (0, primary),
-            (1, PortValue::Text(self.path.clone())),
-        ]
+        vec![(0, primary), (1, PortValue::Text(self.path.clone()))]
     }
 
-    fn type_tag(&self) -> &str { "file" }
+    fn type_tag(&self) -> &str {
+        "file"
+    }
 
     fn save_state(&self) -> serde_json::Value {
         serde_json::json!({
@@ -290,10 +302,18 @@ impl NodeBehavior for FileNode {
             } else {
                 format!("{} B", self.file_size)
             };
-            ui.label(egui::RichText::new(format!("{} · {}", size_str, self.file_type.label())).small().color(dim));
+            ui.label(
+                egui::RichText::new(format!("{} · {}", size_str, self.file_type.label()))
+                    .small()
+                    .color(dim),
+            );
         } else {
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(crate::icons::FILE_TEXT).size(16.0).color(dim));
+                ui.label(
+                    egui::RichText::new(crate::icons::FILE_TEXT)
+                        .size(16.0)
+                        .color(dim),
+                );
                 ui.label(egui::RichText::new("No file").color(dim));
             });
         }
@@ -322,7 +342,11 @@ impl NodeBehavior for FileNode {
         match self.file_type {
             FileType::Image => {
                 if let Some(img) = &self.image_data {
-                    ui.label(egui::RichText::new(format!("{}×{}", img.width, img.height)).small().color(dim));
+                    ui.label(
+                        egui::RichText::new(format!("{}×{}", img.width, img.height))
+                            .small()
+                            .color(dim),
+                    );
                     // Thumbnail preview
                     let max_w = ui.available_width().min(200.0);
                     let aspect = img.height as f32 / img.width as f32;
@@ -331,10 +355,20 @@ impl NodeBehavior for FileNode {
                     let ph = preview_h as u32;
                     if pw > 0 && ph > 0 {
                         let preview = crate::nodes::video_player::fast_downsample(img, pw, ph);
-                        let color_image = egui::ColorImage::from_rgba_unmultiplied([pw as usize, ph as usize], &preview);
+                        let color_image = egui::ColorImage::from_rgba_unmultiplied(
+                            [pw as usize, ph as usize],
+                            &preview,
+                        );
                         let tex_id = egui::Id::new(("file_preview", self.path.as_str()));
-                        let tex = ui.ctx().load_texture(format!("file_{}", tex_id.value()), color_image, egui::TextureOptions::LINEAR);
-                        ui.image(egui::load::SizedTexture::new(tex.id(), egui::vec2(max_w, preview_h)));
+                        let tex = ui.ctx().load_texture(
+                            format!("file_{}", tex_id.value()),
+                            color_image,
+                            egui::TextureOptions::LINEAR,
+                        );
+                        ui.image(egui::load::SizedTexture::new(
+                            tex.id(),
+                            egui::vec2(max_w, preview_h),
+                        ));
                     }
                 }
             }
@@ -342,19 +376,40 @@ impl NodeBehavior for FileNode {
                 // Text preview (first ~10 lines)
                 let preview: String = self.content.lines().take(10).collect::<Vec<_>>().join("\n");
                 let truncated = self.content.lines().count() > 10;
-                egui::ScrollArea::vertical().max_height(100.0).show_pannable(ui, |ui| {
-                    ui.add(egui::TextEdit::multiline(&mut preview.as_str())
-                        .code_editor().desired_width(f32::INFINITY).interactive(false));
-                });
+                egui::ScrollArea::vertical()
+                    .max_height(100.0)
+                    .show_pannable(ui, |ui| {
+                        ui.add(
+                            egui::TextEdit::multiline(&mut preview.as_str())
+                                .code_editor()
+                                .desired_width(f32::INFINITY)
+                                .interactive(false),
+                        );
+                    });
                 if truncated {
-                    ui.label(egui::RichText::new(format!("... {} more lines", self.content.lines().count() - 10)).small().color(dim));
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "... {} more lines",
+                            self.content.lines().count() - 10
+                        ))
+                        .small()
+                        .color(dim),
+                    );
                 }
             }
             FileType::Audio => {
-                ui.label(egui::RichText::new("🎵 Connect to Audio Player").small().color(dim));
+                ui.label(
+                    egui::RichText::new("🎵 Connect to Audio Player")
+                        .small()
+                        .color(dim),
+                );
             }
             FileType::Video => {
-                ui.label(egui::RichText::new("🎬 Connect to Video Player").small().color(dim));
+                ui.label(
+                    egui::RichText::new("🎬 Connect to Video Player")
+                        .small()
+                        .color(dim),
+                );
             }
             _ => {}
         }

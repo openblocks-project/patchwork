@@ -1,6 +1,6 @@
-use eframe::egui;
 use crate::graph::{PortDef, PortKind, PortValue};
 use crate::node_trait::{NodeBehavior, RenderContext};
+use eframe::egui;
 
 // ── Node struct ───────────────────────────────────────────────────────────────
 
@@ -44,7 +44,8 @@ fn enumerate_printers() -> Vec<String> {
             .output();
         if let Ok(out) = out {
             let text = String::from_utf8_lossy(&out.stdout);
-            return text.lines()
+            return text
+                .lines()
                 .skip(1) // header "Name"
                 .map(|l| l.trim().to_string())
                 .filter(|l| !l.is_empty())
@@ -54,12 +55,11 @@ fn enumerate_printers() -> Vec<String> {
     }
     #[cfg(not(target_os = "windows"))]
     {
-        let out = std::process::Command::new("lpstat")
-            .arg("-a")
-            .output();
+        let out = std::process::Command::new("lpstat").arg("-a").output();
         if let Ok(out) = out {
             let text = String::from_utf8_lossy(&out.stdout);
-            return text.lines()
+            return text
+                .lines()
                 .filter_map(|l| l.split_whitespace().next())
                 .map(|s| s.to_string())
                 .filter(|s| !s.is_empty())
@@ -89,8 +89,10 @@ fn send_to_printer(
     #[cfg(not(target_os = "windows"))]
     {
         let mut args: Vec<String> = vec![
-            "-d".into(), printer.to_string(),
-            "-n".into(), copies.to_string(),
+            "-d".into(),
+            printer.to_string(),
+            "-n".into(),
+            copies.to_string(),
         ];
         if fit_to_page {
             args.push("-o".into());
@@ -118,7 +120,9 @@ fn save_image_to_temp(pv: &PortValue) -> Result<String, String> {
     let rgba = image::RgbaImage::from_raw(img.width, img.height, img.pixels.clone())
         .ok_or("Invalid image dimensions")?;
     rgba.save(&path).map_err(|e| e.to_string())?;
-    path.to_str().map(|s| s.to_string()).ok_or("Bad temp path".into())
+    path.to_str()
+        .map(|s| s.to_string())
+        .ok_or("Bad temp path".into())
 }
 
 impl PrinterNode {
@@ -131,7 +135,10 @@ impl PrinterNode {
             // Image input — save to temp
             match save_image_to_temp(pv) {
                 Ok(p) => p,
-                Err(e) => { self.status = format!("Image error: {}", e); return; }
+                Err(e) => {
+                    self.status = format!("Image error: {}", e);
+                    return;
+                }
             }
         } else {
             self.status = "Nothing to print".into();
@@ -150,20 +157,32 @@ impl PrinterNode {
             #[cfg(not(target_os = "windows"))]
             {
                 let mut args: Vec<String> = vec!["-n".into(), self.copies.to_string()];
-                if self.fit_to_page { args.push("-o".into()); args.push("fit-to-page".into()); }
+                if self.fit_to_page {
+                    args.push("-o".into());
+                    args.push("fit-to-page".into());
+                }
                 args.push(file.clone());
-                std::process::Command::new("lp").args(&args).spawn()
-                    .map(|_| ()).map_err(|e| format!("lp error: {}", e))
+                std::process::Command::new("lp")
+                    .args(&args)
+                    .spawn()
+                    .map(|_| ())
+                    .map_err(|e| format!("lp error: {}", e))
             }
             #[cfg(target_os = "windows")]
-            { Err("Select a printer on Windows".to_string()) }
+            {
+                Err("Select a printer on Windows".to_string())
+            }
         } else {
             send_to_printer(&printer, &file, self.copies, self.fit_to_page)
         };
 
         match result {
             Ok(_) => {
-                let name = if printer.is_empty() { "default printer".to_string() } else { printer };
+                let name = if printer.is_empty() {
+                    "default printer".to_string()
+                } else {
+                    printer
+                };
                 self.status = format!("Sent → {}", name);
             }
             Err(e) => {
@@ -176,16 +195,26 @@ impl PrinterNode {
 // ── NodeBehavior ──────────────────────────────────────────────────────────────
 
 impl NodeBehavior for PrinterNode {
-    fn title(&self)        -> &str    { "Printer" }
-    fn type_tag(&self)     -> &str    { "printer" }
-    fn color_hint(&self)   -> [u8; 3] { [180, 100, 220] }
-    fn inline_ports(&self) -> bool    { true }
-    fn min_width(&self)    -> Option<f32> { Some(220.0) }
+    fn title(&self) -> &str {
+        "Printer"
+    }
+    fn type_tag(&self) -> &str {
+        "printer"
+    }
+    fn color_hint(&self) -> [u8; 3] {
+        [180, 100, 220]
+    }
+    fn inline_ports(&self) -> bool {
+        true
+    }
+    fn min_width(&self) -> Option<f32> {
+        Some(220.0)
+    }
 
     fn inputs(&self) -> Vec<PortDef> {
         vec![
             PortDef::new("Trigger", PortKind::Trigger),
-            PortDef::new("Image",   PortKind::Image),
+            PortDef::new("Image", PortKind::Image),
         ]
     }
 
@@ -210,10 +239,18 @@ impl NodeBehavior for PrinterNode {
     }
 
     fn load_state(&mut self, state: &serde_json::Value) {
-        if let Some(v) = state.get("selected_printer").and_then(|v| v.as_str()) { self.selected_printer = v.into(); }
-        if let Some(v) = state.get("document_path").and_then(|v| v.as_str())    { self.document_path = v.into(); }
-        if let Some(v) = state.get("copies").and_then(|v| v.as_u64())           { self.copies = v.clamp(1, 99) as u32; }
-        if let Some(v) = state.get("fit_to_page").and_then(|v| v.as_bool())     { self.fit_to_page = v; }
+        if let Some(v) = state.get("selected_printer").and_then(|v| v.as_str()) {
+            self.selected_printer = v.into();
+        }
+        if let Some(v) = state.get("document_path").and_then(|v| v.as_str()) {
+            self.document_path = v.into();
+        }
+        if let Some(v) = state.get("copies").and_then(|v| v.as_u64()) {
+            self.copies = v.clamp(1, 99) as u32;
+        }
+        if let Some(v) = state.get("fit_to_page").and_then(|v| v.as_bool()) {
+            self.fit_to_page = v;
+        }
     }
 
     fn render_with_context(&mut self, ui: &mut egui::Ui, ctx: &mut RenderContext) {
@@ -228,16 +265,23 @@ impl NodeBehavior for PrinterNode {
         // ── Rising-edge trigger detection (done here, not in evaluate(), ──
         // ── because evaluate() is skipped when an image input is connected) ──
         {
-            let trig = crate::graph::Graph::static_input_value(
-                ctx.connections, ctx.values, node_id, 0
-            ).as_float();
+            let trig =
+                crate::graph::Graph::static_input_value(ctx.connections, ctx.values, node_id, 0)
+                    .as_float();
             let rising = trig > 0.5 && self.last_trigger <= 0.5;
             self.last_trigger = trig;
             if rising {
                 let img_val = crate::graph::Graph::static_input_value(
-                    ctx.connections, ctx.values, node_id, 1
+                    ctx.connections,
+                    ctx.values,
+                    node_id,
+                    1,
                 );
-                let img = if matches!(img_val, PortValue::None) { None } else { Some(img_val) };
+                let img = if matches!(img_val, PortValue::None) {
+                    None
+                } else {
+                    Some(img_val)
+                };
                 self.do_print(img);
             }
         }
@@ -248,26 +292,42 @@ impl NodeBehavior for PrinterNode {
         // ── Trigger input port ────────────────────────────────────────────
         ui.horizontal(|ui| {
             crate::nodes::inline_port_circle(
-                ui, node_id, 0, true,
-                ctx.connections, ctx.port_positions,
-                ctx.dragging_from, ctx.pending_disconnects,
+                ui,
+                node_id,
+                0,
+                true,
+                ctx.connections,
+                ctx.port_positions,
+                ctx.dragging_from,
+                ctx.pending_disconnects,
                 PortKind::Trigger,
             );
             ui.label(egui::RichText::new("Trigger").small().color(dim));
         });
 
         // ── Image input port ──────────────────────────────────────────────
-        let img_connected = ctx.connections.iter()
+        let img_connected = ctx
+            .connections
+            .iter()
             .any(|c| c.to_node == node_id && c.to_port == 1);
         ui.horizontal(|ui| {
             crate::nodes::inline_port_circle(
-                ui, node_id, 1, true,
-                ctx.connections, ctx.port_positions,
-                ctx.dragging_from, ctx.pending_disconnects,
+                ui,
+                node_id,
+                1,
+                true,
+                ctx.connections,
+                ctx.port_positions,
+                ctx.dragging_from,
+                ctx.pending_disconnects,
                 PortKind::Image,
             );
             let lbl = if img_connected { "Image ✓" } else { "Image" };
-            let col  = if img_connected { egui::Color32::from_rgb(160, 120, 200) } else { dim };
+            let col = if img_connected {
+                egui::Color32::from_rgb(160, 120, 200)
+            } else {
+                dim
+            };
             ui.label(egui::RichText::new(lbl).small().color(col));
         });
 
@@ -287,17 +347,27 @@ impl NodeBehavior for PrinterNode {
                 .selected_text(selected_text)
                 .width(130.0)
                 .show_ui(ui, |ui| {
-                    if ui.selectable_label(self.selected_printer.is_empty(), "System Default").clicked() {
+                    if ui
+                        .selectable_label(self.selected_printer.is_empty(), "System Default")
+                        .clicked()
+                    {
                         self.selected_printer.clear();
                     }
                     for p in self.cached_printers.clone() {
-                        if ui.selectable_label(self.selected_printer == p, &p).clicked() {
+                        if ui
+                            .selectable_label(self.selected_printer == p, &p)
+                            .clicked()
+                        {
                             self.selected_printer = p;
                         }
                     }
                 });
             // Refresh button
-            if ui.small_button("⟳").on_hover_text("Re-scan printers").clicked() {
+            if ui
+                .small_button("⟳")
+                .on_hover_text("Re-scan printers")
+                .clicked()
+            {
                 self.cached_printers = enumerate_printers();
             }
         });
@@ -314,10 +384,20 @@ impl NodeBehavior for PrinterNode {
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_else(|| self.document_path.clone())
             };
-            ui.label(egui::RichText::new(short).small().color(
-                if self.document_path.is_empty() { dim } else { egui::Color32::WHITE }
-            ));
-            if ui.small_button("📂").on_hover_text("Browse for document").clicked() {
+            ui.label(
+                egui::RichText::new(short)
+                    .small()
+                    .color(if self.document_path.is_empty() {
+                        dim
+                    } else {
+                        egui::Color32::WHITE
+                    }),
+            );
+            if ui
+                .small_button("📂")
+                .on_hover_text("Browse for document")
+                .clicked()
+            {
                 if let Some(fp) = rfd::FileDialog::new()
                     .add_filter("PDF", &["pdf"])
                     .add_filter("Images", &["png", "jpg", "jpeg", "bmp"])
@@ -330,7 +410,11 @@ impl NodeBehavior for PrinterNode {
             }
             // Clear button
             if !self.document_path.is_empty() {
-                if ui.small_button("✕").on_hover_text("Clear file (use image input)").clicked() {
+                if ui
+                    .small_button("✕")
+                    .on_hover_text("Clear file (use image input)")
+                    .clicked()
+                {
                     self.document_path.clear();
                 }
             }
@@ -339,9 +423,17 @@ impl NodeBehavior for PrinterNode {
         // ── Copies + fit-to-page ──────────────────────────────────────────
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("Copies").small());
-            if ui.small_button("−").clicked() && self.copies > 1 { self.copies -= 1; }
-            ui.label(egui::RichText::new(self.copies.to_string()).small().monospace());
-            if ui.small_button("+").clicked() && self.copies < 99 { self.copies += 1; }
+            if ui.small_button("−").clicked() && self.copies > 1 {
+                self.copies -= 1;
+            }
+            ui.label(
+                egui::RichText::new(self.copies.to_string())
+                    .small()
+                    .monospace(),
+            );
+            if ui.small_button("+").clicked() && self.copies < 99 {
+                self.copies += 1;
+            }
             ui.add_space(8.0);
             ui.checkbox(&mut self.fit_to_page, egui::RichText::new("Fit").small());
         });
@@ -351,15 +443,20 @@ impl NodeBehavior for PrinterNode {
         // ── Print button + status ─────────────────────────────────────────
         ui.horizontal(|ui| {
             let is_ready = !self.status.starts_with("Printing");
-            let btn = egui::Button::new(
-                egui::RichText::new("▶ Print").small().color(accent)
-            );
+            let btn = egui::Button::new(egui::RichText::new("▶ Print").small().color(accent));
             if ui.add_enabled(is_ready, btn).clicked() {
                 // Button path: grab current image input from graph values
                 let img_val = crate::graph::Graph::static_input_value(
-                    ctx.connections, ctx.values, node_id, 1
+                    ctx.connections,
+                    ctx.values,
+                    node_id,
+                    1,
                 );
-                let img = if matches!(img_val, PortValue::None) { None } else { Some(img_val) };
+                let img = if matches!(img_val, PortValue::None) {
+                    None
+                } else {
+                    Some(img_val)
+                };
                 self.do_print(img);
             }
 
@@ -380,9 +477,15 @@ impl NodeBehavior for PrinterNode {
 
         // ── Status output port ────────────────────────────────────────────
         crate::nodes::output_port_row(
-            ui, "Status", &self.status, node_id, 0,
-            ctx.port_positions, ctx.dragging_from,
-            ctx.connections, ctx.pending_disconnects,
+            ui,
+            "Status",
+            &self.status,
+            node_id,
+            0,
+            ctx.port_positions,
+            ctx.dragging_from,
+            ctx.connections,
+            ctx.pending_disconnects,
             PortKind::Text,
         );
     }

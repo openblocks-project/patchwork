@@ -105,7 +105,9 @@ impl Spectrum {
         let n = SPECTRUM_FFT_SIZE;
         // Reuse pre-allocated scratch — zeroing in place avoids a 16 KiB
         // alloc/free pair on every FFT (~94 Hz on the audio thread).
-        for v in self.fft_im.iter_mut() { *v = 0.0; }
+        for v in self.fft_im.iter_mut() {
+            *v = 0.0;
+        }
         for i in 0..n {
             self.fft_re[i] = self.buf[i] * self.window[i];
         }
@@ -135,7 +137,9 @@ impl Spectrum {
             let f0 = (b as f32) * bin_width;
             let f1 = ((b + 1) as f32) * bin_width;
             let i0 = ((f0 / nyquist) * (half as f32)) as usize;
-            let i1 = (((f1 / nyquist) * (half as f32)) as usize).max(i0 + 1).min(half);
+            let i1 = (((f1 / nyquist) * (half as f32)) as usize)
+                .max(i0 + 1)
+                .min(half);
             let mut re_sum = 0.0f32;
             let mut im_sum = 0.0f32;
             let mut count = 0usize;
@@ -178,8 +182,7 @@ impl Spectrum {
             // Spectral Synth needs the freshest phase to lock each bin's
             // oscillator on every new frame. For zeroed bin 0, phase is
             // irrelevant (magnitude is zero).
-            self.phases[b] = (phase_rad / std::f32::consts::TAU + 0.5)
-                .clamp(0.0, 1.0);
+            self.phases[b] = (phase_rad / std::f32::consts::TAU + 0.5).clamp(0.0, 1.0);
         }
     }
 }
@@ -259,9 +262,14 @@ pub struct AudioAnalysis {
 impl Default for AudioAnalysis {
     fn default() -> Self {
         Self {
-            amplitude: 0.0, peak: 0.0,
-            bass: 0.0, mid: 0.0, treble: 0.0,
-            bass_state: 0.0, mid_state: 0.0, treble_state: 0.0,
+            amplitude: 0.0,
+            peak: 0.0,
+            bass: 0.0,
+            mid: 0.0,
+            treble: 0.0,
+            bass_state: 0.0,
+            mid_state: 0.0,
+            treble_state: 0.0,
         }
     }
 }
@@ -271,7 +279,9 @@ impl AudioAnalysis {
     /// filters and exponential smoothing for stable, reactive values.
     pub fn update(&mut self, data: &[f32], channels: usize, sample_rate: f32) {
         let num_frames = data.len() / channels;
-        if num_frames == 0 { return; }
+        if num_frames == 0 {
+            return;
+        }
 
         let mut sum_sq = 0.0f32;
         let mut peak = 0.0f32;
@@ -312,8 +322,11 @@ impl AudioAnalysis {
         let attack = 0.6;
         let decay = 0.05;
         let smooth = |old: f32, new: f32| {
-            if new > old { old + attack * (new - old) }
-            else { old + decay * (new - old) }
+            if new > old {
+                old + attack * (new - old)
+            } else {
+                old + decay * (new - old)
+            }
         };
 
         self.amplitude = smooth(self.amplitude, rms.min(1.0));

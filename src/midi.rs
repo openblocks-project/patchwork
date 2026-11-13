@@ -5,11 +5,24 @@ use std::sync::mpsc;
 
 /// Actions collected during rendering, processed after.
 pub enum MidiAction {
-    ConnectOutput { node_id: NodeId, port_name: String },
-    DisconnectOutput { node_id: NodeId },
-    Send { node_id: NodeId, message: [u8; 3] },
-    ConnectInput { node_id: NodeId, port_name: String },
-    DisconnectInput { node_id: NodeId },
+    ConnectOutput {
+        node_id: NodeId,
+        port_name: String,
+    },
+    DisconnectOutput {
+        node_id: NodeId,
+    },
+    Send {
+        node_id: NodeId,
+        message: [u8; 3],
+    },
+    ConnectInput {
+        node_id: NodeId,
+        port_name: String,
+    },
+    DisconnectInput {
+        node_id: NodeId,
+    },
     /// Re-scan available MIDI input/output ports. Triggered from the ↻
     /// button on midi_in / midi_out nodes so the user can pick up newly
     /// enabled devices (e.g. macOS IAC Driver) without restarting Patchwork.

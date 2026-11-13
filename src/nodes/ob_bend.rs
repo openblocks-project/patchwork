@@ -12,7 +12,11 @@ pub fn render(
     ob_manager: &mut ObManager,
 ) {
     let (device_id, hub_node_id, label_color) = match node_type {
-        NodeType::ObBend { device_id, hub_node_id, label_color } => (device_id, hub_node_id, label_color),
+        NodeType::ObBend {
+            device_id,
+            hub_node_id,
+            label_color,
+        } => (device_id, hub_node_id, label_color),
         _ => return,
     };
 
@@ -25,7 +29,8 @@ pub fn render(
     let hid = *hub_node_id;
 
     let (val, is_active) = {
-        let device = ob_manager.get_hub(hid)
+        let device = ob_manager
+            .get_hub(hid)
             .and_then(|h| h.get_device("bend", did))
             .or_else(|| ob_manager.find_device("bend", did).map(|(_, d)| d));
         if let Some(dev) = device {
@@ -48,9 +53,17 @@ pub fn render(
     painter.rect_filled(rect, 4.0, egui::Color32::from_rgb(20, 20, 30));
     let fill_w = rect.width() * val.clamp(0.0, 1.0);
     let fill_rect = egui::Rect::from_min_size(rect.min, egui::vec2(fill_w, bar_h));
-    painter.rect_filled(fill_rect, 4.0, egui::Color32::from_rgb(label_color[0], label_color[1], label_color[2]));
+    painter.rect_filled(
+        fill_rect,
+        4.0,
+        egui::Color32::from_rgb(label_color[0], label_color[1], label_color[2]),
+    );
 
-    ui.label(egui::RichText::new(format!("{:.2}", val)).monospace().strong());
+    ui.label(
+        egui::RichText::new(format!("{:.2}", val))
+            .monospace()
+            .strong(),
+    );
 
     ui.separator();
     ui.horizontal(|ui| {
@@ -61,8 +74,15 @@ pub fn render(
         }
         if ui.small_button("Set").clicked() {
             let col = *label_color;
-            if let Some(hub) = if hid != 0 { ob_manager.get_hub_mut(hid) } else { ob_manager.find_any_hub_mut() } {
-                hub.send_command(&format!("/bend/{}/color {} {} {}", did, col[0], col[1], col[2]));
+            if let Some(hub) = if hid != 0 {
+                ob_manager.get_hub_mut(hid)
+            } else {
+                ob_manager.find_any_hub_mut()
+            } {
+                hub.send_command(&format!(
+                    "/bend/{}/color {} {} {}",
+                    did, col[0], col[1], col[2]
+                ));
             }
         }
     });

@@ -3,18 +3,18 @@
 //! Uses clap-sys (raw C bindings) directly. No wrapper crate needed.
 //! The CLAP API is small: load → factory → create → activate → process.
 
-use std::ffi::{CStr, CString, c_void, c_char};
+use std::ffi::{CStr, CString, c_char, c_void};
 use std::ptr;
 
+use clap_sys::audio_buffer::clap_audio_buffer;
 use clap_sys::entry::clap_plugin_entry;
+use clap_sys::events::*;
+use clap_sys::ext::gui::*;
+use clap_sys::ext::params::*;
 use clap_sys::factory::plugin_factory::*;
 use clap_sys::host::clap_host;
 use clap_sys::plugin::clap_plugin;
-use clap_sys::ext::gui::*;
 use clap_sys::process::*;
-use clap_sys::audio_buffer::clap_audio_buffer;
-use clap_sys::events::*;
-use clap_sys::ext::params::*;
 use clap_sys::version::CLAP_VERSION;
 
 /// Plugin type — determined from audio/note port declarations.
@@ -37,7 +37,10 @@ pub struct EventBuffer {
 
 impl EventBuffer {
     pub fn new() -> Self {
-        Self { data: Vec::with_capacity(4096), offsets: Vec::with_capacity(64) }
+        Self {
+            data: Vec::with_capacity(4096),
+            offsets: Vec::with_capacity(64),
+        }
     }
 
     pub fn clear(&mut self) {
@@ -45,7 +48,9 @@ impl EventBuffer {
         self.offsets.clear();
     }
 
-    pub fn len(&self) -> usize { self.offsets.len() }
+    pub fn len(&self) -> usize {
+        self.offsets.len()
+    }
 
     pub fn get_header(&self, index: usize) -> *const clap_event_header {
         if index < self.offsets.len() {
@@ -225,7 +230,8 @@ pub fn init_main_thread() {
 }
 
 unsafe extern "C" fn host_is_main_thread(_host: *const clap_host) -> bool {
-    MAIN_THREAD_ID.get()
+    MAIN_THREAD_ID
+        .get()
         .map(|&main_id| std::thread::current().id() == main_id)
         .unwrap_or(true)
 }
@@ -236,7 +242,10 @@ unsafe extern "C" fn host_is_audio_thread(_host: *const clap_host) -> bool {
 
 // ── Host core callbacks ─────────────────────────────────────────────────────
 
-unsafe extern "C" fn host_get_extension(_host: *const clap_host, id: *const c_char) -> *const c_void {
+unsafe extern "C" fn host_get_extension(
+    _host: *const clap_host,
+    id: *const c_char,
+) -> *const c_void {
     let id_str = unsafe { CStr::from_ptr(id) };
     if id_str == CLAP_EXT_GUI {
         return &HOST_GUI as *const clap_host_gui as *const c_void;
@@ -251,7 +260,11 @@ unsafe extern "C" fn host_request_process(_host: *const clap_host) {}
 unsafe extern "C" fn host_request_callback(_host: *const clap_host) {}
 
 unsafe fn cstr_to_string(p: *const c_char) -> String {
-    if p.is_null() { String::new() } else { unsafe { CStr::from_ptr(p).to_string_lossy().to_string() } }
+    if p.is_null() {
+        String::new()
+    } else {
+        unsafe { CStr::from_ptr(p).to_string_lossy().to_string() }
+    }
 }
 
 impl ClapInstance {
@@ -263,7 +276,11 @@ impl ClapInstance {
             let p = std::path::Path::new(path);
             if p.is_dir() {
                 // It's a bundle — find the dylib inside
-                let stem = p.file_stem().unwrap_or_default().to_string_lossy().to_string();
+                let stem = p
+                    .file_stem()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
                 let macos_dir = p.join("Contents").join("MacOS");
                 if macos_dir.exists() {
                     // Try exact stem name first, then any file in the directory
@@ -272,7 +289,8 @@ impl ClapInstance {
                         dylib.to_string_lossy().to_string()
                     } else {
                         // Pick first file
-                        std::fs::read_dir(&macos_dir).ok()
+                        std::fs::read_dir(&macos_dir)
+                            .ok()
                             .and_then(|mut d| d.next())
                             .and_then(|e| e.ok())
                             .map(|e| e.path().to_string_lossy().to_string())
@@ -292,7 +310,8 @@ impl ClapInstance {
 
         // Get entry point
         let entry: &clap_plugin_entry = unsafe {
-            let sym: libloading::Symbol<*const clap_plugin_entry> = library.get(b"clap_entry")
+            let sym: libloading::Symbol<*const clap_plugin_entry> = library
+                .get(b"clap_entry")
                 .map_err(|e| format!("No clap_entry symbol: {}", e))?;
             &**sym
         };
@@ -309,20 +328,29 @@ impl ClapInstance {
 
         // Get plugin factory
         let factory: &clap_plugin_factory = unsafe {
-            let factory_ptr = entry.get_factory.ok_or("No get_factory")?
-                (CLAP_PLUGIN_FACTORY_ID.as_ptr());
-            if factory_ptr.is_null() { return Err("No plugin factory".into()); }
+            let factory_ptr =
+                entry.get_factory.ok_or("No get_factory")?(CLAP_PLUGIN_FACTORY_ID.as_ptr());
+            if factory_ptr.is_null() {
+                return Err("No plugin factory".into());
+            }
             &*(factory_ptr as *const clap_plugin_factory)
         };
 
         // Get first plugin descriptor
-        let plugin_count = unsafe { factory.get_plugin_count.ok_or("No get_plugin_count")?(factory) };
-        if plugin_count == 0 { return Err("No plugins in .clap file".into()); }
+        let plugin_count =
+            unsafe { factory.get_plugin_count.ok_or("No get_plugin_count")?(factory) };
+        if plugin_count == 0 {
+            return Err("No plugins in .clap file".into());
+        }
 
         let desc = unsafe {
-            factory.get_plugin_descriptor.ok_or("No get_plugin_descriptor")?(factory, 0)
+            factory
+                .get_plugin_descriptor
+                .ok_or("No get_plugin_descriptor")?(factory, 0)
         };
-        if desc.is_null() { return Err("Null plugin descriptor".into()); }
+        if desc.is_null() {
+            return Err("Null plugin descriptor".into());
+        }
 
         let plugin_name = unsafe { cstr_to_string((*desc).name) };
         let plugin_vendor = unsafe { cstr_to_string((*desc).vendor) };
@@ -360,10 +388,15 @@ impl ClapInstance {
         // Create plugin instance
         let plugin_id_c = CString::new(plugin_id_str.as_str()).map_err(|_| "Bad plugin ID")?;
         let plugin = unsafe {
-            factory.create_plugin.ok_or("No create_plugin")?
-                (factory, &host_data.host, plugin_id_c.as_ptr())
+            factory.create_plugin.ok_or("No create_plugin")?(
+                factory,
+                &host_data.host,
+                plugin_id_c.as_ptr(),
+            )
         };
-        if plugin.is_null() { return Err("create_plugin returned null".into()); }
+        if plugin.is_null() {
+            return Err("create_plugin returned null".into());
+        }
 
         // Init
         unsafe {
@@ -392,7 +425,9 @@ impl ClapInstance {
                     let mut info: clap_param_info = std::mem::zeroed();
                     if let Some(get_info) = (*params_ext).get_info {
                         if get_info(plugin, i, &mut info) {
-                            let name_bytes: Vec<u8> = info.name.iter()
+                            let name_bytes: Vec<u8> = info
+                                .name
+                                .iter()
                                 .take_while(|&&c| c != 0)
                                 .map(|&c| c as u8)
                                 .collect();
@@ -402,18 +437,23 @@ impl ClapInstance {
                             let mut value_labels = Vec::new();
                             let is_stepped = info.flags & CLAP_PARAM_IS_STEPPED != 0;
                             let is_enum = info.flags & CLAP_PARAM_IS_ENUM != 0;
-                            if (is_stepped || is_enum) && (info.max_value - info.min_value) < 128.0 {
+                            if (is_stepped || is_enum) && (info.max_value - info.min_value) < 128.0
+                            {
                                 if let Some(v2t) = (*params_ext).value_to_text {
-                                    let steps = (info.max_value - info.min_value).round() as i32 + 1;
+                                    let steps =
+                                        (info.max_value - info.min_value).round() as i32 + 1;
                                     for step in 0..steps {
                                         let val = info.min_value + step as f64;
                                         let mut buf = [0i8; 256];
                                         if v2t(plugin, info.id, val, buf.as_mut_ptr(), 256) {
-                                            let label_bytes: Vec<u8> = buf.iter()
+                                            let label_bytes: Vec<u8> = buf
+                                                .iter()
                                                 .take_while(|&&c| c != 0)
                                                 .map(|&c| c as u8)
                                                 .collect();
-                                            value_labels.push(String::from_utf8_lossy(&label_bytes).to_string());
+                                            value_labels.push(
+                                                String::from_utf8_lossy(&label_bytes).to_string(),
+                                            );
                                         } else {
                                             value_labels.push(format!("{}", val as i32));
                                         }
@@ -441,7 +481,10 @@ impl ClapInstance {
 
         // Detect note ports to classify plugin type
         let has_note_input = Self::has_note_input(plugin);
-        crate::system_log::log(format!("  audio_in={} audio_out={} note_in={}", audio_in_ch, audio_out_ch, has_note_input));
+        crate::system_log::log(format!(
+            "  audio_in={} audio_out={} note_in={}",
+            audio_in_ch, audio_out_ch, has_note_input
+        ));
         // If plugin accepts note input → instrument (even if it also has audio inputs for sidechain)
         let plugin_type = if has_note_input {
             ClapPluginType::Instrument
@@ -475,8 +518,17 @@ impl ClapInstance {
             plugin_type,
         };
 
-        let type_str = match plugin_type { ClapPluginType::Instrument => "instrument", ClapPluginType::Effect => "effect" };
-        crate::system_log::log(format!("CLAP loaded: {} by {} ({} params, {})", info.name, info.vendor, info.params.len(), type_str));
+        let type_str = match plugin_type {
+            ClapPluginType::Instrument => "instrument",
+            ClapPluginType::Effect => "effect",
+        };
+        crate::system_log::log(format!(
+            "CLAP loaded: {} by {} ({} params, {})",
+            info.name,
+            info.vendor,
+            info.params.len(),
+            type_str
+        ));
 
         Ok(Self {
             _library: library,
@@ -502,7 +554,9 @@ impl ClapInstance {
             } else {
                 return (2, 2); // default stereo
             };
-            if ext.is_null() { return (2, 2); }
+            if ext.is_null() {
+                return (2, 2);
+            }
 
             let in_count = (*ext).count.map(|f| f(plugin, true)).unwrap_or(0);
             let out_count = (*ext).count.map(|f| f(plugin, false)).unwrap_or(0);
@@ -513,7 +567,9 @@ impl ClapInstance {
                     get(plugin, 0, true, &mut info);
                 }
                 info.channel_count.max(1)
-            } else { 0 }; // No audio input ports (e.g., instrument/synth)
+            } else {
+                0
+            }; // No audio input ports (e.g., instrument/synth)
 
             let out_ch = if out_count > 0 {
                 let mut info: clap_audio_port_info = std::mem::zeroed();
@@ -521,7 +577,9 @@ impl ClapInstance {
                     get(plugin, 0, false, &mut info);
                 }
                 info.channel_count.max(1)
-            } else { 2 };
+            } else {
+                2
+            };
 
             (in_ch, out_ch)
         }
@@ -533,8 +591,12 @@ impl ClapInstance {
         unsafe {
             let ext = if let Some(get_ext) = (*plugin).get_extension {
                 get_ext(plugin, CLAP_EXT_NOTE_PORTS.as_ptr()) as *const clap_plugin_note_ports
-            } else { return false; };
-            if ext.is_null() { return false; }
+            } else {
+                return false;
+            };
+            if ext.is_null() {
+                return false;
+            }
             let count = (*ext).count.map(|f| f(plugin, true)).unwrap_or(0);
             count > 0
         }
@@ -547,7 +609,10 @@ impl ClapInstance {
             unsafe {
                 if let Some(start) = (*self.plugin).start_processing {
                     let ok = start(self.plugin);
-                    crate::system_log::log(format!("CLAP: start_processing() = {} (on audio thread)", ok));
+                    crate::system_log::log(format!(
+                        "CLAP: start_processing() = {} (on audio thread)",
+                        ok
+                    ));
                 }
             }
             self.processing_started = true;
@@ -570,7 +635,8 @@ impl ClapInstance {
 
         // Build CLAP audio buffer pointers
         let mut in_ptrs: Vec<*mut f32> = self.in_bufs.iter_mut().map(|b| b.as_mut_ptr()).collect();
-        let mut out_ptrs: Vec<*mut f32> = self.out_bufs.iter_mut().map(|b| b.as_mut_ptr()).collect();
+        let mut out_ptrs: Vec<*mut f32> =
+            self.out_bufs.iter_mut().map(|b| b.as_mut_ptr()).collect();
 
         let mut clap_in = clap_audio_buffer {
             data32: in_ptrs.as_mut_ptr(),
@@ -608,7 +674,11 @@ impl ClapInstance {
             steady_time: self.steady_time,
             frames_count: num_frames as u32,
             transport: ptr::null(),
-            audio_inputs: if in_ch > 0 { &mut clap_in as *const clap_audio_buffer } else { ptr::null() },
+            audio_inputs: if in_ch > 0 {
+                &mut clap_in as *const clap_audio_buffer
+            } else {
+                ptr::null()
+            },
             audio_outputs: &mut clap_out as *mut clap_audio_buffer,
             audio_inputs_count: if in_ch > 0 { 1 } else { 0 },
             audio_outputs_count: 1,
@@ -687,21 +757,30 @@ impl ClapInstance {
         let floating_supported = unsafe {
             if let Some(is_supported) = (*gui_ext).is_api_supported {
                 is_supported(self.plugin, CLAP_WINDOW_API_COCOA.as_ptr(), true)
-            } else { false }
+            } else {
+                false
+            }
         };
         let embedded_supported = unsafe {
             if let Some(is_supported) = (*gui_ext).is_api_supported {
                 is_supported(self.plugin, CLAP_WINDOW_API_COCOA.as_ptr(), false)
-            } else { false }
+            } else {
+                false
+            }
         };
 
-        crate::system_log::log(format!("  GUI support: floating={}, embedded={}", floating_supported, embedded_supported));
+        crate::system_log::log(format!(
+            "  GUI support: floating={}, embedded={}",
+            floating_supported, embedded_supported
+        ));
 
         // Prefer floating (simplest — plugin creates its own window)
         // Fall back to embedded if floating not supported
         let use_floating = floating_supported;
 
-        if !floating_supported && !embedded_supported { return None; }
+        if !floating_supported && !embedded_supported {
+            return None;
+        }
 
         Some(ClapGuiHandle {
             plugin: self.plugin,
@@ -736,16 +815,24 @@ unsafe impl Sync for ClapGuiHandle {}
 
 impl ClapGuiHandle {
     pub fn open(&mut self) -> bool {
-        if self.is_open { return true; }
+        if self.is_open {
+            return true;
+        }
 
         crate::system_log::log(format!("GUI: opening (floating={})", self.is_floating));
 
         unsafe {
             // Step 1: create
             if let Some(create) = (*self.gui_ext).create {
-                let ok = create(self.plugin, CLAP_WINDOW_API_COCOA.as_ptr(), self.is_floating);
+                let ok = create(
+                    self.plugin,
+                    CLAP_WINDOW_API_COCOA.as_ptr(),
+                    self.is_floating,
+                );
                 crate::system_log::log(format!("GUI: create() = {}", ok));
-                if !ok { return false; }
+                if !ok {
+                    return false;
+                }
             } else {
                 crate::system_log::error("GUI: no create() function");
                 return false;
@@ -761,20 +848,17 @@ impl ClapGuiHandle {
             // Step 3: for embedded mode, create NSWindow and call set_parent
             #[cfg(target_os = "macos")]
             if !self.is_floating {
-                use objc2_foundation::{MainThreadMarker, NSRect, NSPoint, NSSize, NSString};
-                use objc2_app_kit::{NSWindow, NSWindowStyleMask, NSBackingStoreType};
+                use objc2_app_kit::{NSBackingStoreType, NSWindow, NSWindowStyleMask};
+                use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
 
                 let mtm = MainThreadMarker::new().expect("Must be called from main thread");
 
-                let frame = NSRect::new(
-                    NSPoint::new(200.0, 200.0),
-                    NSSize::new(w as f64, h as f64),
-                );
+                let frame =
+                    NSRect::new(NSPoint::new(200.0, 200.0), NSSize::new(w as f64, h as f64));
                 // No Closable — user closes via "Close UI" button in the node.
                 // macOS close button would release the window while the plugin
                 // still references its NSView, causing a crash.
-                let style = NSWindowStyleMask::Titled
-                    | NSWindowStyleMask::Miniaturizable;
+                let style = NSWindowStyleMask::Titled | NSWindowStyleMask::Miniaturizable;
 
                 let window = NSWindow::initWithContentRect_styleMask_backing_defer(
                     mtm.alloc(),
@@ -799,7 +883,9 @@ impl ClapGuiHandle {
                         let ok = set_parent(self.plugin, &clap_win);
                         crate::system_log::log(format!("GUI: set_parent() = {}", ok));
                         if !ok {
-                            if let Some(destroy) = (*self.gui_ext).destroy { destroy(self.plugin); }
+                            if let Some(destroy) = (*self.gui_ext).destroy {
+                                destroy(self.plugin);
+                            }
                             return false;
                         }
                     }
@@ -822,13 +908,19 @@ impl ClapGuiHandle {
     }
 
     pub fn close(&mut self) {
-        if !self.is_open { return; }
+        if !self.is_open {
+            return;
+        }
         // IMPORTANT: destroy plugin GUI BEFORE closing the NSWindow.
         // The plugin's GUI references the NSView inside our window.
         // If we close the window first, the plugin accesses freed memory → segfault.
         unsafe {
-            if let Some(hide) = (*self.gui_ext).hide { hide(self.plugin); }
-            if let Some(destroy) = (*self.gui_ext).destroy { destroy(self.plugin); }
+            if let Some(hide) = (*self.gui_ext).hide {
+                hide(self.plugin);
+            }
+            if let Some(destroy) = (*self.gui_ext).destroy {
+                destroy(self.plugin);
+            }
         }
         #[cfg(target_os = "macos")]
         {
@@ -858,7 +950,9 @@ impl ClapInstance {
     pub fn stop_processing_if_needed(&mut self) {
         if self.processing_started {
             unsafe {
-                if let Some(stop) = (*self.plugin).stop_processing { stop(self.plugin); }
+                if let Some(stop) = (*self.plugin).stop_processing {
+                    stop(self.plugin);
+                }
             }
             self.processing_started = false;
         }
@@ -871,24 +965,35 @@ impl Drop for ClapInstance {
             // Check if we're on the main thread. CLAP requires deactivate/destroy
             // on the main thread. If we're on the audio thread (engine dropped us),
             // we must still clean up but the plugin will log a warning.
-            let on_main = MAIN_THREAD_ID.get()
+            let on_main = MAIN_THREAD_ID
+                .get()
                 .map(|&id| std::thread::current().id() == id)
                 .unwrap_or(true);
 
             unsafe {
                 if self.processing_started {
                     // stop_processing should be on audio thread — we might be there
-                    if let Some(stop) = (*self.plugin).stop_processing { stop(self.plugin); }
+                    if let Some(stop) = (*self.plugin).stop_processing {
+                        stop(self.plugin);
+                    }
                 }
                 if on_main {
-                    if let Some(deactivate) = (*self.plugin).deactivate { deactivate(self.plugin); }
-                    if let Some(destroy) = (*self.plugin).destroy { destroy(self.plugin); }
+                    if let Some(deactivate) = (*self.plugin).deactivate {
+                        deactivate(self.plugin);
+                    }
+                    if let Some(destroy) = (*self.plugin).destroy {
+                        destroy(self.plugin);
+                    }
                 } else {
                     // Not on main thread — can't safely call deactivate/destroy.
                     // TODO: defer to main thread via callback. For now, call anyway
                     // to avoid resource leak, accepting the thread violation warning.
-                    if let Some(deactivate) = (*self.plugin).deactivate { deactivate(self.plugin); }
-                    if let Some(destroy) = (*self.plugin).destroy { destroy(self.plugin); }
+                    if let Some(deactivate) = (*self.plugin).deactivate {
+                        deactivate(self.plugin);
+                    }
+                    if let Some(destroy) = (*self.plugin).destroy {
+                        destroy(self.plugin);
+                    }
                 }
             }
         }
@@ -923,7 +1028,9 @@ unsafe extern "C" fn output_events_try_push(
     event: *const clap_event_header,
 ) -> bool {
     unsafe {
-        if event.is_null() { return true; }
+        if event.is_null() {
+            return true;
+        }
         let header = &*event;
         // Capture param value changes from plugin GUI
         if header.space_id == CLAP_CORE_EVENT_SPACE_ID && header.type_ == CLAP_EVENT_PARAM_VALUE {

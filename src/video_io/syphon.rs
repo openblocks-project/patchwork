@@ -57,7 +57,11 @@ impl SyphonServer {
         let cmd_queue = device.new_command_queue();
         let raw = unsafe { alloc_init_server(name, device) }
             .ok_or_else(|| "SyphonMetalServer init returned nil".to_string())?;
-        Ok(Self { raw, cmd_queue, name: name.to_string() })
+        Ok(Self {
+            raw,
+            cmd_queue,
+            name: name.to_string(),
+        })
     }
 
     /// Publish one frame. Allocates a command buffer on our dedicated
@@ -71,7 +75,10 @@ impl SyphonServer {
         let cmd_buf = self.cmd_queue.new_command_buffer();
         let region = NSRect {
             origin: NSPoint { x: 0.0, y: 0.0 },
-            size: NSSize { width: w as f64, height: h as f64 },
+            size: NSSize {
+                width: w as f64,
+                height: h as f64,
+            },
         };
         unsafe {
             let tex_ptr: *const AnyObject = texture.as_ptr() as *const AnyObject;
@@ -165,10 +172,14 @@ pub fn servers() -> Vec<SyphonServerInfo> {
     objc2::rc::autoreleasepool(|_| unsafe {
         let cls = class!(SyphonServerDirectory);
         let dir: *mut AnyObject = msg_send![cls, sharedDirectory];
-        if dir.is_null() { return Vec::new(); }
+        if dir.is_null() {
+            return Vec::new();
+        }
         // `-servers` returns `NSArray<NSDictionary>`.
         let arr_ptr: *mut NSArray<NSDictionary> = msg_send![dir, servers];
-        let Some(arr) = Retained::retain(arr_ptr) else { return Vec::new(); };
+        let Some(arr) = Retained::retain(arr_ptr) else {
+            return Vec::new();
+        };
 
         let count: usize = msg_send![&*arr, count];
         let mut out = Vec::with_capacity(count);
@@ -178,7 +189,9 @@ pub fn servers() -> Vec<SyphonServerInfo> {
 
         for i in 0..count {
             let dict_ptr: *mut NSDictionary = msg_send![&*arr, objectAtIndex: i];
-            let Some(dict) = Retained::retain(dict_ptr) else { continue; };
+            let Some(dict) = Retained::retain(dict_ptr) else {
+                continue;
+            };
             let name = dict_string(&dict, &name_key).unwrap_or_default();
             let app_name = dict_string(&dict, &app_key).unwrap_or_default();
             let uuid = dict_string(&dict, &uuid_key).unwrap_or_default();
@@ -202,7 +215,9 @@ pub fn servers() -> Vec<SyphonServerInfo> {
 /// the key is missing or the value isn't an NSString.
 unsafe fn dict_string(dict: &NSDictionary, key: &NSString) -> Option<String> {
     let val: *mut NSString = msg_send![dict, objectForKey: key];
-    if val.is_null() { return None; }
+    if val.is_null() {
+        return None;
+    }
     let retained = Retained::retain(val)?;
     Some(retained.to_string())
 }
@@ -248,7 +263,9 @@ impl SyphonClient {
     pub fn take_latest(&self) -> Option<metal::Texture> {
         unsafe {
             let tex_ptr: *mut AnyObject = msg_send![&*self.raw, newFrameImage];
-            if tex_ptr.is_null() { return None; }
+            if tex_ptr.is_null() {
+                return None;
+            }
             // `newFrameImage` returns a +1 retained id<MTLTexture>;
             // wrap as metal::Texture which takes ownership.
             Some(metal::Texture::from_ptr(tex_ptr as *mut _))

@@ -1,5 +1,5 @@
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::cell::UnsafeCell;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
 // ── Lock-free Ring Buffer for Live Audio Input ──────────────────────────────
 
@@ -70,7 +70,9 @@ impl LiveInputBuffer {
         for i in 0..n {
             let idx = wp.wrapping_sub(n).wrapping_add(i) % self.capacity;
             let a = data[idx].abs();
-            if a > peak { peak = a; }
+            if a > peak {
+                peak = a;
+            }
         }
         peak
     }
@@ -106,7 +108,7 @@ impl LiveInputBuffer {
         // and reduces the risk of immediate underrun on the next
         // output callback.
         let skip_threshold = (self.capacity / 10).max(num_frames * 4); // ≥ 100 ms
-        let skip_leave     = (self.capacity / 50).max(num_frames);      // ≈ 20 ms
+        let skip_leave = (self.capacity / 50).max(num_frames); // ≈ 20 ms
         if available > skip_threshold {
             rp = wp.wrapping_sub(skip_leave);
         }
@@ -125,7 +127,6 @@ impl LiveInputBuffer {
         self.read_pos.store(rp, Ordering::Release);
     }
 }
-
 
 // ── Lock-free Ring Buffer for File Playback ──────────────────────────────────
 
@@ -206,7 +207,9 @@ impl FilePlayerBuffer {
     /// Returns silence on underrun — never blocks.
     pub fn read_into(&self, buf: &mut [f32], num_frames: usize) {
         if self.paused.load(Ordering::Relaxed) {
-            for i in 0..num_frames.min(buf.len()) { buf[i] = 0.0; }
+            for i in 0..num_frames.min(buf.len()) {
+                buf[i] = 0.0;
+            }
             return;
         }
         let data = unsafe { &*self.data.get() };
@@ -224,7 +227,9 @@ impl FilePlayerBuffer {
                 buf[i] = data[rp_local % self.capacity];
                 rp_local = rp_local.wrapping_add(1);
             }
-            for i in to_read..num_frames.min(buf.len()) { buf[i] = 0.0; }
+            for i in to_read..num_frames.min(buf.len()) {
+                buf[i] = 0.0;
+            }
             self.read_pos.store(rp_local, Ordering::Release);
         } else {
             // Variable rate with linear interpolation
@@ -257,7 +262,9 @@ impl FilePlayerBuffer {
         self.write_pos.store(0, Ordering::Release);
         self.read_pos.store(0, Ordering::Release);
         self.finished.store(false, Ordering::Release);
-        unsafe { *self.frac_read_pos.get() = 0.0; }
+        unsafe {
+            *self.frac_read_pos.get() = 0.0;
+        }
     }
 
     /// Replay from the beginning without erasing data.
@@ -277,7 +284,6 @@ impl FilePlayerBuffer {
         wp.wrapping_sub(rp)
     }
 }
-
 
 // ── Sampler Buffer (Record + Playback) ───────────────────────────────────────
 
@@ -355,7 +361,9 @@ impl SamplerBuffer {
     pub fn seek_to_normalized(&self, t: f32) {
         let trim_start = self.trim_start.load(Ordering::Relaxed);
         let trim_end = self.effective_end();
-        if trim_end <= trim_start { return; }
+        if trim_end <= trim_start {
+            return;
+        }
         let t = t.clamp(0.0, 1.0) as f64;
         let target = trim_start + ((trim_end - trim_start) as f64 * t) as usize;
         self.pending_seek.store(target, Ordering::Release);
@@ -376,10 +384,14 @@ impl SamplerBuffer {
         // Zero out the existing audio data so the old buffer tail can't
         // be heard if play is retriggered before a new recording finishes.
         let data = unsafe { &mut *self.data.get() };
-        for s in data.iter_mut() { *s = 0.0; }
+        for s in data.iter_mut() {
+            *s = 0.0;
+        }
         // Clear any stale seek so the new recording starts clean.
         self.pending_seek.store(usize::MAX, Ordering::Release);
-        unsafe { *self.frac_read_pos.get() = 0.0; }
+        unsafe {
+            *self.frac_read_pos.get() = 0.0;
+        }
         self.recording.store(true, Ordering::Release);
     }
 
@@ -396,7 +408,9 @@ impl SamplerBuffer {
     /// Write input samples during recording (called from audio thread).
     /// Stops automatically when capacity is reached.
     pub fn record_from(&self, samples: &[f32]) {
-        if !self.recording.load(Ordering::Relaxed) { return; }
+        if !self.recording.load(Ordering::Relaxed) {
+            return;
+        }
         let data = unsafe { &mut *self.data.get() };
         let mut wp = self.write_pos.load(Ordering::Relaxed);
         for &s in samples {
@@ -418,14 +432,17 @@ impl SamplerBuffer {
         let reverse = self.reverse.load(Ordering::Relaxed);
         if reverse {
             let end = self.effective_end();
-            self.read_pos.store(if end > 0 { end - 1 } else { 0 }, Ordering::Release);
+            self.read_pos
+                .store(if end > 0 { end - 1 } else { 0 }, Ordering::Release);
         } else {
             let start = self.trim_start.load(Ordering::Relaxed);
             self.read_pos.store(start, Ordering::Release);
         }
         self.recording.store(false, Ordering::Release);
         // Reset fractional position so variable-rate interpolation starts clean.
-        unsafe { *self.frac_read_pos.get() = 0.0; }
+        unsafe {
+            *self.frac_read_pos.get() = 0.0;
+        }
         self.playing.store(true, Ordering::Release);
     }
 
@@ -444,12 +461,16 @@ impl SamplerBuffer {
         let seek_target = self.pending_seek.load(Ordering::Acquire);
         if seek_target != usize::MAX {
             self.read_pos.store(seek_target, Ordering::Release);
-            unsafe { *self.frac_read_pos.get() = 0.0; }
+            unsafe {
+                *self.frac_read_pos.get() = 0.0;
+            }
             self.pending_seek.store(usize::MAX, Ordering::Release);
         }
 
         if !self.playing.load(Ordering::Relaxed) {
-            for i in 0..n { buf[i] = 0.0; }
+            for i in 0..n {
+                buf[i] = 0.0;
+            }
             return;
         }
 
@@ -464,14 +485,14 @@ impl SamplerBuffer {
 
         // Guard against degenerate trim range
         if trim_end <= trim_start {
-            for i in 0..n { buf[i] = 0.0; }
+            for i in 0..n {
+                buf[i] = 0.0;
+            }
             return;
         }
         let range_len = trim_end - trim_start;
 
-        let safe_sample = |pos: usize| -> f32 {
-            if pos < self.capacity { data[pos] } else { 0.0 }
-        };
+        let safe_sample = |pos: usize| -> f32 { if pos < self.capacity { data[pos] } else { 0.0 } };
 
         if (rate - 1.0).abs() < 0.001 {
             // ── Fast path: 1.0x speed, integer stepping (original logic) ──────
@@ -481,7 +502,9 @@ impl SamplerBuffer {
                         if looping {
                             rp = if trim_end > 0 { trim_end - 1 } else { 0 };
                         } else {
-                            for j in i..n { buf[j] = 0.0; }
+                            for j in i..n {
+                                buf[j] = 0.0;
+                            }
                             self.playing.store(false, Ordering::Release);
                             break;
                         }
@@ -495,7 +518,9 @@ impl SamplerBuffer {
                         if looping {
                             rp = trim_start;
                         } else {
-                            for j in i..n { buf[j] = 0.0; }
+                            for j in i..n {
+                                buf[j] = 0.0;
+                            }
                             self.playing.store(false, Ordering::Release);
                             break;
                         }
@@ -522,7 +547,9 @@ impl SamplerBuffer {
                             rp = trim_start + (overshoot % range_len.max(1));
                             *frac_pos -= consumed as f64;
                         } else {
-                            for j in i..n { buf[j] = 0.0; }
+                            for j in i..n {
+                                buf[j] = 0.0;
+                            }
                             self.playing.store(false, Ordering::Release);
                             break;
                         }
@@ -548,7 +575,9 @@ impl SamplerBuffer {
                             rp = trim_end.saturating_sub(1);
                             *frac_pos = 0.0;
                         } else {
-                            for j in i..n { buf[j] = 0.0; }
+                            for j in i..n {
+                                buf[j] = 0.0;
+                            }
                             self.playing.store(false, Ordering::Release);
                             break;
                         }
@@ -573,7 +602,11 @@ impl SamplerBuffer {
     /// Effective end position (trim_end if set, else recorded_length).
     fn effective_end(&self) -> usize {
         let te = self.trim_end.load(Ordering::Relaxed);
-        if te > 0 { te } else { self.recorded_length.load(Ordering::Relaxed) }
+        if te > 0 {
+            te
+        } else {
+            self.recorded_length.load(Ordering::Relaxed)
+        }
     }
 
     /// Current playback position in samples.
@@ -584,14 +617,18 @@ impl SamplerBuffer {
     /// Get recorded duration in seconds.
     pub fn recorded_duration_secs(&self) -> f32 {
         let sr = self.sample_rate.load(Ordering::Relaxed) as f32;
-        if sr <= 0.0 { return 0.0; }
+        if sr <= 0.0 {
+            return 0.0;
+        }
         self.recorded_length.load(Ordering::Relaxed) as f32 / sr
     }
 
     /// Get waveform snapshot using an explicit length (useful during recording
     /// when recorded_length hasn't been finalized yet — pass write_pos instead).
     pub fn waveform_snapshot_live(&self, num_bars: usize, len: usize) -> Vec<f32> {
-        if len == 0 || num_bars == 0 { return vec![0.0; num_bars]; }
+        if len == 0 || num_bars == 0 {
+            return vec![0.0; num_bars];
+        }
         let data = unsafe { &*self.data.get() };
         let len = len.min(self.capacity);
         let mut bars = Vec::with_capacity(num_bars);
@@ -600,7 +637,10 @@ impl SamplerBuffer {
             let start = (i as f32 * samples_per_bar) as usize;
             let end = ((i + 1) as f32 * samples_per_bar) as usize;
             let end = end.min(len);
-            if start >= end { bars.push(0.0); continue; }
+            if start >= end {
+                bars.push(0.0);
+                continue;
+            }
             let mut peak: f32 = 0.0;
             for j in start..end {
                 peak = peak.max(data[j].abs());
@@ -610,4 +650,3 @@ impl SamplerBuffer {
         bars
     }
 }
-

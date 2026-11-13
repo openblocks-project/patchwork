@@ -19,7 +19,11 @@ pub fn render(
     // but the color picker/Set button UI is hidden for now. Will return when
     // OB hardware LEDs get re-enabled.
     let (device_id, hub_node_id, _label_color) = match node_type {
-        NodeType::ObKnob { device_id, hub_node_id, label_color } => (device_id, hub_node_id, label_color),
+        NodeType::ObKnob {
+            device_id,
+            hub_node_id,
+            label_color,
+        } => (device_id, hub_node_id, label_color),
         _ => return,
     };
 
@@ -36,20 +40,42 @@ pub fn render(
     //
     // HID manager is a process-wide singleton — never construct one here.
     #[derive(PartialEq)]
-    enum Source { Hub, Hid, None }
+    enum Source {
+        Hub,
+        Hid,
+        None,
+    }
     let (val, is_active, source) = {
-        let from_hub = ob_manager.get_hub(hid)
+        let from_hub = ob_manager
+            .get_hub(hid)
             .and_then(|h| h.get_device("knob", did))
             .or_else(|| ob_manager.find_device("knob", did).map(|(_, d)| d))
-            .map(|dev| (dev.values.get("value").copied().unwrap_or(0.0), dev.is_active, Source::Hub));
+            .map(|dev| {
+                (
+                    dev.values.get("value").copied().unwrap_or(0.0),
+                    dev.is_active,
+                    Source::Hub,
+                )
+            });
         from_hub
-            .or_else(|| crate::hid::global().find_device("knob", did)
-                .map(|dev| (dev.values.get("value").copied().unwrap_or(0.0), dev.is_active, Source::Hid)))
+            .or_else(|| {
+                crate::hid::global().find_device("knob", did).map(|dev| {
+                    (
+                        dev.values.get("value").copied().unwrap_or(0.0),
+                        dev.is_active,
+                        Source::Hid,
+                    )
+                })
+            })
             .unwrap_or((0.0, false, Source::None))
     };
 
     if is_active {
-        let label = if source == Source::Hid { "● Active (HID)" } else { "● Active" };
+        let label = if source == Source::Hid {
+            "● Active (HID)"
+        } else {
+            "● Active"
+        };
         ui.colored_label(egui::Color32::from_rgb(80, 200, 80), label);
     } else {
         ui.colored_label(egui::Color32::from_rgb(150, 150, 150), "○ Waiting...");
@@ -65,11 +91,15 @@ pub fn render(
     let radius = size * 0.42;
     // Dial backing
     painter.circle_filled(center, radius, egui::Color32::from_rgb(20, 20, 30));
-    painter.circle_stroke(center, radius, egui::Stroke::new(1.5, egui::Color32::from_rgb(55, 55, 70)));
+    painter.circle_stroke(
+        center,
+        radius,
+        egui::Stroke::new(1.5, egui::Color32::from_rgb(55, 55, 70)),
+    );
     // Sweep arc: approximate with a line strip
     let v = val.clamp(0.0, 1.0);
-    let start_deg: f32 = 135.0;         // 7 o'clock
-    let sweep_deg: f32 = 270.0 * v;     // full sweep at v=1 lands at 5 o'clock
+    let start_deg: f32 = 135.0; // 7 o'clock
+    let sweep_deg: f32 = 270.0 * v; // full sweep at v=1 lands at 5 o'clock
     let seg_count = ((sweep_deg.abs() / 6.0).ceil() as usize).max(1);
     let mut pts: Vec<egui::Pos2> = Vec::with_capacity(seg_count + 1);
     for i in 0..=seg_count {
@@ -96,5 +126,9 @@ pub fn render(
     );
     painter.line_segment([center, tip], egui::Stroke::new(2.0, accent));
 
-    ui.label(egui::RichText::new(format!("{:.2}", val)).monospace().strong());
+    ui.label(
+        egui::RichText::new(format!("{:.2}", val))
+            .monospace()
+            .strong(),
+    );
 }
