@@ -12,11 +12,12 @@ on:
 
 jobs:
   check:
-    name: Rust Build and Tests
-    runs-on: windows-latest
+    name: Windows Build and Tests
+    runs-on: windows-2022
 
     env:
       CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+      CMAKE_GENERATOR: "Visual Studio 17 2022"
       RUST_BACKTRACE: "1"
 
     steps:
@@ -27,6 +28,13 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+
+      - name: Configure CMake compatibility
+        shell: pwsh
+        run: |
+          $cmakeVersion = cmake --version
+          Write-Host $cmakeVersion
+          "CMAKE_ARGS=-DCMAKE_POLICY_VERSION_MINIMUM=3.5" >> $env:GITHUB_ENV
 
       - name: Check formatting
         run: cargo fmt --all -- --check
