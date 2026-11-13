@@ -1,0 +1,34 @@
+name: Rust CI
+
+on:
+  push:
+    branches:
+      - main
+      - feature/p2-p6-architecture
+  pull_request:
+    branches:
+      - main
+      - feature/p2-p6-architecture
+
+jobs:
+  check:
+    name: Rust Build and Tests
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Check compilation
+        run: cargo check --locked
+
+      - name: Run tests
+        run: cargo test --locked
