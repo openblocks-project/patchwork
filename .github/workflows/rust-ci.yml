@@ -48,11 +48,19 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
-      - name: Prepare ONNX Runtime build directory
+      - name: Prepare ONNX Runtime DLL directories
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path "target/debug/build" | Out-Null
-          Write-Host "Prepared ONNX Runtime build directory"
+          $directories = @(
+            "target/debug",
+            "target/debug/examples",
+            "target/debug/deps"
+          )
+
+          foreach ($directory in $directories) {
+            New-Item -ItemType Directory -Force -Path $directory | Out-Null
+            Write-Host "Prepared: $directory"
+          }
 
       - name: Inspect native dependencies
         shell: pwsh
