@@ -1,38 +1,36 @@
 ---
 name: " Bug report"
-about: Create a report to help us improve
+about: Report bugs, crashes, broken nodes, and hardware issues in Patchwork
 title: ''
 labels: ''
 assignees: ''
 
 ---
 
-**Describe the bug**
-A clear and concise description of what the bug is.
+## Bug Description
+Describe the problem clearly.
 
-**To Reproduce**
-Steps to reproduce the behavior:
-1. Go to '...'
-2. Click on '....'
-3. Scroll down to '....'
-4. See error
+## Steps to Reproduce
+1.
+2.
+3.
 
-**Expected behavior**
-A clear and concise description of what you expected to happen.
+## Expected Behaviour
+What should happen?
 
-**Screenshots**
-If applicable, add screenshots to help explain your problem.
+## Actual Behaviour
+What happened instead?
 
-**Desktop (please complete the following information):**
- - OS: [e.g. iOS]
- - Browser [e.g. chrome, safari]
- - Version [e.g. 22]
+## Affected Node or Feature
+Which Patchwork node or feature is affected?
 
-**Smartphone (please complete the following information):**
- - Device: [e.g. iPhone6]
- - OS: [e.g. iOS8.1]
- - Browser [e.g. stock browser, safari]
- - Version [e.g. 22]
+## Environment
+- Operating System:
+- Patchwork Version:
+- Hardware (if applicable):
 
-**Additional context**
-Add any other context about the problem here.
+## Screenshots / Logs
+Attach screenshots or error logs.
+
+## Additional Information
+Anything else that might help.
