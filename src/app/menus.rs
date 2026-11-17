@@ -865,14 +865,7 @@ impl super::PatchworkApp {
                 .add_filter("Patchwork Custom Node", &["pwnode"])
                 .pick_file()
             {
-                match self.documents.open_custom_node(path) {
-                    Ok(id) => {
-                        self.switch_document(id);
-                    }
-                    Err(error) => {
-                        crate::system_log::error(format!("Failed to open custom node: {error}"));
-                    }
-                }
+                self.open_custom_node_for_edit(path);
             }
         }
         if insert_custom_node {

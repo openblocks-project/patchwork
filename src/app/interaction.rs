@@ -252,8 +252,11 @@ impl super::PatchworkApp {
 
     /// Node interaction — pointer and node_rects are in screen pixel space.
     pub(super) fn handle_canvas_interaction(&mut self, ctx: &egui::Context) {
-        // Double-click to add node only when Save As is closed
+        // Double-click to add node only when Save As is closed.
+        // Skip double-clicks already handled by a node this frame (e.g. a
+        // custom node that switched tabs and cleared `node_rects`).
         if !self.save_as_open
+            && !self.node_double_click_consumed
             && ctx.input(|i| {
                 i.pointer
                     .button_double_clicked(egui::PointerButton::Primary)
@@ -635,6 +638,21 @@ impl super::PatchworkApp {
                                 });
                                 ui.separator();
                             }
+                        }
+                        // P3: Edit the .pwnode referenced by a custom-node instance.
+                        let custom_node_file = self
+                            .context_menu_node
+                            .and_then(|id| self.graph.nodes.get(&id))
+                            .and_then(|node| match &node.node_type {
+                                NodeType::CustomNodeInstance { file, .. } => Some(file.clone()),
+                                _ => None,
+                            });
+                        if let Some(file) = custom_node_file {
+                            if icon_menu_item(ui, icons::PENCIL, "Edit Custom Node").clicked() {
+                                self.pending_edit_custom_node = Some(file);
+                                keep_open = false;
+                            }
+                            ui.separator();
                         }
                         if icon_menu_item(ui, icons::COPY, "Copy").clicked() {
                             if let Some(id) = self.context_menu_node {

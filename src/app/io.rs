@@ -1287,6 +1287,12 @@ impl super::PatchworkApp {
                 Ok(()) => {
                     self.is_dirty = false;
                     self.documents.active_mut().is_dirty = false;
+                    // P3: Update instances of this custom node in all open documents.
+                    self.refresh_custom_node_instances(
+                        &path,
+                        &custom_node.inputs,
+                        &custom_node.outputs,
+                    );
                     return true;
                 }
                 Err(error) => {

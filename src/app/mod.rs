@@ -273,6 +273,13 @@ pub struct PatchworkApp {
     property_undo_pushed: bool,
     pending_gesture_snapshot: Option<UndoSnapshot>,
     pending_close_tab: Option<u64>,
+    /// P3: .pwnode file queued to open for editing (double-click / context menu).
+    /// Processed after node rendering to avoid borrowing the graph mid-frame.
+    pending_edit_custom_node: Option<String>,
+    /// P3: Set when this frame's primary double-click landed on a node, so the
+    /// empty-canvas handler (which runs later, possibly after a tab switch has
+    /// cleared `node_rects`) does not also open the Add Node palette.
+    node_double_click_consumed: bool,
     // P3: Save As dialog state
     save_as_open: bool,
     save_as_name: String,
@@ -361,6 +368,8 @@ impl PatchworkApp {
             selected_nodes: std::collections::HashSet::new(),
             pending_popup_open: std::collections::HashSet::new(),
             pending_close_tab: None,
+            pending_edit_custom_node: None,
+            node_double_click_consumed: false,
             save_as_open: false,
             save_as_name: String::new(),
             selected_connection: None,
@@ -1113,6 +1122,10 @@ impl PatchworkApp {
                     None
                 };
             let is_comment = node.node_type.title() == "Comment";
+            let custom_node_file = match &node.node_type {
+                NodeType::CustomNodeInstance { file, .. } => Some(file.clone()),
+                _ => None,
+            };
             let mut win = egui::Window::new(title_rt)
                 .id(egui::Id::new((
                     "node",
@@ -1124,7 +1137,11 @@ impl PatchworkApp {
                 .default_width(node_width)
                 .resizable(is_display)
                 .constrain(false)
-                .collapsible(!is_custom_render && !no_title && !is_pinned)
+                .collapsible(
+                    // Custom-node instances use double-click to open their
+                    // .pwnode, which would otherwise also toggle collapse.
+                    !is_custom_render && !no_title && !is_pinned && custom_node_file.is_none(),
+                )
                 .title_bar(!is_custom_render && !no_title);
             if is_pinned {
                 win = win.order(egui::Order::Foreground);
@@ -1425,6 +1442,28 @@ impl PatchworkApp {
                         ctx.input(|i| i.modifiers.alt),
                         self.selected_nodes
                     ));
+                }
+
+                // P3: A double-click on any node belongs to that node, never
+                // to the empty canvas behind it.
+                let double_clicked_here = r.response.double_clicked()
+                    || (ctx.input(|i| {
+                        i.pointer
+                            .button_double_clicked(egui::PointerButton::Primary)
+                    }) && ctx
+                        .pointer_latest_pos()
+                        .map(|p| r.response.rect.contains(p))
+                        .unwrap_or(false));
+                if double_clicked_here {
+                    self.node_double_click_consumed = true;
+                }
+
+                // P3: Double-click a custom-node instance to edit its .pwnode.
+                if let Some(file) = &custom_node_file {
+                    if !self.save_as_open && self.pending_close_tab.is_none() && double_clicked_here
+                    {
+                        self.pending_edit_custom_node = Some(file.clone());
+                    }
                 }
 
                 // Right-click context menu — skip for custom_render nodes (they handle their own UI)
@@ -2497,6 +2536,8 @@ impl eframe::App for PatchworkApp {
         egui::TopBottomPanel::top("document_tabs").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 let active_id = self.documents.active().id;
+                // P3: How often each open custom node is used in open documents.
+                let usage = self.documents.custom_node_usage(&self.graph);
 
                 let tabs: Vec<(u64, String, bool)> = self
                     .documents
@@ -2514,6 +2555,10 @@ impl eframe::App for PatchworkApp {
                     .collect();
 
                 for (id, title, dirty) in tabs {
+                    let title = match usage.get(&id) {
+                        Some(count) => format!("{title} (used ×{count})"),
+                        None => title,
+                    };
                     let label = if dirty { format!("{} *", title) } else { title };
                     ui.horizontal(|ui| {
                         if ui.selectable_label(id == active_id, label).clicked() {
@@ -3466,6 +3511,14 @@ match validation_result {
             .begin_frame(self.wgpu_render_state.as_ref());
         let now_secs = self.app_start_instant.elapsed().as_secs_f64();
         let mut values = self.graph.evaluate(now_secs);
+        // P3: Report interface changes picked up while reloading custom nodes
+        // (e.g. a .pwnode modified outside this editor).
+        let port_events = self.graph.take_custom_port_events();
+        if port_events.changed {
+            self.is_dirty = true;
+            let title = self.documents.active().title.clone();
+            self.report_removed_custom_connections(&title, &port_events.removed);
+        }
         // Inject OB hardware values into the graph (before they're used by downstream nodes)
         // These need a second evaluation pass to propagate through Add/Multiply/etc.
         {
@@ -5218,6 +5271,8 @@ match validation_result {
         }
         self.canvas(ctx);
         self.render_connections(ctx, &values);
+        // Reset per frame; node rendering sets it when a node is double-clicked.
+        self.node_double_click_consumed = false;
         self.render_nodes_filtered(ctx, &values, false);
         self.render_nodes_filtered(ctx, &values, true);
         // Build audio chains AFTER node rendering — nodes populate s.sources
@@ -5225,6 +5280,12 @@ match validation_result {
         self.sync_audio_engine();
         self.sync_console_messages();
         self.handle_system_node_actions(ctx);
+        // P3: Open a custom node queued by double-click or the context menu.
+        if let Some(file) = self.pending_edit_custom_node.take() {
+            if !self.save_as_open && self.pending_close_tab.is_none() {
+                self.open_custom_node_for_edit(std::path::PathBuf::from(file));
+            }
+        }
         // Handle OSC In spawn requests (create new OscIn pre-configured for a discovered address)
         {
             let osc_ids: Vec<NodeId> = self
@@ -5463,6 +5524,99 @@ impl PatchworkApp {
         let id = self.documents.new_document("Untitled");
         self.switch_document(id);
     }
+    /// P3: Open a .pwnode in an editable tab, reusing its tab if already open.
+    pub(super) fn open_custom_node_for_edit(&mut self, path: std::path::PathBuf) {
+        match self.documents.open_custom_node(path) {
+            Ok(id) => {
+                self.switch_document(id);
+            }
+            Err(error) => {
+                crate::system_log::error(format!("Failed to open custom node: {error}"));
+                self.toast_error(format!("Failed to open custom node: {error}"));
+            }
+        }
+    }
+    /// P3: After a .pwnode was saved, resynchronise every instance that
+    /// references it in all open documents (active graph included) and drop
+    /// their cached runtimes so the saved version is used immediately.
+    pub(super) fn refresh_custom_node_instances(
+        &mut self,
+        saved_path: &std::path::Path,
+        inputs: &[crate::document::CustomNodePort],
+        outputs: &[crate::document::CustomNodePort],
+    ) {
+        let Ok(target) = std::fs::canonicalize(saved_path) else {
+            return;
+        };
+        self.documents.clear_resolved_paths();
+
+        let active_id = self.documents.active().id;
+        let mut reports: Vec<(String, Vec<String>)> = Vec::new();
+
+        // The active document's live graph is `self.graph`.
+        let report = self
+            .graph
+            .refresh_custom_instances(&target, inputs, outputs);
+        if report.changed {
+            self.is_dirty = true;
+            self.caches_dirty = true;
+        }
+        if !report.removed.is_empty() {
+            reports.push((
+                self.documents.active().title.clone(),
+                describe_removed_custom_connections(&self.graph, &report.removed),
+            ));
+        }
+
+        // Background documents keep their own graphs.
+        for doc in self
+            .documents
+            .documents
+            .iter_mut()
+            .filter(|doc| doc.id != active_id)
+        {
+            let report = doc.graph.refresh_custom_instances(&target, inputs, outputs);
+            if report.changed {
+                doc.is_dirty = true;
+            }
+            if !report.removed.is_empty() {
+                reports.push((
+                    doc.title.clone(),
+                    describe_removed_custom_connections(&doc.graph, &report.removed),
+                ));
+            }
+        }
+
+        for (title, lines) in reports {
+            self.log_removed_custom_connections(&title, lines);
+        }
+    }
+    /// P3: Tell the user about connections removed by a custom-node interface change.
+    pub(super) fn report_removed_custom_connections(
+        &mut self,
+        document_title: &str,
+        removed: &[crate::graph::RemovedCustomConnection],
+    ) {
+        if removed.is_empty() {
+            return;
+        }
+        let lines = describe_removed_custom_connections(&self.graph, removed);
+        self.log_removed_custom_connections(document_title, lines);
+    }
+    fn log_removed_custom_connections(&mut self, document_title: &str, lines: Vec<String>) {
+        if lines.is_empty() {
+            return;
+        }
+        for line in &lines {
+            crate::system_log::warn(format!("[{document_title}] {line}"));
+        }
+        self.toast_warn(format!(
+            "{} connection(s) removed in '{}' because a custom node's ports changed. \
+             See the system log for details.",
+            lines.len(),
+            document_title
+        ));
+    }
     fn close_tab(&mut self, document_id: u64) -> bool {
         // Do not close the last remaining tab.
         if self.documents.documents.len() <= 1 {
@@ -5505,4 +5659,40 @@ impl PatchworkApp {
         }
         self.documents.close_document(document_id)
     }
+}
+
+/// P3: Human-readable descriptions of connections removed by a custom-node
+/// interface change, resolved against the graph they were removed from.
+fn describe_removed_custom_connections(
+    graph: &Graph,
+    removed: &[crate::graph::RemovedCustomConnection],
+) -> Vec<String> {
+    let node_label = |id: NodeId| {
+        graph
+            .nodes
+            .get(&id)
+            .map(|node| format!("{} #{}", node.node_type.title(), id))
+            .unwrap_or_else(|| format!("#{id}"))
+    };
+    removed
+        .iter()
+        .map(|r| {
+            let custom_name = std::path::Path::new(&r.file)
+                .file_stem()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| r.file.clone());
+            let direction = if r.is_input { "input" } else { "output" };
+            format!(
+                "Removed connection {} port {} → {} port {}: custom node '{}' (#{}) no longer has {} port '{}'.",
+                node_label(r.from_node),
+                r.from_port,
+                node_label(r.to_node),
+                r.to_port,
+                custom_name,
+                r.instance_id,
+                direction,
+                r.port_name
+            )
+        })
+        .collect()
 }

@@ -2622,6 +2622,79 @@ pub struct Connection {
     pub label: String,
 }
 
+// ── Custom-node port synchronisation ────────────────────────────────────────
+
+/// A connection that had to be removed because the referenced custom node's
+/// interface no longer contains a matching port.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemovedCustomConnection {
+    /// The custom-node instance whose port disappeared.
+    pub instance_id: NodeId,
+    /// The instance's referenced .pwnode file.
+    pub file: String,
+    /// Name of the removed port (or `#index` if it was unknown).
+    pub port_name: String,
+    /// True when the removed port was an input of the instance.
+    pub is_input: bool,
+    /// The removed connection, as it was before the interface changed.
+    pub from_node: NodeId,
+    pub from_port: usize,
+    pub to_node: NodeId,
+    pub to_port: usize,
+}
+
+/// Outcome of synchronising custom-node instances with their source files.
+#[derive(Debug, Clone, Default)]
+pub struct CustomPortSyncReport {
+    /// True when any instance's interface or connections changed.
+    pub changed: bool,
+    /// Connections that could not be mapped to the new interface.
+    pub removed: Vec<RemovedCustomConnection>,
+}
+
+impl CustomPortSyncReport {
+    fn merge(&mut self, other: CustomPortSyncReport) {
+        self.changed |= other.changed;
+        self.removed.extend(other.removed);
+    }
+}
+
+/// Map an old custom-node port index to its index in the new interface.
+///
+/// Ports are identified by name and kind. A uniquely named port follows its
+/// name to any new position; otherwise a port is kept only if the same
+/// position still holds an identical port.
+fn remap_custom_port(
+    old_ports: &[crate::document::CustomNodePort],
+    new_ports: &[crate::document::CustomNodePort],
+    old_index: usize,
+) -> Option<usize> {
+    let old = old_ports.get(old_index)?;
+
+    if old_ports.iter().filter(|p| p.name == old.name).count() == 1 {
+        let mut matches = new_ports
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.name == old.name && p.kind == old.kind);
+        if let Some((index, _)) = matches.next() {
+            if matches.next().is_none() {
+                return Some(index);
+            }
+        }
+    }
+
+    if new_ports.get(old_index) == Some(old) {
+        return Some(old_index);
+    }
+
+    None
+}
+
+/// Resolve a custom-node file reference to a canonical path.
+pub fn canonical_custom_node_path(file: &str) -> Option<std::path::PathBuf> {
+    std::fs::canonicalize(file).ok()
+}
+
 // ── Graph ───────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2636,6 +2709,10 @@ pub struct Graph {
     /// Last known modification time for each custom-node source file.
     #[serde(skip)]
     custom_runtime_modified: HashMap<NodeId, std::time::SystemTime>,
+    /// Port-sync events raised while reloading custom nodes during evaluation.
+    /// Drained by the editor with `take_custom_port_events`.
+    #[serde(skip)]
+    custom_port_events: CustomPortSyncReport,
     /// Last evaluate timestamp for computing real dt (not serialized)
     #[serde(skip)]
     last_eval_time: f64,
@@ -2668,6 +2745,7 @@ impl Graph {
             next_id: 1,
             custom_runtimes: HashMap::new(),
             custom_runtime_modified: HashMap::new(),
+            custom_port_events: CustomPortSyncReport::default(),
 
             last_eval_time: 0.0,
             topo_order: Vec::new(),
@@ -3623,6 +3701,8 @@ impl Graph {
 
                             let internal_values =
                                 runtime.evaluate_with_injected_inputs(now_secs, &injected);
+                            // Nested port-sync events are internal to the runtime.
+                            let _ = runtime.take_custom_port_events();
                             let outputs = runtime.collect_custom_outputs(&internal_values);
                             for (port, value) in outputs.into_iter().enumerate() {
                                 values.insert((id, port), value);
@@ -3714,6 +3794,8 @@ impl Graph {
                                         .collect();
                                     let internal_values =
                                         runtime.evaluate_with_injected_inputs(now_secs, &injected);
+                                    // Nested port-sync events are internal to the runtime.
+                                    let _ = runtime.take_custom_port_events();
                                     let outputs = runtime.collect_custom_outputs(&internal_values);
                                     for (port, value) in outputs.into_iter().enumerate() {
                                         values.insert((id, port), value);
@@ -3744,79 +3826,173 @@ impl Graph {
 
         values
     }
-    // Step 24: Load and cache each custom node's internal graph.
+    /// Synchronise a custom-node instance's ports with a new interface.
+    ///
+    /// Connections follow their port by stable identity (see
+    /// `remap_custom_port`). Connections that cannot be mapped are removed
+    /// and returned in the report so the caller can tell the user.
     fn sync_custom_ports(
         &mut self,
         instance_id: NodeId,
         new_inputs: Vec<crate::document::CustomNodePort>,
         new_outputs: Vec<crate::document::CustomNodePort>,
-    ) {
+    ) -> CustomPortSyncReport {
+        let mut report = CustomPortSyncReport::default();
+
         let Some(node) = self.nodes.get_mut(&instance_id) else {
-            return;
+            return report;
         };
 
         let NodeType::CustomNodeInstance {
-            inputs, outputs, ..
+            file,
+            inputs,
+            outputs,
         } = &mut node.node_type
         else {
-            return;
+            return report;
         };
+
+        // Nothing to do when the interface is unchanged.
+        if *inputs == new_inputs && *outputs == new_outputs {
+            return report;
+        }
 
         // Preserve the previous interface for connection remapping.
-        let old_inputs = inputs.clone();
-        let old_outputs = outputs.clone();
+        let file = file.clone();
+        let old_inputs = std::mem::replace(inputs, new_inputs.clone());
+        let old_outputs = std::mem::replace(outputs, new_outputs.clone());
+        report.changed = true;
 
-        // Map an old port index to its new index by matching name and type.
-        let remap = |old_ports: &[crate::document::CustomNodePort],
-                     new_ports: &[crate::document::CustomNodePort],
-                     old_index: usize|
-         -> Option<usize> {
-            let old = old_ports.get(old_index)?;
-
-            // Ambiguous names are not remapped.
-            if old_ports.iter().filter(|p| p.name == old.name).count() != 1 {
-                return None;
-            }
-
-            let mut matches = new_ports
-                .iter()
-                .enumerate()
-                .filter(|(_, p)| p.name == old.name && p.kind == old.kind);
-
-            let index = matches.next()?.0;
-
-            if matches.next().is_some() {
-                return None;
-            }
-
-            Some(index)
+        let port_name = |ports: &[crate::document::CustomNodePort], index: usize| {
+            ports
+                .get(index)
+                .map(|p| p.name.clone())
+                .unwrap_or_else(|| format!("#{index}"))
         };
 
+        let removed = &mut report.removed;
         self.connections.retain_mut(|connection| {
-            if connection.to_node == instance_id {
-                let Some(index) = remap(&old_inputs, &new_inputs, connection.to_port) else {
-                    return false;
-                };
+            let original = connection.clone();
+            let removed_connection = |is_input: bool, port_name: String| RemovedCustomConnection {
+                instance_id,
+                file: file.clone(),
+                port_name,
+                is_input,
+                from_node: original.from_node,
+                from_port: original.from_port,
+                to_node: original.to_node,
+                to_port: original.to_port,
+            };
 
-                connection.to_port = index;
+            if connection.to_node == instance_id {
+                match remap_custom_port(&old_inputs, &new_inputs, connection.to_port) {
+                    Some(index) => connection.to_port = index,
+                    None => {
+                        removed.push(removed_connection(
+                            true,
+                            port_name(&old_inputs, original.to_port),
+                        ));
+                        return false;
+                    }
+                }
             }
 
             if connection.from_node == instance_id {
-                let Some(index) = remap(&old_outputs, &new_outputs, connection.from_port) else {
-                    return false;
-                };
-
-                connection.from_port = index;
+                match remap_custom_port(&old_outputs, &new_outputs, connection.from_port) {
+                    Some(index) => connection.from_port = index,
+                    None => {
+                        removed.push(removed_connection(
+                            false,
+                            port_name(&old_outputs, original.from_port),
+                        ));
+                        return false;
+                    }
+                }
             }
 
             true
         });
 
-        *inputs = new_inputs;
-        *outputs = new_outputs;
-
         self.topo_dirty = true;
         self.audio_topology_dirty = true;
+
+        report
+    }
+
+    /// Re-synchronise every instance that references `target` (a canonical
+    /// .pwnode path) with its new interface, and drop the cached runtimes so
+    /// the next evaluation reloads the saved file. Nested runtimes that use
+    /// the same file are invalidated as well.
+    pub fn refresh_custom_instances(
+        &mut self,
+        target: &std::path::Path,
+        inputs: &[crate::document::CustomNodePort],
+        outputs: &[crate::document::CustomNodePort],
+    ) -> CustomPortSyncReport {
+        let mut report = CustomPortSyncReport::default();
+
+        let mut instance_ids: Vec<NodeId> = self
+            .nodes
+            .iter()
+            .filter_map(|(&id, node)| match &node.node_type {
+                NodeType::CustomNodeInstance { file, .. }
+                    if canonical_custom_node_path(file).as_deref() == Some(target) =>
+                {
+                    Some(id)
+                }
+                _ => None,
+            })
+            .collect();
+        instance_ids.sort();
+
+        for id in instance_ids {
+            report.merge(self.sync_custom_ports(id, inputs.to_vec(), outputs.to_vec()));
+            self.custom_runtimes.remove(&id);
+            self.custom_runtime_modified.remove(&id);
+        }
+
+        for runtime in self.custom_runtimes.values_mut() {
+            runtime.invalidate_custom_runtimes_for(target);
+        }
+
+        report
+    }
+
+    /// Drop cached runtimes (recursively) for instances referencing `target`.
+    /// Returns the number of runtimes invalidated.
+    pub fn invalidate_custom_runtimes_for(&mut self, target: &std::path::Path) -> usize {
+        let matching: Vec<NodeId> = self
+            .nodes
+            .iter()
+            .filter_map(|(&id, node)| match &node.node_type {
+                NodeType::CustomNodeInstance { file, .. }
+                    if canonical_custom_node_path(file).as_deref() == Some(target) =>
+                {
+                    Some(id)
+                }
+                _ => None,
+            })
+            .collect();
+
+        let mut count = 0;
+        for id in matching {
+            if self.custom_runtimes.remove(&id).is_some() {
+                count += 1;
+            }
+            self.custom_runtime_modified.remove(&id);
+        }
+
+        for runtime in self.custom_runtimes.values_mut() {
+            count += runtime.invalidate_custom_runtimes_for(target);
+        }
+
+        count
+    }
+
+    /// Take port-sync events raised while reloading custom nodes during
+    /// evaluation (e.g. after a .pwnode file changed on disk).
+    pub fn take_custom_port_events(&mut self) -> CustomPortSyncReport {
+        std::mem::take(&mut self.custom_port_events)
     }
     pub(crate) fn validate_custom_node_save(
         graph: &Graph,
@@ -3913,7 +4089,8 @@ impl Graph {
         // Reject direct and indirect recursive custom-node references.
         Self::check_custom_node_dependencies(path, &mut std::collections::HashSet::new(), 0)?;
         // Synchronize the instance's external ports with the source file.
-        self.sync_custom_ports(instance_id, custom.inputs, custom.outputs);
+        let report = self.sync_custom_ports(instance_id, custom.inputs, custom.outputs);
+        self.custom_port_events.merge(report);
         // Replace the cached runtime with the updated internal graph.
         self.custom_runtimes
             .insert(instance_id, Box::new(custom.graph));
@@ -4050,5 +4227,202 @@ fn extract_json_path(json_str: &str, path: &str) -> String {
         serde_json::Value::String(s) => s.clone(),
         serde_json::Value::Null => String::new(),
         other => other.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod custom_node_sync_tests {
+    use super::*;
+    use crate::document::CustomNodePort;
+
+    fn port(name: &str, kind: &str) -> CustomNodePort {
+        CustomNodePort {
+            name: name.to_string(),
+            kind: kind.to_string(),
+        }
+    }
+
+    fn instance(file: &str, inputs: Vec<CustomNodePort>, outputs: Vec<CustomNodePort>) -> NodeType {
+        NodeType::CustomNodeInstance {
+            file: file.to_string(),
+            inputs,
+            outputs,
+        }
+    }
+
+    fn source() -> NodeType {
+        NodeType::CustomInput {
+            name: "src".to_string(),
+            kind: PortKind::Number,
+        }
+    }
+
+    fn sink() -> NodeType {
+        NodeType::CustomOutput {
+            name: "dst".to_string(),
+            kind: PortKind::Number,
+        }
+    }
+
+    fn temp_pwnode(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "patchwork_custom_sync_{}_{}",
+            tag,
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("{tag}.pwnode"));
+        std::fs::write(&path, "{}").unwrap();
+        path
+    }
+
+    #[test]
+    fn remap_follows_unique_name_to_new_position() {
+        let old = vec![port("a", "Number"), port("b", "Number")];
+        let new = vec![port("b", "Number"), port("a", "Number")];
+        assert_eq!(remap_custom_port(&old, &new, 0), Some(1));
+        assert_eq!(remap_custom_port(&old, &new, 1), Some(0));
+    }
+
+    #[test]
+    fn remap_rejects_removed_or_retyped_port() {
+        let old = vec![port("a", "Number"), port("b", "Number")];
+        assert_eq!(remap_custom_port(&old, &[port("b", "Number")], 0), None);
+        assert_eq!(
+            remap_custom_port(&old, &[port("a", "Text"), port("b", "Number")], 0),
+            None
+        );
+    }
+
+    #[test]
+    fn remap_keeps_ambiguous_port_only_at_identical_position() {
+        let old = vec![port("x", "Number"), port("x", "Number")];
+        let same = old.clone();
+        assert_eq!(remap_custom_port(&old, &same, 1), Some(1));
+        let shorter = vec![port("x", "Number")];
+        assert_eq!(remap_custom_port(&old, &shorter, 1), None);
+    }
+
+    #[test]
+    fn sync_remaps_and_reports_removed_connections() {
+        let mut graph = Graph::new();
+        let src = graph.add_node(source(), [0.0, 0.0]);
+        let inst = graph.add_node(
+            instance(
+                "node.pwnode",
+                vec![port("a", "Number"), port("b", "Number")],
+                vec![port("out", "Number")],
+            ),
+            [100.0, 0.0],
+        );
+        let dst = graph.add_node(sink(), [200.0, 0.0]);
+        graph.add_connection(src, 0, inst, 1); // into "b"
+        graph.add_connection(inst, 0, dst, 0); // out of "out"
+
+        let report = graph.sync_custom_ports(inst, vec![port("b", "Number")], vec![]);
+
+        assert!(report.changed);
+        assert_eq!(graph.connections.len(), 1);
+        assert_eq!(graph.connections[0].to_node, inst);
+        assert_eq!(graph.connections[0].to_port, 0);
+
+        assert_eq!(report.removed.len(), 1);
+        let removed = &report.removed[0];
+        assert_eq!(removed.instance_id, inst);
+        assert_eq!(removed.port_name, "out");
+        assert!(!removed.is_input);
+        assert_eq!(
+            (
+                removed.from_node,
+                removed.from_port,
+                removed.to_node,
+                removed.to_port
+            ),
+            (inst, 0, dst, 0)
+        );
+    }
+
+    #[test]
+    fn sync_with_unchanged_interface_is_a_no_op() {
+        let mut graph = Graph::new();
+        let ports = vec![port("a", "Number")];
+        let inst = graph.add_node(
+            instance("n.pwnode", ports.clone(), ports.clone()),
+            [0.0, 0.0],
+        );
+        let report = graph.sync_custom_ports(inst, ports.clone(), ports);
+        assert!(!report.changed);
+        assert!(report.removed.is_empty());
+    }
+
+    #[test]
+    fn refresh_updates_only_instances_of_the_saved_file() {
+        let saved = temp_pwnode("saved");
+        let other = temp_pwnode("other");
+        let target = std::fs::canonicalize(&saved).unwrap();
+
+        let mut graph = Graph::new();
+        let old = vec![port("a", "Number")];
+        let matching = graph.add_node(
+            instance(&saved.to_string_lossy(), old.clone(), vec![]),
+            [0.0, 0.0],
+        );
+        let unrelated = graph.add_node(
+            instance(&other.to_string_lossy(), old.clone(), vec![]),
+            [0.0, 0.0],
+        );
+        // Pretend both instances have cached runtimes.
+        graph
+            .custom_runtimes
+            .insert(matching, Box::new(Graph::new()));
+        graph
+            .custom_runtimes
+            .insert(unrelated, Box::new(Graph::new()));
+
+        let new = vec![port("a", "Number"), port("b", "Number")];
+        let report = graph.refresh_custom_instances(&target, &new, &[]);
+
+        assert!(report.changed);
+        assert!(!graph.custom_runtimes.contains_key(&matching));
+        assert!(graph.custom_runtimes.contains_key(&unrelated));
+        match &graph.nodes[&matching].node_type {
+            NodeType::CustomNodeInstance { inputs, .. } => assert_eq!(inputs, &new),
+            _ => unreachable!(),
+        }
+        match &graph.nodes[&unrelated].node_type {
+            NodeType::CustomNodeInstance { inputs, .. } => assert_eq!(inputs, &old),
+            _ => unreachable!(),
+        }
+
+        let _ = std::fs::remove_dir_all(saved.parent().unwrap());
+        let _ = std::fs::remove_dir_all(other.parent().unwrap());
+    }
+
+    #[test]
+    fn invalidate_reaches_nested_runtimes() {
+        let saved = temp_pwnode("nested");
+        let target = std::fs::canonicalize(&saved).unwrap();
+
+        let mut inner = Graph::new();
+        let inner_inst = inner.add_node(
+            instance(&saved.to_string_lossy(), vec![], vec![]),
+            [0.0, 0.0],
+        );
+        inner
+            .custom_runtimes
+            .insert(inner_inst, Box::new(Graph::new()));
+
+        let mut outer = Graph::new();
+        let outer_inst = outer.add_node(instance("elsewhere.pwnode", vec![], vec![]), [0.0, 0.0]);
+        outer.custom_runtimes.insert(outer_inst, Box::new(inner));
+
+        assert_eq!(outer.invalidate_custom_runtimes_for(&target), 1);
+        assert!(
+            outer.custom_runtimes[&outer_inst]
+                .custom_runtimes
+                .is_empty()
+        );
+
+        let _ = std::fs::remove_dir_all(saved.parent().unwrap());
     }
 }

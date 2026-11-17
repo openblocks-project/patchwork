@@ -27,7 +27,7 @@ pub struct CustomNodeFile {
     pub outputs: Vec<CustomNodePort>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CustomNodePort {
     pub name: String,
     pub kind: String,
