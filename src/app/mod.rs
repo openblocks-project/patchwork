@@ -137,6 +137,7 @@ pub(crate) fn draw_shaped_port(
 }
 
 mod canvas;
+mod group;
 mod interaction;
 mod io;
 mod menus;
@@ -280,6 +281,13 @@ pub struct PatchworkApp {
     /// empty-canvas handler (which runs later, possibly after a tab switch has
     /// cleared `node_rects`) does not also open the Add Node palette.
     node_double_click_consumed: bool,
+    /// P2: "Group into Custom Node" dialog state.
+    group_dialog_open: bool,
+    group_name: String,
+    /// Selection captured when the group dialog opened.
+    group_selection: std::collections::HashSet<NodeId>,
+    /// P2: .pwnode files created by grouping this session (Project Nodes).
+    project_custom_nodes: Vec<std::path::PathBuf>,
     // P3: Save As dialog state
     save_as_open: bool,
     save_as_name: String,
@@ -370,6 +378,10 @@ impl PatchworkApp {
             pending_close_tab: None,
             pending_edit_custom_node: None,
             node_double_click_consumed: false,
+            group_dialog_open: false,
+            group_name: String::new(),
+            group_selection: std::collections::HashSet::new(),
+            project_custom_nodes: Vec::new(),
             save_as_open: false,
             save_as_name: String::new(),
             selected_connection: None,
@@ -3471,6 +3483,8 @@ match validation_result {
 
             self.save_as_open = open;
         }
+        // P2: Group-into-custom-node naming dialog.
+        self.render_group_dialog(ctx);
         // Floating modal for "save before quit?" — drawn after the menu
         // so it visually layers on top of canvas chrome.
         self.render_quit_dialog(ctx);
@@ -5428,7 +5442,8 @@ match validation_result {
                 }
             }
         }
-        if !self.save_as_open {
+        // Canvas input (incl. keyboard shortcuts) pauses while a modal is open.
+        if !self.save_as_open && !self.group_dialog_open {
             self.node_menu(ctx);
             self.context_menu(ctx);
             self.handle_pan_zoom(ctx);

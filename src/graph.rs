@@ -2622,6 +2622,9 @@ pub struct Connection {
     pub label: String,
 }
 
+/// P2: Custom node grouping (selection → reusable .pwnode).
+pub mod group;
+
 // ── Custom-node port synchronisation ────────────────────────────────────────
 
 /// A connection that had to be removed because the referenced custom node's

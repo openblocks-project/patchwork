@@ -33,6 +33,33 @@ pub struct CustomNodePort {
     pub kind: String,
 }
 
+/// Build a custom node's external interface from its internal graph.
+///
+/// Ports are ordered by NodeId, matching how the runtime maps instance
+/// ports to internal `CustomInput` / `CustomOutput` nodes.
+pub fn custom_node_interface(graph: &Graph) -> (Vec<CustomNodePort>, Vec<CustomNodePort>) {
+    let mut interface_nodes: Vec<_> = graph.nodes.values().collect();
+    // HashMap iteration order is not stable.
+    interface_nodes.sort_by_key(|node| node.id);
+
+    let mut inputs = Vec::new();
+    let mut outputs = Vec::new();
+    for node in interface_nodes {
+        match &node.node_type {
+            crate::graph::NodeType::CustomInput { name, kind } => inputs.push(CustomNodePort {
+                name: name.clone(),
+                kind: format!("{:?}", kind),
+            }),
+            crate::graph::NodeType::CustomOutput { name, kind } => outputs.push(CustomNodePort {
+                name: name.clone(),
+                kind: format!("{:?}", kind),
+            }),
+            _ => {}
+        }
+    }
+    (inputs, outputs)
+}
+
 impl CustomNodeFile {
     pub fn save(&self, path: &std::path::Path) -> Result<(), String> {
         let absolute_path = if path.is_absolute() {

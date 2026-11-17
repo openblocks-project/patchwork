@@ -466,6 +466,10 @@ impl super::PatchworkApp {
                 let _ = new_id;
             }
         }
+        // P2: Cmd+G / Ctrl+G = group selection into a custom node
+        if cmd && !modifiers.shift && !text_focused && ctx.input(|i| i.key_pressed(egui::Key::G)) {
+            self.begin_group_selection();
+        }
         // Cmd+D = duplicate (only when no text field is focused)
         if cmd && !text_focused && ctx.input(|i| i.key_pressed(egui::Key::D)) {
             self.duplicate_selected();

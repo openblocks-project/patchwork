@@ -460,6 +460,38 @@ impl super::PatchworkApp {
                     if !any_shown {
                         ui.label("No library nodes found");
                     }
+
+                    // P2: Custom nodes belonging to this project.
+                    let project_nodes = self.project_node_paths();
+                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new(format!("Project Nodes ({})", project_nodes.len()))
+                            .small()
+                            .strong()
+                            .color(egui::Color32::GRAY),
+                    );
+                    ui.separator();
+                    let mut any_project_shown = false;
+                    for path in &project_nodes {
+                        let name = path
+                            .file_stem()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("Unnamed Node");
+                        if !query.is_empty() && !name.to_lowercase().contains(&query) {
+                            continue;
+                        }
+                        if ui
+                            .button(format!("🧩 {}", name))
+                            .on_hover_text(path.display().to_string())
+                            .clicked()
+                        {
+                            selected_library_path = Some(path.clone());
+                        }
+                        any_project_shown = true;
+                    }
+                    if !any_project_shown {
+                        ui.label("No project nodes yet — select nodes and press Ctrl+G");
+                    }
                 }
                 // ── Column layout ───────────────────────────────────────
                 if cat_filter != "Library" {

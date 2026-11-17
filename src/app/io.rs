@@ -1240,34 +1240,8 @@ impl super::PatchworkApp {
                 }
             };
 
-            let mut interface_nodes: Vec<_> = self.graph.nodes.values().collect();
-
-            // HashMap iteration order is not stable.
-            // Sort by node ID for consistent port ordering.
-            interface_nodes.sort_by_key(|node| node.id);
-
-            let mut inputs = Vec::new();
-            let mut outputs = Vec::new();
-
-            for node in interface_nodes {
-                match &node.node_type {
-                    crate::graph::NodeType::CustomInput { name, kind } => {
-                        inputs.push(crate::document::CustomNodePort {
-                            name: name.clone(),
-                            kind: format!("{:?}", kind),
-                        });
-                    }
-
-                    crate::graph::NodeType::CustomOutput { name, kind } => {
-                        outputs.push(crate::document::CustomNodePort {
-                            name: name.clone(),
-                            kind: format!("{:?}", kind),
-                        });
-                    }
-
-                    _ => {}
-                }
-            }
+            // Shared with P2 grouping so both build ports in the same order.
+            let (inputs, outputs) = crate::document::custom_node_interface(&self.graph);
 
             let custom_node = crate::document::CustomNodeFile {
                 version: existing.version,
