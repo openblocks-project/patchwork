@@ -4899,6 +4899,7 @@ dependencies = [
  "rfd",
  "rhai",
  "rosc",
+ "semver",
  "serde",
  "serde_json",
  "serialport",

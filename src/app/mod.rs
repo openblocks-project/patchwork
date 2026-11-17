@@ -140,6 +140,7 @@ mod canvas;
 mod group;
 mod interaction;
 mod io;
+mod library;
 mod menus;
 mod toast;
 pub(crate) mod undo;
@@ -288,6 +289,10 @@ pub struct PatchworkApp {
     group_selection: std::collections::HashSet<NodeId>,
     /// P2: .pwnode files created by grouping this session (Project Nodes).
     project_custom_nodes: Vec<std::path::PathBuf>,
+    /// P4.0: cached Library listing (rescanned on demand, not per frame).
+    library_cache: crate::library::LibraryCache,
+    /// P4.1: "Publish to Library" dialog state.
+    publish_dialog: Option<library::PublishDialog>,
     // P3: Save As dialog state
     save_as_open: bool,
     save_as_name: String,
@@ -322,6 +327,9 @@ pub struct PatchworkApp {
     /// User chose Don't Save / saved successfully — next close request
     /// is allowed through without re-prompting.
     force_quit: bool,
+    /// B1: the user chose "Discard All & Quit"; the session must not keep
+    /// any unsaved graph state.
+    discard_on_exit: bool,
     /// MRU list of project directories (most recent first, capped at 10).
     /// Persisted via SessionState; rendered as the File → Open Recent submenu.
     recent_projects: Vec<String>,
@@ -382,6 +390,8 @@ impl PatchworkApp {
             group_name: String::new(),
             group_selection: std::collections::HashSet::new(),
             project_custom_nodes: Vec::new(),
+            library_cache: crate::library::LibraryCache::new(),
+            publish_dialog: None,
             save_as_open: false,
             save_as_name: String::new(),
             selected_connection: None,
@@ -520,6 +530,7 @@ impl PatchworkApp {
             last_title: String::new(),
             pending_quit_dialog: false,
             force_quit: false,
+            discard_on_exit: false,
             recent_projects: Vec::new(),
             toasts: Vec::new(),
         };
@@ -1134,6 +1145,8 @@ impl PatchworkApp {
                     None
                 };
             let is_comment = node.node_type.title() == "Comment";
+            // Read-only tab, or editing paused while quitting (R3).
+            let read_only_doc = !self.active_is_editable();
             let custom_node_file = match &node.node_type {
                 NodeType::CustomNodeInstance { file, .. } => Some(file.clone()),
                 _ => None,
@@ -1147,7 +1160,8 @@ impl PatchworkApp {
                 )))
                 .current_pos(egui::pos2(egui_x, egui_y))
                 .default_width(node_width)
-                .resizable(is_display)
+                .resizable(is_display && !read_only_doc)
+                .movable(!read_only_doc)
                 .constrain(false)
                 .collapsible(
                     // Custom-node instances use double-click to open their
@@ -1165,6 +1179,10 @@ impl PatchworkApp {
                 win = win.frame(frame);
             }
             let resp = win.show(ctx, |ui| {
+                // P4.1: nothing inside a read-only package tab is editable.
+                if read_only_doc {
+                    ui.disable();
+                }
                 // Constrain width to prevent expanding nodes — but Comment
                 // sizes itself tightly to its text (see comment_node.rs
                 // body_w computation), so the 180-floor here was leaving
@@ -1472,7 +1490,10 @@ impl PatchworkApp {
 
                 // P3: Double-click a custom-node instance to edit its .pwnode.
                 if let Some(file) = &custom_node_file {
-                    if !self.save_as_open && self.pending_close_tab.is_none() && double_clicked_here
+                    if !self.save_as_open
+                        && self.pending_close_tab.is_none()
+                        && !self.documents.is_locked()
+                        && double_clicked_here
                     {
                         self.pending_edit_custom_node = Some(file.clone());
                     }
@@ -1486,6 +1507,7 @@ impl PatchworkApp {
                         .map(|p| r.response.rect.contains(p))
                         .unwrap_or(false);
                 if !self.save_as_open
+                    && !read_only_doc
                     && !is_custom_render
                     && (r.response.secondary_clicked() || secondary_in_rect)
                 {
@@ -2488,8 +2510,8 @@ impl eframe::App for PatchworkApp {
                         ui.close_menu();
                     }
                     if ui.button("Save As...").clicked() {
-                        self.save_as_name = self.documents.active().title.clone();
-                        self.save_as_open = true;
+                        // Projects and custom nodes have separate Save As flows.
+                        self.begin_save_as();
                         ui.close_menu();
                     }
                     ui.separator();
@@ -2497,6 +2519,7 @@ impl eframe::App for PatchworkApp {
                     let can_publish = self.documents.active().kind
                         == crate::document::DocumentKind::CustomNode
                         && self.documents.active().path.is_some()
+                        && !self.documents.active().read_only
                         && !self.is_dirty
                         && !self.documents.active().is_dirty;
 
@@ -2510,6 +2533,26 @@ impl eframe::App for PatchworkApp {
                         ui.ctx().data_mut(|d| {
                             d.insert_temp(egui::Id::new("file_action_publish_library"), true);
                         });
+                        ui.close_menu();
+                    }
+                    // P4.1: editable copy of a read-only package version.
+                    let read_only_path = self
+                        .documents
+                        .active()
+                        .path
+                        .clone()
+                        .filter(|_| self.documents.active().read_only);
+                    if ui
+                        .add_enabled(
+                            read_only_path.is_some(),
+                            egui::Button::new("Duplicate for Editing…"),
+                        )
+                        .on_hover_text("Copy this published Library version to an editable file")
+                        .clicked()
+                    {
+                        if let Some(path) = read_only_path {
+                            self.duplicate_for_editing(path);
+                        }
                         ui.close_menu();
                     }
                 });
@@ -2561,11 +2604,19 @@ impl eframe::App for PatchworkApp {
                         } else {
                             doc.is_dirty
                         };
+                        // P4.1: published package versions are read-only.
+                        let title = if doc.read_only {
+                            format!("🔒 {}", doc.title)
+                        } else {
+                            doc.title.clone()
+                        };
 
-                        (doc.id, doc.title.clone(), dirty)
+                        (doc.id, title, dirty)
                     })
                     .collect();
 
+                // Tabs are locked while the quit dialog is open.
+                let tabs_locked = self.documents.is_locked();
                 for (id, title, dirty) in tabs {
                     let title = match usage.get(&id) {
                         Some(count) => format!("{title} (used ×{count})"),
@@ -2573,12 +2624,21 @@ impl eframe::App for PatchworkApp {
                     };
                     let label = if dirty { format!("{} *", title) } else { title };
                     ui.horizontal(|ui| {
-                        if ui.selectable_label(id == active_id, label).clicked() {
+                        if ui
+                            .add_enabled(
+                                !tabs_locked,
+                                egui::SelectableLabel::new(id == active_id, label),
+                            )
+                            .clicked()
+                        {
                             if self.pending_close_tab.is_none() && !self.save_as_open {
                                 self.switch_document(id);
                             }
                         }
-                        if ui.small_button("×").on_hover_text("Close Tab").clicked()
+                        if ui
+                            .add_enabled(!tabs_locked, egui::Button::new("×").small())
+                            .on_hover_text("Close Tab")
+                            .clicked()
                             && !self.save_as_open
                         {
                             // Do not close the last remaining tab.
@@ -2604,11 +2664,17 @@ impl eframe::App for PatchworkApp {
                         }
                     });
                 }
-                if ui.button("+").on_hover_text("New Tab").clicked() {
+                if ui
+                    .add_enabled(!tabs_locked, egui::Button::new("+"))
+                    .on_hover_text("New Tab")
+                    .clicked()
+                {
                     self.create_new_tab();
                 }
             });
         });
+        // P4.1: banner + Duplicate for Editing for read-only package tabs.
+        self.render_read_only_banner(ctx);
 
         // P5: Hardware Devices window
         let hardware_window_id = egui::Id::new("hardware_devices_open");
@@ -3444,6 +3510,14 @@ match validation_result {
                     }
                 });
             });
+            if save_requested
+                && self.documents.active().kind != crate::document::DocumentKind::Project
+            {
+                // Defensive: project Save As never converts a custom node.
+                save_requested = false;
+                open = false;
+                self.toast_warn("Project Save As is not available in a custom-node tab.");
+            }
             if save_requested {
                 let name = self.save_as_name.trim().to_string();
                 // Reject empty names, special directory names and path separators.
@@ -3485,6 +3559,8 @@ match validation_result {
         }
         // P2: Group-into-custom-node naming dialog.
         self.render_group_dialog(ctx);
+        // P4.1: Publish to Library dialog.
+        self.render_publish_dialog(ctx);
         // Floating modal for "save before quit?" — drawn after the menu
         // so it visually layers on top of canvas chrome.
         self.render_quit_dialog(ctx);
@@ -5296,7 +5372,8 @@ match validation_result {
         self.handle_system_node_actions(ctx);
         // P3: Open a custom node queued by double-click or the context menu.
         if let Some(file) = self.pending_edit_custom_node.take() {
-            if !self.save_as_open && self.pending_close_tab.is_none() {
+            if !self.save_as_open && self.pending_close_tab.is_none() && !self.documents.is_locked()
+            {
                 self.open_custom_node_for_edit(std::path::PathBuf::from(file));
             }
         }
@@ -5320,6 +5397,10 @@ match validation_result {
                     ctx.data_mut(|d| d.get_temp::<(String, usize, u16)>(spawn_id))
                 {
                     ctx.data_mut(|d| d.remove::<(String, usize, u16)>(spawn_id));
+                    // Stage 0: no automatic insertion into read-only tabs.
+                    if !self.require_editable("Adding an OSC node") {
+                        continue;
+                    }
                     let src_pos = self
                         .graph
                         .nodes
@@ -5365,6 +5446,10 @@ match validation_result {
                 let spawn_id = egui::Id::new(("ob_spawn", hub_id));
                 if let Some((dtype, did)) = ctx.data_mut(|d| d.get_temp::<(String, u8)>(spawn_id)) {
                     ctx.data_mut(|d| d.remove::<(String, u8)>(spawn_id));
+                    // Stage 0: no automatic insertion into read-only tabs.
+                    if !self.require_editable("Adding a device node") {
+                        continue;
+                    }
                     let hub_pos = self
                         .graph
                         .nodes
@@ -5442,12 +5527,34 @@ match validation_result {
                 }
             }
         }
+        // P4.1: read-only package tabs never become dirty and accept no
+        // editing input (pan/zoom and non-mutating shortcuts still work).
+        let read_only = self.documents.active().read_only;
+        if read_only {
+            self.is_dirty = false;
+            self.documents.active_mut().is_dirty = false;
+            self.show_node_menu = false;
+            self.show_context_menu = false;
+            self.wire_menu_conn = None;
+        }
         // Canvas input (incl. keyboard shortcuts) pauses while a modal is open.
-        if !self.save_as_open && !self.group_dialog_open {
-            self.node_menu(ctx);
-            self.context_menu(ctx);
+        // R3: while the quit dialog is open the canvas still pans and
+        // renders, but nothing can be edited.
+        let quitting = self.pending_quit_dialog;
+        if quitting {
+            self.show_node_menu = false;
+            self.show_context_menu = false;
+            self.wire_menu_conn = None;
+        }
+        if !self.save_as_open && !self.group_dialog_open && self.publish_dialog.is_none() {
+            if !read_only && !quitting {
+                self.node_menu(ctx);
+                self.context_menu(ctx);
+            }
             self.handle_pan_zoom(ctx);
-            self.handle_canvas_interaction(ctx);
+            if !read_only && !quitting {
+                self.handle_canvas_interaction(ctx);
+            }
         }
         ctx.request_repaint();
     }
@@ -5457,8 +5564,25 @@ match validation_result {
 }
 impl PatchworkApp {
     pub(super) fn switch_document(&mut self, document_id: u64) -> bool {
-        // Nothing to do if the requested document is already active.
+        self.switch_document_inner(document_id, false)
+    }
+
+    /// Quit dialog only: move to the next unsaved document while documents
+    /// are locked.
+    pub(super) fn switch_document_for_quit(&mut self, document_id: u64) -> bool {
+        self.switch_document_inner(document_id, true)
+    }
+
+    fn switch_document_inner(&mut self, document_id: u64, during_quit: bool) -> bool {
+        // Tabs cannot be switched while the quit dialog is open, except by
+        // Save & Continue itself.
+        if self.documents.is_locked() && !during_quit {
+            return false;
+        }
+        // Already active: a read-only tab is still restored from its stored
+        // (authoritative) graph, in case the live graph was changed.
         if self.documents.active().id == document_id {
+            self.restore_read_only_active();
             return true;
         }
         // Check the destination before changing any state.
@@ -5470,21 +5594,29 @@ impl PatchworkApp {
         {
             return false;
         }
-        // Save the current document's state.
+        // Save the current document's state. Read-only documents keep the
+        // graph they were loaded with (Stage 0 model invariant).
         {
             let current = self.documents.active_mut();
-            current.graph = self.graph.clone();
+            current.store_graph(&self.graph);
             current.selected_nodes = self.selected_nodes.clone();
             current.pinned_nodes = self.pinned_nodes.clone();
             current.canvas_offset = self.canvas_offset;
             current.canvas_zoom = self.canvas_zoom;
             current.target_zoom = self.target_zoom;
-            current.is_dirty = self.is_dirty;
+            current.is_dirty = self.is_dirty && current.is_editable();
             current.undo_history = self.undo_history.clone();
-            current.path = self.project_path.as_ref().map(std::path::PathBuf::from);
+            let path = self.project_path.as_ref().map(std::path::PathBuf::from);
+            if let Err(error) = current.set_path(path) {
+                crate::system_log::error(format!("Document location not changed: {error}"));
+            }
         }
         // Switch the active document.
-        self.documents.activate(document_id);
+        if during_quit {
+            self.documents.activate_for_quit(document_id);
+        } else {
+            self.documents.activate(document_id);
+        }
         // Restore the destination document's state.
         {
             let next = self.documents.active();
@@ -5515,9 +5647,12 @@ impl PatchworkApp {
     }
     fn sync_active_document(&mut self) {
         let doc = self.documents.active_mut();
-        // Graph and project information
-        doc.graph = self.graph.clone();
-        doc.path = self.project_path.as_ref().map(std::path::PathBuf::from);
+        // Graph and project information (read-only documents keep theirs)
+        doc.store_graph(&self.graph);
+        let path = self.project_path.as_ref().map(std::path::PathBuf::from);
+        if let Err(error) = doc.set_path(path) {
+            crate::system_log::error(format!("Document location not changed: {error}"));
+        }
         // Editor state
         doc.selected_nodes = self.selected_nodes.clone();
         doc.pinned_nodes = self.pinned_nodes.clone();
@@ -5535,9 +5670,100 @@ impl PatchworkApp {
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_else(|| "Untitled".to_string());
     }
-    fn create_new_tab(&mut self) {
+    /// Open a new Untitled tab. Returns false (and creates nothing) while
+    /// the quit dialog is open, so callers never load into the current tab.
+    fn create_new_tab(&mut self) -> bool {
+        if self.documents.is_locked() {
+            return false;
+        }
         let id = self.documents.new_document("Untitled");
-        self.switch_document(id);
+        self.switch_document(id)
+    }
+
+    /// Open or close the quit dialog. While open, documents are locked:
+    /// no tab switching, closing, opening or creating (Save & Continue
+    /// excepted). Pending tab-close and open-custom-node requests are
+    /// cancelled, which changes nothing.
+    pub(super) fn set_quit_dialog_open(&mut self, open: bool) {
+        self.pending_quit_dialog = open;
+        self.documents.set_locked(open);
+        if open {
+            self.pending_close_tab = None;
+            self.pending_edit_custom_node = None;
+        }
+    }
+
+    /// Restore the live graph of an active read-only tab from its stored
+    /// graph, and keep it clean. No-op for editable tabs.
+    pub(super) fn restore_read_only_active(&mut self) {
+        let document = self.documents.active();
+        if !document.restore_into(&mut self.graph) {
+            return;
+        }
+        self.is_dirty = false;
+        self.documents.active_mut().is_dirty = false;
+        let graph = &self.graph;
+        self.selected_nodes
+            .retain(|id| graph.nodes.contains_key(id));
+        self.selected_connection = None;
+        self.dragging_from = None;
+        self.caches_dirty = true;
+    }
+
+    /// File → Save As / Ctrl+Shift+S, by document kind:
+    /// * project: name + folder dialog (writes a project folder);
+    /// * custom node: "Save Custom Node As" (writes a new .pwnode);
+    /// * read-only package version: Duplicate for Editing.
+    pub(super) fn begin_save_as(&mut self) {
+        if self.documents.is_locked() {
+            return;
+        }
+        let document = self.documents.active();
+        match document.kind {
+            crate::document::DocumentKind::Project => {
+                self.save_as_name = self
+                    .project_path
+                    .as_ref()
+                    .and_then(|p| std::path::Path::new(p).file_name())
+                    .map(|name| name.to_string_lossy().to_string())
+                    .unwrap_or_else(|| document.title.clone());
+                self.save_as_open = true;
+            }
+            crate::document::DocumentKind::CustomNode => {
+                if document.read_only {
+                    if let Some(path) = document.path.clone() {
+                        self.duplicate_for_editing(path);
+                    }
+                } else {
+                    self.save_custom_node_as();
+                }
+            }
+        }
+    }
+
+    /// Stage 0: whether the active document accepts graph changes.
+    /// R3: editing is also paused while the quit dialog is open.
+    pub(super) fn active_is_editable(&self) -> bool {
+        self.documents.active().is_editable() && !self.pending_quit_dialog
+    }
+
+    /// Stage 0: gate for every graph-mutating entry point. Shows a warning
+    /// and returns false in a read-only (published package) tab.
+    pub(super) fn require_editable(&mut self, action: &str) -> bool {
+        if self.active_is_editable() {
+            return true;
+        }
+        if self.pending_quit_dialog {
+            self.toast_warn(format!(
+                "{action} is paused while the quit dialog is open. Choose Cancel to keep editing."
+            ));
+            return false;
+        }
+        self.toast_warn(format!(
+            "{action} is not available: this published Library version is read-only. \
+             Use File → Duplicate for Editing to make an editable copy."
+        ));
+        false
     }
     /// P3: Open a .pwnode in an editable tab, reusing its tab if already open.
     pub(super) fn open_custom_node_for_edit(&mut self, path: std::path::PathBuf) {
@@ -5583,12 +5809,13 @@ impl PatchworkApp {
             ));
         }
 
-        // Background documents keep their own graphs.
+        // Background documents keep their own graphs. Read-only documents
+        // are never modified.
         for doc in self
             .documents
             .documents
             .iter_mut()
-            .filter(|doc| doc.id != active_id)
+            .filter(|doc| doc.id != active_id && doc.is_editable())
         {
             let report = doc.graph.refresh_custom_instances(&target, inputs, outputs);
             if report.changed {

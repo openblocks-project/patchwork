@@ -211,6 +211,346 @@ struct SessionState {
     is_dirty: bool,
     #[serde(default)]
     recent_projects: Vec<String>,
+    /// Session-fix: no project was open at shutdown (only custom-node
+    /// tabs). The next launch starts with a clean Untitled project; only
+    /// recent projects and keys are carried over. Absent in older files.
+    #[serde(default)]
+    clean_start: bool,
+    /// B1: the user discarded unsaved changes at shutdown. `graph` is empty
+    /// and must not be used; the next launch reopens `project_path` from
+    /// its saved `project.json`. Absent (false) in older files.
+    #[serde(default)]
+    reopen_from_disk: bool,
+}
+
+/// Project state captured for the legacy single-document session.
+#[derive(Clone)]
+pub(super) struct SessionSnapshot {
+    pub graph: Graph,
+    pub canvas_offset: [f32; 2],
+    pub canvas_zoom: f32,
+    pub pinned_nodes: Vec<NodeId>,
+    pub project_path: Option<String>,
+    pub is_dirty: bool,
+}
+
+/// Open projects in session priority order: the active tab if it is a
+/// project (its live state), then the other project tabs, most recently
+/// opened (highest id) first. Custom-node tabs are never included.
+fn session_project_candidates(
+    documents: &crate::document::DocumentManager,
+    live: SessionSnapshot,
+) -> Vec<SessionSnapshot> {
+    use crate::document::DocumentKind;
+    let active_id = documents.active().id;
+    let mut candidates = Vec::new();
+    if documents.active().kind == DocumentKind::Project {
+        candidates.push(live);
+    }
+    let mut others: Vec<_> = documents
+        .documents
+        .iter()
+        .filter(|doc| doc.kind == DocumentKind::Project && doc.id != active_id)
+        .collect();
+    others.sort_by_key(|doc| std::cmp::Reverse(doc.id));
+    candidates.extend(others.into_iter().map(|document| {
+        SessionSnapshot {
+            graph: document.graph.clone(),
+            canvas_offset: [document.canvas_offset.x, document.canvas_offset.y],
+            canvas_zoom: document.canvas_zoom,
+            pinned_nodes: document.pinned_nodes.iter().copied().collect(),
+            project_path: document
+                .path
+                .as_ref()
+                .map(|p| p.to_string_lossy().into_owned()),
+            is_dirty: document.is_dirty,
+        }
+    }));
+    candidates
+}
+
+/// Which project the session should capture at shutdown. The legacy
+/// session holds exactly one *project*: the active tab if it is a project,
+/// otherwise the most recently opened project tab (highest id). Custom-node
+/// tabs are never captured. `None` means no project is open.
+pub(super) fn select_session_project(
+    documents: &crate::document::DocumentManager,
+    live: SessionSnapshot,
+) -> Option<SessionSnapshot> {
+    session_project_candidates(documents, live)
+        .into_iter()
+        .next()
+}
+
+/// True when `dir` holds a saved project (`project.json`).
+fn is_saved_project_dir(dir: &str) -> bool {
+    let dir = dir.trim();
+    !dir.is_empty()
+        && crate::document::Document::path_fits_kind(
+            crate::document::DocumentKind::Project,
+            Path::new(dir),
+        )
+        && Path::new(dir).join("project.json").is_file()
+}
+
+/// B1: session written after "Discard All & Quit". No graph state is
+/// stored; the first open project (same priority as a normal session) that
+/// has a saved `project.json` is reopened from disk next time. Without one,
+/// the next launch is clean. The same rule applies whichever tab is active.
+fn discard_session_state(
+    documents: &crate::document::DocumentManager,
+    live: SessionSnapshot,
+    api_keys: HashMap<String, String>,
+    recent_projects: Vec<String>,
+) -> SessionState {
+    let saved = session_project_candidates(documents, live)
+        .into_iter()
+        .find(|c| c.project_path.as_deref().is_some_and(is_saved_project_dir));
+    match saved {
+        Some(project) => SessionState {
+            graph: Graph::new(),
+            canvas_offset: project.canvas_offset,
+            canvas_zoom: project.canvas_zoom,
+            pinned_nodes: Vec::new(),
+            project_path: project.project_path,
+            api_keys,
+            is_dirty: false,
+            recent_projects,
+            clean_start: false,
+            reopen_from_disk: true,
+        },
+        None => session_state_from(None, api_keys, recent_projects),
+    }
+}
+
+/// How a session file should be restored.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum SessionRestorePlan {
+    /// Start a clean Untitled project (keep recent projects and keys).
+    Clean { reason: Option<String> },
+    /// B1: reopen this saved project from its `project.json`; the session
+    /// graph is discarded data and is never used.
+    ReopenFromDisk { project_path: String },
+    /// Restore the saved graph as a project with this location.
+    Project {
+        project_path: Option<String>,
+        /// Force the unsaved indicator (the saved location is unusable,
+        /// so the restored graph exists only in memory).
+        mark_dirty: bool,
+        note: Option<String>,
+    },
+}
+
+/// Decide how to restore a session. Only project documents are restored:
+/// a custom-node (`.pwnode`) location is never restored as a project.
+/// (Tests use this two-flag form; `restore_session` uses `_with`.)
+#[cfg(test)]
+pub(super) fn plan_session_restore(
+    project_path: Option<&str>,
+    clean_start: bool,
+) -> SessionRestorePlan {
+    plan_session_restore_with(project_path, clean_start, false)
+}
+
+/// [`plan_session_restore`] including the B1 `reopen_from_disk` flag.
+pub(super) fn plan_session_restore_with(
+    project_path: Option<&str>,
+    clean_start: bool,
+    reopen_from_disk: bool,
+) -> SessionRestorePlan {
+    if clean_start {
+        return SessionRestorePlan::Clean { reason: None };
+    }
+    if reopen_from_disk {
+        // Never fall back to the (discarded) session graph.
+        return match project_path
+            .map(str::trim)
+            .filter(|p| is_saved_project_dir(p))
+        {
+            Some(path) => SessionRestorePlan::ReopenFromDisk {
+                project_path: path.to_string(),
+            },
+            None => SessionRestorePlan::Clean {
+                reason: Some(format!(
+                    "The last project ({}) could not be reopened from disk; \
+                     starting with a new project.",
+                    project_path.unwrap_or("none")
+                )),
+            },
+        };
+    }
+    let Some(path) = project_path.map(str::trim).filter(|p| !p.is_empty()) else {
+        return SessionRestorePlan::Project {
+            project_path: None,
+            mark_dirty: false,
+            note: None,
+        };
+    };
+    let location = std::path::Path::new(path);
+    if !crate::document::Document::path_fits_kind(crate::document::DocumentKind::Project, location)
+    {
+        return SessionRestorePlan::Clean {
+            reason: Some(format!(
+                "The last session was a custom node ({path}), not a project; \
+                 starting with a new project. The custom node file was not changed."
+            )),
+        };
+    }
+    if location.is_dir() {
+        return SessionRestorePlan::Project {
+            project_path: Some(path.to_string()),
+            mark_dirty: false,
+            note: None,
+        };
+    }
+    SessionRestorePlan::Project {
+        project_path: None,
+        mark_dirty: true,
+        note: Some(format!(
+            "The last session's project folder is unavailable ({path}); \
+             its contents were restored as an unsaved Untitled project."
+        )),
+    }
+}
+
+fn session_state_from(
+    project: Option<SessionSnapshot>,
+    api_keys: HashMap<String, String>,
+    recent_projects: Vec<String>,
+) -> SessionState {
+    match project {
+        Some(project) => SessionState {
+            graph: project.graph,
+            canvas_offset: project.canvas_offset,
+            canvas_zoom: project.canvas_zoom,
+            pinned_nodes: project.pinned_nodes,
+            project_path: project.project_path,
+            api_keys,
+            is_dirty: project.is_dirty,
+            recent_projects,
+            clean_start: false,
+            reopen_from_disk: false,
+        },
+        None => SessionState {
+            graph: Graph::new(),
+            canvas_offset: [0.0, 0.0],
+            canvas_zoom: 1.0,
+            pinned_nodes: Vec::new(),
+            project_path: None,
+            api_keys,
+            is_dirty: false,
+            recent_projects,
+            clean_start: true,
+            reopen_from_disk: false,
+        },
+    }
+}
+
+/// One unsaved document shown in the quit dialog.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct UnsavedDocument {
+    pub id: u64,
+    pub title: String,
+    pub kind: crate::document::DocumentKind,
+    /// Saved by the next "Save & Continue".
+    pub next: bool,
+}
+
+impl UnsavedDocument {
+    pub fn kind_label(&self) -> &'static str {
+        match self.kind {
+            crate::document::DocumentKind::Project => "Project",
+            crate::document::DocumentKind::CustomNode => "Custom Node",
+        }
+    }
+}
+
+/// Every unsaved document, in tab order. The active document's state lives
+/// in the editor (`active_dirty`). "Next" matches Save & Continue: the
+/// active document if it has changes, otherwise the first unsaved tab.
+pub(super) fn unsaved_documents(
+    documents: &crate::document::DocumentManager,
+    active_dirty: bool,
+) -> Vec<UnsavedDocument> {
+    let active_id = documents.active().id;
+    let mut list: Vec<UnsavedDocument> = documents
+        .documents
+        .iter()
+        .filter(|doc| {
+            if doc.id == active_id {
+                active_dirty
+            } else {
+                doc.is_dirty
+            }
+        })
+        .map(|doc| UnsavedDocument {
+            id: doc.id,
+            title: doc.title.clone(),
+            kind: doc.kind,
+            next: false,
+        })
+        .collect();
+    let next = list
+        .iter()
+        .position(|d| d.id == active_id)
+        .or(if list.is_empty() { None } else { Some(0) });
+    if let Some(index) = next {
+        list[index].next = true;
+    }
+    list
+}
+
+/// A button in the quit dialog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum QuitChoice {
+    SaveAndContinue,
+    DiscardAll,
+    Cancel,
+}
+
+/// What the quit dialog does after a choice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum QuitStep {
+    /// A save failed or was cancelled: stay in the dialog, nothing closes.
+    KeepOpen,
+    /// Move to the next unsaved document and keep asking.
+    SwitchTo(u64),
+    /// Close the app (`discard`: the user chose Discard All).
+    Close { discard: bool },
+    /// Cancel: close the dialog, keep every document and its changes.
+    Dismiss,
+}
+
+/// Pure quit-dialog decision. `saved` is the result of saving the active
+/// document (`None` when it had nothing to save); `next_dirty` is the next
+/// unsaved document after that save.
+pub(super) fn quit_step(
+    choice: QuitChoice,
+    saved: Option<bool>,
+    next_dirty: Option<u64>,
+) -> QuitStep {
+    match choice {
+        QuitChoice::Cancel => QuitStep::Dismiss,
+        QuitChoice::DiscardAll => QuitStep::Close { discard: true },
+        QuitChoice::SaveAndContinue => {
+            if saved == Some(false) {
+                QuitStep::KeepOpen
+            } else {
+                match next_dirty {
+                    Some(id) => QuitStep::SwitchTo(id),
+                    None => QuitStep::Close { discard: false },
+                }
+            }
+        }
+    }
+}
+
+/// Read a saved project's `project.json` (used to reopen it from disk).
+fn read_project_file(dir: &Path) -> Result<ProjectFile, String> {
+    let path = dir.join("project.json");
+    let json = std::fs::read_to_string(&path)
+        .map_err(|e| format!("Cannot read {}: {e}", path.display()))?;
+    serde_json::from_str(&json).map_err(|e| format!("{} is not valid: {e}", path.display()))
 }
 
 fn session_path() -> std::path::PathBuf {
@@ -275,19 +615,38 @@ impl super::PatchworkApp {
         // older Patchwork builds that don't read keys.json), but the user store
         // is the canonical source going forward.
         save_user_keys(&self.api_keys);
-        let state = SessionState {
+        let state = self.session_state();
+        if let Ok(json) = serde_json::to_string_pretty(&state) {
+            let _ = std::fs::write(session_path(), json);
+        }
+    }
+
+    /// Session contents: the project to restore next time (never a
+    /// custom-node tab), or a clean-start marker if no project is open.
+    /// Writes no project or custom-node file.
+    fn session_state(&self) -> SessionState {
+        let live = SessionSnapshot {
             graph: self.graph.clone(),
             canvas_offset: [self.canvas_offset.x, self.canvas_offset.y],
             canvas_zoom: self.canvas_zoom,
             pinned_nodes: self.pinned_nodes.iter().copied().collect(),
             project_path: self.project_path.clone(),
-            api_keys: self.api_keys.clone(),
             is_dirty: self.is_dirty,
-            recent_projects: self.recent_projects.clone(),
         };
-        if let Ok(json) = serde_json::to_string_pretty(&state) {
-            let _ = std::fs::write(session_path(), json);
+        if self.discard_on_exit {
+            // B1: never persist discarded graph state.
+            return discard_session_state(
+                &self.documents,
+                live,
+                self.api_keys.clone(),
+                self.recent_projects.clone(),
+            );
         }
+        session_state_from(
+            select_session_project(&self.documents, live),
+            self.api_keys.clone(),
+            self.recent_projects.clone(),
+        )
     }
 
     /// Try to restore session from ~/.patchwork/last_session.json.
@@ -305,8 +664,85 @@ impl super::PatchworkApp {
                 return false;
             }
         };
-        let mut graph = state.graph;
-        graph.fix_next_id();
+        // Recent projects and keys are kept whatever happens to the graph.
+        let user_keys = load_user_keys();
+        let api_keys = if !user_keys.is_empty() {
+            user_keys
+        } else {
+            state.api_keys.clone()
+        };
+        // What to load: the session graph, or (B1) the saved project from
+        // disk. Discarded session graph data is never used.
+        struct Loaded {
+            graph: Graph,
+            canvas_offset: [f32; 2],
+            canvas_zoom: f32,
+            pinned_nodes: Vec<NodeId>,
+            project_path: Option<String>,
+            is_dirty: bool,
+        }
+        let plan = plan_session_restore_with(
+            state.project_path.as_deref(),
+            state.clean_start,
+            state.reopen_from_disk,
+        );
+        let loaded = match plan {
+            SessionRestorePlan::Clean { reason } => {
+                if let Some(reason) = reason {
+                    crate::system_log::warn(reason);
+                }
+                self.api_keys = api_keys;
+                self.recent_projects = state.recent_projects;
+                // Caller spawns a clean Untitled project.
+                return false;
+            }
+            SessionRestorePlan::ReopenFromDisk { project_path } => {
+                match read_project_file(Path::new(&project_path)) {
+                    Ok(pf) => {
+                        let mut graph = pf.graph;
+                        graph.fix_next_id();
+                        absolutize_paths(&mut graph, &project_path);
+                        Loaded {
+                            graph,
+                            canvas_offset: pf.canvas_offset,
+                            canvas_zoom: pf.canvas_zoom,
+                            pinned_nodes: pf.pinned_nodes,
+                            project_path: Some(project_path),
+                            is_dirty: false,
+                        }
+                    }
+                    Err(error) => {
+                        crate::system_log::warn(format!(
+                            "Could not reopen the last project: {error}. \
+                             Starting with a new project."
+                        ));
+                        self.api_keys = api_keys;
+                        self.recent_projects = state.recent_projects;
+                        return false;
+                    }
+                }
+            }
+            SessionRestorePlan::Project {
+                project_path,
+                mark_dirty,
+                note,
+            } => {
+                if let Some(note) = note {
+                    crate::system_log::warn(note);
+                }
+                let mut graph = state.graph;
+                graph.fix_next_id();
+                Loaded {
+                    graph,
+                    canvas_offset: state.canvas_offset,
+                    canvas_zoom: state.canvas_zoom,
+                    pinned_nodes: state.pinned_nodes,
+                    project_path,
+                    is_dirty: state.is_dirty || mark_dirty,
+                }
+            }
+        };
+        let mut graph = loaded.graph;
         // Always start with DSP, Camera, Mic off for safety
         for node in graph.nodes.values_mut() {
             match &mut node.node_type {
@@ -327,20 +763,15 @@ impl super::PatchworkApp {
         }
         self.graph = graph;
         self.graph.audio_topology_dirty = true;
-        self.canvas_offset = egui::Vec2::new(state.canvas_offset[0], state.canvas_offset[1]);
-        self.canvas_zoom = state.canvas_zoom;
-        self.pinned_nodes = state.pinned_nodes.into_iter().collect();
-        self.project_path = state.project_path;
+        self.canvas_offset = egui::Vec2::new(loaded.canvas_offset[0], loaded.canvas_offset[1]);
+        self.canvas_zoom = loaded.canvas_zoom;
+        self.pinned_nodes = loaded.pinned_nodes.into_iter().collect();
+        self.project_path = loaded.project_path;
         // P0-2: user-store keys are canonical; if present, they override any
         // keys carried in last_session.json (older builds wrote both; new
         // builds read keys from `~/.patchwork/keys.json` first).
-        let user_keys = load_user_keys();
-        self.api_keys = if !user_keys.is_empty() {
-            user_keys
-        } else {
-            state.api_keys
-        };
-        self.is_dirty = state.is_dirty;
+        self.api_keys = api_keys;
+        self.is_dirty = loaded.is_dirty;
         self.recent_projects = state.recent_projects;
         self.port_positions.clear();
         self.node_rects.clear();
@@ -393,6 +824,10 @@ impl super::PatchworkApp {
                 .filter_map(|f| f.path.clone())
                 .collect()
         });
+        // Stage 0: dropping files never changes a read-only tab.
+        if !dropped.is_empty() && !self.require_editable("Dropping files") {
+            return;
+        }
         if !dropped.is_empty() {
             self.push_undo();
         }
@@ -1222,6 +1657,99 @@ impl super::PatchworkApp {
         }
     }
 
+    /// Save As for a custom-node tab: write the live graph as a new
+    /// .pwnode and point this tab at it. The original file is not changed;
+    /// the tab stays a custom-node document.
+    pub(super) fn save_custom_node_as(&mut self) {
+        use crate::document::DocumentKind;
+        let document = self.documents.active();
+        if document.kind != DocumentKind::CustomNode || document.read_only {
+            return;
+        }
+        let current = document.path.clone();
+        let stem = current
+            .as_ref()
+            .and_then(|p| p.file_stem())
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| document.title.clone());
+
+        let mut dialog = rfd::FileDialog::new()
+            .set_title("Save Custom Node As")
+            .add_filter("Patchwork Custom Node", &["pwnode"])
+            .set_file_name(format!("{stem}.pwnode"));
+        if let Some(dir) = current.as_ref().and_then(|p| p.parent()) {
+            dialog = dialog.set_directory(std::path::PathBuf::from(
+                dir.to_string_lossy().trim_start_matches(r"\\?\"),
+            ));
+        }
+        let Some(destination) = dialog.save_file() else {
+            return;
+        };
+        let destination = crate::graph::group::with_pwnode_extension(destination);
+
+        // Same file: an ordinary save.
+        let canonical_destination = std::fs::canonicalize(&destination).ok();
+        let canonical_current = current.as_ref().and_then(|p| std::fs::canonicalize(p).ok());
+        if canonical_destination.is_some() && canonical_destination == canonical_current {
+            self.save_project_quick();
+            return;
+        }
+        if destination.exists() {
+            let open_in_tab = canonical_destination.is_some()
+                && self.documents.documents.iter().any(|doc| {
+                    doc.path
+                        .as_ref()
+                        .and_then(|p| std::fs::canonicalize(p).ok())
+                        == canonical_destination
+                });
+            if open_in_tab {
+                self.toast_error(
+                    "That file is open in another tab. Close it or choose another file.",
+                );
+                return;
+            }
+            let confirmed = rfd::MessageDialog::new()
+                .set_title("Replace Custom Node?")
+                .set_description(format!(
+                    "{} already exists. Replacing it changes every instance that uses it. \
+                     Replace it?",
+                    destination.display()
+                ))
+                .set_level(rfd::MessageLevel::Warning)
+                .set_buttons(rfd::MessageButtons::YesNo)
+                .show();
+            if confirmed != rfd::MessageDialogResult::Yes {
+                return;
+            }
+        }
+
+        match crate::document::save_custom_node_as(&self.graph, &destination) {
+            Ok(file) => {
+                let location = std::fs::canonicalize(&destination).unwrap_or(destination);
+                let document = self.documents.active_mut();
+                if let Err(error) = document.set_path(Some(location.clone())) {
+                    // Cannot happen for a .pwnode destination; keep the old
+                    // location rather than an inconsistent one.
+                    crate::system_log::error(format!("Save As: {error}"));
+                    return;
+                }
+                document.title = file.name.clone();
+                document.is_dirty = false;
+                self.project_path = Some(location.to_string_lossy().into_owned());
+                self.is_dirty = false;
+                self.documents.clear_resolved_paths();
+                // Instances of a replaced file pick up the new interface.
+                self.refresh_custom_node_instances(&location, &file.inputs, &file.outputs);
+                crate::system_log::log(format!("Saved custom node as {}", location.display()));
+                self.toast_info(format!("Saved custom node as '{}'.", file.name));
+            }
+            Err(error) => {
+                crate::system_log::error(format!("Save Custom Node As failed: {error}"));
+                self.toast_error(format!("Save Custom Node As failed: {error}"));
+            }
+        }
+    }
+
     /// Save to existing project path (Cmd+S). Falls back to Save As if no path set.
     pub(super) fn save_project_quick(&mut self) -> bool {
         if self.documents.active().kind == crate::document::DocumentKind::CustomNode {
@@ -1231,6 +1759,14 @@ impl super::PatchworkApp {
                 );
                 return false;
             };
+            // P4.1: published package versions are read-only. (The same
+            // rule is enforced again inside `CustomNodeFile::save`.)
+            if self.documents.active().read_only {
+                self.toast_warn(
+                    "This published Library version is read-only. Use File → Duplicate for Editing to make an editable copy.",
+                );
+                return false;
+            }
 
             let existing = match crate::document::CustomNodeFile::load(&path) {
                 Ok(file) => file,
@@ -1518,8 +2054,11 @@ impl super::PatchworkApp {
         absolutize_paths(&mut graph, &dir_str);
 
         // P3: Create a separate tab for the successfully loaded project.
-        // Existing tabs retain their graphs and editor state.
-        self.create_new_tab();
+        // Existing tabs retain their graphs and editor state. Never load
+        // into the current tab if no new tab could be created.
+        if !self.create_new_tab() {
+            return;
+        }
         // Always start with DSP, Camera, Mic off for safety —
         // prevents stale "active" state without actual streams running
         for node in graph.nodes.values_mut() {
@@ -1658,103 +2197,117 @@ impl super::PatchworkApp {
 
         // Prevent quitting while any document has unsaved changes.
         ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-        self.pending_quit_dialog = true;
+        self.set_quit_dialog_open(true);
     }
 
-    /// Render the "Save changes before quitting?" modal when pending.
-    /// Save → save_project_quick (may show a dialog), then close on success.
-    /// Don't Save → close, dropping the in-memory edits.
-    /// Cancel → just dismiss the modal.
+    /// Render the "Save changes before quitting?" dialog when pending.
+    /// Save & Continue → save the document listed as next (may show a
+    /// dialog), then move to the next unsaved tab or close when none remain.
+    /// Discard All & Quit → close without saving (B1: the session reopens
+    /// the saved project from disk). Cancel → keep everything open.
     pub(super) fn render_quit_dialog(&mut self, ctx: &egui::Context) {
         if !self.pending_quit_dialog {
             return;
         }
-        let mut dismiss = false;
-        let mut do_close = false;
-        let mut do_save = false;
+        let unsaved = unsaved_documents(&self.documents, self.is_dirty);
+        let mut choice = None;
         egui::Window::new("Unsaved changes")
             .collapsible(false)
             .resizable(false)
             .order(egui::Order::Tooltip)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
-                let name = self
-                    .project_path
-                    .as_deref()
-                    .and_then(|p| Path::new(p).file_name())
-                    .map(|f| f.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "this project".to_string());
-                let unsaved_count = self
-                    .documents
-                    .documents
-                    .iter()
-                    .filter(|doc| {
-                        if doc.id == self.documents.active().id {
-                            self.is_dirty
-                        } else {
-                            doc.is_dirty
-                        }
-                    })
-                    .count();
-
-                if unsaved_count > 1 {
-                    ui.label(format!("{} tabs have unsaved changes.", unsaved_count));
-                    ui.label(format!("Save changes to {} before quitting?", name));
-                } else {
-                    ui.label(format!("Save changes to {} before quitting?", name));
+                ui.label(format!(
+                    "{} document(s) have unsaved changes:",
+                    unsaved.len()
+                ));
+                ui.add_space(4.0);
+                for doc in &unsaved {
+                    let line = format!(
+                        "{} {} ({}){}",
+                        if doc.next { "→" } else { "•" },
+                        doc.title,
+                        doc.kind_label(),
+                        if doc.next { " — saved next" } else { "" }
+                    );
+                    if doc.next {
+                        ui.label(egui::RichText::new(line).strong());
+                    } else {
+                        ui.label(line);
+                    }
                 }
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    if ui.button("Save").clicked() {
-                        do_save = true;
+                    if ui
+                        .button("Save & Continue")
+                        .on_hover_text("Save the document marked → then move to the next one")
+                        .clicked()
+                    {
+                        choice = Some(QuitChoice::SaveAndContinue);
                     }
                     if ui
                         .button("Discard All & Quit")
-                        .on_hover_text("Discard unsaved changes in every open tab")
+                        .on_hover_text(
+                            "Quit without saving any open tab. The last saved project \
+                             reopens from disk next time.",
+                        )
                         .clicked()
                     {
-                        do_close = true;
+                        choice = Some(QuitChoice::DiscardAll);
                     }
-                    if ui.button("Cancel").clicked() {
-                        dismiss = true;
+                    if ui
+                        .button("Cancel")
+                        .on_hover_text("Keep Patchwork open with all unsaved work")
+                        .clicked()
+                    {
+                        choice = Some(QuitChoice::Cancel);
                     }
                 });
             });
-        if do_save {
-            // Save the active document first.
-            if self.is_dirty && !self.save_project_quick() {
-                return;
-            }
+        let Some(choice) = choice else {
+            return;
+        };
 
-            // Update the active document's saved state.
-            self.sync_active_document();
-
-            // Find the next unsaved document.
-            let next_dirty_id = self
-                .documents
-                .documents
-                .iter()
-                .find(|doc| doc.is_dirty)
-                .map(|doc| doc.id);
-
-            if let Some(document_id) = next_dirty_id {
-                // Move to the next unsaved tab.
-                self.switch_document(document_id);
-
-                // Keep the quit confirmation open.
-                self.pending_quit_dialog = true;
+        let (saved, next_dirty) = if choice == QuitChoice::SaveAndContinue {
+            // Save the active document first (if it has changes).
+            let saved = if self.is_dirty {
+                Some(self.save_project_quick())
             } else {
-                // Every document is saved.
-                self.pending_quit_dialog = false;
+                None
+            };
+            let next = if saved == Some(false) {
+                None
+            } else {
+                // Update the active document's saved state, then find the
+                // next unsaved document.
+                self.sync_active_document();
+                self.documents
+                    .documents
+                    .iter()
+                    .find(|doc| doc.is_dirty)
+                    .map(|doc| doc.id)
+            };
+            (saved, next)
+        } else {
+            (None, None)
+        };
+
+        match quit_step(choice, saved, next_dirty) {
+            QuitStep::KeepOpen => {}
+            QuitStep::SwitchTo(document_id) => {
+                // The only tab switch allowed while documents are locked.
+                self.switch_document_for_quit(document_id);
+            }
+            QuitStep::Close { discard } => {
+                self.discard_on_exit = discard;
+                self.set_quit_dialog_open(false);
                 self.force_quit = true;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
-        } else if do_close {
-            self.pending_quit_dialog = false;
-            self.force_quit = true;
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-        } else if dismiss {
-            self.pending_quit_dialog = false;
+            QuitStep::Dismiss => {
+                // Cancel: normal tab interactions resume.
+                self.set_quit_dialog_open(false);
+            }
         }
     }
 
@@ -1858,5 +2411,834 @@ impl super::PatchworkApp {
 
     pub(super) fn update_key_inputs(&mut self, _ctx: &egui::Context) {
         // KeyInput is now trait-based — reads key state in render_ui()
+    }
+}
+
+/// Session-fix: the legacy single-document session only ever holds a
+/// project, and restoring never turns a custom node into a project.
+#[cfg(test)]
+mod session_tests {
+    use super::*;
+    use crate::document::{CustomNodeFile, DocumentKind, DocumentManager};
+    use crate::graph::PortKind;
+    use std::path::PathBuf;
+
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new(tag: &str) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "patchwork_session_{tag}_{}_{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos())
+                    .unwrap_or(0)
+            ));
+            std::fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn project_graph(marker: f32) -> Graph {
+        let mut graph = Graph::new();
+        graph.add_node(NodeType::FileMenu, [marker, marker]);
+        graph
+    }
+
+    fn write_custom_node(path: &Path) {
+        let mut graph = Graph::new();
+        graph.add_node(
+            NodeType::CustomOutput {
+                name: "out".into(),
+                kind: PortKind::Number,
+            },
+            [0.0, 0.0],
+        );
+        CustomNodeFile {
+            version: 1,
+            name: "Node".into(),
+            graph,
+            inputs: Vec::new(),
+            outputs: Vec::new(),
+        }
+        .save(path)
+        .unwrap();
+    }
+
+    fn snapshot(graph: Graph, path: Option<String>, dirty: bool) -> SessionSnapshot {
+        SessionSnapshot {
+            graph,
+            canvas_offset: [1.0, 2.0],
+            canvas_zoom: 1.5,
+            pinned_nodes: Vec::new(),
+            project_path: path,
+            is_dirty: dirty,
+        }
+    }
+
+    fn marker_of(graph: &Graph) -> f32 {
+        graph
+            .nodes
+            .values()
+            .next()
+            .map(|n| n.pos[0])
+            .unwrap_or(-1.0)
+    }
+
+    /// Serialize and parse like save_session/restore_session do.
+    fn round_trip(state: &SessionState) -> SessionState {
+        serde_json::from_str(&serde_json::to_string_pretty(state).unwrap()).unwrap()
+    }
+
+    // ── Shutdown ─────────────────────────────────────────────────────
+
+    #[test]
+    fn shutdown_with_project_tab_active_saves_that_project() {
+        let tmp = TempDir::new("project_active");
+        let project_dir = tmp.0.join("MyProject");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        let documents = DocumentManager::new();
+        let live = snapshot(
+            project_graph(7.0),
+            Some(project_dir.to_string_lossy().into_owned()),
+            true,
+        );
+        let selected = select_session_project(&documents, live).unwrap();
+        let state = round_trip(&session_state_from(
+            Some(selected),
+            HashMap::new(),
+            vec!["recent".into()],
+        ));
+        assert!(!state.clean_start);
+        assert_eq!(marker_of(&state.graph), 7.0);
+        assert!(
+            state.is_dirty,
+            "unsaved project work is kept in the session"
+        );
+        assert_eq!(
+            plan_session_restore(state.project_path.as_deref(), state.clean_start),
+            SessionRestorePlan::Project {
+                project_path: Some(project_dir.to_string_lossy().into_owned()),
+                mark_dirty: false,
+                note: None,
+            }
+        );
+    }
+
+    #[test]
+    fn shutdown_with_custom_node_active_saves_the_open_project() {
+        let tmp = TempDir::new("custom_active");
+        let node = tmp.0.join("Node.pwnode");
+        write_custom_node(&node);
+        let older = tmp.0.join("Older");
+        let newer = tmp.0.join("Newer");
+        std::fs::create_dir_all(&older).unwrap();
+        std::fs::create_dir_all(&newer).unwrap();
+
+        let mut documents = DocumentManager::new();
+        // Tab 1: a saved project.
+        documents.active_mut().store_graph(&project_graph(1.0));
+        documents
+            .active_mut()
+            .set_path(Some(older.clone()))
+            .unwrap();
+        // Tab 2: another project with unsaved work (most recently opened).
+        let second = documents.new_document("Newer");
+        {
+            let doc = documents
+                .documents
+                .iter_mut()
+                .find(|d| d.id == second)
+                .unwrap();
+            doc.store_graph(&project_graph(2.0));
+            doc.set_path(Some(newer.clone())).unwrap();
+            doc.is_dirty = true;
+        }
+        // Active: a custom-node tab with unsaved edits.
+        let custom = documents.open_custom_node(node.clone()).unwrap();
+        assert!(documents.activate(custom));
+        assert_eq!(documents.active().kind, DocumentKind::CustomNode);
+        let live = snapshot(
+            Graph::new(),
+            Some(node.to_string_lossy().into_owned()),
+            true,
+        );
+
+        let selected = select_session_project(&documents, live).unwrap();
+        let state = round_trip(&session_state_from(
+            Some(selected),
+            HashMap::new(),
+            Vec::new(),
+        ));
+        assert!(!state.clean_start);
+        assert_eq!(marker_of(&state.graph), 2.0, "most recently opened project");
+        assert_eq!(
+            state.project_path.as_deref(),
+            Some(newer.to_string_lossy().as_ref())
+        );
+        assert!(state.is_dirty);
+        assert!(
+            !state
+                .project_path
+                .as_deref()
+                .unwrap()
+                .to_lowercase()
+                .ends_with(".pwnode")
+        );
+    }
+
+    #[test]
+    fn shutdown_with_only_custom_node_tabs_starts_clean_next_time() {
+        let tmp = TempDir::new("custom_only");
+        let node = tmp.0.join("Node.pwnode");
+        write_custom_node(&node);
+        let mut documents = DocumentManager::new();
+        let custom = documents.open_custom_node(node.clone()).unwrap();
+        assert!(documents.activate(custom));
+        assert!(documents.close_document(1), "close the untitled project");
+        assert!(
+            documents
+                .documents
+                .iter()
+                .all(|d| d.kind == DocumentKind::CustomNode)
+        );
+
+        let live = snapshot(
+            Graph::new(),
+            Some(node.to_string_lossy().into_owned()),
+            true,
+        );
+        assert!(select_session_project(&documents, live).is_none());
+        let state = round_trip(&session_state_from(
+            None,
+            HashMap::from([("k".to_string(), "v".to_string())]),
+            vec!["recent-project".into()],
+        ));
+        assert!(state.clean_start);
+        assert!(state.project_path.is_none());
+        assert!(state.graph.nodes.is_empty());
+        assert!(!state.is_dirty);
+        // Recent projects and keys survive the clean start.
+        assert_eq!(state.recent_projects, vec!["recent-project".to_string()]);
+        assert_eq!(state.api_keys.get("k").map(String::as_str), Some("v"));
+        assert_eq!(
+            plan_session_restore(state.project_path.as_deref(), state.clean_start),
+            SessionRestorePlan::Clean { reason: None }
+        );
+    }
+
+    // ── Startup ──────────────────────────────────────────────────────
+
+    #[test]
+    fn legacy_session_with_pwnode_path_starts_clean() {
+        let tmp = TempDir::new("legacy_pwnode");
+        let node = tmp.0.join("nested-test.pwnode");
+        write_custom_node(&node);
+        // A session file written by an older build (no clean_start field).
+        let legacy = serde_json::json!({
+            "graph": serde_json::to_value(Graph::new()).unwrap(),
+            "canvas_offset": [0.0, 0.0],
+            "canvas_zoom": 1.0,
+            "pinned_nodes": [],
+            "project_path": node.to_string_lossy(),
+            "is_dirty": true,
+            "recent_projects": ["a"]
+        })
+        .to_string();
+        let state: SessionState = serde_json::from_str(&legacy).unwrap();
+        assert!(!state.clean_start, "older files default to false");
+        match plan_session_restore(state.project_path.as_deref(), state.clean_start) {
+            SessionRestorePlan::Clean {
+                reason: Some(reason),
+            } => {
+                assert!(reason.contains("custom node"), "{reason}");
+                assert!(reason.contains("not changed"), "{reason}");
+            }
+            other => panic!("expected a clean start, got {other:?}"),
+        }
+        // Upper-case extension too.
+        assert!(matches!(
+            plan_session_restore(Some("C:/x/Node.PWNODE"), false),
+            SessionRestorePlan::Clean { .. }
+        ));
+    }
+
+    #[test]
+    fn legacy_project_session_is_restored_unchanged() {
+        let tmp = TempDir::new("legacy_project");
+        let dir = tmp.0.join("Project");
+        std::fs::create_dir_all(&dir).unwrap();
+        let legacy = serde_json::json!({
+            "graph": serde_json::to_value(project_graph(3.0)).unwrap(),
+            "canvas_offset": [0.0, 0.0],
+            "canvas_zoom": 1.0,
+            "pinned_nodes": [],
+            "project_path": dir.to_string_lossy(),
+        })
+        .to_string();
+        let state: SessionState = serde_json::from_str(&legacy).unwrap();
+        assert_eq!(marker_of(&state.graph), 3.0);
+        assert_eq!(
+            plan_session_restore(state.project_path.as_deref(), state.clean_start),
+            SessionRestorePlan::Project {
+                project_path: Some(dir.to_string_lossy().into_owned()),
+                mark_dirty: false,
+                note: None,
+            }
+        );
+        // An untitled session (no path) also restores as before.
+        assert_eq!(
+            plan_session_restore(None, false),
+            SessionRestorePlan::Project {
+                project_path: None,
+                mark_dirty: false,
+                note: None,
+            }
+        );
+    }
+
+    #[test]
+    fn missing_or_corrupted_session_paths() {
+        let tmp = TempDir::new("bad_paths");
+        // Missing project folder: keep the work, but as an unsaved Untitled
+        // project so Ctrl+S cannot write to a vanished location.
+        let missing = tmp.0.join("Gone");
+        match plan_session_restore(Some(&missing.to_string_lossy()), false) {
+            SessionRestorePlan::Project {
+                project_path: None,
+                mark_dirty: true,
+                note: Some(note),
+            } => assert!(note.contains("unavailable"), "{note}"),
+            other => panic!("{other:?}"),
+        }
+        // A file where a project folder should be.
+        let file = tmp.0.join("project.json");
+        std::fs::write(&file, "{}").unwrap();
+        assert!(matches!(
+            plan_session_restore(Some(&file.to_string_lossy()), false),
+            SessionRestorePlan::Project {
+                project_path: None,
+                mark_dirty: true,
+                ..
+            }
+        ));
+        // Empty / whitespace path: untitled, as before.
+        assert!(matches!(
+            plan_session_restore(Some("   "), false),
+            SessionRestorePlan::Project {
+                project_path: None,
+                mark_dirty: false,
+                ..
+            }
+        ));
+        // A corrupted session file is not parsed at all (restore returns
+        // false and the app starts clean).
+        assert!(serde_json::from_str::<SessionState>("{ not json").is_err());
+        assert!(serde_json::from_str::<SessionState>(r#"{"graph": 5}"#).is_err());
+    }
+
+    #[test]
+    fn session_handling_never_modifies_project_or_custom_node_files() {
+        let tmp = TempDir::new("no_writes");
+        let project = tmp.0.join("Project");
+        std::fs::create_dir_all(&project).unwrap();
+        let project_json = project.join("project.json");
+        std::fs::write(
+            &project_json,
+            r#"{"graph":{"nodes":{},"connections":[],"next_id":1}}"#,
+        )
+        .unwrap();
+        let node = tmp.0.join("Node.pwnode");
+        write_custom_node(&node);
+        let watched = [project_json.clone(), node.clone()];
+        let before: Vec<_> = watched
+            .iter()
+            .map(|p| {
+                (
+                    std::fs::read(p).unwrap(),
+                    std::fs::metadata(p).unwrap().modified().unwrap(),
+                )
+            })
+            .collect();
+
+        let mut documents = DocumentManager::new();
+        documents
+            .active_mut()
+            .set_path(Some(project.clone()))
+            .unwrap();
+        let custom = documents.open_custom_node(node.clone()).unwrap();
+        documents.activate(custom);
+        let live = snapshot(
+            project_graph(9.0),
+            Some(node.to_string_lossy().into_owned()),
+            true,
+        );
+        let state = session_state_from(
+            select_session_project(&documents, live),
+            HashMap::new(),
+            Vec::new(),
+        );
+        let session_file = tmp.0.join("last_session.json");
+        std::fs::write(&session_file, serde_json::to_string_pretty(&state).unwrap()).unwrap();
+        let reread: SessionState =
+            serde_json::from_str(&std::fs::read_to_string(&session_file).unwrap()).unwrap();
+        let _ = plan_session_restore(reread.project_path.as_deref(), reread.clean_start);
+        let _ = plan_session_restore(Some(&node.to_string_lossy()), false);
+
+        let after: Vec<_> = watched
+            .iter()
+            .map(|p| {
+                (
+                    std::fs::read(p).unwrap(),
+                    std::fs::metadata(p).unwrap().modified().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(before, after);
+    }
+}
+
+/// B1 / B2 / R3: Discard All & Quit, the quit dialog list and decisions.
+#[cfg(test)]
+mod shutdown_tests {
+    use super::*;
+    use crate::document::{CustomNodeFile, DocumentKind, DocumentManager};
+    use crate::graph::PortKind;
+    use std::path::PathBuf;
+
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new(tag: &str) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "patchwork_shutdown_{tag}_{}_{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos())
+                    .unwrap_or(0)
+            ));
+            std::fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn graph_marked(marker: f32) -> Graph {
+        let mut graph = Graph::new();
+        graph.add_node(NodeType::FileMenu, [marker, marker]);
+        graph
+    }
+
+    fn marker_of(graph: &Graph) -> f32 {
+        graph
+            .nodes
+            .values()
+            .next()
+            .map(|n| n.pos[0])
+            .unwrap_or(-1.0)
+    }
+
+    /// A saved project folder whose project.json holds `marker`.
+    fn saved_project(root: &Path, name: &str, marker: f32) -> PathBuf {
+        let dir = root.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        let pf = ProjectFile {
+            graph: graph_marked(marker),
+            pinned_nodes: Vec::new(),
+            canvas_offset: [0.0, 0.0],
+            canvas_zoom: 1.0,
+        };
+        std::fs::write(
+            dir.join("project.json"),
+            serde_json::to_string_pretty(&pf).unwrap(),
+        )
+        .unwrap();
+        dir
+    }
+
+    fn custom_node(path: &Path) {
+        let mut graph = Graph::new();
+        graph.add_node(
+            NodeType::CustomOutput {
+                name: "out".into(),
+                kind: PortKind::Number,
+            },
+            [0.0, 0.0],
+        );
+        CustomNodeFile {
+            version: 1,
+            name: "Mixer".into(),
+            graph,
+            inputs: Vec::new(),
+            outputs: Vec::new(),
+        }
+        .save(path)
+        .unwrap();
+    }
+
+    fn live(graph: Graph, path: Option<&Path>, dirty: bool) -> SessionSnapshot {
+        SessionSnapshot {
+            graph,
+            canvas_offset: [3.0, 4.0],
+            canvas_zoom: 2.0,
+            pinned_nodes: Vec::new(),
+            project_path: path.map(|p| p.to_string_lossy().into_owned()),
+            is_dirty: dirty,
+        }
+    }
+
+    fn round_trip(state: &SessionState) -> SessionState {
+        serde_json::from_str(&serde_json::to_string_pretty(state).unwrap()).unwrap()
+    }
+
+    fn plan(state: &SessionState) -> SessionRestorePlan {
+        plan_session_restore_with(
+            state.project_path.as_deref(),
+            state.clean_start,
+            state.reopen_from_disk,
+        )
+    }
+
+    /// Mirrors restore_session: the graph that would be loaded, or None for
+    /// a clean start.
+    fn restored_graph(state: &SessionState) -> Option<Graph> {
+        match plan(state) {
+            SessionRestorePlan::Clean { .. } => None,
+            SessionRestorePlan::ReopenFromDisk { project_path } => {
+                read_project_file(Path::new(&project_path))
+                    .ok()
+                    .map(|pf| pf.graph)
+            }
+            SessionRestorePlan::Project { .. } => Some(state.graph.clone()),
+        }
+    }
+
+    // 1 ──────────────────────────────────────────────────────────────────
+    #[test]
+    fn discarding_an_edited_saved_project_reopens_the_disk_version() {
+        let tmp = TempDir::new("discard_saved");
+        let dir = saved_project(&tmp.0, "Saved", 1.0);
+        let mut documents = DocumentManager::new();
+        documents.active_mut().set_path(Some(dir.clone())).unwrap();
+
+        // Edited in memory (marker 9) and discarded.
+        let state = round_trip(&discard_session_state(
+            &documents,
+            live(graph_marked(9.0), Some(&dir), true),
+            HashMap::from([("key".to_string(), "v".to_string())]),
+            vec!["recent".into()],
+        ));
+        assert!(state.reopen_from_disk);
+        assert!(!state.clean_start);
+        assert!(
+            state.graph.nodes.is_empty(),
+            "no discarded graph data stored"
+        );
+        assert!(!state.is_dirty);
+        assert_eq!(state.recent_projects, vec!["recent".to_string()]);
+        assert_eq!(state.api_keys.get("key").map(String::as_str), Some("v"));
+        assert_eq!(
+            plan(&state),
+            SessionRestorePlan::ReopenFromDisk {
+                project_path: dir.to_string_lossy().into_owned()
+            }
+        );
+        assert_eq!(marker_of(&restored_graph(&state).unwrap()), 1.0);
+    }
+
+    // 2 ──────────────────────────────────────────────────────────────────
+    #[test]
+    fn discarding_with_a_custom_node_tab_active_keeps_no_project_edits() {
+        let tmp = TempDir::new("discard_custom_active");
+        let dir = saved_project(&tmp.0, "Saved", 1.0);
+        let node = tmp.0.join("Mixer.pwnode");
+        custom_node(&node);
+
+        let mut documents = DocumentManager::new();
+        {
+            let project = documents.active_mut();
+            project.set_path(Some(dir.clone())).unwrap();
+            project.store_graph(&graph_marked(9.0)); // unsaved edits
+            project.is_dirty = true;
+        }
+        let custom = documents.open_custom_node(node.clone()).unwrap();
+        assert!(documents.activate(custom));
+        assert_eq!(documents.active().kind, DocumentKind::CustomNode);
+
+        let state = round_trip(&discard_session_state(
+            &documents,
+            live(Graph::new(), Some(&node), true),
+            HashMap::new(),
+            Vec::new(),
+        ));
+        assert!(state.reopen_from_disk);
+        assert!(state.graph.nodes.is_empty());
+        assert_eq!(
+            state.project_path.as_deref(),
+            Some(dir.to_string_lossy().as_ref())
+        );
+        assert_eq!(marker_of(&restored_graph(&state).unwrap()), 1.0);
+    }
+
+    #[test]
+    fn discard_prefers_a_saved_project_over_an_untitled_one() {
+        let tmp = TempDir::new("discard_where_possible");
+        let dir = saved_project(&tmp.0, "Saved", 1.0);
+        let mut documents = DocumentManager::new();
+        documents.active_mut().set_path(Some(dir.clone())).unwrap();
+        let untitled = documents.new_document("Untitled");
+        assert!(documents.activate(untitled));
+        // Active: untitled project with unsaved work.
+        let state = discard_session_state(
+            &documents,
+            live(graph_marked(5.0), None, true),
+            HashMap::new(),
+            Vec::new(),
+        );
+        assert!(state.reopen_from_disk);
+        assert_eq!(
+            state.project_path.as_deref(),
+            Some(dir.to_string_lossy().as_ref())
+        );
+        assert!(state.graph.nodes.is_empty());
+    }
+
+    // 3 ──────────────────────────────────────────────────────────────────
+    #[test]
+    fn discarding_an_unsaved_untitled_project_starts_clean() {
+        let documents = DocumentManager::new();
+        let state = round_trip(&discard_session_state(
+            &documents,
+            live(graph_marked(5.0), None, true),
+            HashMap::new(),
+            vec!["recent".into()],
+        ));
+        assert!(state.clean_start);
+        assert!(!state.reopen_from_disk);
+        assert!(state.graph.nodes.is_empty());
+        assert_eq!(state.recent_projects, vec!["recent".to_string()]);
+        assert_eq!(plan(&state), SessionRestorePlan::Clean { reason: None });
+        assert!(restored_graph(&state).is_none());
+    }
+
+    // 4 ──────────────────────────────────────────────────────────────────
+    #[test]
+    fn discarding_never_modifies_project_or_custom_node_files() {
+        let tmp = TempDir::new("discard_no_writes");
+        let dir = saved_project(&tmp.0, "Saved", 1.0);
+        let node = tmp.0.join("Mixer.pwnode");
+        custom_node(&node);
+        let watched = [dir.join("project.json"), node.clone()];
+        let stamp = |paths: &[PathBuf]| -> Vec<(Vec<u8>, std::time::SystemTime)> {
+            paths
+                .iter()
+                .map(|p| {
+                    (
+                        std::fs::read(p).unwrap(),
+                        std::fs::metadata(p).unwrap().modified().unwrap(),
+                    )
+                })
+                .collect()
+        };
+        let before = stamp(&watched);
+
+        let mut documents = DocumentManager::new();
+        documents.active_mut().set_path(Some(dir.clone())).unwrap();
+        let custom = documents.open_custom_node(node.clone()).unwrap();
+        documents.activate(custom);
+        let state = discard_session_state(
+            &documents,
+            live(graph_marked(9.0), Some(&node), true),
+            HashMap::new(),
+            Vec::new(),
+        );
+        let session_file = tmp.0.join("last_session.json");
+        std::fs::write(&session_file, serde_json::to_string(&state).unwrap()).unwrap();
+        let reread: SessionState =
+            serde_json::from_str(&std::fs::read_to_string(&session_file).unwrap()).unwrap();
+        let _ = restored_graph(&reread);
+
+        assert_eq!(stamp(&watched), before);
+    }
+
+    // 5 ──────────────────────────────────────────────────────────────────
+    #[test]
+    fn legacy_session_files_restore_as_before() {
+        let tmp = TempDir::new("legacy");
+        let dir = saved_project(&tmp.0, "Saved", 1.0);
+        // Older file: no clean_start / reopen_from_disk, unsaved graph kept.
+        let legacy = serde_json::json!({
+            "graph": serde_json::to_value(graph_marked(7.0)).unwrap(),
+            "canvas_offset": [0.0, 0.0],
+            "canvas_zoom": 1.0,
+            "pinned_nodes": [],
+            "project_path": dir.to_string_lossy(),
+            "is_dirty": true
+        })
+        .to_string();
+        let state: SessionState = serde_json::from_str(&legacy).unwrap();
+        assert!(!state.reopen_from_disk && !state.clean_start);
+        assert!(matches!(plan(&state), SessionRestorePlan::Project { .. }));
+        assert_eq!(
+            marker_of(&restored_graph(&state).unwrap()),
+            7.0,
+            "a normal (non-discard) session still restores its graph"
+        );
+    }
+
+    // 6 ──────────────────────────────────────────────────────────────────
+    #[test]
+    fn missing_or_corrupt_saved_project_never_resurrects_discarded_data() {
+        let tmp = TempDir::new("discard_missing");
+        // A discard session that (wrongly or from tampering) carries a graph.
+        let mut state = session_state_from(
+            Some(live(graph_marked(9.0), None, true)),
+            HashMap::new(),
+            Vec::new(),
+        );
+        state.reopen_from_disk = true;
+
+        // Project folder gone.
+        state.project_path = Some(tmp.0.join("Gone").to_string_lossy().into_owned());
+        match plan(&state) {
+            SessionRestorePlan::Clean {
+                reason: Some(reason),
+            } => {
+                assert!(reason.contains("could not be reopened"), "{reason}")
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(restored_graph(&state).is_none());
+
+        // Folder without project.json.
+        let empty = tmp.0.join("Empty");
+        std::fs::create_dir_all(&empty).unwrap();
+        state.project_path = Some(empty.to_string_lossy().into_owned());
+        assert!(matches!(plan(&state), SessionRestorePlan::Clean { .. }));
+
+        // A custom-node path.
+        state.project_path = Some(tmp.0.join("X.pwnode").to_string_lossy().into_owned());
+        assert!(matches!(plan(&state), SessionRestorePlan::Clean { .. }));
+
+        // No path at all.
+        state.project_path = None;
+        assert!(matches!(plan(&state), SessionRestorePlan::Clean { .. }));
+
+        // Corrupt project.json: the plan reopens from disk, reading fails,
+        // and restore starts clean (never uses the session graph).
+        let corrupt = tmp.0.join("Corrupt");
+        std::fs::create_dir_all(&corrupt).unwrap();
+        std::fs::write(corrupt.join("project.json"), "{ not json").unwrap();
+        state.project_path = Some(corrupt.to_string_lossy().into_owned());
+        assert!(matches!(
+            plan(&state),
+            SessionRestorePlan::ReopenFromDisk { .. }
+        ));
+        assert!(read_project_file(&corrupt).is_err());
+        assert!(restored_graph(&state).is_none());
+    }
+
+    // 7 ──────────────────────────────────────────────────────────────────
+    #[test]
+    fn quit_dialog_lists_every_unsaved_document_with_its_type() {
+        let tmp = TempDir::new("quit_list");
+        let node = tmp.0.join("Mixer.pwnode");
+        custom_node(&node);
+        let mut documents = DocumentManager::new(); // id 1 "Untitled", active
+        documents.active_mut().title = "Song".into();
+        let clean = documents.new_document("Clean");
+        let custom = documents.open_custom_node(node).unwrap();
+        documents
+            .documents
+            .iter_mut()
+            .find(|d| d.id == custom)
+            .unwrap()
+            .is_dirty = true;
+        let _ = clean;
+
+        // Active project dirty: it is saved next.
+        let list = unsaved_documents(&documents, true);
+        let shown: Vec<_> = list
+            .iter()
+            .map(|d| (d.title.as_str(), d.kind_label(), d.next))
+            .collect();
+        assert_eq!(
+            shown,
+            vec![("Song", "Project", true), ("Mixer", "Custom Node", false)]
+        );
+
+        // Active project clean: the first unsaved tab is next.
+        let list = unsaved_documents(&documents, false);
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].title, "Mixer");
+        assert_eq!(list[0].kind, DocumentKind::CustomNode);
+        assert!(list[0].next);
+
+        // A stale flag on the active document is ignored (live state wins).
+        documents.active_mut().is_dirty = true;
+        assert_eq!(unsaved_documents(&documents, false).len(), 1);
+    }
+
+    // 8 ──────────────────────────────────────────────────────────────────
+    #[test]
+    fn cancel_keeps_every_document_and_its_changes() {
+        let mut documents = DocumentManager::new();
+        let other = documents.new_document("Other");
+        documents
+            .documents
+            .iter_mut()
+            .find(|d| d.id == other)
+            .unwrap()
+            .is_dirty = true;
+        let before = unsaved_documents(&documents, true);
+
+        assert_eq!(quit_step(QuitChoice::Cancel, None, None), QuitStep::Dismiss);
+        // Cancel never saves, closes or discards anything.
+        assert_eq!(unsaved_documents(&documents, true), before);
+        assert_eq!(documents.documents.len(), 2);
+        assert!(documents.documents.iter().any(|d| d.is_dirty));
+    }
+
+    // 9 ──────────────────────────────────────────────────────────────────
+    #[test]
+    fn save_and_continue_keeps_the_tab_by_tab_behaviour() {
+        // Save failed or was cancelled: stay in the dialog.
+        assert_eq!(
+            quit_step(QuitChoice::SaveAndContinue, Some(false), Some(2)),
+            QuitStep::KeepOpen
+        );
+        // Saved, more unsaved tabs: move to the next one.
+        assert_eq!(
+            quit_step(QuitChoice::SaveAndContinue, Some(true), Some(2)),
+            QuitStep::SwitchTo(2)
+        );
+        // Active had nothing to save: move on.
+        assert_eq!(
+            quit_step(QuitChoice::SaveAndContinue, None, Some(3)),
+            QuitStep::SwitchTo(3)
+        );
+        // Everything saved: close normally (not a discard).
+        assert_eq!(
+            quit_step(QuitChoice::SaveAndContinue, Some(true), None),
+            QuitStep::Close { discard: false }
+        );
+        // Discard All closes with the discard decision.
+        assert_eq!(
+            quit_step(QuitChoice::DiscardAll, None, Some(2)),
+            QuitStep::Close { discard: true }
+        );
     }
 }

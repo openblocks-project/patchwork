@@ -118,6 +118,8 @@ impl super::PatchworkApp {
         let _ = self.node_menu_pos; // retained for spawn offset (used below)
         let mut keep_open = true;
         let mut selected_library_path: Option<std::path::PathBuf> = None;
+        // P4.1: package insert / convert / duplicate requested in the palette.
+        let mut library_action: Option<super::library::LibraryAction> = None;
         let menu_id = egui::Id::new("add_node_menu_window");
 
         // Menu chrome derives from the active theme so picker, body, and
@@ -248,13 +250,15 @@ impl super::PatchworkApp {
                 let catalog = nodes::catalog();
                 let wire_ctx = self.wire_menu_context;
                 let cat_filter = self.node_menu_category.clone();
-                let library_nodes = match crate::library::list_library_nodes() {
-                    Ok(paths) => paths,
-                    Err(error) => {
-                        crate::system_log::error(format!("Failed to list library nodes: {error}"));
-                        Vec::new()
-                    }
-                };
+                // P4.0: cached listing; the filesystem is only scanned on
+                // first use, after publishing, or on explicit refresh.
+                if let Some(report) = self.library_cache.ensure_loaded() {
+                    self.report_library_migration(&report);
+                }
+                let library_nodes = self.library_cache.entries().to_vec();
+                let library_packages = self.library_cache.packages().to_vec();
+                let library_error = self.library_cache.error().map(str::to_string);
+                let mut refresh_library = false;
                 if wire_ctx.is_some() {
                     ui.label(
                         egui::RichText::new("⚡ Compatible nodes")
@@ -431,34 +435,144 @@ impl super::PatchworkApp {
                 }
 
                 if cat_filter.is_empty() || cat_filter == "Library" {
-                    ui.label(
-                        egui::RichText::new(format!("Library ({})", library_nodes.len()))
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "Library ({})",
+                                library_packages.len() + library_nodes.len()
+                            ))
                             .small()
                             .strong()
                             .color(egui::Color32::GRAY),
-                    );
+                        );
+                        if ui
+                            .small_button("⟳")
+                            .on_hover_text("Rescan the Library folder")
+                            .clicked()
+                        {
+                            refresh_library = true;
+                        }
+                    });
+                    if let Some(error) = &library_error {
+                        ui.label(
+                            egui::RichText::new(error)
+                                .small()
+                                .color(egui::Color32::from_rgb(255, 120, 120)),
+                        );
+                    }
 
                     ui.separator();
 
                     let mut any_shown = false;
 
-                    for path in &library_nodes {
+                    // P4.1: versioned packages (newest version inserted by
+                    // default; older versions via right-click).
+                    for pkg in &library_packages {
+                        if !pkg.matches(&query) {
+                            continue;
+                        }
+                        any_shown = true;
+                        let latest = pkg.latest();
+                        let m = &latest.manifest;
+                        let ok = latest.integrity.is_ok();
+                        let label = format!(
+                            "{} {}  v{}",
+                            if ok { "📦" } else { "⚠" },
+                            m.name,
+                            latest.version
+                        );
+                        let mut hover = format!("{}@{}", m.id, latest.version);
+                        if !m.description.is_empty() {
+                            hover.push_str(&format!("\n{}", m.description));
+                        }
+                        if !m.tags.is_empty() {
+                            hover.push_str(&format!("\nTags: {}", m.tags.join(", ")));
+                        }
+                        if let Err(error) = &latest.integrity {
+                            hover.push_str(&format!("\n⚠ {error}"));
+                        }
+                        hover.push_str("\nRight-click for other versions");
+                        let response = ui.button(label).on_hover_text(hover);
+                        if response.clicked() {
+                            library_action = Some(super::library::LibraryAction::Insert(Box::new(
+                                latest.clone(),
+                            )));
+                        }
+                        response.context_menu(|ui| {
+                            ui.label(egui::RichText::new(&m.id).small().weak());
+                            ui.menu_button("Insert version", |ui| {
+                                for version in &pkg.versions {
+                                    let text = match &version.integrity {
+                                        Ok(()) => format!("v{}", version.version),
+                                        Err(_) => format!("⚠ v{} (failed check)", version.version),
+                                    };
+                                    if ui.button(text).clicked() {
+                                        library_action =
+                                            Some(super::library::LibraryAction::Insert(Box::new(
+                                                version.clone(),
+                                            )));
+                                        ui.close_menu();
+                                    }
+                                }
+                            });
+                            if ui.button("Duplicate for Editing…").clicked() {
+                                library_action = Some(super::library::LibraryAction::Duplicate(
+                                    latest.entry_path.clone(),
+                                ));
+                                ui.close_menu();
+                            }
+                        });
+                    }
+
+                    // P4.0 flat nodes: still supported, never auto-converted.
+                    let unversioned: Vec<_> = library_nodes
+                        .iter()
+                        .filter(|path| {
+                            query.is_empty()
+                                || path
+                                    .file_stem()
+                                    .and_then(|s| s.to_str())
+                                    .is_some_and(|name| name.to_lowercase().contains(&query))
+                        })
+                        .collect();
+                    if !unversioned.is_empty() && !library_packages.is_empty() {
+                        ui.label(egui::RichText::new("Unversioned").small().weak());
+                    }
+                    for path in unversioned {
                         let name = path
                             .file_stem()
                             .and_then(|s| s.to_str())
                             .unwrap_or("Unnamed Node");
-
-                        if !query.is_empty() && !name.to_lowercase().contains(&query) {
-                            continue;
-                        }
-                        if ui.button(format!("📦 {}", name)).clicked() {
+                        let response = ui
+                            .button(format!("📄 {}", name))
+                            .on_hover_text("Unversioned Library node. Right-click to convert.");
+                        if response.clicked() {
                             selected_library_path = Some(path.clone());
                         }
+                        response.context_menu(|ui| {
+                            if ui
+                                .button("Convert to Package…")
+                                .on_hover_text(
+                                    "Copies it into a versioned package; the original stays",
+                                )
+                                .clicked()
+                            {
+                                library_action =
+                                    Some(super::library::LibraryAction::Convert(path.clone()));
+                                ui.close_menu();
+                            }
+                        });
                         any_shown = true;
                     }
 
                     if !any_shown {
                         ui.label("No library nodes found");
+                    }
+                    if refresh_library {
+                        self.library_cache.invalidate();
+                        // Stage 0: explicit refresh also retries custom
+                        // nodes that previously failed to load.
+                        self.graph.clear_custom_runtime_failures();
                     }
 
                     // P2: Custom nodes belonging to this project.
@@ -499,11 +613,12 @@ impl super::PatchworkApp {
                     if total_cols == 0 {
                         let library_has_matches = (cat_filter.is_empty()
                             || cat_filter == "Library")
-                            && library_nodes.iter().any(|path| {
-                                path.file_stem()
-                                    .and_then(|s| s.to_str())
-                                    .is_some_and(|name| name.to_lowercase().contains(&query))
-                            });
+                            && (library_packages.iter().any(|pkg| pkg.matches(&query))
+                                || library_nodes.iter().any(|path| {
+                                    path.file_stem()
+                                        .and_then(|s| s.to_str())
+                                        .is_some_and(|name| name.to_lowercase().contains(&query))
+                                }));
                         if !library_has_matches {
                             ui.add_space(40.0);
                             ui.vertical_centered(|ui| {
@@ -686,9 +801,22 @@ impl super::PatchworkApp {
                 }
             });
 
+        if let Some(action) = library_action {
+            self.apply_library_action(ctx, action);
+            keep_open = false;
+        }
         // INSERT HERE
         if let Some(path) = selected_library_path {
-            self.insert_custom_node_from_path(ctx, &path);
+            if path.is_file() {
+                self.insert_custom_node_from_path(ctx, &path);
+            } else {
+                // Deleted since the last scan: drop the stale entry.
+                self.library_cache.invalidate();
+                self.toast_warn(format!(
+                    "Custom node file no longer exists: {}",
+                    path.display()
+                ));
+            }
             keep_open = false;
         }
 
@@ -730,6 +858,9 @@ impl super::PatchworkApp {
     /// Insert a saved .pwnode as a reusable node in the active project.
 
     pub(super) fn insert_custom_node(&mut self, ctx: &egui::Context) {
+        if !self.require_editable("Insert Custom Node") {
+            return;
+        }
         let Some(path) = rfd::FileDialog::new()
             .add_filter("Patchwork Custom Node", &["pwnode"])
             .pick_file()
@@ -746,6 +877,10 @@ impl super::PatchworkApp {
         path: &std::path::Path,
     ) {
         use crate::document::{CustomNodeFile, DocumentKind};
+        // Stage 0: every insertion path (palette, Library, File menu) ends here.
+        if !self.require_editable("Insert Custom Node") {
+            return;
+        }
         // Custom nodes can be inserted into projects and other custom nodes.
         // Recursive dependencies are checked before runtime evaluation.
         if !matches!(
@@ -878,7 +1013,19 @@ impl super::PatchworkApp {
             d.insert_temp(egui::Id::new("file_action_insert_custom_node"), false);
         });
 
+        // R3: File-menu and system-node actions are ignored while quitting
+        // (their flags were cleared above).
+        if self.pending_quit_dialog {
+            return;
+        }
         if new_project {
+            // H1: always open the new project in its own tab. The previously
+            // active document keeps its graph, path, dirty state and undo
+            // history (it is stored by `switch_document`), so a custom-node
+            // tab can never be overwritten by a project graph.
+            if !self.create_new_tab() {
+                return;
+            }
             self.graph = Graph::new();
             self.project_path = None;
             self.pinned_nodes.clear();
@@ -904,48 +1051,7 @@ impl super::PatchworkApp {
             self.insert_custom_node(ctx);
         }
         if publish_library {
-            use crate::document::DocumentKind;
-
-            let document = self.documents.active();
-            let has_unsaved_changes = self.is_dirty || document.is_dirty;
-            if document.kind != DocumentKind::CustomNode {
-                crate::system_log::error(
-                    "Only custom-node documents can be published.".to_string(),
-                );
-            } else if has_unsaved_changes {
-                crate::system_log::error("Save the custom node before publishing.".to_string());
-            } else if let Some(path) = document.path.clone() {
-                // Validate the saved file rather than potentially unsaved graph state.
-                match crate::document::CustomNodeFile::load(&path) {
-                    Ok(custom_node) => {
-                        let has_nested_nodes = custom_node.graph.nodes.values().any(|node| {
-                            matches!(&node.node_type, NodeType::CustomNodeInstance { .. })
-                        });
-
-                        if has_nested_nodes {
-                            crate::system_log::error(
-                                "Publishing nested custom nodes is not supported yet.".to_string(),
-                            );
-                        } else {
-                            match crate::library::publish_to_library(&path) {
-                                Ok(destination) => {
-                                    println!("Published to Library: {}", destination.display());
-                                }
-                                Err(error) => {
-                                    crate::system_log::error(format!(
-                                        "Publish to Library failed: {error}"
-                                    ));
-                                }
-                            }
-                        }
-                    }
-                    Err(error) => {
-                        crate::system_log::error(format!("Cannot read custom node: {error}"));
-                    }
-                }
-            } else {
-                crate::system_log::error("Save the custom node before publishing.".to_string());
-            }
+            self.publish_active_custom_node();
         }
         if let Some(path) = load_recent {
             self.load_project_path(std::path::PathBuf::from(path));

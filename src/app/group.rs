@@ -10,6 +10,9 @@ use crate::graph::group::{self, GroupExtraction};
 impl PatchworkApp {
     /// Ctrl+G / Cmd+G: validate the selection and open the naming dialog.
     pub(super) fn begin_group_selection(&mut self) {
+        if !self.require_editable("Group into Custom Node") {
+            return;
+        }
         if self.selected_nodes.is_empty() {
             self.toast_info("Select nodes to group into a custom node (Ctrl+G).");
             return;
@@ -89,6 +92,9 @@ impl PatchworkApp {
     /// Validate, write the .pwnode and replace the selection.
     /// Returns true when the dialog should close (success or hard error).
     fn create_group_from_dialog(&mut self) -> bool {
+        if !self.require_editable("Group into Custom Node") {
+            return true;
+        }
         let name = self.group_name.trim().to_string();
         if let Err(message) = group::validate_group_name(&name) {
             show_group_error(&message);
@@ -210,6 +216,7 @@ impl PatchworkApp {
         extraction: &GroupExtraction,
         file: &str,
     ) -> NodeId {
+        debug_assert!(self.active_is_editable(), "grouping in a read-only tab");
         self.push_undo();
         for &id in &extraction.selected {
             self.release_node_resources(id);

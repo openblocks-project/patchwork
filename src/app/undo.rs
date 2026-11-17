@@ -2,7 +2,7 @@ use crate::graph::*;
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 #[derive(Clone)]
-pub(super) struct UndoSnapshot {
+pub(crate) struct UndoSnapshot {
     pub graph: Graph,
     pub pinned_nodes: HashSet<NodeId>,
     /// Content hash of the snapshot, used to skip duplicate states.
@@ -144,6 +144,9 @@ impl super::PatchworkApp {
     }
 
     pub(super) fn perform_undo(&mut self) {
+        if !self.active_is_editable() {
+            return;
+        }
         let current = UndoSnapshot::new(self.graph.clone(), self.pinned_nodes.clone());
         if let Some(prev) = self.undo_history.undo(current) {
             self.graph = prev.graph;
@@ -163,6 +166,9 @@ impl super::PatchworkApp {
     }
 
     pub(super) fn perform_redo(&mut self) {
+        if !self.active_is_editable() {
+            return;
+        }
         let current = UndoSnapshot::new(self.graph.clone(), self.pinned_nodes.clone());
         if let Some(next) = self.undo_history.redo(current) {
             self.graph = next.graph;

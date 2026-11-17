@@ -179,17 +179,12 @@ impl super::PatchworkApp {
         // ── File shortcuts (only when no text field is focused) ───────
         let no_focus = ctx.memory(|mem| mem.focused().is_none());
         let cmd = modifiers.mac_cmd || modifiers.ctrl;
-        if no_focus && cmd {
-            // Cmd+N → New project (fresh graph + randomised accent color)
+        // R3: no new/open/save shortcuts while the quit dialog is open.
+        if no_focus && cmd && !self.pending_quit_dialog {
+            // Cmd+N → New project. H1: same path as File → New Project, which
+            // opens a new tab and never replaces the active document.
             if ctx.input(|i| i.key_pressed(egui::Key::N)) {
-                self.push_undo();
-                self.graph = crate::graph::Graph::new();
-                self.project_path = None;
-                self.pinned_nodes.clear();
-                self.undo_history.clear();
-                self.spawn_default_nodes();
-                // Randomise accent for the new session
-                self.session_accent = crate::nodes::theme::random_accent();
+                ctx.data_mut(|d| d.insert_temp(egui::Id::new("file_action_new"), true));
             }
             // Cmd+O → Open project
             if ctx.input(|i| i.key_pressed(egui::Key::O)) {
@@ -202,14 +197,8 @@ impl super::PatchworkApp {
             // Cmd+Shift+S → Save As (always shows dialog)
             // Cmd+Shift+S → Open Save As naming popup
             if modifiers.shift && ctx.input(|i| i.key_pressed(egui::Key::S)) {
-                self.save_as_name = self
-                    .project_path
-                    .as_ref()
-                    .and_then(|p| std::path::Path::new(p).file_name())
-                    .map(|name| name.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "my-project".to_string());
-
-                self.save_as_open = true;
+                // Projects and custom nodes have separate Save As flows.
+                self.begin_save_as();
             }
             // // Cmd+Z → Undo
             // if !modifiers.shift && ctx.input(|i| i.key_pressed(egui::Key::Z)) {
@@ -412,21 +401,31 @@ impl super::PatchworkApp {
         // Keyboard shortcuts
         self.handle_keyboard_shortcuts(ctx);
 
-        // Option+drag completion
-        self.handle_opt_drag(ctx);
+        // Option+drag completion (duplicates nodes; not in read-only tabs)
+        if self.active_is_editable() {
+            self.handle_opt_drag(ctx);
+        }
     }
 
     pub(super) fn handle_keyboard_shortcuts(&mut self, ctx: &egui::Context) {
         let modifiers = ctx.input(|i| i.modifiers);
         let cmd = modifiers.mac_cmd || modifiers.ctrl;
         let text_focused = ctx.wants_keyboard_input();
+        // P4.1: read-only package tabs only allow non-mutating shortcuts.
+        let editable = self.active_is_editable();
 
         // Cmd+Z = undo, Cmd+Shift+Z = redo
-        if cmd && !modifiers.shift && !text_focused && ctx.input(|i| i.key_pressed(egui::Key::Z)) {
+        if editable
+            && cmd
+            && !modifiers.shift
+            && !text_focused
+            && ctx.input(|i| i.key_pressed(egui::Key::Z))
+        {
             self.perform_undo();
         }
         // Redo: Ctrl+Y or Ctrl+Shift+Z
-        if cmd
+        if editable
+            && cmd
             && !text_focused
             && (ctx.input(|i| i.key_pressed(egui::Key::Y))
                 || (modifiers.shift && ctx.input(|i| i.key_pressed(egui::Key::Z))))
@@ -443,7 +442,7 @@ impl super::PatchworkApp {
             }
         }
         // Cmd+V = paste node (only when no text field is focused)
-        if cmd && !text_focused && ctx.input(|i| i.key_pressed(egui::Key::V)) {
+        if editable && cmd && !text_focused && ctx.input(|i| i.key_pressed(egui::Key::V)) {
             if let Some(nt) = self.clipboard.clone() {
                 let (cx, cy) = if let Some(id) = self.primary_selected() {
                     if let Some(node) = self.graph.nodes.get(&id) {
@@ -467,15 +466,21 @@ impl super::PatchworkApp {
             }
         }
         // P2: Cmd+G / Ctrl+G = group selection into a custom node
-        if cmd && !modifiers.shift && !text_focused && ctx.input(|i| i.key_pressed(egui::Key::G)) {
+        if editable
+            && cmd
+            && !modifiers.shift
+            && !text_focused
+            && ctx.input(|i| i.key_pressed(egui::Key::G))
+        {
             self.begin_group_selection();
         }
         // Cmd+D = duplicate (only when no text field is focused)
-        if cmd && !text_focused && ctx.input(|i| i.key_pressed(egui::Key::D)) {
+        if editable && cmd && !text_focused && ctx.input(|i| i.key_pressed(egui::Key::D)) {
             self.duplicate_selected();
         }
         // Delete / Backspace = delete selected (only if no text input is focused)
-        if !text_focused
+        if editable
+            && !text_focused
             && ctx
                 .input(|i| i.key_pressed(egui::Key::Backspace) || i.key_pressed(egui::Key::Delete))
         {
@@ -567,6 +572,9 @@ impl super::PatchworkApp {
         }
     }
     pub(super) fn duplicate_selected(&mut self) {
+        if !self.require_editable("Duplicate") {
+            return;
+        }
         let ids: Vec<NodeId> = self.selected_nodes.iter().copied().collect();
         if ids.is_empty() {
             return;

@@ -74,6 +74,19 @@ pub fn group_support(node_type: &NodeType) -> GroupSupport {
     }
 }
 
+/// Editor chrome added to every new project (File, Zoom, Palette). Such
+/// nodes never belong inside a custom node, so a custom-node graph that
+/// contains them is really a project graph.
+pub fn is_editor_chrome(node_type: &NodeType) -> bool {
+    match node_type {
+        NodeType::FileMenu | NodeType::ZoomControl { .. } | NodeType::Palette { .. } => true,
+        NodeType::Dynamic { inner } => {
+            matches!(inner.node.type_tag(), "file_menu" | "zoom_control")
+        }
+        _ => false,
+    }
+}
+
 /// Why a selection cannot be grouped.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GroupError {

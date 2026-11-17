@@ -723,7 +723,8 @@ impl super::PatchworkApp {
                             .any(|&pp| pp.distance(p) < PORT_INTERACT)
                     })
                     .unwrap_or(false);
-                if !near_port {
+                // P4.1: wires in read-only package tabs are not editable.
+                if !near_port && self.active_is_editable() {
                     if let Some(conn) = self.graph.connections.get(idx) {
                         let cid = (conn.from_node, conn.from_port, conn.to_node, conn.to_port);
                         self.selected_connection = Some(cid);

@@ -2698,6 +2698,42 @@ pub fn canonical_custom_node_path(file: &str) -> Option<std::path::PathBuf> {
     std::fs::canonicalize(file).ok()
 }
 
+/// How long a failed custom-node load is trusted before the file is
+/// checked again (Stage 0: no per-frame filesystem work for broken files).
+const CUSTOM_FAILURE_RECHECK: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Identity of the file a cached custom-node runtime was loaded from.
+/// A runtime is reused only while the instance still references the same
+/// file and that file's modification time and size are unchanged.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CustomRuntimeStamp {
+    /// The instance's `file` value at load time.
+    file: String,
+    /// Canonical path resolved at load time.
+    resolved: std::path::PathBuf,
+    modified: std::time::SystemTime,
+    len: u64,
+}
+
+/// A cached custom-node load failure.
+#[derive(Debug, Clone)]
+struct CustomRuntimeFailure {
+    file: String,
+    /// File modification time and size when it failed (`None` = missing).
+    stamp: Option<(std::time::SystemTime, u64)>,
+    error: String,
+    next_check: std::time::Instant,
+}
+
+fn custom_file_stamp(path: &std::path::Path) -> Result<(std::time::SystemTime, u64), String> {
+    let metadata = std::fs::metadata(path)
+        .map_err(|error| format!("Cannot read custom node {}: {error}", path.display()))?;
+    let modified = metadata
+        .modified()
+        .map_err(|error| format!("Cannot read custom node modification time: {error}"))?;
+    Ok((modified, metadata.len()))
+}
+
 // ── Graph ───────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2709,9 +2745,12 @@ pub struct Graph {
     /// Not included in saved project files.
     #[serde(skip)]
     custom_runtimes: HashMap<NodeId, Box<Graph>>,
-    /// Last known modification time for each custom-node source file.
+    /// File identity each cached runtime was loaded from (path + mtime + size).
     #[serde(skip)]
-    custom_runtime_modified: HashMap<NodeId, std::time::SystemTime>,
+    custom_runtime_modified: HashMap<NodeId, CustomRuntimeStamp>,
+    /// Cached load failures, so broken files are not re-read every frame.
+    #[serde(skip)]
+    custom_runtime_failures: HashMap<NodeId, CustomRuntimeFailure>,
     /// Port-sync events raised while reloading custom nodes during evaluation.
     /// Drained by the editor with `take_custom_port_events`.
     #[serde(skip)]
@@ -2748,6 +2787,7 @@ impl Graph {
             next_id: 1,
             custom_runtimes: HashMap::new(),
             custom_runtime_modified: HashMap::new(),
+            custom_runtime_failures: HashMap::new(),
             custom_port_events: CustomPortSyncReport::default(),
 
             last_eval_time: 0.0,
@@ -2812,6 +2852,7 @@ impl Graph {
         // Remove the cached runtime when a custom-node instance is deleted.
         self.custom_runtimes.remove(&id);
         self.custom_runtime_modified.remove(&id);
+        self.custom_runtime_failures.remove(&id);
         self.connections
             .retain(|c| c.from_node != id && c.to_node != id);
         crate::node_errors::remove_for(id);
@@ -3952,6 +3993,7 @@ impl Graph {
             report.merge(self.sync_custom_ports(id, inputs.to_vec(), outputs.to_vec()));
             self.custom_runtimes.remove(&id);
             self.custom_runtime_modified.remove(&id);
+            self.custom_runtime_failures.remove(&id);
         }
 
         for runtime in self.custom_runtimes.values_mut() {
@@ -3983,6 +4025,7 @@ impl Graph {
                 count += 1;
             }
             self.custom_runtime_modified.remove(&id);
+            self.custom_runtime_failures.remove(&id);
         }
 
         for runtime in self.custom_runtimes.values_mut() {
@@ -3997,13 +4040,78 @@ impl Graph {
     pub fn take_custom_port_events(&mut self) -> CustomPortSyncReport {
         std::mem::take(&mut self.custom_port_events)
     }
+
+    /// Explicit refresh: forget every cached custom-node load failure
+    /// (recursively), so the next evaluation retries those files.
+    /// Returns the number of failures cleared.
+    pub fn clear_custom_runtime_failures(&mut self) -> usize {
+        let mut count = self.custom_runtime_failures.len();
+        self.custom_runtime_failures.clear();
+        for runtime in self.custom_runtimes.values_mut() {
+            count += runtime.clear_custom_runtime_failures();
+        }
+        count
+    }
+
+    /// Point a custom-node instance at another file and drop its cached
+    /// runtime and failure state. Ports are re-synchronised from the new
+    /// file on the next evaluation. Returns false when `id` is not a
+    /// custom-node instance or already references `file`.
+    #[allow(dead_code)] // first UI caller is P4.2 version switching
+    pub fn retarget_custom_instance(&mut self, id: NodeId, file: &str) -> bool {
+        let Some(NodeType::CustomNodeInstance { file: current, .. }) =
+            self.nodes.get_mut(&id).map(|n| &mut n.node_type)
+        else {
+            return false;
+        };
+        if current == file {
+            return false;
+        }
+        *current = file.to_string();
+        self.custom_runtimes.remove(&id);
+        self.custom_runtime_modified.remove(&id);
+        self.custom_runtime_failures.remove(&id);
+        true
+    }
     pub(crate) fn validate_custom_node_save(
         graph: &Graph,
         target_path: &std::path::Path,
     ) -> Result<(), String> {
+        Self::check_custom_node_content(graph)?;
         let target = std::fs::canonicalize(target_path)
             .map_err(|e| format!("Cannot resolve custom node path: {e}"))?;
+        Self::check_custom_node_save_dependencies(graph, &target)
+    }
 
+    /// Content rules for any graph written as a custom node.
+    pub(crate) fn check_custom_node_content(graph: &Graph) -> Result<(), String> {
+        // Stage 0 (H1 defence): editor chrome (File, Zoom, Palette) never
+        // belongs inside a custom node. A graph that contains it is a project
+        // graph, so refuse to write it over the .pwnode instead of
+        // destroying the custom node.
+        let mut system: Vec<String> = graph
+            .nodes
+            .values()
+            .filter(|node| group::is_editor_chrome(&node.node_type))
+            .map(|node| node.node_type.title().to_string())
+            .collect();
+        if !system.is_empty() {
+            system.sort();
+            system.dedup();
+            return Err(format!(
+                "This graph contains editor nodes ({}) that cannot be part of a custom node. \
+                 The custom node file was not changed.",
+                system.join(", ")
+            ));
+        }
+        Ok(())
+    }
+
+    /// Recursion check for saving `graph` to the canonical path `target`.
+    fn check_custom_node_save_dependencies(
+        graph: &Graph,
+        target: &std::path::Path,
+    ) -> Result<(), String> {
         for node in graph.nodes.values() {
             if let NodeType::CustomNodeInstance { file, .. } = &node.node_type {
                 let child_path = std::path::Path::new(file);
@@ -4021,7 +4129,7 @@ impl Graph {
 
                 // Treat the file being saved as already visited.
                 // Any dependency reaching it creates a cycle.
-                visited.insert(target.clone());
+                visited.insert(target.to_path_buf());
 
                 Self::check_custom_node_dependencies(&resolved, &mut visited, 1)?;
             }
@@ -4079,12 +4187,53 @@ impl Graph {
         result
     }
     fn ensure_custom_runtime(&mut self, instance_id: NodeId, file: &str) -> Result<(), String> {
+        // A cached failure for the same reference is reused without touching
+        // the filesystem until the recheck time; after that the file is only
+        // reloaded if its modification time or size changed.
+        if let Some(failure) = self.custom_runtime_failures.get_mut(&instance_id) {
+            if failure.file == file {
+                let now = std::time::Instant::now();
+                if now < failure.next_check {
+                    return Err(failure.error.clone());
+                }
+                if custom_file_stamp(std::path::Path::new(file)).ok() == failure.stamp {
+                    failure.next_check = now + CUSTOM_FAILURE_RECHECK;
+                    return Err(failure.error.clone());
+                }
+            }
+            self.custom_runtime_failures.remove(&instance_id);
+        }
+
+        let result = self.load_custom_runtime(instance_id, file);
+        if let Err(error) = &result {
+            // The previous runtime (if any) belongs to a file that no longer
+            // loads; drop it and remember the failure.
+            self.custom_runtimes.remove(&instance_id);
+            self.custom_runtime_modified.remove(&instance_id);
+            self.custom_runtime_failures.insert(
+                instance_id,
+                CustomRuntimeFailure {
+                    file: file.to_string(),
+                    stamp: custom_file_stamp(std::path::Path::new(file)).ok(),
+                    error: error.clone(),
+                    next_check: std::time::Instant::now() + CUSTOM_FAILURE_RECHECK,
+                },
+            );
+        }
+        result
+    }
+
+    fn load_custom_runtime(&mut self, instance_id: NodeId, file: &str) -> Result<(), String> {
         let path = std::path::Path::new(file);
-        let modified = std::fs::metadata(path)
-            .and_then(|metadata| metadata.modified())
-            .map_err(|error| format!("Cannot read custom node modification time: {error}"))?;
+        let (modified, len) = custom_file_stamp(path)?;
+        // Reuse the runtime only for the same reference, mtime and size.
         if self.custom_runtimes.contains_key(&instance_id)
-            && self.custom_runtime_modified.get(&instance_id) == Some(&modified)
+            && self
+                .custom_runtime_modified
+                .get(&instance_id)
+                .is_some_and(|stamp| {
+                    stamp.file == file && stamp.modified == modified && stamp.len == len
+                })
         {
             return Ok(());
         }
@@ -4098,7 +4247,15 @@ impl Graph {
         self.custom_runtimes
             .insert(instance_id, Box::new(custom.graph));
 
-        self.custom_runtime_modified.insert(instance_id, modified);
+        self.custom_runtime_modified.insert(
+            instance_id,
+            CustomRuntimeStamp {
+                file: file.to_string(),
+                resolved: std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()),
+                modified,
+                len,
+            },
+        );
 
         Ok(())
     }
@@ -4427,5 +4584,298 @@ mod custom_node_sync_tests {
         );
 
         let _ = std::fs::remove_dir_all(saved.parent().unwrap());
+    }
+}
+
+/// Stage 0: runtime cache identity, failure caching and save guards.
+#[cfg(test)]
+mod custom_runtime_cache_tests {
+    use super::*;
+    use crate::document::{CustomNodeFile, CustomNodePort, LOAD_COUNT};
+    use std::path::{Path, PathBuf};
+
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new(tag: &str) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "patchwork_stage0_{tag}_{}_{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos())
+                    .unwrap_or(0)
+            ));
+            std::fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn write_node(path: &Path, output: &str) {
+        let file = CustomNodeFile {
+            version: 1,
+            name: "Node".into(),
+            graph: Graph::new(),
+            inputs: Vec::new(),
+            outputs: vec![CustomNodePort {
+                name: output.into(),
+                kind: "Number".into(),
+            }],
+        };
+        file.save(path).unwrap();
+    }
+
+    fn instance_graph(file: &Path) -> (Graph, NodeId) {
+        let mut graph = Graph::new();
+        let id = graph.add_node(
+            NodeType::CustomNodeInstance {
+                file: file.to_string_lossy().into_owned(),
+                inputs: Vec::new(),
+                outputs: Vec::new(),
+            },
+            [0.0, 0.0],
+        );
+        (graph, id)
+    }
+
+    fn output_names(graph: &Graph, id: NodeId) -> Vec<String> {
+        match &graph.nodes[&id].node_type {
+            NodeType::CustomNodeInstance { outputs, .. } => {
+                outputs.iter().map(|p| p.name.clone()).collect()
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    fn file_of(graph: &Graph, id: NodeId) -> String {
+        match &graph.nodes[&id].node_type {
+            NodeType::CustomNodeInstance { file, .. } => file.clone(),
+            _ => unreachable!(),
+        }
+    }
+
+    fn loads() -> usize {
+        LOAD_COUNT.with(|c| c.get())
+    }
+
+    fn expire_rechecks(graph: &mut Graph) {
+        let now = std::time::Instant::now();
+        for failure in graph.custom_runtime_failures.values_mut() {
+            failure.next_check = now;
+        }
+    }
+
+    #[test]
+    fn failed_load_is_cached_without_rereading_the_file() {
+        let tmp = TempDir::new("fail_cache");
+        let path = tmp.0.join("broken.pwnode");
+        std::fs::write(&path, "not json").unwrap();
+        let (mut graph, id) = instance_graph(&path);
+        let file = file_of(&graph, id);
+
+        let before = loads();
+        let first = graph.ensure_custom_runtime(id, &file).unwrap_err();
+        assert_eq!(loads(), before + 1);
+        for _ in 0..50 {
+            assert_eq!(graph.ensure_custom_runtime(id, &file).unwrap_err(), first);
+        }
+        assert_eq!(
+            loads(),
+            before + 1,
+            "no re-read while the failure is cached"
+        );
+
+        // After the recheck time an unchanged file is still not re-parsed.
+        expire_rechecks(&mut graph);
+        assert!(graph.ensure_custom_runtime(id, &file).is_err());
+        assert_eq!(loads(), before + 1);
+    }
+
+    #[test]
+    fn failed_load_recovers_when_the_file_changes() {
+        let tmp = TempDir::new("fail_recover");
+        let path = tmp.0.join("node.pwnode");
+        std::fs::write(&path, "not json").unwrap();
+        let (mut graph, id) = instance_graph(&path);
+        let file = file_of(&graph, id);
+        assert!(graph.ensure_custom_runtime(id, &file).is_err());
+
+        write_node(&path, "out"); // different size, so a different stamp
+        assert!(
+            graph.ensure_custom_runtime(id, &file).is_err(),
+            "still inside the recheck window"
+        );
+        expire_rechecks(&mut graph);
+        graph.ensure_custom_runtime(id, &file).unwrap();
+        assert_eq!(output_names(&graph, id), vec!["out"]);
+        assert!(graph.custom_runtime_failures.is_empty());
+    }
+
+    #[test]
+    fn explicit_refresh_retries_failed_loads() {
+        let tmp = TempDir::new("fail_refresh");
+        let path = tmp.0.join("node.pwnode");
+        std::fs::write(&path, "not json").unwrap();
+        let (mut graph, id) = instance_graph(&path);
+        let file = file_of(&graph, id);
+        assert!(graph.ensure_custom_runtime(id, &file).is_err());
+        write_node(&path, "out");
+
+        assert_eq!(graph.clear_custom_runtime_failures(), 1);
+        graph.ensure_custom_runtime(id, &file).unwrap();
+        assert_eq!(output_names(&graph, id), vec!["out"]);
+    }
+
+    #[test]
+    fn missing_file_failure_is_cached_and_recovers() {
+        let tmp = TempDir::new("missing");
+        let path = tmp.0.join("later.pwnode");
+        let (mut graph, id) = instance_graph(&path);
+        let file = file_of(&graph, id);
+        assert!(graph.ensure_custom_runtime(id, &file).is_err());
+        assert!(graph.custom_runtime_failures[&id].stamp.is_none());
+
+        write_node(&path, "out");
+        expire_rechecks(&mut graph);
+        graph.ensure_custom_runtime(id, &file).unwrap();
+        assert_eq!(output_names(&graph, id), vec!["out"]);
+    }
+
+    /// Two files with identical size and modification time.
+    fn twin_files(tmp: &TempDir) -> (PathBuf, PathBuf) {
+        let a = tmp.0.join("a.pwnode");
+        let b = tmp.0.join("b.pwnode");
+        write_node(&a, "outA");
+        write_node(&b, "outB");
+        let time =
+            std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        for path in [&a, &b] {
+            std::fs::File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_modified(time)
+                .unwrap();
+        }
+        assert_eq!(
+            custom_file_stamp(&a).unwrap(),
+            custom_file_stamp(&b).unwrap()
+        );
+        (a, b)
+    }
+
+    #[test]
+    fn cache_identity_includes_the_file_path() {
+        let tmp = TempDir::new("identity");
+        let (a, b) = twin_files(&tmp);
+        let (mut graph, id) = instance_graph(&a);
+        graph
+            .ensure_custom_runtime(id, &file_of(&graph, id))
+            .unwrap();
+        assert_eq!(output_names(&graph, id), vec!["outA"]);
+        assert_eq!(
+            graph.custom_runtime_modified[&id].resolved,
+            std::fs::canonicalize(&a).unwrap()
+        );
+
+        // Change the reference without the retarget API (for example via
+        // restored state): same mtime and size, but a different file must
+        // reload.
+        if let NodeType::CustomNodeInstance { file, .. } =
+            &mut graph.nodes.get_mut(&id).unwrap().node_type
+        {
+            *file = b.to_string_lossy().into_owned();
+        }
+        graph
+            .ensure_custom_runtime(id, &file_of(&graph, id))
+            .unwrap();
+        assert_eq!(output_names(&graph, id), vec!["outB"]);
+    }
+
+    #[test]
+    fn retarget_invalidates_runtime_and_failures() {
+        let tmp = TempDir::new("retarget");
+        let (a, b) = twin_files(&tmp);
+        let broken = tmp.0.join("broken.pwnode");
+        std::fs::write(&broken, "not json").unwrap();
+        let (mut graph, id) = instance_graph(&a);
+        graph
+            .ensure_custom_runtime(id, &file_of(&graph, id))
+            .unwrap();
+
+        let b_file = b.to_string_lossy().into_owned();
+        assert!(graph.retarget_custom_instance(id, &b_file));
+        assert!(!graph.custom_runtimes.contains_key(&id));
+        assert!(
+            !graph.retarget_custom_instance(id, &b_file),
+            "already there"
+        );
+        graph.ensure_custom_runtime(id, &b_file).unwrap();
+        assert_eq!(output_names(&graph, id), vec!["outB"]);
+
+        // A cached failure is dropped on retarget as well.
+        let broken_file = broken.to_string_lossy().into_owned();
+        assert!(graph.retarget_custom_instance(id, &broken_file));
+        assert!(graph.ensure_custom_runtime(id, &broken_file).is_err());
+        assert!(graph.retarget_custom_instance(id, &b_file));
+        assert!(graph.custom_runtime_failures.is_empty());
+        graph.ensure_custom_runtime(id, &b_file).unwrap();
+
+        // Not a custom-node instance.
+        let other = graph.add_node(
+            NodeType::CustomInput {
+                name: "x".into(),
+                kind: PortKind::Number,
+            },
+            [0.0, 0.0],
+        );
+        assert!(!graph.retarget_custom_instance(other, &b_file));
+    }
+
+    #[test]
+    fn healthy_runtime_is_not_reloaded_every_frame() {
+        let tmp = TempDir::new("healthy");
+        let path = tmp.0.join("node.pwnode");
+        write_node(&path, "out");
+        let (mut graph, id) = instance_graph(&path);
+        let file = file_of(&graph, id);
+        graph.ensure_custom_runtime(id, &file).unwrap();
+        let before = loads();
+        for _ in 0..20 {
+            graph.ensure_custom_runtime(id, &file).unwrap();
+        }
+        assert_eq!(loads(), before);
+    }
+
+    #[test]
+    fn project_graph_is_never_saved_as_a_custom_node() {
+        // H1 defence: a project graph (editor chrome) is refused before the
+        // .pwnode is written.
+        let tmp = TempDir::new("chrome");
+        let path = tmp.0.join("node.pwnode");
+        write_node(&path, "out");
+        let before = std::fs::read(&path).unwrap();
+        let mut project = Graph::new();
+        project.add_node(NodeType::FileMenu, [0.0, 0.0]);
+        let error = Graph::validate_custom_node_save(&project, &path).unwrap_err();
+        assert!(error.contains("not changed"), "{error}");
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+
+        // Ordinary custom-node content is still accepted.
+        let mut normal = Graph::new();
+        normal.add_node(
+            NodeType::CustomOutput {
+                name: "out".into(),
+                kind: PortKind::Number,
+            },
+            [0.0, 0.0],
+        );
+        assert!(Graph::validate_custom_node_save(&normal, &path).is_ok());
     }
 }

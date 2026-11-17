@@ -60,6 +60,9 @@ opus = "0.3.1"
 # source bytes for the `~/.patchwork/trusted_plugins.json` allow-list.
 # Already a transitive dep via iroh/webrtc; this line just makes it direct.
 sha2 = "0.10"
+# P4.1: Library package versions (src/library/package.rs).
+# Already a transitive dep; this line just makes it direct.
+semver = "1"
 # Verify ESP-IDF partition-table MD5 checksum entries.
 md-5 = "0.10"
 
