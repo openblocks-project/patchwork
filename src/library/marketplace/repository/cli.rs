@@ -9,6 +9,9 @@
 //! patchwork catalogue publish-artifacts --root DIR --repository OWNER/REPO [--branch B]
 //! patchwork catalogue publish-index     --root DIR --repository OWNER/REPO [--branch B]
 //!                                       --commit SHA --generated-at UNIX_SECONDS
+//! patchwork catalogue check-paths       --repository OWNER/REPO --pull-before FILE
+//!                                       --pull-after FILE --pages DIR --head-sha SHA
+//!                                       --default-branch B --maintainer-ids "ID,ID"
 //! ```
 //!
 //! The repository identity is always given by the caller (CI passes
@@ -20,7 +23,7 @@ use std::path::PathBuf;
 
 use super::super::source::CatalogueLocation;
 
-const USAGE: &str = "usage: patchwork catalogue <validate|check-pr|publish-artifacts|publish-index> \
+const USAGE: &str = "usage: patchwork catalogue <validate|check-pr|publish-artifacts|publish-index|check-paths> \
     --repository OWNER/REPO [--branch BRANCH] …  (see docs/marketplace/catalogue-repository.md)";
 
 /// Parse `--name value` pairs (and bare `--flag`s).
@@ -69,6 +72,30 @@ fn report(issues: &[String]) -> i32 {
     }
     eprintln!("{} problem(s) found.", issues.len());
     1
+}
+
+/// The changed-file pages `1.json`, `2.json`, ... in order. Any other file,
+/// or a gap in the numbering, is refused: the list must be provably whole.
+fn read_pages(dir: &std::path::Path) -> Result<Vec<Vec<u8>>, String> {
+    let mut numbers = Vec::new();
+    for entry in std::fs::read_dir(dir).map_err(|e| format!("--pages {}: {e}", dir.display()))? {
+        let entry = entry.map_err(|e| format!("--pages: {e}"))?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let number = name
+            .strip_suffix(".json")
+            .and_then(|n| n.parse::<usize>().ok())
+            .filter(|n| *n > 0 && name == format!("{n}.json"))
+            .ok_or_else(|| format!("--pages: unexpected file '{name}'"))?;
+        numbers.push(number);
+    }
+    numbers.sort_unstable();
+    if numbers.iter().enumerate().any(|(i, n)| *n != i + 1) {
+        return Err("--pages: pages must be numbered 1.json, 2.json, ... without gaps".into());
+    }
+    numbers
+        .iter()
+        .map(|n| std::fs::read(dir.join(format!("{n}.json"))).map_err(|e| format!("--pages: {e}")))
+        .collect()
 }
 
 /// Run a command; returns the process exit status.
@@ -145,6 +172,27 @@ pub fn run(args: Vec<String>) -> i32 {
                         bytes.len()
                     ))
                 })
+            }
+            "check-paths" => {
+                let read = |name: &str| -> Result<Vec<u8>, String> {
+                    let file = path(name)?;
+                    std::fs::read(&file).map_err(|e| format!("--{name} {}: {e}", file.display()))
+                };
+                let before = read("pull-before")?;
+                let after = read("pull-after")?;
+                let pages = read_pages(&path("pages")?)?;
+                // Present even when empty: a missing variable must be noticed.
+                let maintainer_ids = options
+                    .get("maintainer-ids")
+                    .ok_or_else(|| "--maintainer-ids is required (may be empty)".to_string())?;
+                super::paths::check_submission_paths(
+                    &before,
+                    &after,
+                    &pages,
+                    required(&options, "head-sha")?,
+                    required(&options, "default-branch")?,
+                    maintainer_ids,
+                )
             }
             other => return Err(format!("unknown command '{other}'")),
         })

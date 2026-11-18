@@ -67,7 +67,13 @@ It may never change an existing version folder, `artifacts/`, `index.json`,
 
 ## 4. Automated validation
 
-The **Validate** check runs the same validator Patchwork uses. It checks:
+Two checks must pass.
+
+**Submission paths** checks GitHub's list of changed files. Any change
+outside `publishers/` and `packages/` fails it, including renames and
+deletions. Workflow changes (`.github/`) fail it too.
+
+**Validate submission** runs the same validator Patchwork uses. It checks:
 
 - namespace ownership against your numeric GitHub account id;
 - reserved and look-alike namespaces and package names;

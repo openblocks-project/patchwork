@@ -4,8 +4,39 @@
 
 | Workflow | Runs on | Token | Does |
 |---|---|---|---|
-| `validate.yml` | every pull request | read-only, no secrets | builds the validator and runs `patchwork catalogue check-pr` |
+| `submission-paths.yml` | every pull request (`pull_request_target`: the workflow always comes from the default branch) | read-only (`contents`, `pull-requests`), no secrets | builds the checker and runs `patchwork catalogue check-paths` on GitHub's changed-file list; checks out nothing from the pull request |
+| `validate.yml` | every pull request (`pull_request`) | read-only, no secrets | builds the validator and runs `patchwork catalogue check-pr` |
 | `publish.yml` | push to the default branch, or run by hand | read-only + deploy key | `validate`, `publish-artifacts` (commit), `publish-index` (commit), push |
+
+**Both checks are required: "Submission paths" and "Validate submission".**
+A pull request can rewrite `validate.yml` for its own run and make
+"Validate submission" pass. It cannot change `submission-paths.yml`, because
+GitHub takes `pull_request_target` workflows from the default branch. That
+guard fails every contributor pull request that touches anything outside
+`publishers/` and `packages/`, including `.github/`. So whenever both checks
+pass, "Validate submission" was the reviewed workflow.
+
+### Maintainer exception
+
+- **Who counts as a maintainer:** the guard and the validator accept an
+  account as a maintainer only by its numeric GitHub account id, taken from
+  GitHub's own pull request record, and only if that id is listed in the
+  repository variable `MAINTAINER_IDS`. Logins, display names and anything
+  else in the pull request are never used.
+- **Malformed list:** if `MAINTAINER_IDS` contains a malformed entry (a
+  login, a sign, a leading zero), every pull request fails until it is
+  fixed.
+- **Empty list:** an empty `MAINTAINER_IDS` means there are no maintainers.
+- **What maintainers may change:** a maintainer's pull request may change
+  configuration: `.github/`, `moderation.json`, documentation, publisher
+  claims, and version takedowns.
+- **What nobody may change:** `index.json` and `artifacts/` are refused for
+  everyone, because only the Publish workflow writes them.
+- **Review still applies:** maintainer pull requests still need review
+  (CODEOWNERS). A change to `submission-paths.yml` takes effect only after
+  it is merged.
+- **Adding or removing a maintainer** is a settings change: edit
+  `MAINTAINER_IDS`. It never happens through a pull request.
 
 The validator is the Patchwork binary itself in its headless `catalogue`
 mode, built from a reviewed Patchwork commit. It uses exactly the desktop
@@ -51,8 +82,10 @@ a published version or goes backwards.
    ruleset):
    - require a pull request, with at least 1 approval, review from Code
      Owners, and dismissal of stale approvals on new commits;
-   - require the status check **Validate submission** to pass, with
-     branches up to date;
+   - require **both** status checks, **Submission paths** and **Validate
+     submission**, with source GitHub Actions and branches up to date. A
+     check appears in the list only after it has run once, so open a test
+     pull request first;
    - block force pushes and deletions;
    - **bypass list:** the deploy key only (the Publish workflow's two
      commits). Do not give maintainers a standing bypass.
@@ -61,6 +94,10 @@ a published version or goes backwards.
    `moderation.json`).
 7. **Actions settings:**
    - require approval for workflow runs from first-time contributors;
+   - keep no repository-level secrets: `pull_request_target` workflows can
+     read them. The deploy key belongs only in the `publish` environment;
+   - keep no long-lived branches other than the default branch: the guard
+     refuses pull requests that target any other branch;
    - keep "Send write tokens / secrets to workflows from fork pull requests"
      off;
    - consider pinning third-party actions (`dtolnay/rust-toolchain`,
@@ -83,9 +120,11 @@ whether the package should be listed:
   anyone. Then add the namespace to `CODEOWNERS` in a maintainer change.
 - **Existing namespace:** the namespace owner's approval is required by
   CODEOWNERS.
-- Changes under `.github/` in a contributor PR are refused by the check;
-  never approve them anyway. The check runs the PR's own workflow file, so
-  a contributor PR that edits it must be closed.
+- A contributor PR that changes anything outside `publishers/` and
+  `packages/` fails **Submission paths**. Never merge it, whatever any other
+  check says, and close it if it touches `.github/`. Look at every check on
+  the PR: a red "Submission paths" next to a second, green check of the
+  same name means someone added a look-alike workflow.
 
 ## Release procedures
 
@@ -102,8 +141,8 @@ whether the package should be listed:
   `publishers/<ns>.json`. The numeric id must stay the same; Patchwork
   refuses a namespace whose owner id changes. A different account means a
   new namespace.
-- **Validator update:** change `PATCHWORK_COMMIT` and re-run Validate on an
-  open pull request, then run Publish by hand. It must report no changes to
+- **Validator update:** change `PATCHWORK_COMMIT` and re-run Validate and
+  Submission paths on an open pull request, then run Publish by hand. It must report no changes to
   existing artifacts.
 - **Never:** edit `index.json` or `artifacts/` by hand, force-push, or
   rewrite history. Patchwork rejects catalogues that change published

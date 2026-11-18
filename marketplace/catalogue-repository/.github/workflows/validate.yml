@@ -8,9 +8,12 @@
 #   in the repository is executed. The validator is built from
 #   vars.PATCHWORK_REPOSITORY at vars.PATCHWORK_COMMIT, never from the pull
 #   request.
-# - A pull request can change this file for its own run, so changes under
-#   .github/ need a maintainer's review (CODEOWNERS) and the publish workflow
-#   validates everything again after merge.
+# - A pull request can change this file for its own run. The required
+#   "Submission paths" check (submission-paths.yml, pull_request_target,
+#   taken from the default branch) fails any contributor pull request that
+#   touches .github/, so this check counts only together with that one.
+#   Changes under .github/ also need CODEOWNERS review, and the publish
+#   workflow validates everything again after merge.
 # - Pull-request values reach the script through environment variables only
 #   (never interpolated into the script).
 name: Validate

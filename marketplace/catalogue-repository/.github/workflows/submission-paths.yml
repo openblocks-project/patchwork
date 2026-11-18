@@ -1,0 +1,127 @@
+# The trusted "Submission paths" guard, a required check next to
+# "Validate submission".
+#
+# Why it exists: validate.yml runs on `pull_request`, so a pull request can
+# replace that workflow for its own run and report a green "Validate
+# submission". This guard runs on `pull_request_target`, which GitHub always
+# takes from the default branch, so a pull request cannot change it. It
+# refuses every pull request that touches anything outside publishers/ and
+# packages/ (so .github/ too) unless the author is a maintainer. While it
+# passes, the "Validate submission" run is the reviewed one.
+#
+# Security:
+# - Never checks out, builds or runs anything from the pull request. The
+#   catalogue is not checked out at all; the changed-file list comes from
+#   GitHub's API, the author's numeric id from GitHub's own pull request
+#   record.
+# - Read-only token (contents, pull-requests). No secrets are used; keep the
+#   deploy key in the `publish` environment, never as a repository secret.
+# - The checker is Patchwork's `catalogue check-paths`, built from
+#   vars.PATCHWORK_REPOSITORY at vars.PATCHWORK_COMMIT.
+# - Fails closed: an API error, a missing page, a count that does not add
+#   up, or a pull request that changed during the check is a failure.
+# - Pull-request values reach the scripts through environment variables only.
+name: Submission paths
+
+on:
+  pull_request_target:
+    # `edited` covers a change of target branch.
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: submission-paths-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  submission-paths:
+    # The required check's name. Keep it stable.
+    name: Submission paths
+    # The same build environment as Patchwork's own CI.
+    runs-on: windows-2022
+    timeout-minutes: 90
+    env:
+      CMAKE_GENERATOR: "Visual Studio 17 2022"
+      CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+      CMAKE_MSVC_RUNTIME_LIBRARY: "MultiThreadedDLL"
+      RUSTFLAGS: "-C target-feature=-crt-static"
+      CARGO_TERM_COLOR: always
+    steps:
+      - name: Require the validator configuration
+        shell: bash
+        env:
+          PATCHWORK_REPOSITORY: ${{ vars.PATCHWORK_REPOSITORY }}
+          PATCHWORK_COMMIT: ${{ vars.PATCHWORK_COMMIT }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$PATCHWORK_REPOSITORY" || ! "$PATCHWORK_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::repository variables PATCHWORK_REPOSITORY and PATCHWORK_COMMIT (full 40-character hash) must be set"
+            exit 1
+          fi
+
+      - name: Check out the checker (Patchwork at a reviewed commit)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.PATCHWORK_REPOSITORY }}
+          ref: ${{ vars.PATCHWORK_COMMIT }}
+          path: patchwork
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies (restore only)
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: patchwork
+          save-if: false
+
+      - name: Configure CMake compatibility
+        shell: pwsh
+        run: '"CMAKE_ARGS=-DCMAKE_POLICY_VERSION_MINIMUM=3.5" >> $env:GITHUB_ENV'
+
+      - name: Build the checker
+        shell: bash
+        run: cargo build --release --locked --manifest-path patchwork/Cargo.toml
+
+      - name: Retrieve the changed files (GitHub API only)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          api="repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}"
+          mkdir -p api/pages
+          # Any API error stops the job (fails closed).
+          gh api "$api" > api/before.json
+          count="$(gh api "$api" --jq .changed_files)"
+          if [[ ! "$count" =~ ^[0-9]+$ ]]; then
+            echo "::error::the API did not report the number of changed files"; exit 1
+          fi
+          # Every page up to and including the first short one (per_page must
+          # stay 100: the checker requires full pages before the last). The
+          # checker refuses more than 3000 files.
+          pages=$(( count / 100 + 1 ))
+          if (( pages > 31 )); then pages=31; fi
+          for (( page = 1; page <= pages; page++ )); do
+            gh api "${api}/files?per_page=100&page=${page}" > "api/pages/${page}.json"
+          done
+          gh api "$api" > api/after.json
+
+      - name: Check the changed paths
+        shell: bash
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          MAINTAINER_IDS: ${{ vars.MAINTAINER_IDS }}
+        run: |
+          set -euo pipefail
+          patchwork/target/release/patchwork.exe catalogue check-paths \
+            --repository "$GITHUB_REPOSITORY" \
+            --pull-before api/before.json --pull-after api/after.json --pages api/pages \
+            --head-sha "$HEAD_SHA" --default-branch "$DEFAULT_BRANCH" \
+            --maintainer-ids "$MAINTAINER_IDS"

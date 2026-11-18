@@ -26,6 +26,9 @@ patchwork catalogue check-pr          --base DIR --head DIR --repository OWNER/R
 patchwork catalogue publish-artifacts --root DIR --repository OWNER/REPO [--branch B]
 patchwork catalogue publish-index     --root DIR --repository OWNER/REPO [--branch B]
                                       --commit SHA --generated-at UNIX_SECONDS
+patchwork catalogue check-paths       --repository OWNER/REPO --pull-before FILE
+                                      --pull-after FILE --pages DIR --head-sha SHA
+                                      --default-branch B --maintainer-ids "ID,ID"
 ```
 
 The mode is selected by the first argument and exits before any window,
@@ -111,9 +114,28 @@ nothing new, because both commands are idempotent.
 - Pull-request workflows use `pull_request` (read-only token, no
   secrets), check out the validator from the pinned Patchwork commit, and
   pass PR values through environment variables only.
-- A contributor PR can alter its own validate run. It cannot alter what is
-  published: changes under `.github/` need maintainers (CODEOWNERS), and
-  publication re-validates everything.
+- A contributor PR can rewrite `validate.yml` for its own run, so on its
+  own a green "Validate submission" proves nothing. The required
+  **Submission paths** check closes this (`submission-paths.yml`,
+  `repository/paths.rs`):
+  - It runs on `pull_request_target`, so its definition always comes from
+    the default branch.
+  - Its token can only read (`contents`, `pull-requests`).
+  - It checks out and runs nothing from the PR.
+  - It reads every page of GitHub's changed-file list and the PR record
+    before and after. It fails closed if the list is incomplete or
+    inconsistent, if the API returns an error, if there are more than 3000
+    files, if the head changes during the check, or if the PR targets a
+    non-default branch.
+  - It refuses any change outside `publishers/` and `packages/`, checking
+    renames at both ends, unless the author's numeric id is in
+    `MAINTAINER_IDS`.
+  - Nobody may change `index.json` or `artifacts/`.
+
+  When both checks pass, the PR has not touched `.github/`, so "Validate
+  submission" ran the reviewed workflow.
+- Publication re-validates everything, and changes under `.github/` also
+  need CODEOWNERS review.
 - Namespace ownership comes from GitHub's pull request event (numeric
   account id), never from typed names. Namespace owners and maintainers
   approve through CODEOWNERS.

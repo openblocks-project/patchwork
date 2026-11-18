@@ -49,6 +49,7 @@ use super::{
 use crate::library::package::{MANIFEST_FILE, PackageManifest, parse_stable_version};
 
 pub mod cli;
+pub mod paths;
 
 pub const PUBLISHERS_DIR: &str = "publishers";
 pub const PACKAGES_DIR: &str = "packages";

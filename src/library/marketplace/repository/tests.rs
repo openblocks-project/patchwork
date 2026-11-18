@@ -779,17 +779,80 @@ fn the_repository_template_is_a_valid_empty_catalogue() {
         Some("* -text"),
         "exact bytes"
     );
-    for workflow in ["validate.yml", "publish.yml"] {
-        let text =
-            std::fs::read_to_string(template.join(".github/workflows").join(workflow)).unwrap();
+    let workflows = template.join(".github/workflows");
+    let mut names: Vec<String> = std::fs::read_dir(&workflows)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    assert_eq!(
+        names,
+        ["publish.yml", "submission-paths.yml", "validate.yml"],
+        "every workflow is reviewed here"
+    );
+    for workflow in ["validate.yml", "publish.yml", "submission-paths.yml"] {
+        let text = std::fs::read_to_string(workflows.join(workflow)).unwrap();
         let code: Vec<&str> = text
             .lines()
             .filter(|l| !l.trim_start().starts_with('#'))
             .collect();
-        assert!(
-            !code.iter().any(|l| l.contains("pull_request_target")),
-            "{workflow}"
-        );
+        let has = |needle: &str| code.iter().any(|l| l.contains(needle));
+        if workflow == "submission-paths.yml" {
+            // The trusted guard: taken from the default branch, read-only,
+            // never touching pull-request code.
+            assert!(has("  pull_request_target:"), "{workflow}");
+            assert!(!has("  pull_request:"), "{workflow}");
+            let permissions = text
+                .split("\npermissions:\n")
+                .nth(1)
+                .and_then(|rest| rest.split("\n\n").next())
+                .unwrap();
+            assert_eq!(
+                permissions, "  contents: read\n  pull-requests: read",
+                "{workflow}: minimal read-only permissions"
+            );
+            assert!(
+                has("    name: Submission paths"),
+                "{workflow}: stable check name"
+            );
+            assert_eq!(
+                code.iter()
+                    .filter(|l| l.contains("actions/checkout"))
+                    .count(),
+                1,
+                "{workflow}: only the checker is checked out"
+            );
+            assert!(has("repository: ${{ vars.PATCHWORK_REPOSITORY }}"));
+            for forbidden in [
+                "github.event.pull_request.head.ref",
+                "github.event.pull_request.head.repo",
+                "github.head_ref",
+                "refs/pull/",
+                "secrets.",
+                "${{ github.event.pull_request.title",
+                "${{ github.event.pull_request.body",
+            ] {
+                assert!(!has(forbidden), "{workflow}: {forbidden}");
+            }
+            // Every value from the event reaches scripts through `env:`.
+            for line in code.iter().filter(|l| l.contains("${{ github.event")) {
+                let key = line.trim_start().split(':').next().unwrap();
+                assert!(
+                    ["HEAD_SHA", "DEFAULT_BRANCH", "PR_NUMBER", "group"].contains(&key),
+                    "{workflow}: {line}"
+                );
+            }
+            assert!(has("files?per_page=100&page="));
+            assert_eq!(paths::PER_PAGE, 100);
+        } else {
+            assert!(!has("pull_request_target"), "{workflow}");
+        }
+        if workflow == "validate.yml" {
+            assert!(
+                has("    name: Validate submission"),
+                "{workflow}: stable check name"
+            );
+        }
         let mut calls = 0;
         for line in code {
             let Some((_, after)) = line
@@ -801,7 +864,14 @@ fn the_repository_template_is_a_valid_empty_catalogue() {
             calls += 1;
             let command = after.split_whitespace().next().unwrap();
             assert!(
-                ["validate", "check-pr", "publish-artifacts", "publish-index"].contains(&command),
+                [
+                    "validate",
+                    "check-pr",
+                    "publish-artifacts",
+                    "publish-index",
+                    "check-paths"
+                ]
+                .contains(&command),
                 "{workflow}: unknown command {command}"
             );
         }
