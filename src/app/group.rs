@@ -181,9 +181,18 @@ impl PatchworkApp {
             inputs: extraction.inputs.clone(),
             outputs: extraction.outputs.clone(),
         };
-        if let Err(error) = file.save(&path) {
-            show_group_error(&format!("Failed to save custom node: {error}"));
-            return false;
+        match file.save_with_digest(&path) {
+            // P4.3.2E1: the new custom node inherits the provenance of the
+            // document it was grouped from.
+            Ok(digest) => super::provenance::record_written(
+                &self.graph.content,
+                crate::library::trust::content::ContentKind::CustomNode,
+                &digest,
+            ),
+            Err(error) => {
+                show_group_error(&format!("Failed to save custom node: {error}"));
+                return false;
+            }
         }
 
         // ── Replace the selection (single undo step) ─────────────────────

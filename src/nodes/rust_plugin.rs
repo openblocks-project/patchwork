@@ -116,15 +116,16 @@ pub fn render(
         .clicked()
     {
         let tmp = std::env::temp_dir().join(format!("patchwork_rust_{}.rs", node_id));
-        if std::fs::write(&tmp, code.as_str()).is_ok() {
-            #[cfg(target_os = "macos")]
-            let _ = std::process::Command::new("open").arg(&tmp).spawn();
-            #[cfg(target_os = "windows")]
-            let _ = std::process::Command::new("cmd")
-                .args(["/C", "start", "", &tmp.display().to_string()])
-                .spawn();
-            #[cfg(target_os = "linux")]
-            let _ = std::process::Command::new("xdg-open").arg(&tmp).spawn();
+        // P4.3.2E2: writes a file and starts another program.
+        if crate::capability::check_all(&[
+            crate::capability::Capability::Filesystem,
+            crate::capability::Capability::Process,
+        ])
+        .is_ok()
+            && std::fs::write(&tmp, code.as_str()).is_ok()
+        {
+            // P4.3.2B: OS handler, no shell.
+            crate::external_process::open_externally(&tmp);
         }
     }
 
@@ -147,10 +148,20 @@ pub fn render(
                        ins: Vec<String>,
                        outs: Vec<String>| {
         ctx.data_mut(|d| d.insert_temp(build_status_id, BuildStatus::Building));
-        std::thread::spawn(move || {
-            let result = build_rust_plugin(&code_owned, &ins, &outs, node_id);
+        // P4.3.2E2: the build runs with the node's rights; the library it
+        // produced is identified so a different file is never loaded.
+        // P4.3.2F: the approved source the library is built from (its
+        // approval is checked again before every load).
+        let source = crate::plugin_trust::source_hash(&code_owned);
+        crate::capability::spawn(move || {
+            let result = build_rust_plugin(&code_owned, &ins, &outs, node_id)
+                .and_then(|path| built_library_identity(&path).map(|identity| (path, identity)));
             ctx.data_mut(|d| match result {
-                Ok(dylib_path) => d.insert_temp(build_status_id, BuildStatus::Success(dylib_path)),
+                Ok((dylib_path, identity)) => {
+                    d.insert_temp(built_identity_id(node_id), identity);
+                    d.insert_temp(built_source_id(node_id), source);
+                    d.insert_temp(build_status_id, BuildStatus::Success(dylib_path))
+                }
                 Err(e) => d.insert_temp(build_status_id, BuildStatus::Error(e)),
             });
             ctx.request_repaint();
@@ -311,8 +322,10 @@ pub fn render(
                 .add_filter("Rust", &["rs"])
                 .pick_file()
             {
-                if let Ok(content) = std::fs::read_to_string(&path) {
-                    *code = content;
+                if crate::capability::check(crate::capability::Capability::Filesystem).is_ok() {
+                    if let Ok(content) = std::fs::read_to_string(&path) {
+                        *code = content;
+                    }
                 }
             }
         }
@@ -322,7 +335,9 @@ pub fn render(
                 .save_file()
             {
                 let full = generate_full_source(code, input_names, output_names);
-                let _ = std::fs::write(&path, full);
+                if crate::capability::check(crate::capability::Capability::Filesystem).is_ok() {
+                    let _ = std::fs::write(&path, full);
+                }
             }
         }
     });
@@ -354,6 +369,58 @@ pub extern "C" fn process(inputs_ptr: *const f64, inputs_len: usize, outputs_ptr
     )
 }
 
+/// P4.3.2E2: what a build produced: the library's SHA-256 and the file
+/// metadata it was hashed at.
+type BuiltIdentity = (String, Option<std::time::SystemTime>, u64);
+
+fn built_identity_id(node_id: NodeId) -> egui::Id {
+    egui::Id::new(("rust_plugin_built", node_id))
+}
+
+/// P4.3.2F: the SHA-256 of the source the built library came from.
+fn built_source_id(node_id: NodeId) -> egui::Id {
+    egui::Id::new(("rust_plugin_built_source", node_id))
+}
+
+/// P4.3.2F: a built library loads only while the source it was built from
+/// is still approved (withdrawing the approval stops it without a restart).
+fn built_source_still_trusted(source: Option<String>) -> Result<(), String> {
+    match source {
+        Some(sha) if crate::plugin_trust::is_trusted(&sha) => Ok(()),
+        Some(_) => {
+            Err("This plugin's approval was withdrawn; trust and build it again.".to_string())
+        }
+        None => Err("Build the plugin again to load it.".to_string()),
+    }
+}
+
+fn built_library_identity(path: &std::path::Path) -> Result<BuiltIdentity, String> {
+    let sha = crate::plugin_trust::file_sha256(path)?;
+    let meta = std::fs::metadata(path).map_err(|e| e.to_string())?;
+    Ok((sha, meta.modified().ok(), meta.len()))
+}
+
+/// The library at `path` is still the one the build produced (hashed again
+/// only when its metadata changed). Returns the identity to remember.
+fn verify_built_library(
+    path: &std::path::Path,
+    built: Option<BuiltIdentity>,
+) -> Result<BuiltIdentity, String> {
+    let Some(built) = built else {
+        return Err("Build the plugin again to load it.".to_string());
+    };
+    let meta = std::fs::metadata(path).map_err(|e| e.to_string())?;
+    if (meta.modified().ok(), meta.len()) == (built.1, built.2) {
+        return Ok(built);
+    }
+    let now = built_library_identity(path)?;
+    if now.0 == built.0 {
+        Ok(now)
+    } else {
+        Err("The built plugin library changed on disk; build it again.".to_string())
+    }
+}
+
 /// Build the plugin as a .dylib in a temp directory
 fn build_rust_plugin(
     code: &str,
@@ -361,6 +428,12 @@ fn build_rust_plugin(
     output_names: &[String],
     node_id: NodeId,
 ) -> Result<PathBuf, String> {
+    // P4.3.2E2: compiles (another program, files) native code.
+    crate::capability::check_all(&[
+        crate::capability::Capability::NativeCode,
+        crate::capability::Capability::Process,
+        crate::capability::Capability::Filesystem,
+    ])?;
     let plugin_dir = std::env::temp_dir().join(format!("patchwork_plugin_{}", node_id));
     let src_dir = plugin_dir.join("src");
     std::fs::create_dir_all(&src_dir).map_err(|e| format!("mkdir: {}", e))?;
@@ -462,6 +535,27 @@ pub fn evaluate(
     let input_f64: Vec<f64> = inputs.iter().map(|v| v.as_float() as f64).collect();
     let mut output_f64 = vec![0.0f64; output_names.len()];
 
+    // P4.3.2E2: loading native code needs the native-code capability, and
+    // the library must be the one this node's build produced.
+    let built_id = built_identity_id(node_id);
+    let built: Option<BuiltIdentity> = ctx_data.data_mut(|d| d.get_temp(built_id));
+    let source: Option<String> = ctx_data.data_mut(|d| d.get_temp(built_source_id(node_id)));
+    let checked = crate::capability::check(crate::capability::Capability::NativeCode)
+        .map_err(String::from)
+        .and_then(|()| built_source_still_trusted(source))
+        .and_then(|()| verify_built_library(&dylib_path, built));
+    match checked {
+        Ok(identity) => ctx_data.data_mut(|d| d.insert_temp(built_id, identity)),
+        Err(message) => {
+            *error = message;
+            return last_values
+                .iter()
+                .enumerate()
+                .map(|(i, v)| (i, PortValue::Float(*v as f32)))
+                .collect();
+        }
+    }
+
     // Use libloading to call the process function
     unsafe {
         match libloading::Library::new(&dylib_path) {
@@ -502,4 +596,31 @@ pub fn evaluate(
         .enumerate()
         .map(|(i, v)| (i, PortValue::Float(*v as f32)))
         .collect()
+}
+
+#[cfg(test)]
+mod built_library_tests {
+    use super::*;
+
+    #[test]
+    fn a_changed_built_library_is_never_loaded() {
+        let dir = std::env::temp_dir().join(format!(
+            "patchwork_built_library_{}_{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("plugin.bin");
+        std::fs::write(&path, b"built").unwrap();
+        let identity = built_library_identity(&path).unwrap();
+        assert!(verify_built_library(&path, Some(identity.clone())).is_ok());
+        // Replaced on disk (different bytes): refused until rebuilt.
+        std::fs::write(&path, b"replaced!").unwrap();
+        assert!(verify_built_library(&path, Some(identity)).is_err());
+        assert!(
+            verify_built_library(&path, None).is_err(),
+            "never built here"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

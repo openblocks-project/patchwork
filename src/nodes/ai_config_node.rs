@@ -86,6 +86,15 @@ pub struct AiConfigNode {
     /// Show the "new profile" input.
     #[serde(skip)]
     adding_profile: bool,
+    /// P4.3.2E2: whether the keys of `profile` were read under rights that
+    /// allow it. Construction (load, paste, clone, undo, session restore)
+    /// has no rights, so the keys are read when the node first runs or is
+    /// drawn in its graph, never while it is being built.
+    #[serde(skip)]
+    keys_loaded: bool,
+    /// A refusal was already reported (until the rights allow it again).
+    #[serde(skip)]
+    keys_refused: bool,
 }
 
 fn default_anthropic_text_model_provider() -> String {
@@ -116,13 +125,49 @@ impl Default for AiConfigNode {
             known_profiles: vec!["default".into()],
             new_profile_name: String::new(),
             adding_profile: false,
+            keys_loaded: false,
+            keys_refused: false,
         };
-        n.refresh_from_disk();
+        // P4.3.2E2: no key store access here; see `ensure_keys`.
+        n.forget_keys();
         n
     }
 }
 
 impl AiConfigNode {
+    /// P4.3.2E2: hold no keys until they are read under the rights of the
+    /// graph the node runs in.
+    fn forget_keys(&mut self) {
+        self.cached_keys = ProviderKeys::default();
+        self.editing_keys = ProviderKeys::default();
+        self.env_fallback.clear();
+        self.keys_loaded = false;
+        self.dirty = false;
+    }
+
+    /// P4.3.2E2: called whenever the node runs or is drawn, in the context
+    /// of its graph. Reads the profile's keys the first time the rights
+    /// allow it; while they do not, the node holds no key (including ones
+    /// read before the rights were withdrawn) and the refusal is reported
+    /// once.
+    fn ensure_keys(&mut self) {
+        let capability = crate::capability::Capability::AiCredentials;
+        if crate::capability::still_allowed(capability) {
+            self.keys_refused = false;
+            if !self.keys_loaded {
+                self.refresh_from_disk();
+            }
+            return;
+        }
+        if self.keys_loaded || self.dirty {
+            self.forget_keys();
+        }
+        if !self.keys_refused {
+            self.keys_refused = true;
+            let _ = crate::capability::check(capability); // reports it
+        }
+    }
+
     /// Read the active config's keys from its per-file bundle
     /// (`~/.patchwork/ai_configs/<profile>.json`) and populate
     /// `cached_keys` / `editing_keys` / `env_fallback`.
@@ -139,6 +184,7 @@ impl AiConfigNode {
             }
         }
         self.dirty = false;
+        self.keys_loaded = true;
     }
 
     /// Resolve the effective key for a provider — profile first, else env var.
@@ -220,6 +266,7 @@ impl NodeBehavior for AiConfigNode {
     }
 
     fn evaluate(&mut self, _inputs: &[PortValue]) -> Vec<(usize, PortValue)> {
+        self.ensure_keys();
         let text = self
             .build_payload(&self.text_provider, &self.text_model)
             .to_port_string();
@@ -287,10 +334,12 @@ impl NodeBehavior for AiConfigNode {
             self.custom_auth_header = l.custom_auth_header;
             self.custom_auth_format = l.custom_auth_format;
         }
-        self.refresh_from_disk();
+        // P4.3.2E2: read when the node runs in its graph (`ensure_keys`).
+        self.forget_keys();
     }
 
     fn render_with_context(&mut self, ui: &mut egui::Ui, ctx: &mut RenderContext) {
+        self.ensure_keys();
         let dim = egui::Color32::from_rgb(140, 140, 155);
 
         // ── Label + profile row ──────────────────────────────────

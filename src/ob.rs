@@ -243,11 +243,15 @@ impl ObHub {
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let stop_clone = stop.clone();
 
-        let thread = std::thread::spawn(move || {
+        // P4.3.2E2: the reader keeps the node's rights and stops (releasing
+        // the port) once they are revoked.
+        let thread = crate::capability::spawn(move || {
             let mut reader = std::io::BufReader::new(port);
             let mut line = String::new();
             loop {
-                if stop_clone.load(std::sync::atomic::Ordering::Relaxed) {
+                if stop_clone.load(std::sync::atomic::Ordering::Relaxed)
+                    || !crate::capability::still_allowed(crate::capability::Capability::Devices)
+                {
                     break;
                 }
                 line.clear();
@@ -292,6 +296,10 @@ impl ObHub {
 
     /// Send a command string to the serial port
     pub fn send_command(&mut self, cmd: &str) {
+        // P4.3.2E2: commands drive hardware (motors, lights).
+        if crate::capability::check(crate::capability::Capability::Devices).is_err() {
+            return;
+        }
         if let Some(ref mut w) = self.writer {
             if let Err(e) = write!(w, "{}\n", cmd) {
                 self.log_push(format!("⚠ Write failed: {}", e));
@@ -429,6 +437,8 @@ impl ObManager {
     pub fn connect_hub(&mut self, node_id: NodeId, port_name: &str) -> Result<(), String> {
         // Disconnect existing if any
         self.hubs.remove(&node_id);
+        // P4.3.2E2: opening the hub's serial port.
+        crate::capability::check_for(node_id, crate::capability::Capability::Devices)?;
         let hub = ObHub::connect(port_name)?;
         self.hubs.insert(node_id, hub);
         Ok(())
@@ -441,6 +451,11 @@ impl ObManager {
 
     /// Poll all hubs
     pub fn poll_all(&mut self) {
+        // P4.3.2E2: a graph that may not use devices holds no hub open.
+        if !crate::capability::still_allowed(crate::capability::Capability::Devices) {
+            self.hubs.clear();
+            return;
+        }
         for hub in self.hubs.values_mut() {
             hub.poll();
         }
@@ -448,21 +463,33 @@ impl ObManager {
 
     /// Get a hub by node ID
     pub fn get_hub(&self, node_id: NodeId) -> Option<&ObHub> {
+        if !crate::capability::still_allowed(crate::capability::Capability::Devices) {
+            return None;
+        }
         self.hubs.get(&node_id)
     }
 
     /// Get mutable hub
     pub fn get_hub_mut(&mut self, node_id: NodeId) -> Option<&mut ObHub> {
+        if !crate::capability::still_allowed(crate::capability::Capability::Devices) {
+            return None;
+        }
         self.hubs.get_mut(&node_id)
     }
 
     /// Get mutable reference to any connected hub (for sending commands when hub_node_id is 0)
     pub fn find_any_hub_mut(&mut self) -> Option<&mut ObHub> {
+        if !crate::capability::still_allowed(crate::capability::Capability::Devices) {
+            return None;
+        }
         self.hubs.values_mut().find(|h| h.is_connected)
     }
 
     /// Find any hub that has a device of the given type/id
     pub fn find_device(&self, device_type: &str, id: u8) -> Option<(NodeId, &ObDevice)> {
+        if !crate::capability::still_allowed(crate::capability::Capability::Devices) {
+            return None;
+        }
         for (&hub_id, hub) in &self.hubs {
             if let Some(device) = hub.get_device(device_type, id) {
                 return Some((hub_id, device));

@@ -889,7 +889,7 @@ impl super::PatchworkApp {
         path: &std::path::Path,
         package: Option<crate::library::resolve::InstancePackageRef>,
     ) {
-        use crate::document::{CustomNodeFile, DocumentKind};
+        use crate::document::DocumentKind;
         // Stage 0: every insertion path (palette, Library, File menu) ends here.
         if !self.require_editable("Insert Custom Node") {
             return;
@@ -955,7 +955,9 @@ impl super::PatchworkApp {
                 }
             }
         }
-        let custom_node = match CustomNodeFile::load(&path) {
+        // P4.3.2D: only the interface is needed; nothing in the custom node
+        // is constructed until its runtime is authorized and activated.
+        let custom_node = match crate::document::read_custom_node_interface_static(&path) {
             Ok(node) => node,
             Err(error) => {
                 crate::system_log::error(format!("Failed to load custom node: {error}"));

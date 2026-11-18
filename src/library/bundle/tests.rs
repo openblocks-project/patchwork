@@ -753,7 +753,7 @@ fn tampered_bundled_dependency_is_refused_without_substitution() {
     std::fs::write(&bundled_entry, &text).unwrap();
 
     assert_eq!(tampered_kind(&a, &library), ResolveErrorKind::Corrupted);
-    assert!(package::verify_version_dir(&a.dir, true).is_err());
+    assert!(package::verify_version_dir_static(&a.dir, true).is_err());
     // The intact Library copy of B is never used instead.
     assert_eq!(published_outputs(&a, 1, &library), vec![None]);
     let mut resolver = PackageResolver::new(None, Some(library.clone()));
@@ -925,7 +925,7 @@ fn standalone_and_p41_packages_are_unchanged() {
     value.as_object_mut().unwrap().remove("files");
     value["dependencies"] = serde_json::json!([]);
     std::fs::write(solo.dir.join(MANIFEST_FILE), value.to_string()).unwrap();
-    assert!(package::verify_version_dir(&solo.dir, true).is_ok());
+    assert!(package::verify_version_dir_static(&solo.dir, true).is_ok());
     assert_eq!(published_outputs(&solo, 1, &library), vec![Some(0.3)]);
 }
 
@@ -1102,7 +1102,7 @@ fn declared_dependency_missing_from_a_complete_bundle_is_refused() {
     edit_json(&a.dir.join(MANIFEST_FILE), |v| {
         v["files"] = serde_json::json!({});
     });
-    let error = package::verify_version_dir(&a.dir, true).unwrap_err();
+    let error = package::verify_version_dir_static(&a.dir, true).unwrap_err();
     assert!(error.contains("missing from the bundle"), "{error}");
     assert_eq!(tampered_kind(&a, &library), ResolveErrorKind::Corrupted);
     // Never falls back to the Library copy of B.
@@ -1132,7 +1132,7 @@ fn undeclared_bundled_dependency_is_refused() {
             v["files"][rel] = serde_json::json!(sha);
         }
     });
-    let error = package::verify_version_dir(&a.dir, true).unwrap_err();
+    let error = package::verify_version_dir_static(&a.dir, true).unwrap_err();
     assert!(error.contains("not a declared dependency"), "{error}");
     assert_eq!(tampered_kind(&a, &library), ResolveErrorKind::Corrupted);
 }
@@ -1263,4 +1263,308 @@ fn path_only_references_into_packages_are_verified() {
         None,
         "refused before first evaluation"
     );
+}
+
+// ── P4.3.2A: static verification ─────────────────────────────────────────
+
+/// Add dynamic nodes (a known one and an unavailable one) to a `.pwnode`.
+fn with_dynamic_nodes(path: &Path) {
+    let mut value: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    value["graph"]["nodes"]["900"] = serde_json::json!({
+        "id": 900, "pos": [0.0, 0.0],
+        "node_type": {"Dynamic": {"inner": {"type_tag": "comment", "state": {"text": "hi"}}}}
+    });
+    value["graph"]["nodes"]["901"] = serde_json::json!({
+        "id": 901, "pos": [0.0, 0.0],
+        "node_type": {"Dynamic": {"inner": {"type_tag": "p432a_not_here", "state": {}}}}
+    });
+    std::fs::write(path, serde_json::to_string(&value).unwrap()).unwrap();
+}
+
+fn constructed() -> usize {
+    crate::node_trait::CONSTRUCTED.with(|c| c.get())
+}
+
+fn static_reads() -> usize {
+    crate::document::STATIC_READ_COUNT.with(|c| c.get())
+}
+
+#[test]
+fn verification_constructs_no_dynamic_nodes() {
+    let tmp = TempDir::new("static_no_construct");
+    let library = tmp.0.join("library");
+    let gain_src = leaf(&tmp.0.join("src"), "Gain", 0.5);
+    with_dynamic_nodes(&gain_src);
+    let gain = publish(&library, &gain_src, "Gain", None, "1.0.0").unwrap();
+    let chain_src = composite(&tmp.0.join("c"), "Chain", &[child(&gain)]);
+    with_dynamic_nodes(&chain_src);
+    let chain = publish(&library, &chain_src, "Chain", None, "1.0.0").unwrap();
+
+    let (built, reads) = (constructed(), static_reads());
+    package::verify_version_dir_static(&gain.dir, true).unwrap();
+    package::verify_version_dir_static(&chain.dir, true).unwrap();
+    let scan = crate::library::index::scan_packages(&library);
+    assert_eq!(scan.packages.len(), 2);
+    assert!(
+        scan.packages
+            .iter()
+            .all(|p| p.versions.iter().all(|v| v.integrity.is_ok()))
+    );
+    let mut resolver = PackageResolver::new(None, Some(library.clone()));
+    for v in [&gain, &chain] {
+        resolver
+            .resolve(&v.manifest.package_ref().unwrap())
+            .unwrap();
+    }
+    resolver
+        .resolve_instance("", Some(&child(&gain).1.unwrap()))
+        .unwrap();
+    assert_eq!(
+        constructed() - built,
+        0,
+        "verification constructed node code"
+    );
+    assert!(static_reads() > reads, "the graphs were read (statically)");
+
+    // Loading the package to use it does construct its nodes, so the
+    // counter does observe construction.
+    crate::document::CustomNodeFile::load_with_policy(
+        &chain.entry_path,
+        &crate::document::DependencyPolicy::Contained {
+            root: chain.dir.clone(),
+        },
+    )
+    .unwrap();
+    assert!(constructed() > built);
+}
+
+/// Replace a published entry, keeping its checksum valid, so the static
+/// graph rules are what is tested.
+fn rewrite_entry(dir: &Path, text: &str) -> PathBuf {
+    let mut manifest = package::read_manifest(dir).unwrap();
+    let entry = dir.join(&manifest.entry);
+    std::fs::write(&entry, text).unwrap();
+    manifest.sha256 = package::sha256_file(&entry).unwrap();
+    std::fs::write(
+        dir.join(package::MANIFEST_FILE),
+        serde_json::to_string_pretty(&manifest).unwrap(),
+    )
+    .unwrap();
+    entry
+}
+
+fn entry_with(nodes: serde_json::Value) -> String {
+    serde_json::json!({"version": 1, "name": "Gain", "graph": {"nodes": nodes, "connections": [], "next_id": 2}})
+        .to_string()
+}
+
+fn instance(file: &str, package: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({"1": {"id": 1, "pos": [0.0, 0.0], "node_type": {"CustomNodeInstance": {
+        "file": file, "inputs": [], "outputs": [], "package": package
+    }}}})
+}
+
+#[test]
+fn static_verification_refuses_invalid_entries_like_the_loader() {
+    let tmp = TempDir::new("static_invalid");
+    let library = tmp.0.join("library");
+    let gain = publish(
+        &library,
+        &leaf(&tmp.0.join("src"), "Gain", 0.5),
+        "Gain",
+        None,
+        "1.0.0",
+    )
+    .unwrap();
+    let policy = crate::document::DependencyPolicy::Contained {
+        root: gain.dir.clone(),
+    };
+    let undeclared =
+        serde_json::json!({"id": "local.other", "version": "1.0.0", "entry": "Other.pwnode"});
+    let cases: Vec<(&str, String, bool)> = vec![
+        // (label, entry text, accepted by the loader's rules)
+        ("empty graph", entry_with(serde_json::json!({})), true),
+        ("not json", "not json".into(), false),
+        (
+            "no nodes",
+            r#"{"version":1,"name":"x","graph":{"connections":[],"next_id":1}}"#.into(),
+            false,
+        ),
+        (
+            "no connections",
+            r#"{"version":1,"name":"x","graph":{"nodes":{},"next_id":1}}"#.into(),
+            false,
+        ),
+        (
+            "no next_id",
+            r#"{"version":1,"name":"x","graph":{"nodes":{},"connections":[]}}"#.into(),
+            false,
+        ),
+        (
+            "no name",
+            r#"{"version":1,"graph":{"nodes":{},"connections":[],"next_id":1}}"#.into(),
+            false,
+        ),
+        (
+            "malformed built-in node",
+            entry_with(serde_json::json!({"1": {"id": 1, "pos": [0.0, 0.0],
+                "node_type": {"Slider": {"value": "loud"}}}})),
+            false,
+        ),
+        (
+            "dynamic node without inner",
+            entry_with(serde_json::json!({"1": {"id": 1, "pos": [0.0, 0.0],
+                "node_type": {"Dynamic": {}}}})),
+            false,
+        ),
+        (
+            "unknown dynamic node",
+            entry_with(serde_json::json!({"1": {"id": 1, "pos": [0.0, 0.0],
+                "node_type": {"Dynamic": {"inner": {"type_tag": "p432b_later", "state": {}}}}}})),
+            true,
+        ),
+        (
+            "node without position",
+            entry_with(serde_json::json!({"1": {"id": 1, "node_type": {"Slider": {}}}})),
+            false,
+        ),
+        (
+            "future version",
+            r#"{"version":2,"name":"x","graph":{"nodes":{},"connections":[],"next_id":1}}"#.into(),
+            false,
+        ),
+        (
+            "instance without file",
+            entry_with(serde_json::json!({"1": {"id": 1, "pos": [0.0, 0.0],
+            "node_type": {"CustomNodeInstance": {"inputs": [], "outputs": []}}}})),
+            false,
+        ),
+        (
+            "absolute path",
+            entry_with(instance(
+                if cfg!(windows) {
+                    "C:/x.pwnode"
+                } else {
+                    "/x.pwnode"
+                },
+                serde_json::Value::Null,
+            )),
+            false,
+        ),
+        (
+            "parent path",
+            entry_with(instance("../x.pwnode", serde_json::Value::Null)),
+            false,
+        ),
+        (
+            "missing nested file",
+            entry_with(instance("sub/missing.pwnode", serde_json::Value::Null)),
+            false,
+        ),
+        (
+            "bad package reference",
+            entry_with(instance("", serde_json::json!({"id": 5}))),
+            false,
+        ),
+        // Valid as a graph, but the package does not declare it.
+        (
+            "undeclared dependency",
+            entry_with(instance("", undeclared)),
+            true,
+        ),
+    ];
+    for (label, text, loader_accepts) in cases {
+        let entry = rewrite_entry(&gain.dir, &text);
+        let loader = crate::document::CustomNodeFile::load_with_policy(&entry, &policy).is_ok();
+        let static_check = crate::document::CustomNodeFile::check_static(&entry, &policy).is_ok();
+        assert_eq!(
+            static_check, loader,
+            "{label}: static check disagrees with the loader"
+        );
+        assert_eq!(loader, loader_accepts, "{label}");
+        let verified = package::verify_version_dir_static(&gain.dir, true);
+        if label == "empty graph" || label == "unknown dynamic node" {
+            assert!(verified.is_ok(), "{label}: {verified:?}");
+        } else {
+            assert!(verified.is_err(), "{label} must be refused");
+        }
+    }
+}
+
+#[test]
+fn existing_packages_still_verify_and_dependencies_are_still_checked() {
+    let tmp = TempDir::new("static_compat");
+    let library = tmp.0.join("library");
+    let gain = publish(
+        &library,
+        &leaf(&tmp.0.join("g"), "Gain", 0.5),
+        "Gain",
+        None,
+        "1.0.0",
+    )
+    .unwrap();
+    let chain = publish(
+        &library,
+        &composite(&tmp.0.join("c"), "Chain", &[child(&gain)]),
+        "Chain",
+        None,
+        "1.0.0",
+    )
+    .unwrap();
+    for v in [&gain, &chain] {
+        let verified = package::verify_version_dir_static(&v.dir, true).unwrap();
+        assert_eq!(verified.manifest, v.manifest);
+        assert_eq!(verified.entry_path, v.entry_path);
+    }
+    // The static reader sees the same nested reference the loader does.
+    let raw = crate::document::read_custom_node_static(&chain.entry_path).unwrap();
+    assert_eq!(raw.instances.len(), 1);
+    assert_eq!(raw.instances[0].package, child(&gain).1);
+
+    // Dependency problems are still refused.
+    std::fs::remove_dir_all(chain.dir.join(DEPS_DIR)).unwrap();
+    let error = package::verify_version_dir_static(&chain.dir, true).unwrap_err();
+    assert!(error.contains("missing"), "{error}");
+}
+
+#[test]
+fn publishing_refuses_obvious_secrets_and_leaves_the_source_alone() {
+    let tmp = TempDir::new("p432b_secret_publish");
+    let library = tmp.0.join("library");
+    let source = leaf(&tmp.0.join("src"), "Keyed", 0.5);
+    let mut value: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&source).unwrap()).unwrap();
+    value["graph"]["nodes"]["77"] = serde_json::json!({"id": 77, "pos": [0.0, 0.0],
+        "node_type": {"HttpRequest": {"url": "https://api.example.com",
+            "headers": "Authorization: Bearer live-token-123"}}});
+    std::fs::write(&source, serde_json::to_string(&value).unwrap()).unwrap();
+    let before = std::fs::read(&source).unwrap();
+
+    match publish(&library, &source, "Keyed", None, "1.0.0") {
+        Err(PublishError::Invalid(message)) => {
+            assert!(message.contains("secret"), "{message}");
+            assert!(
+                !message.contains("live-token-123"),
+                "the secret is not echoed"
+            );
+        }
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+    assert_eq!(
+        std::fs::read(&source).unwrap(),
+        before,
+        "the source is not modified"
+    );
+    let versions = library.join(PACKAGES_DIR);
+    assert!(
+        !versions.exists() || files_under(&versions).is_empty(),
+        "nothing published"
+    );
+
+    // Without the credential it publishes.
+    value["graph"]["nodes"]["77"]["node_type"]["HttpRequest"]["headers"] =
+        serde_json::json!("Accept: application/json");
+    std::fs::write(&source, serde_json::to_string(&value).unwrap()).unwrap();
+    assert!(publish(&library, &source, "Keyed", None, "1.0.0").is_ok());
 }

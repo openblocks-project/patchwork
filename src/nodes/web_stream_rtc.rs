@@ -102,6 +102,9 @@ pub struct WebStreamShared {
     pub in_rx: crossbeam_channel::Receiver<String>,
     /// Latest peer-connection state, surfaced to the node UI.
     pub state: Mutex<PeerStatus>,
+    /// P4.3.2E2: video samples refused because the node's context does not
+    /// allow network access (diagnostics).
+    pub video_refused: std::sync::atomic::AtomicU64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -125,6 +128,7 @@ impl WebStreamShared {
             in_tx: tx,
             in_rx: rx,
             state: Mutex::new(PeerStatus::Idle),
+            video_refused: std::sync::atomic::AtomicU64::new(0),
         })
     }
 
@@ -133,6 +137,8 @@ impl WebStreamShared {
     /// one with audio + video tracks, set remote desc, generate
     /// answer, wait for ICE gathering, return final SDP.
     pub fn handle_offer(self: &Arc<Self>, offer_sdp: &str) -> Result<String, String> {
+        // P4.3.2E2: opens a peer-to-peer network connection.
+        crate::capability::check(crate::capability::Capability::Network)?;
         let this = self.clone();
         let offer_str = offer_sdp.to_string();
         runtime().block_on(async move { this.handle_offer_async(offer_str).await })
@@ -410,6 +416,13 @@ impl WebStreamShared {
     /// errors (no peer, write fail) are silently dropped — encoder
     /// keeps emitting and a fresh peer picks up at the next sample.
     pub fn write_video_nal(&self, nal: &[u8]) {
+        // P4.3.2E2: called on the encoder's reader thread, under the
+        // context of the node that created the encoder.
+        if !crate::capability::still_allowed(crate::capability::Capability::Network) {
+            self.video_refused
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return;
+        }
         let track = match self.video_track.lock().unwrap().as_ref() {
             Some(t) => t.clone(),
             None => return,

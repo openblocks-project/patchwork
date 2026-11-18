@@ -65,6 +65,12 @@ impl OscManager {
                         args: osc_args,
                     };
                     let packet = OscPacket::Message(msg);
+                    // P4.3.2E2: sending is a network operation of the node.
+                    if crate::capability::check_for(node_id, crate::capability::Capability::Network)
+                        .is_err()
+                    {
+                        continue;
+                    }
                     if let Ok(buf) = rosc::encoder::encode(&packet) {
                         // Change detection
                         if self.last_sent.get(&node_id) == Some(&buf) {
@@ -81,6 +87,11 @@ impl OscManager {
                     if self.listeners.contains_key(&node_id) {
                         continue;
                     }
+                    if crate::capability::check_for(node_id, crate::capability::Capability::Network)
+                        .is_err()
+                    {
+                        continue;
+                    }
                     let bind_addr = format!("0.0.0.0:{}", port);
                     let socket = match UdpSocket::bind(&bind_addr) {
                         Ok(s) => s,
@@ -95,9 +106,16 @@ impl OscManager {
                         .ok();
 
                     let (tx, rx) = mpsc::channel();
-                    let handle = std::thread::spawn(move || {
+                    // P4.3.2E2: the listener keeps the node's rights and
+                    // closes its socket once they are revoked.
+                    let handle = crate::capability::spawn(move || {
                         let mut buf = [0u8; 4096];
                         loop {
+                            if !crate::capability::still_allowed(
+                                crate::capability::Capability::Network,
+                            ) {
+                                break;
+                            }
                             match socket.recv_from(&mut buf) {
                                 Ok((size, _)) => {
                                     if let Ok((_, packet)) = rosc::decoder::decode_udp(&buf[..size])
@@ -188,6 +206,12 @@ impl OscManager {
     }
 
     pub fn poll(&mut self, node_id: NodeId) -> Vec<ReceivedOsc> {
+        // P4.3.2E2: nothing is delivered (and the socket is closed) once
+        // the graph may no longer use the network.
+        if !crate::capability::still_allowed(crate::capability::Capability::Network) {
+            self.cleanup_node(node_id);
+            return Vec::new();
+        }
         let mut messages = Vec::new();
         if let Some(listener) = self.listeners.get(&node_id) {
             while let Ok(msg) = listener.rx.try_recv() {

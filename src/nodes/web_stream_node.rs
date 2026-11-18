@@ -470,6 +470,10 @@ fn push_json_escaped(out: &mut String, s: &str) {
 }
 
 fn start_http_server(state: SharedServerState, rtc: Arc<WebStreamShared>) -> u16 {
+    // P4.3.2E2: a listening server (serving page code to browsers).
+    if crate::capability::check_all(&[crate::capability::Capability::Network]).is_err() {
+        return 0;
+    }
     let listener = match TcpListener::bind("0.0.0.0:0") {
         Ok(l) => l,
         Err(_) => match TcpListener::bind("127.0.0.1:0") {
@@ -487,8 +491,13 @@ fn start_http_server(state: SharedServerState, rtc: Arc<WebStreamShared>) -> u16
     }
     crate::system_log::log(format!("Web Stream server started on port {}", port));
 
-    std::thread::spawn(move || {
+    // P4.3.2E2: the server keeps the node's rights; once they are revoked
+    // it accepts nothing more and closes its listening socket.
+    crate::capability::spawn(move || {
         for stream in listener.incoming() {
+            if !crate::capability::still_allowed(crate::capability::Capability::Network) {
+                break;
+            }
             let Ok(mut stream) = stream else { continue };
             let mut buf = [0u8; 8192];
             let n = match stream.read(&mut buf) {
@@ -763,10 +772,7 @@ impl NodeBehavior for WebStreamNode {
                 let dims = (img.width, img.height);
                 if self.encoder_dims != Some(dims) {
                     self.encoder = None;
-                    let rtc = self.rtc.clone();
-                    let sink: NalSink = Arc::new(move |nal: &[u8]| {
-                        rtc.write_video_nal(nal);
-                    });
+                    let sink = video_sink(self.rtc.clone());
                     match H264Encoder::new(dims.0, dims.1, sink) {
                         Ok(e) => {
                             self.encoder = Some(e);
@@ -1584,4 +1590,164 @@ pub fn register(registry: &mut crate::node_trait::NodeRegistryInner) {
         n.load_state(state);
         Box::new(n)
     });
+}
+
+/// P4.3.2E2: the sink the H.264 encoder hands each access unit to. It runs
+/// on the encoder's reader thread, so it carries the context in force when
+/// it was made (the node's, while it evaluates): sends are checked against
+/// the node's rights wherever the encoder delivers them, and stop once
+/// those rights are revoked.
+fn video_sink(rtc: Arc<WebStreamShared>) -> NalSink {
+    let context = crate::capability::current();
+    Arc::new(move |nal: &[u8]| {
+        let _entered = context.as_ref().map(crate::capability::Context::enter);
+        rtc.write_video_nal(nal);
+    })
+}
+
+#[cfg(test)]
+mod capability_tests {
+    use super::*;
+    use crate::capability::{CapSet, Capability, Context};
+    use crate::library::trust::authorize::TEST_DEFAULT_ALLOW;
+    use std::sync::atomic::Ordering;
+    use std::sync::mpsc::{Receiver, Sender, channel};
+
+    /// No implicit allow on this thread (as in production).
+    struct Enforce;
+    impl Enforce {
+        fn new() -> Self {
+            TEST_DEFAULT_ALLOW.with(|allow| allow.set(false));
+            Enforce
+        }
+    }
+    impl Drop for Enforce {
+        fn drop(&mut self) {
+            TEST_DEFAULT_ALLOW.with(|allow| allow.set(true));
+        }
+    }
+
+    /// Two complete access units (IDR + non-IDR slice), as ffmpeg emits,
+    /// followed by the start of a third (flushed only by more output).
+    fn two_access_units() -> Vec<u8> {
+        vec![
+            0, 0, 0, 1, 0x65, 1, 2, 3, // IDR slice
+            0, 0, 0, 1, 0x41, 4, 5, 6, // non-IDR slice
+            0, 0, 0, 1, 0x41, 7, // next slice
+        ]
+    }
+
+    /// ffmpeg's stdout: chunks fed by the test. Each read after the first
+    /// reports that the previous chunk was fully handled.
+    struct Pipe {
+        chunks: Receiver<Vec<u8>>,
+        pending: Vec<u8>,
+        reads: Sender<()>,
+    }
+
+    impl Read for Pipe {
+        fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+            if self.pending.is_empty() {
+                let _ = self.reads.send(());
+                match self.chunks.recv() {
+                    Ok(chunk) => self.pending = chunk,
+                    Err(_) => return Ok(0),
+                }
+            }
+            let n = out.len().min(self.pending.len());
+            out[..n].copy_from_slice(&self.pending[..n]);
+            self.pending.drain(..n);
+            Ok(n)
+        }
+    }
+
+    struct Encoder {
+        feed: Sender<Vec<u8>>,
+        reads: Receiver<()>,
+        thread: std::thread::JoinHandle<()>,
+    }
+
+    impl Encoder {
+        /// The reader thread exactly as `H264Encoder::new` starts it, with
+        /// the sink the node makes, both created under `context`.
+        fn start(rtc: &Arc<WebStreamShared>, context: &Context) -> Encoder {
+            let (feed, chunks) = channel();
+            let (reads_tx, reads) = channel();
+            let thread = {
+                let _entered = context.enter();
+                crate::nodes::web_stream_h264::spawn_nal_reader(
+                    Pipe {
+                        chunks,
+                        pending: Vec::new(),
+                        reads: reads_tx,
+                    },
+                    video_sink(rtc.clone()),
+                )
+            };
+            reads.recv().unwrap(); // waiting for output
+            Encoder {
+                feed,
+                reads,
+                thread,
+            }
+        }
+
+        /// Feed one chunk and wait until the thread handled it.
+        fn emit(&self, bytes: Vec<u8>) {
+            self.feed.send(bytes).unwrap();
+            self.reads.recv().unwrap();
+        }
+
+        fn stop(self) {
+            drop(self.feed);
+            self.thread.join().unwrap();
+        }
+    }
+
+    fn refused(rtc: &WebStreamShared) -> u64 {
+        rtc.video_refused.load(Ordering::Relaxed)
+    }
+
+    #[test]
+    fn webrtc_video_is_sent_from_the_encoder_thread_with_the_nodes_rights() {
+        let _enforce = Enforce::new();
+        let rtc = WebStreamShared::new();
+
+        // A locally authored project streams video: nothing is refused.
+        let document = Context::new(CapSet::ALL, "authored project");
+        let encoder = Encoder::start(&rtc, &document);
+        encoder.emit(two_access_units());
+        assert_eq!(refused(&rtc), 0, "every access unit was sent");
+
+        // Revoked while the encoder runs (document closed, grant
+        // narrowed): the encoder thread sends nothing more.
+        document.revoke();
+        encoder.emit(two_access_units());
+        assert!(refused(&rtc) >= 2, "revoked: refused");
+        encoder.stop();
+
+        // A document not approved for network access never sends.
+        let before = refused(&rtc);
+        let imported = Context::new(
+            CapSet::ALL.minus(CapSet::of(&[Capability::Network])),
+            "imported project",
+        );
+        let encoder = Encoder::start(&rtc, &imported);
+        encoder.emit(two_access_units());
+        assert_eq!(refused(&rtc) - before, 2);
+        encoder.stop();
+
+        // The shape before the fix (a plain thread without a context) is
+        // refused every send, even for an authored project.
+        let before = refused(&rtc);
+        let unbound = {
+            let rtc = rtc.clone();
+            std::thread::spawn(move || {
+                TEST_DEFAULT_ALLOW.with(|allow| allow.set(false));
+                rtc.write_video_nal(&[0, 0, 0, 1, 0x65]);
+            })
+        };
+        unbound.join().unwrap();
+        assert_eq!(refused(&rtc) - before, 1);
+    }
 }

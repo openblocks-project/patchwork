@@ -438,13 +438,14 @@ impl super::PatchworkApp {
         if cmd && !text_focused && ctx.input(|i| i.key_pressed(egui::Key::C)) {
             if let Some(id) = self.primary_selected() {
                 if let Some(node) = self.graph.nodes.get(&id) {
-                    self.clipboard = Some(node.node_type.clone());
+                    let node_type = node.node_type.clone();
+                    self.copy_to_clipboard(node_type);
                 }
             }
         }
         // Cmd+V = paste node (only when no text field is focused)
         if editable && cmd && !text_focused && ctx.input(|i| i.key_pressed(egui::Key::V)) {
-            if let Some(nt) = self.clipboard.clone() {
+            if let Some(nt) = self.clipboard_for_paste() {
                 let (cx, cy) = if let Some(id) = self.primary_selected() {
                     if let Some(node) = self.graph.nodes.get(&id) {
                         (node.pos[0] + 30.0, node.pos[1] + 30.0)
@@ -673,7 +674,8 @@ impl super::PatchworkApp {
                         if icon_menu_item(ui, icons::COPY, "Copy").clicked() {
                             if let Some(id) = self.context_menu_node {
                                 if let Some(node) = self.graph.nodes.get(&id) {
-                                    self.clipboard = Some(node.node_type.clone());
+                                    let node_type = node.node_type.clone();
+                                    self.copy_to_clipboard(node_type);
                                 }
                             }
                             keep_open = false;
@@ -819,7 +821,7 @@ impl super::PatchworkApp {
                         if self.clipboard.is_some() {
                             ui.separator();
                             if icon_menu_item(ui, icons::COPY, "Paste").clicked() {
-                                if let Some(nt) = self.clipboard.clone() {
+                                if let Some(nt) = self.clipboard_for_paste() {
                                     self.push_undo();
                                     let off_e = self.canvas_offset / self.canvas_zoom;
                                     let _ = self.add_node_selected(

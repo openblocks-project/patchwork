@@ -242,9 +242,24 @@ pub fn parse_bundle_then_pick(raw: &str, kind: &str) -> Option<ConfigPayload> {
 
 // ── Filesystem layout for per-config files ───────────────────────────────────
 
+#[cfg(test)]
+thread_local! {
+    /// Tests keep their AI configurations out of the user's home folder.
+    pub(crate) static TEST_AI_CONFIGS_DIR: std::cell::RefCell<Option<PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 /// `~/.patchwork/ai_configs/` (created if missing). `None` only when
 /// `dirs::home_dir()` returns `None` (shouldn't happen on supported OSes).
 pub fn ai_configs_dir() -> Option<PathBuf> {
+    // P4.3.2E2: the stored AI service configurations hold the user's keys;
+    // every read, write, listing and deletion goes through here.
+    crate::capability::check(crate::capability::Capability::AiCredentials).ok()?;
+    #[cfg(test)]
+    if let Some(dir) = TEST_AI_CONFIGS_DIR.with(|dir| dir.borrow().clone()) {
+        std::fs::create_dir_all(&dir).ok()?;
+        return Some(dir);
+    }
     let dir = dirs::home_dir()?.join(".patchwork").join("ai_configs");
     std::fs::create_dir_all(&dir).ok()?;
     Some(dir)
@@ -416,6 +431,10 @@ pub fn migrate_legacy_profiles_if_any() {
 ///   `GOOGLE_API_KEY` / `PATCHWORK_CUSTOM_API_KEY`.
 /// - Else empty string with `came_from_env = false`.
 pub fn resolve_key(provider: &str, keys: &ProviderKeys) -> (String, bool) {
+    // P4.3.2E2: a stored or environment key is the user's credential.
+    if crate::capability::check(crate::capability::Capability::AiCredentials).is_err() {
+        return (String::new(), false);
+    }
     let from_pool = match provider {
         "anthropic" => &keys.anthropic,
         "openai" => &keys.openai,

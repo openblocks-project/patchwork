@@ -267,42 +267,55 @@ unsafe fn cstr_to_string(p: *const c_char) -> String {
     }
 }
 
+/// The native library a `.clap` path loads (on macOS, `.clap` files are
+/// bundles: the dylib is at `<bundle>/Contents/MacOS/<name>`).
+fn library_path(path: &str) -> String {
+    let p = std::path::Path::new(path);
+    if p.is_dir() {
+        // It's a bundle — find the dylib inside
+        let stem = p
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        let macos_dir = p.join("Contents").join("MacOS");
+        if macos_dir.exists() {
+            // Try exact stem name first, then any file in the directory
+            let dylib = macos_dir.join(&stem);
+            if dylib.exists() {
+                dylib.to_string_lossy().to_string()
+            } else {
+                // Pick first file
+                std::fs::read_dir(&macos_dir)
+                    .ok()
+                    .and_then(|mut d| d.next())
+                    .and_then(|e| e.ok())
+                    .map(|e| e.path().to_string_lossy().to_string())
+                    .unwrap_or_else(|| path.to_string())
+            }
+        } else {
+            path.to_string()
+        }
+    } else {
+        path.to_string()
+    }
+}
+
+/// P4.3.2F: whether the plugin at `path` is still approved (its binary is
+/// the pinned one and its approval was not withdrawn). Pins nothing.
+pub fn still_approved(path: &str) -> bool {
+    crate::plugin_trust::native_still_approved(std::path::Path::new(&library_path(path)))
+}
+
 impl ClapInstance {
     /// Load a .clap file and create a plugin instance.
     pub fn load(path: &str, sample_rate: f64, max_block_size: u32) -> Result<Self, String> {
-        // On macOS, .clap files are bundles (directories).
-        // The actual dylib is at <bundle>/Contents/MacOS/<name>
-        let lib_path = {
-            let p = std::path::Path::new(path);
-            if p.is_dir() {
-                // It's a bundle — find the dylib inside
-                let stem = p
-                    .file_stem()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_string();
-                let macos_dir = p.join("Contents").join("MacOS");
-                if macos_dir.exists() {
-                    // Try exact stem name first, then any file in the directory
-                    let dylib = macos_dir.join(&stem);
-                    if dylib.exists() {
-                        dylib.to_string_lossy().to_string()
-                    } else {
-                        // Pick first file
-                        std::fs::read_dir(&macos_dir)
-                            .ok()
-                            .and_then(|mut d| d.next())
-                            .and_then(|e| e.ok())
-                            .map(|e| e.path().to_string_lossy().to_string())
-                            .unwrap_or_else(|| path.to_string())
-                    }
-                } else {
-                    path.to_string()
-                }
-            } else {
-                path.to_string()
-            }
-        };
+        let lib_path = library_path(path);
+
+        // P4.3.2E2: loading native code needs the native-code capability,
+        // and the binary must be the one approved for this path.
+        crate::capability::check(crate::capability::Capability::NativeCode)?;
+        crate::plugin_trust::check_native_binary(std::path::Path::new(&lib_path))?;
 
         // Load library
         let library = unsafe { libloading::Library::new(&lib_path) }

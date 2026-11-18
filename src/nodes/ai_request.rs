@@ -961,6 +961,7 @@ pub fn try_save_imagen_image(body: &str) -> Option<String> {
         })?;
     let bytes = base64_decode(b64)?;
     // Imagen returns PNG bytes; write to a temp file with a unique name.
+    crate::capability::check(crate::capability::Capability::Filesystem).ok()?;
     let mut path = std::env::temp_dir();
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1008,7 +1009,9 @@ pub fn extract_ai_response(provider: &str, body: &str) -> String {
                     .map(|d| d.as_nanos())
                     .unwrap_or(0);
                 path.push(format!("patchwork_openai_{}.png", stamp));
-                if std::fs::write(&path, &bytes).is_ok() {
+                if crate::capability::check(crate::capability::Capability::Filesystem).is_ok()
+                    && std::fs::write(&path, &bytes).is_ok()
+                {
                     return format!("file://{}", path.to_string_lossy());
                 }
             }

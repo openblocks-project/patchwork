@@ -166,6 +166,16 @@ pub trait NodeBehavior: std::any::Any + Send + Sync {
         let _ = ctx;
         self.evaluate(inputs)
     }
+
+    /// P4.3.2A: `Some` only for the inert placeholder of a node type that
+    /// is not available (see `nodes::unknown_node`).
+    fn as_unknown(&self) -> Option<&crate::nodes::unknown_node::UnknownNode> {
+        None
+    }
+
+    fn as_unknown_mut(&mut self) -> Option<&mut crate::nodes::unknown_node::UnknownNode> {
+        None
+    }
 }
 
 /// Context passed to `evaluate_with_ctx` — gives image-producing nodes
@@ -321,6 +331,13 @@ pub static NODE_REGISTRY: std::sync::LazyLock<std::sync::Mutex<NodeRegistryInner
         std::sync::Mutex::new(r)
     });
 
+#[cfg(test)]
+thread_local! {
+    /// P4.3.2A: dynamic nodes constructed through the registry on this
+    /// thread (tests check that verification constructs none).
+    pub static CONSTRUCTED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 pub struct NodeRegistryInner {
     factories: HashMap<String, Box<dyn Fn(&Value) -> Box<dyn NodeBehavior> + Send + Sync>>,
 }
@@ -341,7 +358,18 @@ impl NodeRegistryInner {
     }
 
     pub fn create(&self, type_tag: &str, state: &Value) -> Option<Box<dyn NodeBehavior>> {
-        self.factories.get(type_tag).map(|f| f(state))
+        let factory = self.factories.get(type_tag)?;
+        #[cfg(test)]
+        CONSTRUCTED.with(|count| count.set(count.get() + 1));
+        // P4.3.2E2: constructing a node (loading, cloning, pasting, undo)
+        // never acts on anyone's rights; privileged work waits until the
+        // node runs in its graph's context.
+        Some(crate::capability::without_rights(|| factory(state)))
+    }
+
+    /// P4.3.2A: whether `type_tag` has a factory (no construction).
+    pub fn contains(&self, type_tag: &str) -> bool {
+        self.factories.contains_key(type_tag)
     }
 
     pub fn type_tags(&self) -> Vec<String> {

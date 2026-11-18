@@ -58,6 +58,21 @@ impl SerialManager {
 
     pub fn process(&mut self, actions: Vec<SerialAction>) {
         for action in actions {
+            // P4.3.2E2: serial ports are hardware devices.
+            let node_id = match &action {
+                SerialAction::Connect { node_id, .. } | SerialAction::Send { node_id, .. } => {
+                    Some(*node_id)
+                }
+                SerialAction::Disconnect { .. } => None,
+            };
+            if let Some(node_id) = node_id {
+                if crate::capability::check_for(node_id, crate::capability::Capability::Devices)
+                    .is_err()
+                {
+                    self.cleanup_node(node_id);
+                    continue;
+                }
+            }
             match action {
                 SerialAction::Connect {
                     node_id,
@@ -95,10 +110,14 @@ impl SerialManager {
         };
         let (tx, rx) = mpsc::channel();
 
-        let handle = std::thread::spawn(move || {
+        let handle = crate::capability::spawn(move || {
             let mut reader = BufReader::new(reader_port);
             let mut line = String::new();
             loop {
+                // P4.3.2E2: stop reading once the node's rights are revoked.
+                if !crate::capability::still_allowed(crate::capability::Capability::Devices) {
+                    break;
+                }
                 line.clear();
                 match reader.read_line(&mut line) {
                     Ok(0) => break, // EOF
@@ -126,6 +145,9 @@ impl SerialManager {
 
     /// Drain all received lines for a node.
     pub fn poll(&self, node_id: NodeId) -> Vec<String> {
+        if !crate::capability::still_allowed(crate::capability::Capability::Devices) {
+            return vec![];
+        }
         let Some(conn) = self.connections.get(&node_id) else {
             return vec![];
         };

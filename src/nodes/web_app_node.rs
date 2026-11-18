@@ -181,6 +181,15 @@ patchwork.onUpdate = (d) => {
 </body></html>"#;
 
 fn start_web_app_server(state: SharedWebAppState) -> u16 {
+    // P4.3.2E2: a listening server (serving page code to browsers).
+    if crate::capability::check_all(&[
+        crate::capability::Capability::Network,
+        crate::capability::Capability::Scripting,
+    ])
+    .is_err()
+    {
+        return 0;
+    }
     // Bind on ALL interfaces so phones / other devices on the same Wi-Fi
     // can reach the page via the host's LAN IP. Falls back to loopback if
     // 0.0.0.0 is blocked (locked-down environment / restrictive firewall).
@@ -202,8 +211,13 @@ fn start_web_app_server(state: SharedWebAppState) -> u16 {
 
     crate::system_log::log(format!("Web App server started on port {}", port));
 
-    std::thread::spawn(move || {
+    // P4.3.2E2: the server keeps the node's rights; once they are revoked
+    // it accepts nothing more and closes its listening socket.
+    crate::capability::spawn(move || {
         for stream in listener.incoming() {
+            if !crate::capability::still_allowed(crate::capability::Capability::Network) {
+                break;
+            }
             let Ok(mut stream) = stream else { continue };
             let mut buf = [0u8; 4096];
             let n = stream.read(&mut buf).unwrap_or(0);
@@ -296,7 +310,7 @@ fn start_web_app_server(state: SharedWebAppState) -> u16 {
                 if let Some(slot) = slot {
                     let _ = stream.set_nodelay(true);
                     let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
-                    std::thread::spawn(move || serve_mjpeg_stream(stream, slot));
+                    crate::capability::spawn(move || serve_mjpeg_stream(stream, slot));
                 }
                 continue;
             } else {
@@ -408,14 +422,12 @@ fn write_mjpeg_part(
 }
 
 pub(crate) fn open_in_browser(url: &str) {
-    #[cfg(target_os = "macos")]
-    let _ = std::process::Command::new("open").arg(url).spawn();
-    #[cfg(target_os = "windows")]
-    let _ = std::process::Command::new("cmd")
-        .args(["/C", "start", "", url])
-        .spawn();
-    #[cfg(target_os = "linux")]
-    let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+    // P4.3.2E2: starts another program (the browser).
+    if crate::capability::check(crate::capability::Capability::Process).is_err() {
+        return;
+    }
+    // P4.3.2B: OS handler, no shell (`cmd /C start` would parse `&`).
+    crate::external_process::open_externally(url);
 }
 
 // ── LAN IP detection ────────────────────────────────────────────────────────
@@ -425,6 +437,9 @@ pub(crate) fn open_in_browser(url: &str) {
 // it would route through. Returns None if there's no routable interface
 // (e.g. machine is fully offline) — caller falls back to loopback.
 pub(crate) fn detect_lan_ip() -> Option<std::net::IpAddr> {
+    if !crate::capability::still_allowed(crate::capability::Capability::Network) {
+        return None;
+    }
     let s = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
     s.connect("8.8.8.8:80").ok()?;
     let ip = s.local_addr().ok()?.ip();
@@ -1088,15 +1103,16 @@ impl NodeBehavior for WebAppNode {
                 .clicked()
             {
                 let tmp = std::env::temp_dir().join(format!("patchwork_webapp_{}.html", node_id));
-                if std::fs::write(&tmp, &self.html_code).is_ok() {
-                    #[cfg(target_os = "macos")]
-                    let _ = std::process::Command::new("open").arg(&tmp).spawn();
-                    #[cfg(target_os = "windows")]
-                    let _ = std::process::Command::new("cmd")
-                        .args(["/C", "start", "", &tmp.display().to_string()])
-                        .spawn();
-                    #[cfg(target_os = "linux")]
-                    let _ = std::process::Command::new("xdg-open").arg(&tmp).spawn();
+                // P4.3.2E2: writes a file and starts another program.
+                if crate::capability::check_all(&[
+                    crate::capability::Capability::Filesystem,
+                    crate::capability::Capability::Process,
+                ])
+                .is_ok()
+                    && std::fs::write(&tmp, &self.html_code).is_ok()
+                {
+                    // P4.3.2B: OS handler, no shell.
+                    crate::external_process::open_externally(&tmp);
                 }
             }
         } else {

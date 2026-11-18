@@ -310,7 +310,9 @@ impl Graph {
             .package_resolver
             .resolve(&exact)
             .map_err(|e| format!("{target} can't be used: {e}"))?;
-        let interface = crate::document::CustomNodeFile::load(&resolved.entry_path)
+        // P4.3.2D: read statically; the target version is authorized (and
+        // constructed) only when its runtime is activated after the switch.
+        let interface = crate::document::read_custom_node_interface_static(&resolved.entry_path)
             .map_err(|e| format!("{target} can't be used: {e}"))?;
 
         let connections = &self.connections;

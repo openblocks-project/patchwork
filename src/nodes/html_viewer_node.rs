@@ -25,6 +25,15 @@ fn compute_hash(s: &str) -> u64 {
 }
 
 fn start_server(state: SharedState) -> u16 {
+    // P4.3.2E2: a listening server (serving page code to browsers).
+    if crate::capability::check_all(&[
+        crate::capability::Capability::Network,
+        crate::capability::Capability::Scripting,
+    ])
+    .is_err()
+    {
+        return 0;
+    }
     let listener = match TcpListener::bind("127.0.0.1:0") {
         Ok(l) => l,
         Err(e) => {
@@ -38,8 +47,13 @@ fn start_server(state: SharedState) -> u16 {
         s.is_running = true;
     }
 
-    std::thread::spawn(move || {
+    // P4.3.2E2: the server keeps the node's rights; once they are revoked
+    // it accepts nothing more and closes its listening socket.
+    crate::capability::spawn(move || {
         for stream in listener.incoming() {
+            if !crate::capability::still_allowed(crate::capability::Capability::Network) {
+                break;
+            }
             let Ok(mut stream) = stream else { continue };
             let mut buf = [0u8; 2048];
             let _ = stream.read(&mut buf);

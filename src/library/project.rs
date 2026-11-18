@@ -600,7 +600,7 @@ pub fn commit_project_save(
         for copy in &plan.to_copy {
             let staged_dir = project_version_dir(&staging, &copy.reference);
             copy_tree(&copy.source_dir, &staged_dir)?;
-            let verified = package::verify_version_dir(&staged_dir, true)
+            let verified = package::verify_version_dir_static(&staged_dir, true)
                 .map_err(|e| format!("The copy of {} did not verify: {e}", copy.reference))?;
             if content_id(&verified.manifest) != copy.content {
                 return Err(format!(
@@ -621,7 +621,7 @@ pub fn commit_project_save(
             let target = project_version_dir(dest, &copy.reference);
             if std::fs::symlink_metadata(&target).is_ok() {
                 // Appeared since planning: only identical content is accepted.
-                let same = package::verify_version_dir(&target, true)
+                let same = package::verify_version_dir_static(&target, true)
                     .map(|v| content_id(&v.manifest) == copy.content)
                     .unwrap_or(false);
                 if same {

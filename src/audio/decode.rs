@@ -23,6 +23,8 @@ pub(crate) fn decode_file_thread(
 
     let open_and_decode =
         |path: &str, buffer: &FilePlayerBuffer, seek_secs: f64| -> Result<(), String> {
+            // P4.3.2E2: checked before every open (loops and seeks reopen).
+            crate::capability::check(crate::capability::Capability::Filesystem)?;
             let file = std::fs::File::open(path).map_err(|e| format!("Open: {}", e))?;
             let mss = MediaSourceStream::new(Box::new(file), Default::default());
 
@@ -235,6 +237,7 @@ pub fn probe_file_duration(path: &str) -> Option<f64> {
     use symphonia::core::meta::MetadataOptions;
     use symphonia::core::probe::Hint;
 
+    crate::capability::check(crate::capability::Capability::Filesystem).ok()?;
     let file = std::fs::File::open(path).ok()?;
     let mss = MediaSourceStream::new(Box::new(file), Default::default());
     let mut hint = Hint::new();

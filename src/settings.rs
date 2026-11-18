@@ -113,6 +113,24 @@ pub struct Settings {
         skip_serializing_if = "Option::is_none"
     )]
     pub legacy_profiles: Option<serde_json::Value>,
+    /// P4.3.1A: the marketplace catalogue repository. Empty (not
+    /// configured) by default; there is no built-in production source.
+    #[serde(default)]
+    pub marketplace: MarketplaceSettings,
+}
+
+/// P4.3.1A: explicit, trusted marketplace catalogue source
+/// (`https://raw.githubusercontent.com/<owner>/<repo>/<branch>/index.json`).
+/// Validated by `library::marketplace::source::CatalogueLocation`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MarketplaceSettings {
+    #[serde(default)]
+    pub owner: String,
+    #[serde(default)]
+    pub repo: String,
+    /// Empty means `main`.
+    #[serde(default)]
+    pub branch: String,
 }
 
 impl Default for Settings {
@@ -123,6 +141,7 @@ impl Default for Settings {
             ai: AiSettings::default(),
             vcam_modal_dismissed: false,
             legacy_profiles: None,
+            marketplace: MarketplaceSettings::default(),
         }
     }
 }

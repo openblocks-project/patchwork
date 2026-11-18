@@ -478,6 +478,21 @@ impl NodeBehavior for VideoOutNode {
         });
 
         // ── Sink‑specific UI ───────────────────────────────────────
+        // P4.3.2E2: a window on a display and inter-app video sharing
+        // (Syphon, Spout, virtual camera) are device output; NDI is network
+        // output (checked when its sender starts); recording is checked by
+        // the recorder (files, ffmpeg).
+        let needs_devices = matches!(
+            self.sink,
+            VideoSink::Window | VideoSink::Syphon | VideoSink::Spout | VideoSink::VirtualCamera
+        );
+        if needs_devices {
+            if let Err(denied) = crate::capability::check(crate::capability::Capability::Devices) {
+                ui.add_space(4.0);
+                ui.colored_label(egui::Color32::from_rgb(255, 180, 80), denied.to_string());
+                return;
+            }
+        }
         match self.sink {
             VideoSink::Window => self.render_window_sink(ui, ctx, &input_val),
             #[cfg(target_os = "macos")]

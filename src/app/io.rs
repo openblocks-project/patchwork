@@ -146,6 +146,8 @@ fn relativize_paths(graph: &mut Graph, project_dir: &str) {
 pub(super) struct PortableSave {
     pub plan: crate::library::project::ProjectPackagePlan,
     pub portability: crate::library::project::PortabilityReport,
+    /// P4.3.2E1: content digest of the `project.json` written.
+    pub content_digest: Option<String>,
 }
 
 /// P4.2 Stage 4: write a project portably. The graph is serialized from a
@@ -195,7 +197,11 @@ pub(super) fn save_project_files(
         &report,
         count_external_assets(graph, dir),
     );
-    Ok(PortableSave { plan, portability })
+    Ok(PortableSave {
+        plan,
+        portability,
+        content_digest: crate::library::trust::content::project_digest(&json).ok(),
+    })
 }
 
 /// Absolute project-copy path per package reference, exactly as a reopen
@@ -336,8 +342,8 @@ fn absolutize_paths(graph: &mut Graph, project_dir: &str) {
 /// Project file format — includes graph, pinned nodes, and viewport state.
 /// Backward-compatible: old project.json files (raw Graph) are detected and loaded.
 #[derive(Serialize, Deserialize)]
-struct ProjectFile {
-    graph: Graph,
+pub(super) struct ProjectFile {
+    pub(super) graph: Graph,
     #[serde(default)]
     pinned_nodes: Vec<NodeId>,
     #[serde(default)]
@@ -701,12 +707,74 @@ pub(super) fn quit_step(
     }
 }
 
+/// P4.3.2B: what every project load does after parsing (the File menu and
+/// MCP `LoadProject`): ids and unknown-node ports are restored
+/// (`fix_next_id`), asset paths become absolute, and capture/playback
+/// starts off for safety.
+pub(crate) fn normalize_loaded_graph(graph: &mut Graph, project_dir: &str) {
+    graph.fix_next_id();
+    absolutize_paths(graph, project_dir);
+    // Always start with DSP, Camera, Mic off for safety —
+    // prevents stale "active" state without actual streams running
+    for node in graph.nodes.values_mut() {
+        match &mut node.node_type {
+            NodeType::AudioDevice { enabled, .. } => {
+                *enabled = false;
+            }
+            NodeType::Camera { active, .. } => {
+                *active = false;
+            }
+            NodeType::AudioInput { active, .. } => {
+                *active = false;
+            }
+            NodeType::VideoPlayer { playing, .. } => {
+                *playing = false;
+            }
+            _ => {}
+        }
+    }
+}
+
+/// P4.3.2B: load a project's graph for MCP: a project folder or its
+/// `project.json`, or (as before) a bare graph file, normalized exactly
+/// like a project opened from the File menu.
+pub(crate) fn load_project_graph(path: &Path) -> Result<Graph, String> {
+    let json_path = if path.is_file() {
+        path.to_path_buf()
+    } else {
+        path.join("project.json")
+    };
+    let text = std::fs::read_to_string(&json_path).map_err(|e| format!("read: {e}"))?;
+    let mut graph = match serde_json::from_str::<ProjectFile>(&text) {
+        Ok(project) => project.graph,
+        Err(_) => serde_json::from_str::<Graph>(&text).map_err(|e| format!("parse: {e}"))?,
+    };
+    let dir = json_path
+        .parent()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    normalize_loaded_graph(&mut graph, &dir);
+    // P4.3.2E1: an MCP-loaded project is identified like any other.
+    graph.content = crate::library::trust::content::ContentState::loaded(
+        crate::library::trust::content::ContentKind::Project,
+        &text,
+    );
+    Ok(graph)
+}
+
 /// Read a saved project's `project.json` (used to reopen it from disk).
-fn read_project_file(dir: &Path) -> Result<ProjectFile, String> {
+pub(super) fn read_project_file(dir: &Path) -> Result<ProjectFile, String> {
     let path = dir.join("project.json");
     let json = std::fs::read_to_string(&path)
         .map_err(|e| format!("Cannot read {}: {e}", path.display()))?;
-    serde_json::from_str(&json).map_err(|e| format!("{} is not valid: {e}", path.display()))
+    let mut project: ProjectFile =
+        serde_json::from_str(&json).map_err(|e| format!("{} is not valid: {e}", path.display()))?;
+    // P4.3.2E1: identified by its content, looked up before it may run.
+    project.graph.content = crate::library::trust::content::ContentState::loaded(
+        crate::library::trust::content::ContentKind::Project,
+        &json,
+    );
+    Ok(project)
 }
 
 fn session_path() -> std::path::PathBuf {
@@ -773,7 +841,20 @@ impl super::PatchworkApp {
         save_user_keys(&self.api_keys);
         let state = self.session_state();
         if let Ok(json) = serde_json::to_string_pretty(&state) {
-            let _ = std::fs::write(session_path(), json);
+            if std::fs::write(session_path(), &json).is_ok()
+                && !state.clean_start
+                && !state.reopen_from_disk
+            {
+                // P4.3.2E1: the session graph keeps the provenance of the
+                // document it came from (nothing for unverified content).
+                if let Ok(digest) = crate::library::trust::content::project_digest(&json) {
+                    super::provenance::record_written(
+                        &state.graph.content,
+                        crate::library::trust::content::ContentKind::Project,
+                        &digest,
+                    );
+                }
+            }
         }
     }
 
@@ -888,6 +969,12 @@ impl super::PatchworkApp {
                 }
                 let mut graph = state.graph;
                 graph.fix_next_id();
+                // P4.3.2E1: a restored session graph runs only if its
+                // content is recorded as authored or allowed.
+                graph.content = crate::library::trust::content::ContentState::loaded(
+                    crate::library::trust::content::ContentKind::Project,
+                    &json,
+                );
                 Loaded {
                     graph,
                     canvas_offset: state.canvas_offset,
@@ -1697,7 +1784,9 @@ impl super::PatchworkApp {
                 });
                 self.ml_running.insert(nid);
                 let tx = self.ml_tx.clone();
-                std::thread::spawn(move || {
+                // P4.3.2E2: inference loads the model with the document's
+                // rights.
+                crate::capability::spawn(move || {
                     let result = crate::nodes::ml_model::run_inference(&req);
                     let _ = tx.send(result);
                 });
@@ -1807,9 +1896,33 @@ impl super::PatchworkApp {
             None => return,
         };
         // Drain all pending requests (non-blocking)
+        let mut withheld_messages = Vec::new();
         while let Ok(request) = rx.try_recv() {
+            // P4.3.2E2: an MCP edit never widens what the document may do.
+            let before = self
+                .graph
+                .content
+                .runnable()
+                .then(|| super::provenance::graph_uses(&self.graph));
             let result = crate::mcp::execute_command(request.command, &mut self.graph, values);
+            if let Some(before) = before {
+                let after = super::provenance::graph_uses(&self.graph);
+                let withheld =
+                    super::provenance::after_mcp_edit(&mut self.graph.content, before, after);
+                if !withheld.is_empty() {
+                    let message = format!(
+                        "An MCP edit added nodes that use {}. They will not use it until you \
+                         approve it in Library → Permissions.",
+                        withheld.describe()
+                    );
+                    crate::system_log::warn(&message);
+                    withheld_messages.push(message);
+                }
+            }
             let _ = request.response_tx.send(result);
+        }
+        for message in withheld_messages {
+            self.toast_warn(message);
         }
     }
 
@@ -1879,8 +1992,12 @@ impl super::PatchworkApp {
             }
         }
 
-        match crate::document::save_custom_node_as(&self.graph, &destination) {
-            Ok(file) => {
+        match crate::document::save_custom_node_as_with_digest(&self.graph, &destination) {
+            Ok((file, digest)) => {
+                self.after_content_write(
+                    crate::library::trust::content::ContentKind::CustomNode,
+                    &digest,
+                );
                 let location = std::fs::canonicalize(&destination).unwrap_or(destination);
                 let document = self.documents.active_mut();
                 if let Err(error) = document.set_path(Some(location.clone())) {
@@ -1949,8 +2066,12 @@ impl super::PatchworkApp {
                 crate::system_log::error(format!("Cannot save custom node: {error}"));
                 return false;
             }
-            match custom_node.save(&path) {
-                Ok(()) => {
+            match custom_node.save_with_digest(&path) {
+                Ok(digest) => {
+                    self.after_content_write(
+                        crate::library::trust::content::ContentKind::CustomNode,
+                        &digest,
+                    );
                     self.is_dirty = false;
                     self.documents.active_mut().is_dirty = false;
                     // P3: Update instances of this custom node in all open documents.
@@ -2096,6 +2217,12 @@ impl super::PatchworkApp {
                     project_file.display(),
                     saved.portability.summary()
                 ));
+                if let Some(digest) = &saved.content_digest {
+                    self.after_content_write(
+                        crate::library::trust::content::ContentKind::Project,
+                        digest,
+                    );
+                }
                 for warning in &saved.plan.warnings {
                     crate::system_log::warn(format!("Portability: {warning}"));
                 }
@@ -2225,33 +2352,18 @@ impl super::PatchworkApp {
             }
         };
         let mut graph = pf.graph;
-        graph.fix_next_id();
-        absolutize_paths(&mut graph, &dir_str);
+        // P4.3.2E1: identified by its content, looked up before it may run.
+        graph.content = crate::library::trust::content::ContentState::loaded(
+            crate::library::trust::content::ContentKind::Project,
+            &json,
+        );
+        normalize_loaded_graph(&mut graph, &dir_str);
 
         // P3: Create a separate tab for the successfully loaded project.
         // Existing tabs retain their graphs and editor state. Never load
         // into the current tab if no new tab could be created.
         if !self.create_new_tab() {
             return;
-        }
-        // Always start with DSP, Camera, Mic off for safety —
-        // prevents stale "active" state without actual streams running
-        for node in graph.nodes.values_mut() {
-            match &mut node.node_type {
-                NodeType::AudioDevice { enabled, .. } => {
-                    *enabled = false;
-                }
-                NodeType::Camera { active, .. } => {
-                    *active = false;
-                }
-                NodeType::AudioInput { active, .. } => {
-                    *active = false;
-                }
-                NodeType::VideoPlayer { playing, .. } => {
-                    *playing = false;
-                }
-                _ => {}
-            }
         }
         self.audio.stop_output();
         self.graph = graph;
@@ -3891,7 +4003,7 @@ mod project_bundle_tests {
                 .is_dir()
         );
         assert!(pkg_dir(&f.project, &c1).is_dir() && pkg_dir(&f.project, &c2).is_dir());
-        assert!(crate::library::package::verify_version_dir(&a_copy, true).is_ok());
+        assert!(crate::library::package::verify_version_dir_static(&a_copy, true).is_ok());
         assert!(
             !pkg_dir(&f.project, &b).exists(),
             "B travels inside A's bundle"
@@ -5827,5 +5939,99 @@ mod node_token_tests {
         assert!(!has_key(&value, "token"), ".pwnode has no runtime tokens");
         let loaded = CustomNodeFile::load(&path).unwrap();
         assert!(tokens(&loaded.graph).is_disjoint(&tokens(&graph)));
+    }
+}
+
+/// P4.3.2B: MCP `LoadProject` normalizes like File → Open.
+#[cfg(test)]
+mod mcp_load_tests {
+    use super::*;
+    use crate::library::package::tests::TempDir;
+    use serde_json::json;
+
+    fn graph_with_unknown() -> (Graph, NodeId, NodeId) {
+        let mut graph = Graph::new();
+        let slider = graph.add_node(
+            NodeType::Slider {
+                value: 0.5,
+                min: 0.0,
+                max: 1.0,
+                step: 0.01,
+                slider_color: [0, 0, 0],
+                label: String::new(),
+            },
+            [0.0, 0.0],
+        );
+        let mut value = serde_json::to_value(&graph).unwrap();
+        value["nodes"]["40"] = json!({"id": 40, "pos": [0.0, 0.0],
+            "node_type": {"Dynamic": {"inner": {"type_tag": "p432b_mcp_future", "state": {"k": 1}}}}});
+        value["connections"] = json!([{"from_node": slider, "from_port": 0, "to_node": 40, "to_port": 3, "label": ""}]);
+        (serde_json::from_value(value).unwrap(), slider, 40)
+    }
+
+    fn unknown_inputs(graph: &Graph, id: NodeId) -> Vec<crate::graph::PortKind> {
+        match &graph.nodes[&id].node_type {
+            NodeType::Dynamic { inner } => inner
+                .node
+                .as_unknown()
+                .expect("kept as unknown")
+                .inputs()
+                .iter()
+                .map(|p| p.kind)
+                .collect(),
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn mcp_load_project_restores_unknown_ports_like_file_open() {
+        use crate::node_trait::NodeBehavior;
+        let tmp = TempDir::new("p432b_mcp_load");
+        let (mut graph, slider, unknown) = graph_with_unknown();
+        let project = tmp.0.join("project");
+        let mut history = UndoHistory::new(5);
+        save_project_files(
+            &mut graph,
+            &mut history,
+            Vec::new(),
+            [0.0, 0.0],
+            1.0,
+            &project,
+            None,
+            None,
+        )
+        .unwrap();
+
+        // A project folder, and its project.json directly.
+        for path in [project.clone(), project.join("project.json")] {
+            let loaded = load_project_graph(&path).unwrap();
+            let kinds = unknown_inputs(&loaded, unknown);
+            assert_eq!(kinds.len(), 4, "a port for the wire at index 3");
+            assert_eq!(kinds[3], loaded.nodes[&slider].node_type.outputs()[0].kind);
+            assert_eq!(loaded.connections.len(), 1);
+            // Ids continue after the loaded nodes.
+            let mut copy = loaded.clone();
+            assert!(
+                copy.add_node(
+                    NodeType::Console {
+                        messages: Vec::new()
+                    },
+                    [0.0, 0.0]
+                ) > unknown
+            );
+        }
+
+        // A bare graph file still loads (previous MCP behaviour).
+        let bare = tmp.0.join("graph.json");
+        std::fs::write(
+            &bare,
+            serde_json::to_string(&graph_with_unknown().0).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            unknown_inputs(&load_project_graph(&bare).unwrap(), unknown).len(),
+            4
+        );
+        assert!(load_project_graph(&tmp.0.join("missing")).is_err());
     }
 }

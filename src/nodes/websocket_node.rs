@@ -28,6 +28,10 @@ struct WsServerState {
 type SharedWsState = Arc<Mutex<WsServerState>>;
 
 fn start_ws_server(state: SharedWsState) -> u16 {
+    // P4.3.2E2: a listening server (serving page code to browsers).
+    if crate::capability::check_all(&[crate::capability::Capability::Network]).is_err() {
+        return 0;
+    }
     let listener = match TcpListener::bind("127.0.0.1:0") {
         Ok(l) => l,
         Err(e) => {
@@ -42,13 +46,18 @@ fn start_ws_server(state: SharedWsState) -> u16 {
     }
 
     // Accept connections in a dedicated thread
-    std::thread::spawn(move || {
+    // P4.3.2E2: the server keeps the node's rights; once they are revoked
+    // it accepts nothing more and closes its listening socket.
+    crate::capability::spawn(move || {
         for stream in listener.incoming() {
+            if !crate::capability::still_allowed(crate::capability::Capability::Network) {
+                break;
+            }
             let Ok(stream) = stream else { continue };
             let state = state.clone();
 
-            // Each client gets its own thread
-            std::thread::spawn(move || {
+            // Each client gets its own thread (with the server's rights).
+            crate::capability::spawn(move || {
                 // Upgrade HTTP → WebSocket
                 let mut ws = match tungstenite::accept(stream) {
                     Ok(ws) => ws,
@@ -62,6 +71,10 @@ fn start_ws_server(state: SharedWsState) -> u16 {
 
                 // Send loop: push data at ~60fps
                 loop {
+                    // P4.3.2E2: disconnect once the rights are revoked.
+                    if !crate::capability::still_allowed(crate::capability::Capability::Network) {
+                        break;
+                    }
                     let json = if let Ok(s) = state.lock() {
                         if !s.is_running {
                             break;

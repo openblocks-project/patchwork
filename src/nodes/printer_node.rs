@@ -37,6 +37,15 @@ impl Default for PrinterNode {
 // ── Printer enumeration ───────────────────────────────────────────────────────
 
 fn enumerate_printers() -> Vec<String> {
+    // P4.3.2E2: asks the system (another program) for its printers.
+    if crate::capability::check_all(&[
+        crate::capability::Capability::Devices,
+        crate::capability::Capability::Process,
+    ])
+    .is_err()
+    {
+        return Vec::new();
+    }
     #[cfg(target_os = "windows")]
     {
         let out = std::process::Command::new("wmic")
@@ -98,6 +107,8 @@ fn send_to_printer(
             args.push("-o".into());
             args.push("fit-to-page".into());
         }
+        // P4.3.2B: `--` ends options; the file is never an option.
+        args.push("--".into());
         args.push(file.to_string());
         std::process::Command::new("lp")
             .args(&args)
@@ -125,8 +136,31 @@ fn save_image_to_temp(pv: &PortValue) -> Result<String, String> {
         .ok_or("Bad temp path".into())
 }
 
+/// P4.3.2B: printer names and document paths are plain values, never
+/// options (`lp -…`, `print /…`).
+fn check_print_args(printer: &str, file: &str) -> Result<(), String> {
+    use crate::external_process::check_positional;
+    if !printer.is_empty() {
+        check_positional(printer, "printer name")?;
+    }
+    check_positional(file, "document path")?;
+    if file.starts_with('/') && cfg!(target_os = "windows") {
+        return Err("The document path must not start with '/'.".to_string());
+    }
+    Ok(())
+}
+
 impl PrinterNode {
     fn do_print(&mut self, image_override: Option<PortValue>) {
+        // P4.3.2E2: printing runs the print program on a file.
+        if let Err(denied) = crate::capability::check_all(&[
+            crate::capability::Capability::Devices,
+            crate::capability::Capability::Process,
+            crate::capability::Capability::Filesystem,
+        ]) {
+            self.status = denied.to_string();
+            return;
+        }
         // Determine file to print
         let file: String = if !self.document_path.is_empty() {
             // Explicit document path takes priority
@@ -151,6 +185,10 @@ impl PrinterNode {
         } else {
             self.selected_printer.clone()
         };
+        if let Err(error) = check_print_args(&printer, &file) {
+            self.status = error;
+            return;
+        }
 
         // Build command — allow empty printer to use system default (no -d flag)
         let result = if printer.is_empty() {
@@ -161,6 +199,7 @@ impl PrinterNode {
                     args.push("-o".into());
                     args.push("fit-to-page".into());
                 }
+                args.push("--".into());
                 args.push(file.clone());
                 std::process::Command::new("lp")
                     .args(&args)
@@ -499,4 +538,21 @@ pub fn register(registry: &mut crate::node_trait::NodeRegistryInner) {
         n.load_state(state);
         Box::new(n)
     });
+}
+
+#[cfg(test)]
+mod p432b_tests {
+    use super::*;
+
+    #[test]
+    fn printer_and_document_are_never_options() {
+        assert!(check_print_args("", "report.pdf").is_ok());
+        assert!(check_print_args("Office Printer", "/home/a/report.pdf").is_ok() || cfg!(windows));
+        for (printer, file) in [("-o", "a.pdf"), ("", "-dEvil"), ("", ""), ("", "a\nb")] {
+            assert!(
+                check_print_args(printer, file).is_err(),
+                "{printer:?} {file:?}"
+            );
+        }
+    }
 }

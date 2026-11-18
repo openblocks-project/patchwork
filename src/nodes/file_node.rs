@@ -119,6 +119,14 @@ impl FileNode {
             self.last_error = None;
             return;
         }
+        // P4.3.2E2: reading the file is a filesystem operation of the
+        // graph. Not marked loaded, so it loads once allowed.
+        if let Err(denied) = crate::capability::check(crate::capability::Capability::Filesystem) {
+            self.content.clear();
+            self.image_data = None;
+            self.last_error = Some(denied.to_string());
+            return;
+        }
 
         let ext = std::path::Path::new(&self.path)
             .extension()
@@ -217,7 +225,10 @@ impl NodeBehavior for FileNode {
         // been touched since we last loaded it, re-read. This is what makes
         // editing a `.wgsl` (or any text file) in VS Code show up live in the
         // downstream WGSL Viewer / consumer the moment you save.
-        if self.auto_reload && !self.path.is_empty() {
+        if self.auto_reload
+            && !self.path.is_empty()
+            && crate::capability::still_allowed(crate::capability::Capability::Filesystem)
+        {
             if let Ok(meta) = std::fs::metadata(&self.path) {
                 if let Ok(m) = meta.modified() {
                     if Some(m) != self.last_mtime {

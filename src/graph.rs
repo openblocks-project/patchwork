@@ -1536,6 +1536,12 @@ pub struct DynNode {
 
 impl Clone for DynNode {
     fn clone(&self) -> Self {
+        // P4.3.2A: an unknown node is copied as data, never reconstructed.
+        if let Some(unknown) = self.node.as_unknown() {
+            return DynNode {
+                node: Box::new(unknown.clone()),
+            };
+        }
         // Reconstruct from serialized state via the registry
         let tag = self.node.type_tag();
         let state = self.node.save_state();
@@ -1546,9 +1552,12 @@ impl Clone for DynNode {
         {
             DynNode { node: cloned }
         } else {
-            // Fallback: create a placeholder
+            // Not expected (the node was created from this registry); keep
+            // its data rather than substituting another node.
             DynNode {
-                node: Box::new(crate::nodes::add_node::AddNode::default()),
+                node: Box::new(crate::nodes::unknown_node::UnknownNode::new(
+                    serde_json::json!({ "type_tag": tag, "state": state }),
+                )),
             }
         }
     }
@@ -1563,6 +1572,10 @@ impl std::fmt::Debug for DynNode {
 impl serde::Serialize for DynNode {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeMap;
+        // P4.3.2A: written back exactly as it was read.
+        if let Some(unknown) = self.node.as_unknown() {
+            return unknown.raw().serialize(s);
+        }
         let mut map = s.serialize_map(Some(2))?;
         map.serialize_entry("type_tag", self.node.type_tag())?;
         map.serialize_entry("state", &self.node.save_state())?;
@@ -1573,17 +1586,26 @@ impl serde::Serialize for DynNode {
 impl<'de> serde::Deserialize<'de> for DynNode {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let v = serde_json::Value::deserialize(d)?;
-        let tag = v.get("type_tag").and_then(|t| t.as_str()).unwrap_or("add");
-        let state = v.get("state").cloned().unwrap_or(serde_json::Value::Null);
-        let node_opt = crate::node_trait::NODE_REGISTRY
-            .lock()
-            .ok()
-            .and_then(|r| r.create(tag, &state));
+        // P4.3.2A: an unavailable (or missing) type is kept as an inert
+        // placeholder with its original data; it is never replaced by a
+        // working node and no factory runs for it.
+        let node_opt = match v.get("type_tag").and_then(|t| t.as_str()) {
+            Some(tag) => {
+                let state = v.get("state").cloned().unwrap_or(serde_json::Value::Null);
+                crate::node_trait::NODE_REGISTRY
+                    .lock()
+                    .ok()
+                    .and_then(|r| r.create(tag, &state))
+            }
+            None => None,
+        };
         if let Some(node) = node_opt {
             Ok(DynNode { node })
         } else {
+            let unknown = crate::nodes::unknown_node::UnknownNode::new(v);
+            crate::system_log::warn(unknown.missing_message());
             Ok(DynNode {
-                node: Box::new(crate::nodes::add_node::AddNode::default()),
+                node: Box::new(unknown),
             })
         }
     }
@@ -2646,8 +2668,12 @@ pub struct Connection {
     pub label: String,
 }
 
+#[cfg(test)]
+mod capability_tests;
 /// P2: Custom node grouping (selection → reusable .pwnode).
 pub mod group;
+#[cfg(test)]
+mod permission_tests;
 pub mod version;
 
 // ── Custom-node port synchronisation ────────────────────────────────────────
@@ -2727,6 +2753,11 @@ pub fn canonical_custom_node_path(file: &str) -> Option<std::path::PathBuf> {
 /// checked again (Stage 0: no per-frame filesystem work for broken files).
 const CUSTOM_FAILURE_RECHECK: std::time::Duration = std::time::Duration::from_secs(1);
 
+/// P4.3.2D: how long a blocked package runtime waits before it is checked
+/// again on its own. A grant or denial (a new trust generation) retries it
+/// at once.
+const BLOCKED_RECHECK: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Identity of the file a cached custom-node runtime was loaded from.
 /// A runtime is reused only while the instance still references the same
 /// file and that file's modification time and size are unchanged.
@@ -2742,6 +2773,15 @@ struct CustomRuntimeStamp {
     resolved: std::path::PathBuf,
     modified: std::time::SystemTime,
     len: u64,
+    /// P4.3.2D: for package runtimes, the authorized identity and the trust
+    /// generation it was authorized under (`None` for plain files).
+    /// P4.3.2E1: every runtime is authorized; the key identifies what was
+    /// authorized (`package:id@version#digest` or `custom_node:digest`).
+    authorized: Option<(String, u64)>,
+    /// P4.3.2E2: the runtime's own rights (its grant, the local-author
+    /// policy or its content-ledger approval). It runs with these
+    /// intersected with the rights of the graph containing it.
+    capabilities: crate::capability::CapSet,
 }
 
 /// A cached custom-node load failure.
@@ -2753,6 +2793,8 @@ struct CustomRuntimeFailure {
     stamp: Option<(std::time::SystemTime, u64)>,
     error: String,
     next_check: std::time::Instant,
+    /// P4.3.2D: the trust generation of an authorization block.
+    blocked: Option<u64>,
 }
 
 /// P4.2 Stage 2: cached resolution of a packaged instance. Reused while the
@@ -2812,6 +2854,26 @@ pub struct Graph {
     /// file value so ordinary files cost nothing per frame.
     #[serde(skip)]
     custom_file_in_package: HashMap<NodeId, (String, bool)>,
+    /// P4.3.2D: package runtimes refused by authorization ("Needs
+    /// permission"). The instance, its ports and connections are kept.
+    #[serde(skip)]
+    custom_blocked: HashMap<NodeId, crate::library::trust::authorize::Blocked>,
+    /// P4.3.2E1: whether this graph, when it is the editor's top-level
+    /// graph, may run. Never saved. A deserialized graph is `Unverified`
+    /// until a loader identifies it; `Graph::new()` is `Authored`.
+    #[serde(skip)]
+    pub content: crate::library::trust::content::ContentState,
+    /// P4.3.2F: the exact identity `content` was decided for (set by the
+    /// editor when it identifies, saves or decides its top-level graph).
+    #[serde(skip)]
+    pub content_basis: Option<crate::library::trust::content::ContentBasis>,
+    /// P4.3.2E2: the capability context this graph evaluates in. Set by the
+    /// editor for its top-level graph (from `content`) and by the parent
+    /// graph for each custom-node runtime. A graph without one evaluates in
+    /// the context of its caller. Never cloned (a clone starts without
+    /// one); revoked when the graph is dropped.
+    #[serde(skip)]
+    capabilities: crate::capability::Scope,
     /// P4.2 Stage 2: resolves package references (project copy first, then
     /// the Library). Its locations are set by the editor with
     /// `set_package_environment`; verification results are cached.
@@ -2856,6 +2918,10 @@ impl Graph {
             custom_runtime_failures: HashMap::new(),
             custom_package_paths: HashMap::new(),
             custom_file_in_package: HashMap::new(),
+            custom_blocked: HashMap::new(),
+            content: crate::library::trust::content::ContentState::Authored,
+            content_basis: None,
+            capabilities: crate::capability::Scope::default(),
             package_resolver: crate::library::resolve::PackageResolver::default(),
             custom_port_events: CustomPortSyncReport::default(),
 
@@ -2883,6 +2949,51 @@ impl Graph {
     /// Sets next_id to one past the highest existing node ID.
     pub fn fix_next_id(&mut self) {
         self.next_id = self.nodes.keys().max().copied().unwrap_or(0) + 1;
+        // P4.3.2A: every load path calls this; give placeholders for
+        // unavailable node types a port for each attached wire.
+        self.size_unknown_nodes();
+    }
+
+    /// Size the ports of unknown-node placeholders from their connections,
+    /// so the wires stay visible and intact, and give each such port the
+    /// type of the (known) port at the other end of its wire.
+    pub fn size_unknown_nodes(&mut self) {
+        let is_unknown = |node: &Node| matches!(&node.node_type, NodeType::Dynamic { inner } if inner.node.as_unknown().is_some());
+        let mut needed: HashMap<NodeId, (usize, usize)> = HashMap::new();
+        // (node, is_input, port, kind of the port on the other end)
+        let mut kinds: Vec<(NodeId, bool, usize, PortKind)> = Vec::new();
+        for c in &self.connections {
+            let to = needed.entry(c.to_node).or_default();
+            to.0 = to.0.max(c.to_port + 1);
+            let from = needed.entry(c.from_node).or_default();
+            from.1 = from.1.max(c.from_port + 1);
+            let (Some(from_node), Some(to_node)) =
+                (self.nodes.get(&c.from_node), self.nodes.get(&c.to_node))
+            else {
+                continue;
+            };
+            if is_unknown(to_node) && !is_unknown(from_node) {
+                if let Some(port) = from_node.node_type.outputs().get(c.from_port) {
+                    kinds.push((c.to_node, true, c.to_port, port.kind));
+                }
+            }
+            if is_unknown(from_node) && !is_unknown(to_node) {
+                if let Some(port) = to_node.node_type.inputs().get(c.to_port) {
+                    kinds.push((c.from_node, false, c.from_port, port.kind));
+                }
+            }
+        }
+        for (id, node) in self.nodes.iter_mut() {
+            if let NodeType::Dynamic { inner } = &mut node.node_type {
+                if let Some(unknown) = inner.node.as_unknown_mut() {
+                    let (inputs, outputs) = needed.get(id).copied().unwrap_or_default();
+                    unknown.ensure_ports(inputs, outputs);
+                    for (_, is_input, port, kind) in kinds.iter().filter(|k| k.0 == *id) {
+                        unknown.learn_port_kind(*is_input, *port, *kind);
+                    }
+                }
+            }
+        }
     }
 
     pub fn add_node(&mut self, node_type: NodeType, pos: [f32; 2]) -> NodeId {
@@ -2925,6 +3036,7 @@ impl Graph {
         self.custom_runtime_failures.remove(&id);
         self.custom_package_paths.remove(&id);
         self.custom_file_in_package.remove(&id);
+        self.custom_blocked.remove(&id);
         self.connections
             .retain(|c| c.from_node != id && c.to_node != id);
         crate::node_errors::remove_for(id);
@@ -3462,7 +3574,12 @@ impl Graph {
                 // of syscalls + CPU for the 99.99% of frames where the
                 // selection hasn't changed.
                 if !selected_file.is_empty() {
-                    if cached_content_path != selected_file {
+                    // P4.3.2E2: read only with the filesystem capability
+                    // (retried once it is granted).
+                    if cached_content_path != selected_file
+                        && crate::capability::check(crate::capability::Capability::Filesystem)
+                            .is_ok()
+                    {
                         *cached_content =
                             std::fs::read_to_string(selected_file.as_str()).unwrap_or_default();
                         *cached_content_path = selected_file.clone();
@@ -3545,7 +3662,28 @@ impl Graph {
                     return; // emit last values and skip eval for this node
                 }
 
-                let engine = rhai::Engine::new();
+                // P4.3.2B: bounded source, plain variable names, and a
+                // hardened engine (no imports, finite time and resources).
+                let limits = &crate::scripting::SCRIPT_LIMITS;
+                let checked =
+                    crate::scripting::check_source(effective_code, limits).and_then(|_| {
+                        input_names
+                            .iter()
+                            .chain(output_names.iter())
+                            .try_for_each(|name| crate::scripting::check_identifier(name))
+                    });
+                if let Err(message) = checked {
+                    *error = message;
+                    return;
+                }
+                // P4.3.2E2: running script code from the graph.
+                if let Err(denied) =
+                    crate::capability::check(crate::capability::Capability::Scripting)
+                {
+                    *error = denied.to_string();
+                    return;
+                }
+                let engine = crate::scripting::sandboxed_engine(limits);
                 // User inputs start after [Exec?] [Code] ports
                 let input_offset: usize = code_port_idx + 1;
                 let in_vars: Vec<String> = input_names
@@ -3738,6 +3876,9 @@ impl Graph {
         now_secs: f64,
         injected_inputs: &[(NodeId, PortValue)],
     ) -> HashMap<(NodeId, usize), PortValue> {
+        // P4.3.2E2: everything this graph's nodes do is checked against its
+        // context (or, without one, the caller's).
+        let _rights = self.capabilities.context().map(|c| c.enter());
         // Compute real frame dt from wall clock (clamped to avoid huge jumps).
         let real_dt = if self.last_eval_time > 0.0 {
             ((now_secs - self.last_eval_time) as f32).clamp(0.0001, 0.25)
@@ -3789,7 +3930,9 @@ impl Graph {
             if let Some((file, package)) = custom_file {
                 match self.ensure_custom_runtime(id, &file, package.as_ref()) {
                     Ok(()) => {
+                        let (rights, label) = self.runtime_rights(id);
                         if let Some(runtime) = self.custom_runtimes.get_mut(&id) {
+                            runtime.capabilities.ensure(rights, &label);
                             let mut input_nodes: Vec<NodeId> = runtime
                                 .nodes
                                 .iter()
@@ -3826,10 +3969,12 @@ impl Graph {
                         }
                     }
                     Err(error) => {
-                        crate::node_errors::report_for(
-                            id,
-                            format!("Custom node load failed: {error}"),
-                        );
+                        let message = if self.custom_blocked.contains_key(&id) {
+                            error
+                        } else {
+                            format!("Custom node load failed: {error}")
+                        };
+                        crate::node_errors::report_for(id, message);
                     }
                 }
             } else if let Some(node) = self.nodes.get_mut(&id) {
@@ -3879,7 +4024,9 @@ impl Graph {
                     if let Some((file, package)) = custom_file {
                         match self.ensure_custom_runtime(id, &file, package.as_ref()) {
                             Ok(()) => {
+                                let (rights, label) = self.runtime_rights(id);
                                 if let Some(runtime) = self.custom_runtimes.get_mut(&id) {
+                                    runtime.capabilities.ensure(rights, &label);
                                     // Match the stable port ordering used when saving .pwnode.
                                     let mut input_nodes: Vec<NodeId> = runtime
                                         .nodes
@@ -3920,10 +4067,12 @@ impl Graph {
                                 }
                             }
                             Err(error) => {
-                                crate::node_errors::report_for(
-                                    id,
-                                    format!("Custom node load failed: {error}"),
-                                );
+                                let message = if self.custom_blocked.contains_key(&id) {
+                                    error
+                                } else {
+                                    format!("Custom node load failed: {error}")
+                                };
+                                crate::node_errors::report_for(id, message);
                             }
                         }
                     } else if let Some(node) = self.nodes.get_mut(&id) {
@@ -4130,6 +4279,7 @@ impl Graph {
         self.custom_runtime_failures.clear();
         self.custom_package_paths.clear();
         self.custom_file_in_package.clear();
+        self.custom_blocked.clear();
         self.package_resolver.clear_cache();
         for runtime in self.custom_runtimes.values_mut() {
             count += runtime.clear_custom_runtime_failures();
@@ -4182,11 +4332,13 @@ impl Graph {
             .package_resolver
             .bundle()
             .map(std::path::Path::to_path_buf);
+        let trust = self.package_resolver.trust().clone();
         self.package_resolver = crate::library::resolve::PackageResolver::new(
             project_dir.clone(),
             library_root.clone(),
         );
         self.package_resolver.set_bundle(bundle);
+        self.package_resolver.set_trust(trust);
         let packaged: Vec<NodeId> = self
             .nodes
             .iter()
@@ -4210,6 +4362,47 @@ impl Graph {
         for runtime in self.custom_runtimes.values_mut() {
             runtime.set_package_environment(project_dir.clone(), library_root.clone());
         }
+    }
+
+    /// P4.3.2D: set the trust store that authorizes package runtimes in
+    /// this graph and every nested runtime. Cheap when unchanged (the editor
+    /// calls it before every evaluation); on a change every package runtime
+    /// is authorized again.
+    pub fn set_trust_policy(&mut self, policy: crate::library::trust::authorize::TrustPolicy) {
+        if self.package_resolver.trust() == &policy {
+            return;
+        }
+        self.package_resolver.set_trust(policy.clone());
+        let packaged: Vec<NodeId> = self
+            .custom_runtime_modified
+            .iter()
+            .filter(|(_, stamp)| stamp.authorized.is_some())
+            .map(|(&id, _)| id)
+            .collect();
+        for id in packaged {
+            self.custom_runtimes.remove(&id);
+            self.custom_runtime_modified.remove(&id);
+        }
+        self.custom_runtime_failures.clear();
+        self.custom_blocked.clear();
+        for runtime in self.custom_runtimes.values_mut() {
+            runtime.set_trust_policy(policy.clone());
+        }
+    }
+
+    /// P4.3.2D: why an instance's package may not run, if it is blocked.
+    pub fn custom_blocked(&self, id: NodeId) -> Option<&crate::library::trust::authorize::Blocked> {
+        self.custom_blocked.get(&id)
+    }
+
+    /// P4.3.2D: every blocked package runtime in this graph and its nested
+    /// runtimes (for the permission banner and review).
+    pub fn blocked_packages(&self) -> Vec<crate::library::trust::authorize::Blocked> {
+        let mut out: Vec<_> = self.custom_blocked.values().cloned().collect();
+        for runtime in self.custom_runtimes.values() {
+            out.extend(runtime.blocked_packages());
+        }
+        out
     }
 
     /// The `.pwnode` a custom-node instance currently loads: the resolved
@@ -4329,10 +4522,13 @@ impl Graph {
         }
 
         let result = (|| {
-            let custom = crate::document::CustomNodeFile::load(&canonical)?;
+            // P4.3.2D: read statically. Checking a (possibly unauthorized)
+            // nested package must never construct its nodes.
+            let custom = crate::document::read_custom_node_static(&canonical)?;
 
-            for node in custom.graph.nodes.values() {
-                if let NodeType::CustomNodeInstance { file, package, .. } = &node.node_type {
+            for instance in &custom.instances {
+                {
+                    let (file, package) = (&instance.file, &instance.package);
                     let child_path = std::path::Path::new(file);
 
                     let resolved = if let Some(stored) = package {
@@ -4379,7 +4575,11 @@ impl Graph {
         // reference is resolved again (verification results stay cached by
         // file stamps), so installing the package recovers the instance.
         if let Some(failure) = self.custom_runtime_failures.get_mut(&instance_id) {
-            if failure.file == file && failure.package.as_ref() == package {
+            // P4.3.2D: a grant or denial decides a blocked runtime again now.
+            let trust_changed = failure
+                .blocked
+                .is_some_and(|g| g != crate::library::trust::generation());
+            if failure.file == file && failure.package.as_ref() == package && !trust_changed {
                 let now = std::time::Instant::now();
                 if now < failure.next_check {
                     return Err(failure.error.clone());
@@ -4399,6 +4599,8 @@ impl Graph {
             self.custom_runtime_failures.remove(&instance_id);
         }
 
+        // Only an authorization refusal in this attempt marks it blocked.
+        self.custom_blocked.remove(&instance_id);
         let result = self
             .custom_source_path(instance_id, file, package)
             .and_then(|source| self.load_custom_runtime(instance_id, file, package, &source));
@@ -4409,6 +4611,10 @@ impl Graph {
             self.custom_runtimes.remove(&instance_id);
             self.custom_runtime_modified.remove(&instance_id);
             self.custom_package_paths.remove(&instance_id);
+            let blocked = self
+                .custom_blocked
+                .contains_key(&instance_id)
+                .then(crate::library::trust::generation);
             self.custom_runtime_failures.insert(
                 instance_id,
                 CustomRuntimeFailure {
@@ -4416,9 +4622,17 @@ impl Graph {
                     package: package.cloned(),
                     stamp: custom_file_stamp(std::path::Path::new(file)).ok(),
                     error: error.clone(),
-                    next_check: std::time::Instant::now() + CUSTOM_FAILURE_RECHECK,
+                    next_check: std::time::Instant::now()
+                        + if blocked.is_some() {
+                            BLOCKED_RECHECK
+                        } else {
+                            CUSTOM_FAILURE_RECHECK
+                        },
+                    blocked,
                 },
             );
+        } else {
+            self.custom_blocked.remove(&instance_id);
         }
         result
     }
@@ -4526,10 +4740,145 @@ impl Graph {
             .map(|f| f.error.clone())
     }
 
+    /// P4.3.2E2: the capability context of this graph (custom-node runtimes
+    /// get theirs from their parent; the editor keeps each document's).
+    #[cfg(test)]
+    pub fn capability_scope_mut(&mut self) -> &mut crate::capability::Scope {
+        &mut self.capabilities
+    }
+
     /// Test hook: whether an instance currently has a loaded runtime.
     #[cfg(test)]
     pub(crate) fn has_custom_runtime(&self, id: NodeId) -> bool {
         self.custom_runtimes.contains_key(&id)
+    }
+
+    /// P4.3.2D: the single authorization path for package runtimes (and,
+    /// through [`crate::library::trust::authorize::authorize_entry`], every
+    /// package they depend on). A refusal is remembered as the instance's
+    /// blocked state; nothing is constructed.
+    fn authorize_package(
+        &mut self,
+        instance_id: NodeId,
+        source: &std::path::Path,
+    ) -> Result<crate::library::trust::authorize::Authorized, String> {
+        match crate::library::trust::authorize::authorize_entry(
+            self.package_resolver.trust(),
+            source,
+            &self.package_resolver,
+        ) {
+            Ok(authorized) => {
+                self.custom_blocked.remove(&instance_id);
+                Ok(authorized)
+            }
+            Err(blocked) => {
+                let message = blocked.message();
+                self.custom_blocked.insert(instance_id, blocked);
+                Err(message)
+            }
+        }
+    }
+
+    /// P4.3.2E2: the rights a custom-node runtime evaluates with: its own
+    /// (recorded when it was authorized) within the rights in force for
+    /// this graph. A runtime without a record gets nothing (fail closed).
+    fn runtime_rights(&self, instance_id: NodeId) -> (crate::capability::CapSet, String) {
+        let (own, label) = self
+            .custom_runtime_modified
+            .get(&instance_id)
+            .and_then(|stamp| {
+                let (key, _) = stamp.authorized.as_ref()?;
+                Some((stamp.capabilities, key.clone()))
+            })
+            .unwrap_or((crate::capability::CapSet::EMPTY, String::new()));
+        let parent = self
+            .capabilities
+            .context()
+            .map(|context| context.effective())
+            .unwrap_or_else(crate::capability::effective);
+        (own.intersect(parent), format!("custom node {label}"))
+    }
+
+    /// P4.3.2E2: bring this graph's custom-node runtimes (and theirs, at
+    /// every level) in line with a trust change now, whether or not the
+    /// graph is evaluated (a background tab's graph, the active one
+    /// between frames). A runtime authorized under an older trust
+    /// generation is authorized again from its bytes:
+    /// * the same content keeps running with its new rights; a narrower
+    ///   set revokes its context (and so its workers' rights) at once;
+    /// * content that is now refused, or that changed, is dropped, which
+    ///   revokes its context; it is loaded and decided again only if the
+    ///   graph runs.
+    pub fn apply_trust_change(&mut self) {
+        let generation = crate::library::trust::generation();
+        let follows_store = self.package_resolver.trust().follows_store();
+        let ids: Vec<NodeId> = self.custom_runtime_modified.keys().copied().collect();
+        for id in ids {
+            let Some(stamp) = self.custom_runtime_modified.get(&id).cloned() else {
+                continue;
+            };
+            if let (Some((key, at)), true) = (&stamp.authorized, follows_store) {
+                if *at != generation {
+                    let packaged = stamp.package.is_some() || self.file_in_package(id, &stamp.file);
+                    match self.authorize_runtime(id, &stamp.source, packaged) {
+                        Ok((authorized, _, rights)) if authorized == *key => {
+                            if !stamp.capabilities.is_subset(rights) {
+                                if let Some(runtime) = self.custom_runtimes.get_mut(&id) {
+                                    runtime.capabilities.revoke();
+                                }
+                            }
+                            if let Some(current) = self.custom_runtime_modified.get_mut(&id) {
+                                current.authorized = Some((key.clone(), generation));
+                                current.capabilities = rights;
+                            }
+                        }
+                        _ => {
+                            // Dropping the runtime revokes its context.
+                            self.custom_runtimes.remove(&id);
+                            self.custom_runtime_modified.remove(&id);
+                            continue;
+                        }
+                    }
+                }
+            }
+            if let Some(runtime) = self.custom_runtimes.get_mut(&id) {
+                runtime.apply_trust_change();
+            }
+        }
+    }
+
+    /// P4.3.2E1: authorize a runtime: a package (with its dependencies)
+    /// or a loose custom-node file (by content). Returns what was
+    /// authorized, the exact text to build it from and (P4.3.2E2) its own
+    /// rights.
+    fn authorize_runtime(
+        &mut self,
+        instance_id: NodeId,
+        source: &std::path::Path,
+        packaged: bool,
+    ) -> Result<(String, String, crate::capability::CapSet), String> {
+        if packaged {
+            let authorized = self.authorize_package(instance_id, source)?;
+            let identity = &authorized.identity;
+            return Ok((
+                format!("package:{}#{}", identity.label(), identity.tree_sha256),
+                authorized.entry_text,
+                authorized.capabilities,
+            ));
+        }
+        use crate::library::trust::authorize::{LooseRefusal, authorize_loose};
+        match authorize_loose(self.package_resolver.trust(), source) {
+            Ok((digest, text, rights)) => {
+                self.custom_blocked.remove(&instance_id);
+                Ok((format!("custom_node:{digest}"), text, rights))
+            }
+            Err(LooseRefusal::Blocked(blocked)) => {
+                let message = blocked.message();
+                self.custom_blocked.insert(instance_id, blocked);
+                Err(message)
+            }
+            Err(LooseRefusal::Failed(error)) => Err(error),
+        }
     }
 
     fn load_custom_runtime(
@@ -4540,8 +4889,12 @@ impl Graph {
         source: &std::path::Path,
     ) -> Result<(), String> {
         let (modified, len) = custom_file_stamp(source)?;
+        // P4.3.2D: package runtimes (packaged instances, and files inside a
+        // published package) are authorized before anything is constructed.
+        // P4.3.2E1: so are loose custom-node files (by content).
+        let packaged = package.is_some() || self.file_in_package(instance_id, file);
         // Reuse the runtime only for the same reference, source, mtime and size.
-        if self.custom_runtimes.contains_key(&instance_id)
+        let same_source = self.custom_runtimes.contains_key(&instance_id)
             && self
                 .custom_runtime_modified
                 .get(&instance_id)
@@ -4551,21 +4904,54 @@ impl Graph {
                         && stamp.source == source
                         && stamp.modified == modified
                         && stamp.len == len
-                })
-        {
-            return Ok(());
+                });
+        if same_source {
+            let generation = crate::library::trust::generation();
+            let stamp = self.custom_runtime_modified.get(&instance_id);
+            match stamp.and_then(|s| s.authorized.clone()) {
+                None => return Ok(()),
+                Some((_, authorized_at))
+                    if authorized_at == generation
+                        || !self.package_resolver.trust().follows_store() =>
+                {
+                    return Ok(());
+                }
+                // The trust store changed: decide again (from the bytes). The
+                // running runtime is kept only for the very same identity.
+                Some((key, _)) => match self.authorize_runtime(instance_id, source, packaged) {
+                    Ok((authorized, _, rights)) if authorized == key => {
+                        // P4.3.2E2: the same content may have new rights (a
+                        // grant re-decided); a narrower set revokes the
+                        // runtime's context at its next evaluation.
+                        if let Some(stamp) = self.custom_runtime_modified.get_mut(&instance_id) {
+                            stamp.authorized = Some((key, generation));
+                            stamp.capabilities = rights;
+                        }
+                        return Ok(());
+                    }
+                    Ok(_) => {}
+                    Err(message) => return Err(message),
+                },
+            }
         }
-        let custom = crate::document::CustomNodeFile::load(source)?;
+        let (key, text, rights) = self.authorize_runtime(instance_id, source, packaged)?;
         // P4.2 Stage 3: nested instances of a package resolve against the
         // outermost package containing it (its bundled deps/ first).
         let mut child_resolver = self.package_resolver.clone();
         child_resolver.set_bundle(crate::library::package::containing_package_root(source));
-        // Reject direct and indirect recursive custom-node references.
+        // Reject direct and indirect recursive custom-node references
+        // (read statically: nothing is constructed).
         Self::check_custom_node_dependencies_resolving(
             source,
             &mut std::collections::HashSet::new(),
             0,
             Some(&mut child_resolver),
+        )?;
+        // Nodes are constructed here, from the authorized bytes.
+        let custom = crate::document::CustomNodeFile::load_text_with_policy(
+            source,
+            &text,
+            &crate::document::DependencyPolicy::TrustedLocal,
         )?;
         // Synchronize the instance's external ports with the source file.
         let report = self.sync_custom_ports(instance_id, custom.inputs, custom.outputs);
@@ -4585,6 +4971,8 @@ impl Graph {
                 resolved: std::fs::canonicalize(source).unwrap_or_else(|_| source.to_path_buf()),
                 modified,
                 len,
+                authorized: Some((key, crate::library::trust::generation())),
+                capabilities: rights,
             },
         );
 
@@ -4997,6 +5385,14 @@ mod custom_runtime_cache_tests {
         LOAD_COUNT.with(|c| c.get())
     }
 
+    /// Every read of a custom-node file: full loads and (P4.3.2D) the
+    /// static reads of the recursion check.
+    fn reads() -> usize {
+        loads()
+            + crate::document::STATIC_READ_COUNT.with(|c| c.get())
+            + crate::library::trust::authorize::LOOSE_READS.with(|c| c.get())
+    }
+
     fn expire_rechecks(graph: &mut Graph) {
         let now = std::time::Instant::now();
         for failure in graph.custom_runtime_failures.values_mut() {
@@ -5012,9 +5408,9 @@ mod custom_runtime_cache_tests {
         let (mut graph, id) = instance_graph(&path);
         let file = file_of(&graph, id);
 
-        let before = loads();
+        let before = reads();
         let first = graph.ensure_custom_runtime(id, &file, None).unwrap_err();
-        assert_eq!(loads(), before + 1);
+        assert_eq!(reads(), before + 1);
         for _ in 0..50 {
             assert_eq!(
                 graph.ensure_custom_runtime(id, &file, None).unwrap_err(),
@@ -5022,7 +5418,7 @@ mod custom_runtime_cache_tests {
             );
         }
         assert_eq!(
-            loads(),
+            reads(),
             before + 1,
             "no re-read while the failure is cached"
         );
@@ -5030,7 +5426,7 @@ mod custom_runtime_cache_tests {
         // After the recheck time an unchanged file is still not re-parsed.
         expire_rechecks(&mut graph);
         assert!(graph.ensure_custom_runtime(id, &file, None).is_err());
-        assert_eq!(loads(), before + 1);
+        assert_eq!(reads(), before + 1);
     }
 
     #[test]
@@ -5540,6 +5936,7 @@ mod package_reference_tests {
                 stamp: None,
                 error: "stale".into(),
                 next_check: std::time::Instant::now() + std::time::Duration::from_secs(60),
+                blocked: None,
             },
         );
         graph.evaluate(0.0);

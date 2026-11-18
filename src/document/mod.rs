@@ -10,6 +10,20 @@ pub mod manager;
 
 pub use manager::DocumentManager;
 
+/// P4.3.2F: the rights a published package version open in a tab runs
+/// with now (its authorization as a package runtime), or why it may not run.
+pub fn authorize_package_tab(
+    policy: &crate::library::trust::authorize::TrustPolicy,
+    entry: &std::path::Path,
+) -> Result<crate::capability::CapSet, String> {
+    let mut resolver =
+        crate::library::resolve::PackageResolver::new(None, crate::library::library_root().ok());
+    resolver.set_trust(policy.clone());
+    crate::library::trust::authorize::authorize_entry(policy, entry, &resolver)
+        .map(|authorized| authorized.capabilities)
+        .map_err(|blocked| blocked.message())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DocumentKind {
     Project,
@@ -21,6 +35,8 @@ thread_local! {
     /// Number of `.pwnode` loads on this thread (tests use it to prove
     /// that cached failures cause no repeated file reads).
     pub static LOAD_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// P4.3.2A: `.pwnode` files read statically (no node construction).
+    pub static STATIC_READ_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -71,10 +87,21 @@ pub fn custom_node_interface(graph: &Graph) -> (Vec<CustomNodePort>, Vec<CustomN
 /// `.pwnode` at `destination` (named after the file) and returns what was
 /// written. Never touches any other file. The caller confirms overwriting
 /// an existing destination.
+/// Used by tests (the editor records the digest: [`save_custom_node_as_with_digest`]).
+#[cfg(test)]
 pub fn save_custom_node_as(
     graph: &Graph,
     destination: &std::path::Path,
 ) -> Result<CustomNodeFile, String> {
+    save_custom_node_as_with_digest(graph, destination).map(|(file, _)| file)
+}
+
+/// [`save_custom_node_as`], also returning (P4.3.2E1) the content digest of
+/// the exact text written.
+pub fn save_custom_node_as_with_digest(
+    graph: &Graph,
+    destination: &std::path::Path,
+) -> Result<(CustomNodeFile, String), String> {
     if !Document::path_fits_kind(DocumentKind::CustomNode, destination) {
         return Err("A custom node must be saved as a .pwnode file.".to_string());
     }
@@ -97,12 +124,20 @@ pub fn save_custom_node_as(
         outputs,
     };
     // `save` also refuses published Library package versions.
-    file.save(destination)?;
-    Ok(file)
+    let digest = file.save_with_digest(destination)?;
+    Ok((file, digest))
 }
 
 impl CustomNodeFile {
+    /// Used by tests (the editor records the digest: [`Self::save_with_digest`]).
+    #[cfg(test)]
     pub fn save(&self, path: &std::path::Path) -> Result<(), String> {
+        self.save_with_digest(path).map(drop)
+    }
+
+    /// Save, returning (P4.3.2E1) the content digest of the exact text
+    /// written, so the caller can record its provenance.
+    pub fn save_with_digest(&self, path: &std::path::Path) -> Result<String, String> {
         // P4.1: published Library package versions are immutable from every
         // editing workflow (tab save, grouping, duplicate, ...).
         if crate::library::package::is_inside_published_package(path) {
@@ -146,29 +181,32 @@ impl CustomNodeFile {
         let json = serde_json::to_string_pretty(&portable)
             .map_err(|e| format!("Failed to serialize custom node: {e}"))?;
 
+        let digest = crate::library::trust::content::custom_node_digest(&json)?;
         std::fs::write(path, json).map_err(|e| format!("Failed to save custom node: {e}"))?;
 
-        Ok(())
+        Ok(digest)
     }
     /// Load a custom node, validating nested references with `policy`.
     pub fn load_with_policy(
         path: &std::path::Path,
         policy: &DependencyPolicy,
     ) -> Result<Self, String> {
-        if let DependencyPolicy::Contained { root } = policy {
-            let canonical_root = std::fs::canonicalize(root)
-                .map_err(|e| format!("Cannot resolve dependency folder {}: {e}", root.display()))?;
-            let canonical = std::fs::canonicalize(path)
-                .map_err(|e| format!("Cannot resolve custom node {}: {e}", path.display()))?;
-            if !canonical.starts_with(&canonical_root) {
-                return Err(format!("{} is outside its package folder.", path.display()));
-            }
-        }
-        #[cfg(test)]
-        LOAD_COUNT.with(|count| count.set(count.get() + 1));
+        check_contained_file(path, policy)?;
         let json = std::fs::read_to_string(path)
             .map_err(|e| format!("Failed to read custom node: {e}"))?;
+        Self::load_text_with_policy(path, &json, policy)
+    }
 
+    /// P4.3.2D: build a custom node from text that was already read (and,
+    /// for packages, authorized byte for byte), as if loaded from `path`.
+    /// This is where node objects are constructed.
+    pub fn load_text_with_policy(
+        path: &std::path::Path,
+        json: &str,
+        policy: &DependencyPolicy,
+    ) -> Result<Self, String> {
+        #[cfg(test)]
+        LOAD_COUNT.with(|count| count.set(count.get() + 1));
         let mut custom_node: Self =
             serde_json::from_str(&json).map_err(|e| format!("Failed to parse custom node: {e}"))?;
 
@@ -189,58 +227,267 @@ impl CustomNodeFile {
             if let crate::graph::NodeType::CustomNodeInstance { file, package, .. } =
                 &mut node.node_type
             {
-                if file.is_empty() && *policy == DependencyPolicy::TrustedLocal {
-                    // Unchanged legacy behaviour for an unset reference.
-                    continue;
-                }
-                // P4.2 Stage 3: in a package, a packaged nested instance is
-                // resolved by its reference (often from the containing
-                // package's deps/), so its compatibility path may be absent.
-                // It must still be a plain path inside the folder.
-                if package.is_some() && matches!(policy, DependencyPolicy::Contained { .. }) {
-                    if file.is_empty() {
-                        continue;
-                    }
-                    let lexical =
-                        resolve_nested_reference(parent, file, &DependencyPolicy::TrustedLocal)
-                            .map_err(|e| format!("{}: {e}", path.display()))?;
-                    if std::path::Path::new(file.as_str()).is_absolute() {
-                        return Err(format!(
-                            "{}: Nested custom node uses an absolute path ({file}).",
-                            path.display()
-                        ));
-                    }
-                    let resolved = if lexical.exists() {
-                        resolve_nested_reference(parent, file, policy)
-                            .map_err(|e| format!("{}: {e}", path.display()))?
-                    } else {
-                        lexical
-                    };
+                if let Some(resolved) =
+                    check_instance_reference(path, parent, file, package.is_some(), policy)?
+                {
                     *file = resolved.to_string_lossy().into_owned();
-                    continue;
                 }
-                let resolved = match resolve_nested_reference(parent, file, policy) {
-                    Ok(resolved) => resolved,
-                    // P4.2 Stage 2: in a local file, a packaged instance is
-                    // identified by its package; an unusable compatibility
-                    // path (e.g. written on another OS) is kept as-is and
-                    // the package is resolved instead.
-                    Err(_) if package.is_some() && *policy == DependencyPolicy::TrustedLocal => {
-                        continue;
-                    }
-                    Err(e) => return Err(format!("{}: {e}", path.display())),
-                };
-                *file = resolved.to_string_lossy().into_owned();
             }
         }
 
         Ok(custom_node)
     }
 
+    /// P4.3.2A: validate a custom node exactly like [`Self::load_with_policy`]
+    /// (format, containment, every nested reference) but read it as plain
+    /// JSON: no `NodeType` or dynamic node is constructed, so no node code
+    /// runs. Used by package verification.
+    pub fn check_static(
+        path: &std::path::Path,
+        policy: &DependencyPolicy,
+    ) -> Result<RawCustomNode, String> {
+        check_contained_file(path, policy)?;
+        let raw = read_custom_node_static(path)?;
+        if raw.version != 1 {
+            return Err(format!("Unsupported custom node version: {}", raw.version));
+        }
+        let parent = path.parent().unwrap_or(std::path::Path::new("."));
+        for instance in &raw.instances {
+            check_instance_reference(
+                path,
+                parent,
+                &instance.file,
+                instance.package.is_some(),
+                policy,
+            )?;
+        }
+        Ok(raw)
+    }
+
     /// Load a local custom node (the user's own files and Library).
     pub fn load(path: &std::path::Path) -> Result<Self, String> {
         Self::load_with_policy(path, &DependencyPolicy::TrustedLocal)
     }
+}
+
+/// A `Contained` file must resolve inside its root.
+fn check_contained_file(path: &std::path::Path, policy: &DependencyPolicy) -> Result<(), String> {
+    if let DependencyPolicy::Contained { root } = policy {
+        let canonical_root = std::fs::canonicalize(root)
+            .map_err(|e| format!("Cannot resolve dependency folder {}: {e}", root.display()))?;
+        let canonical = std::fs::canonicalize(path)
+            .map_err(|e| format!("Cannot resolve custom node {}: {e}", path.display()))?;
+        if !canonical.starts_with(&canonical_root) {
+            return Err(format!("{} is outside its package folder.", path.display()));
+        }
+    }
+    Ok(())
+}
+
+/// The rules for one nested instance reference in the `.pwnode` at `path`
+/// (shared by the loader and the static check). `Ok(Some(path))` is the
+/// path to record, `Ok(None)` keeps the reference unchanged.
+fn check_instance_reference(
+    path: &std::path::Path,
+    parent: &std::path::Path,
+    file: &str,
+    packaged: bool,
+    policy: &DependencyPolicy,
+) -> Result<Option<PathBuf>, String> {
+    if file.is_empty() && *policy == DependencyPolicy::TrustedLocal {
+        // Unchanged legacy behaviour for an unset reference.
+        return Ok(None);
+    }
+    // P4.2 Stage 3: in a package, a packaged nested instance is resolved by
+    // its reference (often from the containing package's deps/), so its
+    // compatibility path may be absent. It must still be a plain path
+    // inside the folder.
+    if packaged && matches!(policy, DependencyPolicy::Contained { .. }) {
+        if file.is_empty() {
+            return Ok(None);
+        }
+        let lexical = resolve_nested_reference(parent, file, &DependencyPolicy::TrustedLocal)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        if std::path::Path::new(file).is_absolute() {
+            return Err(format!(
+                "{}: Nested custom node uses an absolute path ({file}).",
+                path.display()
+            ));
+        }
+        let resolved = if lexical.exists() {
+            resolve_nested_reference(parent, file, policy)
+                .map_err(|e| format!("{}: {e}", path.display()))?
+        } else {
+            lexical
+        };
+        return Ok(Some(resolved));
+    }
+    match resolve_nested_reference(parent, file, policy) {
+        Ok(resolved) => Ok(Some(resolved)),
+        // P4.2 Stage 2: in a local file, a packaged instance is identified
+        // by its package; an unusable compatibility path (e.g. written on
+        // another OS) is kept as-is and the package is resolved instead.
+        Err(_) if packaged && *policy == DependencyPolicy::TrustedLocal => Ok(None),
+        Err(e) => Err(format!("{}: {e}", path.display())),
+    }
+}
+
+/// P4.3.2A: one nested custom-node instance, read without constructing it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawInstance {
+    pub file: String,
+    pub package: Option<crate::library::resolve::InstancePackageRef>,
+}
+
+/// P4.3.2A: what package verification needs from a `.pwnode`, read as
+/// plain JSON.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawCustomNode {
+    pub version: u64,
+    pub instances: Vec<RawInstance>,
+}
+
+// Shadow of the `.pwnode` layout with the loader's required fields
+// (`CustomNodeFile`, `Graph`, `Node`, `Connection`) but every node type kept
+// as raw JSON, so reading it constructs no node.
+#[derive(Deserialize)]
+struct ShadowFile {
+    version: u32,
+    #[allow(dead_code)]
+    name: String,
+    graph: ShadowGraph,
+    #[serde(default)]
+    #[allow(dead_code)]
+    inputs: Vec<CustomNodePort>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    outputs: Vec<CustomNodePort>,
+}
+
+#[derive(Deserialize)]
+struct ShadowGraph {
+    nodes: std::collections::HashMap<crate::graph::NodeId, ShadowNode>,
+    #[allow(dead_code)]
+    connections: Vec<crate::graph::Connection>,
+    #[allow(dead_code)]
+    next_id: u64,
+}
+
+#[derive(Deserialize)]
+struct ShadowNode {
+    #[allow(dead_code)]
+    id: crate::graph::NodeId,
+    node_type: serde_json::Value,
+    #[allow(dead_code)]
+    pos: [f32; 2],
+}
+
+/// `NodeType::CustomNodeInstance`'s fields, with the same requirements.
+#[derive(Deserialize)]
+struct ShadowInstance {
+    file: String,
+    #[allow(dead_code)]
+    inputs: Vec<CustomNodePort>,
+    #[allow(dead_code)]
+    outputs: Vec<CustomNodePort>,
+    #[serde(default)]
+    package: Option<crate::library::resolve::InstancePackageRef>,
+}
+
+/// P4.3.2B: check one node's serialized type against the loader's own
+/// definitions without running node code. Built-in variants are plain data
+/// (no custom deserializers; skipped fields default to plain values —
+/// guarded by a test), so they are checked with the real `NodeType`
+/// definition. `Dynamic` is never deserialized here (that would run a
+/// registry factory): only its required `inner` object is checked.
+fn check_node_payload_static(node_type: &serde_json::Value) -> Result<(), String> {
+    if let Some(dynamic) = node_type.get("Dynamic") {
+        let valid = node_type.as_object().is_some_and(|m| m.len() == 1)
+            && dynamic
+                .get("inner")
+                .is_some_and(serde_json::Value::is_object);
+        return if valid {
+            Ok(())
+        } else {
+            Err("Failed to parse custom node: a dynamic node has no `inner` object".to_string())
+        };
+    }
+    serde_json::from_value::<crate::graph::NodeType>(node_type.clone())
+        .map(drop)
+        .map_err(|e| format!("Failed to parse custom node: invalid node: {e}"))
+}
+
+/// P4.3.2A: read a `.pwnode` without constructing any node and extract its
+/// nested instances. The file layout (format version, name, graph, node
+/// ids, positions, connections, instance fields) is checked with the same
+/// required fields as the loader; every other node type stays raw JSON
+/// (a malformed one is reported when the graph is loaded for use).
+pub fn read_custom_node_static(path: &std::path::Path) -> Result<RawCustomNode, String> {
+    #[cfg(test)]
+    STATIC_READ_COUNT.with(|count| count.set(count.get() + 1));
+    let text =
+        std::fs::read_to_string(path).map_err(|e| format!("Failed to read custom node: {e}"))?;
+    read_custom_node_static_text(&text)
+}
+
+/// P4.3.2D: a custom node's name and external ports, read statically
+/// (nothing is constructed). Used to insert or re-target an instance of a
+/// package before its runtime is authorized.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StaticInterface {
+    pub name: String,
+    pub inputs: Vec<CustomNodePort>,
+    pub outputs: Vec<CustomNodePort>,
+}
+
+pub fn read_custom_node_interface_static(
+    path: &std::path::Path,
+) -> Result<StaticInterface, String> {
+    #[derive(Deserialize)]
+    struct Interface {
+        name: String,
+        #[serde(default)]
+        inputs: Vec<CustomNodePort>,
+        #[serde(default)]
+        outputs: Vec<CustomNodePort>,
+    }
+    let text =
+        std::fs::read_to_string(path).map_err(|e| format!("Failed to read custom node: {e}"))?;
+    let raw = read_custom_node_static_text(&text)?;
+    if raw.version != 1 {
+        return Err(format!("Unsupported custom node version: {}", raw.version));
+    }
+    let interface: Interface =
+        serde_json::from_str(&text).map_err(|e| format!("Failed to parse custom node: {e}"))?;
+    Ok(StaticInterface {
+        name: interface.name,
+        inputs: interface.inputs,
+        outputs: interface.outputs,
+    })
+}
+
+/// P4.3.2D: [`read_custom_node_static`] on text already in memory.
+pub fn read_custom_node_static_text(text: &str) -> Result<RawCustomNode, String> {
+    let file: ShadowFile =
+        serde_json::from_str(text).map_err(|e| format!("Failed to parse custom node: {e}"))?;
+    let mut instances = Vec::new();
+    for node in file.graph.nodes.values() {
+        check_node_payload_static(&node.node_type)?;
+        let Some(body) = node.node_type.get("CustomNodeInstance") else {
+            continue;
+        };
+        let instance: ShadowInstance = serde_json::from_value(body.clone()).map_err(|e| {
+            format!("Failed to parse custom node: invalid custom node instance: {e}")
+        })?;
+        instances.push(RawInstance {
+            file: instance.file,
+            package: instance.package,
+        });
+    }
+    Ok(RawCustomNode {
+        version: u64::from(file.version),
+        instances,
+    })
 }
 
 /// How strictly nested `.pwnode` references inside a file are validated.

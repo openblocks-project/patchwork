@@ -266,6 +266,10 @@ fn render_file_row(
 
 fn read_dir(path: &str) -> Vec<DirEntry> {
     let mut entries = Vec::new();
+    // P4.3.2E2: listing a folder is a filesystem operation.
+    if crate::capability::check(crate::capability::Capability::Filesystem).is_err() {
+        return entries;
+    }
     let Ok(read_dir) = std::fs::read_dir(path) else {
         return entries;
     };

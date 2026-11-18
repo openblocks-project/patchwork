@@ -363,10 +363,12 @@ pub fn render(
                 .add_filter("JSON", &["json"])
                 .save_file()
             {
-                let _ = std::fs::write(
-                    &path,
-                    serde_json::to_string_pretty(&data).unwrap_or_default(),
-                );
+                if crate::capability::check(crate::capability::Capability::Filesystem).is_ok() {
+                    let _ = std::fs::write(
+                        &path,
+                        serde_json::to_string_pretty(&data).unwrap_or_default(),
+                    );
+                }
             }
         }
         if ui.small_button("Open...").clicked() {
@@ -374,7 +376,10 @@ pub fn render(
                 .add_filter("JSON", &["json"])
                 .pick_file()
             {
-                if let Ok(content) = std::fs::read_to_string(&path) {
+                let content = crate::capability::check(crate::capability::Capability::Filesystem)
+                    .map_err(|e| e.to_string())
+                    .and_then(|()| std::fs::read_to_string(&path).map_err(|e| e.to_string()));
+                if let Ok(content) = content {
                     if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
                         if let Some(b) = v.get("dark_mode").and_then(|v| v.as_bool()) {
                             *dark_mode = b;

@@ -9264,7 +9264,9 @@ struct Detection {
 }
 
 fn load_labels(path: &str, fallback_count: usize) -> Vec<String> {
-    if !path.is_empty() {
+    if !path.is_empty()
+        && crate::capability::check(crate::capability::Capability::Filesystem).is_ok()
+    {
         std::fs::read_to_string(path)
             .unwrap_or_default()
             .lines()

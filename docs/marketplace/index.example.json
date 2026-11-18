@@ -1,0 +1,139 @@
+{
+  "kind": "patchwork-catalogue",
+  "catalogue_format": 1,
+  "generated_at": 1795046400,
+  "publishers": [
+    {
+      "namespace": "patchwork",
+      "github": "patchwork-nodes",
+      "github_id": 190000001,
+      "display_name": "Patchwork maintainers",
+      "url": "https://github.com/patchwork-nodes"
+    },
+    {
+      "namespace": "acme-audio",
+      "github": "Acme-Audio",
+      "github_id": 190000042,
+      "display_name": "Acme Audio"
+    }
+  ],
+  "packages": [
+    {
+      "id": "patchwork.lfo",
+      "name": "LFO",
+      "description": "Low-frequency oscillator with sine, triangle and square shapes.",
+      "author": "Patchwork maintainers",
+      "tags": ["modulation", "utility"],
+      "license": "MIT",
+      "documentation": "https://github.com/patchwork-nodes/catalogue/blob/main/packages/patchwork/lfo/README.md",
+      "versions": [
+        {
+          "version": "1.0.0",
+          "entry": "LFO.pwnode",
+          "manifest_format": 1,
+          "pwnode_version": 1,
+          "bundle_format": 0,
+          "min_patchwork": "0.0.10",
+          "capabilities": [],
+          "artifact": {
+            "format": 1,
+            "url": "https://raw.githubusercontent.com/patchwork-nodes/catalogue/3f2a9c1e7b4d5a6f8e0c2b1a9d7e6f5c4b3a2918/artifacts/patchwork.lfo/1.0.0/patchwork.lfo-1.0.0.pwpkg",
+            "sha256": "9b1c3f0e4a7d2c8b5e6f1a0d9c8b7a6f5e4d3c2b1a09f8e7d6c5b4a392817065",
+            "size": 18432,
+            "files": 2
+          },
+          "published_at": 1794441600
+        }
+      ]
+    },
+    {
+      "id": "acme-audio.stereo-delay",
+      "name": "Stereo Delay",
+      "description": "Ping-pong stereo delay with tempo sync.\nBundles acme-audio.gain 1.2.0.",
+      "author": "Acme Audio",
+      "tags": ["audio", "effect", "delay"],
+      "license": "Apache-2.0",
+      "versions": [
+        {
+          "version": "1.0.0",
+          "entry": "Stereo Delay.pwnode",
+          "manifest_format": 1,
+          "pwnode_version": 1,
+          "bundle_format": 1,
+          "min_patchwork": "0.0.10",
+          "capabilities": [],
+          "artifact": {
+            "format": 1,
+            "url": "https://raw.githubusercontent.com/patchwork-nodes/catalogue/3f2a9c1e7b4d5a6f8e0c2b1a9d7e6f5c4b3a2918/artifacts/acme-audio.stereo-delay/1.0.0/acme-audio.stereo-delay-1.0.0.pwpkg",
+            "sha256": "4e5d6c7b8a9f0e1d2c3b4a5f6e7d8c9b0a1f2e3d4c5b6a7f8e9d0c1b2a3f4e5d",
+            "size": 61204,
+            "files": 4
+          },
+          "preview": {
+            "url": "https://raw.githubusercontent.com/patchwork-nodes/catalogue/3f2a9c1e7b4d5a6f8e0c2b1a9d7e6f5c4b3a2918/packages/acme-audio/stereo-delay/1.0.0/preview.png",
+            "sha256": "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0",
+            "size": 48211
+          },
+          "published_at": 1794528000
+        }
+      ]
+    },
+    {
+      "id": "acme-audio.gain",
+      "name": "Gain",
+      "description": "Smoothed gain stage.",
+      "author": "Acme Audio",
+      "tags": ["audio", "utility"],
+      "license": "MIT",
+      "versions": [
+        {
+          "version": "1.1.0",
+          "entry": "Gain.pwnode",
+          "manifest_format": 1,
+          "pwnode_version": 1,
+          "min_patchwork": "0.0.10",
+          "artifact": {
+            "format": 1,
+            "url": "https://raw.githubusercontent.com/patchwork-nodes/catalogue/aa01bb02cc03dd04ee05ff0611227733448855aa/artifacts/acme-audio.gain/1.1.0/acme-audio.gain-1.1.0.pwpkg",
+            "sha256": "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee01",
+            "size": 9120,
+            "files": 2
+          },
+          "published_at": 1793836800,
+          "yanked": "Clipped above 0 dB; use 1.2.0."
+        },
+        {
+          "version": "1.2.0",
+          "entry": "Gain.pwnode",
+          "manifest_format": 1,
+          "pwnode_version": 1,
+          "min_patchwork": "0.0.10",
+          "artifact": {
+            "format": 1,
+            "url": "https://raw.githubusercontent.com/patchwork-nodes/catalogue/3f2a9c1e7b4d5a6f8e0c2b1a9d7e6f5c4b3a2918/artifacts/acme-audio.gain/1.2.0/acme-audio.gain-1.2.0.pwpkg",
+            "sha256": "1a2b3c4d5e6f70819a2b3c4d5e6f70819a2b3c4d5e6f70819a2b3c4d5e6f7081",
+            "size": 9348,
+            "files": 2
+          },
+          "published_at": 1794355200
+        },
+        {
+          "version": "2.0.0",
+          "entry": "Gain.pwnode",
+          "manifest_format": 1,
+          "pwnode_version": 1,
+          "min_patchwork": "0.1.0",
+          "capabilities": ["network"],
+          "artifact": {
+            "format": 1,
+            "url": "https://raw.githubusercontent.com/patchwork-nodes/catalogue/3f2a9c1e7b4d5a6f8e0c2b1a9d7e6f5c4b3a2918/artifacts/acme-audio.gain/2.0.0/acme-audio.gain-2.0.0.pwpkg",
+            "sha256": "5f4e3d2c1b0a99887766554433221100ffeeddccbbaa99887766554433221100",
+            "size": 11872,
+            "files": 2
+          },
+          "published_at": 1794960000
+        }
+      ]
+    }
+  ]
+}

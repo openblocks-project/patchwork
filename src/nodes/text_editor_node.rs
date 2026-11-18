@@ -84,14 +84,21 @@ impl NodeBehavior for TextEditorNode {
                         )
                         .pick_file()
                     {
-                        self.content =
-                            std::fs::read_to_string(&fp).unwrap_or_else(|e| format!("Error: {e}"));
+                        self.content = match crate::capability::check(
+                            crate::capability::Capability::Filesystem,
+                        ) {
+                            Ok(()) => std::fs::read_to_string(&fp)
+                                .unwrap_or_else(|e| format!("Error: {e}")),
+                            Err(denied) => denied.to_string(),
+                        };
                     }
                 }
             }
             if ui.button("Save as...").clicked() {
                 if let Some(fp) = rfd::FileDialog::new().save_file() {
-                    let _ = std::fs::write(&fp, self.content.as_str());
+                    if crate::capability::check(crate::capability::Capability::Filesystem).is_ok() {
+                        let _ = std::fs::write(&fp, self.content.as_str());
+                    }
                 }
             }
         });
@@ -134,15 +141,16 @@ impl NodeBehavior for TextEditorNode {
             .clicked()
         {
             let tmp = std::env::temp_dir().join(format!("patchwork_text_{}.txt", ctx.node_id));
-            if std::fs::write(&tmp, &self.content).is_ok() {
-                #[cfg(target_os = "macos")]
-                let _ = std::process::Command::new("open").arg(&tmp).spawn();
-                #[cfg(target_os = "windows")]
-                let _ = std::process::Command::new("cmd")
-                    .args(["/C", "start", "", &tmp.display().to_string()])
-                    .spawn();
-                #[cfg(target_os = "linux")]
-                let _ = std::process::Command::new("xdg-open").arg(&tmp).spawn();
+            // P4.3.2E2: writes a file and starts another program.
+            if crate::capability::check_all(&[
+                crate::capability::Capability::Filesystem,
+                crate::capability::Capability::Process,
+            ])
+            .is_ok()
+                && std::fs::write(&tmp, &self.content).is_ok()
+            {
+                // P4.3.2B: OS handler, no shell.
+                crate::external_process::open_externally(&tmp);
             }
         }
 

@@ -140,10 +140,26 @@ fn text_to_phoneme_ids(
 }
 
 /// Try to call espeak-ng as a subprocess. Returns the raw IPA output on success.
+/// P4.3.2B: an espeak-ng voice name (`en-us`, `en+f3`, `mb-de1`).
+fn espeak_voice_ok(voice: &str) -> bool {
+    voice.len() <= 64
+        && crate::external_process::check_positional(voice, "voice").is_ok()
+        && voice
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '+' | '.' | '/'))
+}
+
 fn try_espeak_ng(text: &str, voice: &str) -> Result<String, ()> {
+    // P4.3.2E2: runs another program.
+    crate::capability::check(crate::capability::Capability::Process).map_err(|_| ())?;
     let voice = if voice.is_empty() { "en-us" } else { voice };
+    // P4.3.2B: the voice is a plain name; the text follows `--`, so text
+    // such as "-w file" is spoken, never read as an option.
+    if !espeak_voice_ok(voice) {
+        return Err(());
+    }
     let output = std::process::Command::new("espeak-ng")
-        .args(["-q", "--ipa", "-v", voice])
+        .args(["-q", "--ipa", "-v", voice, "--"])
         .arg(text)
         .output()
         .map_err(|_| ())?;
@@ -167,6 +183,9 @@ fn try_espeak_ng(text: &str, voice: &str) -> Result<String, ()> {
 
 /// Check whether espeak-ng is available on this system.
 pub fn espeak_ng_available() -> bool {
+    if !crate::capability::still_allowed(crate::capability::Capability::Process) {
+        return false;
+    }
     std::process::Command::new("espeak-ng")
         .arg("--version")
         .output()
@@ -943,6 +962,10 @@ pub fn run_tts_synthesis(
         success: false,
     };
 
+    // P4.3.2E2: reads the voice model and its configuration.
+    if let Err(denied) = crate::capability::check(crate::capability::Capability::Filesystem) {
+        return fail(denied.to_string());
+    }
     // 1. Parse config JSON
     let config_str = match std::fs::read_to_string(&req.config_path) {
         Ok(s) => s,
@@ -1138,6 +1161,10 @@ pub struct TtsNode {
     pub detected_num_speakers: u32,
     #[serde(skip)]
     pub detected_espeak_voice: String,
+    /// P4.3.2E2: the voice details of `config_path` still have to be read
+    /// (construction has no rights; they are read when the node runs).
+    #[serde(skip)]
+    config_info_stale: bool,
 }
 
 impl Default for TtsNode {
@@ -1154,6 +1181,7 @@ impl Default for TtsNode {
             synthesis_done: false,
             has_audio: false,
             detected_phoneme_type: String::new(),
+            config_info_stale: false,
             detected_sample_rate: 0,
             detected_num_speakers: 0,
             detected_espeak_voice: String::new(),
@@ -1164,7 +1192,9 @@ impl Default for TtsNode {
 impl TtsNode {
     /// Auto-detect config from model path (.onnx → .onnx.json)
     fn auto_detect_config(&self) -> Option<String> {
-        if self.model_path.is_empty() {
+        if self.model_path.is_empty()
+            || !crate::capability::still_allowed(crate::capability::Capability::Filesystem)
+        {
             return None;
         }
         let candidate = format!("{}.json", self.model_path);
@@ -1182,9 +1212,21 @@ impl TtsNode {
         None
     }
 
+    /// P4.3.2E2: read the voice details once the graph's rights allow it.
+    fn ensure_config_info(&mut self) {
+        if self.config_info_stale
+            && crate::capability::still_allowed(crate::capability::Capability::Filesystem)
+        {
+            self.config_info_stale = false;
+            self.refresh_config_info();
+        }
+    }
+
     /// Load and cache config metadata (phoneme_type, sample_rate, num_speakers, espeak_voice)
     fn refresh_config_info(&mut self) {
-        if self.config_path.is_empty() {
+        if self.config_path.is_empty()
+            || crate::capability::check(crate::capability::Capability::Filesystem).is_err()
+        {
             return;
         }
         if let Ok(s) = std::fs::read_to_string(&self.config_path) {
@@ -1264,12 +1306,14 @@ impl NodeBehavior for TtsNode {
             self.speed = s.speed;
             self.noise_scale = s.noise_scale;
             self.noise_scale_w = s.noise_scale_w;
-            // Refresh cached config info
-            self.refresh_config_info();
+            // P4.3.2E2: the voice details are read when the node runs in
+            // its graph, never while it is being built.
+            self.config_info_stale = true;
         }
     }
 
     fn evaluate(&mut self, inputs: &[PortValue]) -> Vec<(usize, PortValue)> {
+        self.ensure_config_info();
         // Read speed from port 2 if wired
         if let Some(PortValue::Float(s)) = inputs.get(2) {
             if *s > 0.0 {
@@ -1297,6 +1341,7 @@ impl NodeBehavior for TtsNode {
     }
 
     fn render_with_context(&mut self, ui: &mut egui::Ui, ctx: &mut RenderContext) {
+        self.ensure_config_info();
         let node_id = ctx.node_id;
 
         // ── Read result from app/io (written via egui temp data) ─────
@@ -1578,4 +1623,82 @@ pub fn register(r: &mut crate::node_trait::NodeRegistryInner) {
         node.load_state(state);
         Box::new(node)
     });
+}
+
+#[cfg(test)]
+mod p432b_tests {
+    use super::*;
+
+    #[test]
+    fn espeak_voices_are_plain_names() {
+        for good in ["en-us", "en+f3", "mb/mb-de1", "de"] {
+            assert!(espeak_voice_ok(good), "{good}");
+        }
+        for bad in ["-w", "--stdout", "-f/etc/passwd", "", "en us", "en\n-w"] {
+            assert!(!espeak_voice_ok(bad), "{bad:?}");
+        }
+        // A refused voice never starts espeak-ng.
+        assert!(try_espeak_ng("hello", "-w/tmp/x.wav").is_err());
+    }
+}
+
+#[cfg(test)]
+mod capability_tests {
+    use super::*;
+    use crate::capability::{CapSet, Capability, Context};
+    use crate::library::trust::authorize::TEST_DEFAULT_ALLOW;
+
+    #[test]
+    fn voice_details_are_read_when_the_node_runs_not_when_it_is_built() {
+        TEST_DEFAULT_ALLOW.with(|allow| allow.set(false));
+        let dir = std::env::temp_dir().join(format!(
+            "patchwork_tts_caps_{}_{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = dir.join("voice.onnx.json");
+        std::fs::write(
+            &config,
+            r#"{"audio":{"sample_rate":22050},"num_speakers":3,"espeak":{"voice":"en-us"}}"#,
+        )
+        .unwrap();
+        let state = TtsNode {
+            config_path: config.to_string_lossy().into_owned(),
+            ..TtsNode::default()
+        }
+        .save_state();
+        // Exactly as the registry builds it (load, paste, undo, clone).
+        let build = || {
+            crate::capability::without_rights(|| {
+                let mut node = TtsNode::default();
+                node.load_state(&state);
+                node
+            })
+        };
+
+        // Construction has no rights: nothing is read yet.
+        let mut node = build();
+        let tts = |node: &mut TtsNode| (node.detected_sample_rate, node.detected_num_speakers);
+        assert_eq!(tts(&mut node), (0, 0));
+        {
+            let _entered = Context::new(CapSet::ALL, "authored project").enter();
+            node.evaluate(&[]);
+        }
+        assert_eq!(tts(&mut node), (22050, 3), "read in the graph's context");
+
+        // Without file access the details are not read.
+        let mut node = build();
+        {
+            let _entered = Context::new(
+                CapSet::ALL.minus(CapSet::of(&[Capability::Filesystem])),
+                "imported project",
+            )
+            .enter();
+            node.evaluate(&[]);
+        }
+        assert_eq!(tts(&mut node), (0, 0));
+        TEST_DEFAULT_ALLOW.with(|allow| allow.set(true));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

@@ -52,8 +52,12 @@ impl NodeBehavior for MouseTrackerNode {
     fn render_ui(&mut self, ui: &mut eframe::egui::Ui) {
         use eframe::egui;
 
-        // Update position
-        if let Some(pos) = ui.ctx().pointer_latest_pos() {
+        // Update position (P4.3.2E2: input devices).
+        if let Some(pos) = ui
+            .ctx()
+            .pointer_latest_pos()
+            .filter(|_| crate::capability::still_allowed(crate::capability::Capability::Devices))
+        {
             self.x = pos.x;
             self.y = pos.y;
             let screen = ui.ctx().screen_rect();

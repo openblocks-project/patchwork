@@ -1873,6 +1873,8 @@ fn render_offscreen(
     image_b_source: Option<(NodeId, usize)>,
     feedback_reset_pending: &mut bool,
 ) -> Option<std::sync::Arc<ImageData>> {
+    // P4.3.2E2: compiling and running shader code from the graph.
+    crate::capability::check(crate::capability::Capability::Scripting).ok()?;
     let device = &render_state.device;
     let queue = &render_state.queue;
     let readback_format = wgpu::TextureFormat::Rgba8UnormSrgb;
@@ -2251,6 +2253,11 @@ fn render_with_wgpu(
     canvas_w: f32,
     canvas_h: f32,
 ) {
+    // P4.3.2E2: compiling and running shader code from the graph.
+    if let Err(denied) = crate::capability::check(crate::capability::Capability::Scripting) {
+        ui.colored_label(egui::Color32::from_rgb(255, 180, 80), denied.to_string());
+        return;
+    }
     let device = &render_state.device;
     let target_format = render_state.target_format;
 

@@ -480,6 +480,8 @@ pub struct NdiSourceInfo {
 
 impl NdiFinder {
     pub fn new() -> Result<Self, String> {
+        // P4.3.2E2: network discovery.
+        crate::capability::check(crate::capability::Capability::Network)?;
         let lib = library()?;
         let opts = NDIlib_find_create_t {
             show_local_sources: true, // see our own sender for loopback tests
@@ -557,6 +559,8 @@ unsafe impl Send for NdiSender {}
 
 impl NdiSender {
     pub fn new(name: &str) -> Result<Self, String> {
+        // P4.3.2E2: publishes video on the network.
+        crate::capability::check(crate::capability::Capability::Network)?;
         let lib = library()?;
         let name_c = CString::new(name).map_err(|_| "sender name contains NUL byte".to_string())?;
         let opts = NDIlib_send_create_t {
@@ -610,6 +614,8 @@ impl NdiSender {
         frame_rate_num: i32,
         frame_rate_den: i32,
     ) -> Result<(), String> {
+        // P4.3.2E2: sends nothing more once revoked.
+        crate::capability::check(crate::capability::Capability::Network)?;
         let expected = (width as usize) * (height as usize) * 4;
         if bgra_pixels.len() != expected {
             return Err(format!(
@@ -703,6 +709,8 @@ impl NdiReceiver {
     /// connection list (useful for debugging when 3+ PatchWork
     /// instances are subscribed).
     pub fn new(source: &NdiSourceInfo, recv_name: &str) -> Result<Self, String> {
+        // P4.3.2E2: receives video from the network.
+        crate::capability::check(crate::capability::Capability::Network)?;
         let lib = library()?;
         // Both `source_to_connect_to.p_ndi_name` and `p_ndi_recv_name`
         // must stay alive for the duration of the C call. NDI copies

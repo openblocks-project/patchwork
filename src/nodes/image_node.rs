@@ -130,6 +130,10 @@ pub fn clear_image_cache() {
 /// caller's canvas badge + Console pick them up. The return type stays
 /// `(None, None)` on failure to keep the calling state-machine simple.
 fn fetch_and_cache(node_id: NodeId, url: &str) -> FetchResult {
+    // P4.3.2E2: downloads (into Patchwork's own image cache).
+    if crate::capability::check_for(node_id, crate::capability::Capability::Network).is_err() {
+        return (None, None);
+    }
     let client = match reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(20))
         .build()
@@ -257,7 +261,7 @@ pub fn maybe_load_async(ctx: &egui::Context, node_id: NodeId, src: &str) -> Opti
         let gen_ref = state.generation.clone();
         let ctx_clone = ctx.clone();
         let url = trimmed.clone();
-        std::thread::spawn(move || {
+        crate::capability::spawn(move || {
             let result = fetch_and_cache(node_id, &url);
             // Drop result if a newer fetch was started after us.
             if gen_ref.load(Ordering::SeqCst) != my_gen {
@@ -495,6 +499,7 @@ pub fn render(
 }
 
 pub fn load_image_from_path(path: &str) -> Option<Arc<ImageData>> {
+    crate::capability::check(crate::capability::Capability::Filesystem).ok()?;
     let img = image::open(path).ok()?;
     let rgba = img.to_rgba8();
     let (w, h) = rgba.dimensions();
@@ -515,6 +520,7 @@ pub fn load_image_from_source(src: &str) -> Option<Arc<ImageData>> {
         return None;
     }
     if s.starts_with("http://") || s.starts_with("https://") {
+        crate::capability::check(crate::capability::Capability::Network).ok()?;
         let client = reqwest::blocking::Client::builder()
             .timeout(std::time::Duration::from_secs(20))
             .build()
@@ -536,6 +542,9 @@ pub fn load_image_from_source(src: &str) -> Option<Arc<ImageData>> {
 }
 
 fn save_image(img: &ImageData, path: &str) {
+    if crate::capability::check(crate::capability::Capability::Filesystem).is_err() {
+        return;
+    }
     let buf = image::RgbaImage::from_raw(img.width, img.height, img.pixels.clone());
     if let Some(buf) = buf {
         let _ = buf.save(path);

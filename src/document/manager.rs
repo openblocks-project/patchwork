@@ -13,6 +13,11 @@ pub struct DocumentManager {
     /// While true (quit dialog open) documents cannot be activated, closed
     /// or opened, except through `activate_for_quit`.
     locked: bool,
+    /// P4.3.2D: authorizes package versions opened in a tab (their graph
+    /// becomes the evaluated graph, so it is a package runtime too).
+    trust: crate::library::trust::authorize::TrustPolicy,
+    /// The package refused by the last `open_custom_node`, if any.
+    blocked: Option<crate::library::trust::authorize::Blocked>,
 }
 
 impl DocumentManager {
@@ -23,6 +28,8 @@ impl DocumentManager {
             next_id: 2,
             resolved_paths: HashMap::new(),
             locked: false,
+            trust: Default::default(),
+            blocked: None,
         }
     }
 
@@ -63,6 +70,17 @@ impl DocumentManager {
 
         id
     }
+    pub fn set_trust_policy(&mut self, policy: crate::library::trust::authorize::TrustPolicy) {
+        if self.trust != policy {
+            self.trust = policy;
+        }
+    }
+
+    /// The package refused by the last [`Self::open_custom_node`].
+    pub fn take_blocked(&mut self) -> Option<crate::library::trust::authorize::Blocked> {
+        self.blocked.take()
+    }
+
     pub fn open_custom_node(&mut self, path: PathBuf) -> Result<u64, String> {
         if self.locked {
             return Err("Documents cannot be opened while the quit dialog is open.".to_string());
@@ -77,7 +95,63 @@ impl DocumentManager {
             return Ok(document.id);
         }
 
-        let custom_node = CustomNodeFile::load(&canonical_path)?;
+        // P4.3.2D: a published package version (Library, project copy or a
+        // bundled dependency) is authorized like any package runtime, and
+        // the tab is built from the authorized bytes. Plain custom-node
+        // files are the user's own and open as before.
+        self.blocked = None;
+        let custom_node = if crate::library::package::is_inside_published_package(&canonical_path) {
+            let mut resolver = crate::library::resolve::PackageResolver::new(
+                None,
+                crate::library::library_root().ok(),
+            );
+            resolver.set_trust(self.trust.clone());
+            match crate::library::trust::authorize::authorize_entry(
+                &self.trust,
+                &canonical_path,
+                &resolver,
+            ) {
+                Ok(authorized) => {
+                    let mut file = CustomNodeFile::load_text_with_policy(
+                        &canonical_path,
+                        &authorized.entry_text,
+                        &super::DependencyPolicy::TrustedLocal,
+                    )?;
+                    // Authorized as a package: its graph may run, with the
+                    // package's rights (P4.3.2E2), while the package's
+                    // authorization stands (P4.3.2F).
+                    file.graph.content = crate::library::trust::content::ContentState::Allowed(
+                        authorized.capabilities,
+                    );
+                    file.graph.content_basis =
+                        Some(crate::library::trust::content::ContentBasis::Package {
+                            entry: canonical_path.clone(),
+                            seen: Some(authorized.capabilities),
+                        });
+                    file
+                }
+                Err(blocked) => {
+                    let message = blocked.message();
+                    self.blocked = Some(blocked);
+                    return Err(message);
+                }
+            }
+        } else {
+            // P4.3.2E1: a loose custom node is identified by its content
+            // and runs (as the tab's graph) only if authored or allowed.
+            let text = std::fs::read_to_string(&canonical_path)
+                .map_err(|e| format!("Failed to read custom node: {e}"))?;
+            let mut file = CustomNodeFile::load_text_with_policy(
+                &canonical_path,
+                &text,
+                &super::DependencyPolicy::TrustedLocal,
+            )?;
+            file.graph.content = crate::library::trust::content::ContentState::loaded(
+                crate::library::trust::content::ContentKind::CustomNode,
+                &text,
+            );
+            file
+        };
 
         let id = self.new_custom_node_document(custom_node.name);
 

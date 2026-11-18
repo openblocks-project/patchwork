@@ -22,8 +22,9 @@ fn detect_variables(formula: &str) -> Vec<char> {
 
 /// Evaluate formula using Rhai with variable substitution
 fn evaluate_formula(formula: &str, var_values: &HashMap<char, f64>) -> Result<f64, String> {
-    let mut engine = rhai::Engine::new();
-    engine.set_max_operations(10000);
+    // P4.3.2B: the shared hardened engine (no imports, bounded).
+    crate::scripting::check_source(formula, &crate::scripting::FORMULA_LIMITS)?;
+    let mut engine = crate::scripting::sandboxed_engine(&crate::scripting::FORMULA_LIMITS);
 
     engine.register_fn(
         "map",

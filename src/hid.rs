@@ -93,6 +93,11 @@ impl HidManager {
     /// `ObDevice` (behind Mutex; cheap to clone since it's small-ish).
     /// `None` if no HID device with that type+id has been seen.
     pub fn find_device(&self, device_type: &str, id: u8) -> Option<ObDevice> {
+        // P4.3.2E2: device values reach a graph only with the devices
+        // capability (enumeration itself is the editor's).
+        if !crate::capability::still_allowed(crate::capability::Capability::Devices) {
+            return None;
+        }
         let key = (device_type.to_string(), id);
         self.devices.lock().ok()?.get(&key).cloned()
     }

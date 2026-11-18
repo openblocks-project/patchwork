@@ -80,6 +80,9 @@ pub fn get_bundled_session(sentinel: &'static str, bytes: &[u8]) -> Result<Cache
 /// If the file changes on disk, callers should invalidate via `clear()` (or
 /// future per-key eviction) before the next call.
 pub fn get_file_session(path: &str) -> Result<CachedSession, String> {
+    // P4.3.2E2: a model file is read from disk (a cached session too: the
+    // graph is using that file).
+    crate::capability::check(crate::capability::Capability::Filesystem)?;
     let key = ModelKey::Path(path.to_string());
 
     if let Ok(r) = cache().read() {

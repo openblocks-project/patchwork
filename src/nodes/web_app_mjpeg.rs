@@ -150,6 +150,8 @@ impl MjpegEncoder {
     /// reader threads. Stdout goes to `slot`. Returns Err if ffmpeg
     /// isn't on PATH (with install hint) or dimensions are invalid.
     pub fn new(w: u32, h: u32, slot: Arc<JpegSlot>) -> Result<Self, String> {
+        // P4.3.2E2: starts ffmpeg.
+        crate::capability::check(crate::capability::Capability::Process)?;
         if w == 0 || h == 0 {
             return Err(format!("invalid stream dimensions {w}×{h}"));
         }
@@ -250,6 +252,8 @@ impl MjpegEncoder {
     /// faster calls are silently dropped (matches FileRecorder's
     /// `last_write_at` gate at `file_recorder.rs:284–292`).
     pub fn write_frame(&mut self, rgba: &[u8], w: u32, h: u32) -> Result<(), String> {
+        // P4.3.2E2: feeds nothing more once revoked.
+        crate::capability::check(crate::capability::Capability::Process)?;
         if (w, h) != self.locked_dims {
             return Err(format!(
                 "dims changed {}×{} → {w}×{h}; respawn",

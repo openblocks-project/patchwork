@@ -146,15 +146,16 @@ pub fn render(
         .clicked()
     {
         let tmp = std::env::temp_dir().join(format!("patchwork_script_{}.rhai", node_id));
-        if std::fs::write(&tmp, code.as_str()).is_ok() {
-            #[cfg(target_os = "macos")]
-            let _ = std::process::Command::new("open").arg(&tmp).spawn();
-            #[cfg(target_os = "windows")]
-            let _ = std::process::Command::new("cmd")
-                .args(["/C", "start", "", &tmp.display().to_string()])
-                .spawn();
-            #[cfg(target_os = "linux")]
-            let _ = std::process::Command::new("xdg-open").arg(&tmp).spawn();
+        // P4.3.2E2: writes a file and starts another program.
+        if crate::capability::check_all(&[
+            crate::capability::Capability::Filesystem,
+            crate::capability::Capability::Process,
+        ])
+        .is_ok()
+            && std::fs::write(&tmp, code.as_str()).is_ok()
+        {
+            // P4.3.2B: OS handler, no shell.
+            crate::external_process::open_externally(&tmp);
         }
     }
 
@@ -171,7 +172,10 @@ pub fn render(
                 .add_filter("json", &["json"])
                 .pick_file()
             {
-                if let Ok(content) = std::fs::read_to_string(&path) {
+                let content = crate::capability::check(crate::capability::Capability::Filesystem)
+                    .map_err(|e| e.to_string())
+                    .and_then(|()| std::fs::read_to_string(&path).map_err(|e| e.to_string()));
+                if let Ok(content) = content {
                     if let Ok(script) = serde_json::from_str::<serde_json::Value>(&content) {
                         if let Some(obj) = script.as_object() {
                             if let Some(n) = obj.get("name").and_then(|v| v.as_str()) {
@@ -208,10 +212,12 @@ pub fn render(
                 .add_filter("json", &["json"])
                 .save_file()
             {
-                let _ = std::fs::write(
-                    &path,
-                    serde_json::to_string_pretty(&script_obj).unwrap_or_default(),
-                );
+                if crate::capability::check(crate::capability::Capability::Filesystem).is_ok() {
+                    let _ = std::fs::write(
+                        &path,
+                        serde_json::to_string_pretty(&script_obj).unwrap_or_default(),
+                    );
+                }
             }
         }
     });

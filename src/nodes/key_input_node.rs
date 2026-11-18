@@ -165,7 +165,11 @@ impl NodeBehavior for KeyInputNode {
             .data_mut(|d| d.get_temp::<bool>(listening_id).unwrap_or(false));
 
         // Key detection (runs every frame regardless of listening mode)
-        if !self.key_name.is_empty() {
+        // P4.3.2E2: keystrokes reach the graph only with the devices
+        // capability (it would otherwise see everything typed in Patchwork).
+        if !self.key_name.is_empty()
+            && crate::capability::still_allowed(crate::capability::Capability::Devices)
+        {
             if let Some(key) = parse_key(&self.key_name) {
                 let was_pressed = self.pressed;
                 self.pressed = ui.ctx().input(|i| i.key_down(key));

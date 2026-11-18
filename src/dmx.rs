@@ -103,6 +103,21 @@ impl DmxManager {
 
     pub fn process(&mut self, actions: Vec<DmxAction>) {
         for action in actions {
+            // P4.3.2E2: every DMX action drives a hardware adapter.
+            let node_id = match &action {
+                DmxAction::OpenOutput { node_id, .. }
+                | DmxAction::SetUniverse { node_id, .. }
+                | DmxAction::StartListening { node_id, .. } => Some(*node_id),
+                DmxAction::Close { .. } | DmxAction::StopListening { .. } => None,
+            };
+            if let Some(node_id) = node_id {
+                if crate::capability::check_for(node_id, crate::capability::Capability::Devices)
+                    .is_err()
+                {
+                    self.cleanup_node(node_id);
+                    continue;
+                }
+            }
             match action {
                 DmxAction::OpenOutput {
                     node_id,
@@ -195,6 +210,10 @@ impl DmxManager {
     }
 
     pub fn poll_input(&mut self, node_id: NodeId) -> Vec<ReceivedDmx> {
+        if !crate::capability::still_allowed(crate::capability::Capability::Devices) {
+            self.cleanup_node(node_id);
+            return Vec::new();
+        }
         let mut out = Vec::new();
         if let Some(active) = self.inputs.get(&node_id) {
             while let Ok(msg) = active.rx.try_recv() {
@@ -237,31 +256,32 @@ fn open_output_thread(
     let stop_t = stop.clone();
     let frame_dur = Duration::from_millis((1000 / frame_rate_hz.max(1).min(44) as u64).max(20));
 
-    let handle = std::thread::Builder::new()
-        .name(format!("dmx-out-{}", port_name))
-        .spawn(move || {
-            let mut port = port;
-            while !stop_t.load(Ordering::Relaxed) {
-                let snapshot: [u8; 513] = match universe_t.lock() {
-                    Ok(g) => *g,
-                    Err(_) => {
-                        return;
-                    } // poisoned — bail
-                };
-                let send_result = match adapter {
-                    DmxAdapter::UsbPro => send_frame_usb_pro(&mut *port, &snapshot[1..]),
-                    DmxAdapter::OpenDmx => send_frame_open_dmx(&mut *port, &snapshot),
-                };
-                if let Err(e) = send_result {
-                    crate::system_log::warn(format!("DMX send error: {}", e));
-                    // Don't kill the thread on a transient write error;
-                    // the user may unplug/replug. Pause briefly.
-                    std::thread::sleep(Duration::from_millis(200));
-                }
-                std::thread::sleep(frame_dur);
+    let handle = crate::capability::spawn_named(&format!("dmx-out-{}", port_name), move || {
+        let mut port = port;
+        // P4.3.2E2: stops (closing the port) once its rights are revoked.
+        while !stop_t.load(Ordering::Relaxed)
+            && crate::capability::still_allowed(crate::capability::Capability::Devices)
+        {
+            let snapshot: [u8; 513] = match universe_t.lock() {
+                Ok(g) => *g,
+                Err(_) => {
+                    return;
+                } // poisoned — bail
+            };
+            let send_result = match adapter {
+                DmxAdapter::UsbPro => send_frame_usb_pro(&mut *port, &snapshot[1..]),
+                DmxAdapter::OpenDmx => send_frame_open_dmx(&mut *port, &snapshot),
+            };
+            if let Err(e) = send_result {
+                crate::system_log::warn(format!("DMX send error: {}", e));
+                // Don't kill the thread on a transient write error;
+                // the user may unplug/replug. Pause briefly.
+                std::thread::sleep(Duration::from_millis(200));
             }
-        })
-        .map_err(|e| format!("spawn DMX sender thread: {}", e))?;
+            std::thread::sleep(frame_dur);
+        }
+    })
+    .map_err(|e| format!("spawn DMX sender thread: {}", e))?;
 
     Ok(ActiveOutput {
         universe,
@@ -284,35 +304,35 @@ fn open_input_thread(port_name: String) -> Result<ActiveInput, String> {
     let (tx, rx) = mpsc::channel();
     let stop_t = stop.clone();
 
-    let handle = std::thread::Builder::new()
-        .name(format!("dmx-in-{}", port_name))
-        .spawn(move || {
-            let mut port = port;
-            // Tell USB Pro to start streaming inbound frames (label 5
-            // = "Receive DMX on Change", set always-send mode = 0).
-            // Spec: send a label-5 packet with 1-byte payload = 0.
-            let _ = write_usb_pro_packet(&mut *port, 5, &[0]);
-            // Read loop: parse framed packets, forward inbound (label 5).
-            while !stop_t.load(Ordering::Relaxed) {
-                if let Ok(Some(frame)) = read_usb_pro_packet(&mut *port) {
-                    if frame.label == 5 && !frame.data.is_empty() {
-                        // First byte of a label-5 packet is a start code;
-                        // skip it so the receiver gets just channels.
-                        let data = if frame.data.len() > 1 {
-                            frame.data[1..].to_vec()
-                        } else {
-                            Vec::new()
-                        };
-                        if tx.send(ReceivedDmx { data }).is_err() {
-                            break;
-                        }
+    let handle = crate::capability::spawn_named(&format!("dmx-in-{}", port_name), move || {
+        let mut port = port;
+        // Tell USB Pro to start streaming inbound frames (label 5
+        // = "Receive DMX on Change", set always-send mode = 0).
+        // Spec: send a label-5 packet with 1-byte payload = 0.
+        let _ = write_usb_pro_packet(&mut *port, 5, &[0]);
+        // Read loop: parse framed packets, forward inbound (label 5).
+        while !stop_t.load(Ordering::Relaxed)
+            && crate::capability::still_allowed(crate::capability::Capability::Devices)
+        {
+            if let Ok(Some(frame)) = read_usb_pro_packet(&mut *port) {
+                if frame.label == 5 && !frame.data.is_empty() {
+                    // First byte of a label-5 packet is a start code;
+                    // skip it so the receiver gets just channels.
+                    let data = if frame.data.len() > 1 {
+                        frame.data[1..].to_vec()
+                    } else {
+                        Vec::new()
+                    };
+                    if tx.send(ReceivedDmx { data }).is_err() {
+                        break;
                     }
                 }
             }
-            // Best-effort: stop streaming when we exit.
-            let _ = write_usb_pro_packet(&mut *port, 5, &[1]);
-        })
-        .map_err(|e| format!("spawn DMX listener thread: {}", e))?;
+        }
+        // Best-effort: stop streaming when we exit.
+        let _ = write_usb_pro_packet(&mut *port, 5, &[1]);
+    })
+    .map_err(|e| format!("spawn DMX listener thread: {}", e))?;
 
     Ok(ActiveInput {
         stop,

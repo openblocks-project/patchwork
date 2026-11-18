@@ -31,6 +31,7 @@ fn export_wav(
     let byte_rate = sample_rate * 4; // 4 bytes per sample (f32)
     let data_size = num_samples * 4;
 
+    crate::capability::check(crate::capability::Capability::Filesystem)?;
     let mut file = std::fs::File::create(path).map_err(|e| e.to_string())?;
     use std::io::Write;
 

@@ -102,11 +102,14 @@ impl NodeBehavior for SettingsNode {
                 .on_hover_text("Delete every cached image")
                 .clicked()
             {
-                crate::nodes::image_node::clear_image_cache();
+                if crate::capability::check(crate::capability::Capability::Filesystem).is_ok() {
+                    crate::nodes::image_node::clear_image_cache();
+                }
             }
         });
 
-        if changed {
+        // P4.3.2E2: writes Patchwork's settings file.
+        if changed && crate::capability::check(crate::capability::Capability::Filesystem).is_ok() {
             let _ = settings.save();
             settings.apply_image_cache();
         }

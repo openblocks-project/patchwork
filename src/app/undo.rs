@@ -149,6 +149,18 @@ impl UndoHistory {
 }
 
 /// Undo/redo impl on PatchworkApp
+/// Undo/redo: restore `snapshot` as the live graph. P4.3.2E1/E2: the
+/// document's run decision and rights are not part of its history, so
+/// undoing or redoing (a paste, an MCP edit) never re-blocks, unblocks,
+/// widens or narrows what the document may do.
+pub(super) fn restore_keeping_rights(live: &mut Graph, snapshot: Graph) {
+    let content = live.content.clone();
+    let basis = live.content_basis.clone();
+    *live = snapshot;
+    live.content = content;
+    live.content_basis = basis;
+}
+
 impl super::PatchworkApp {
     pub(super) fn push_undo(&mut self) {
         let snap = UndoSnapshot::new(self.graph.clone(), self.pinned_nodes.clone());
@@ -165,7 +177,7 @@ impl super::PatchworkApp {
         }
         let current = UndoSnapshot::new(self.graph.clone(), self.pinned_nodes.clone());
         if let Some(prev) = self.undo_history.undo(current) {
-            self.graph = prev.graph;
+            restore_keeping_rights(&mut self.graph, prev.graph);
             self.pinned_nodes = prev.pinned_nodes;
             self.port_positions.clear();
             self.node_rects.clear();
@@ -187,7 +199,7 @@ impl super::PatchworkApp {
         }
         let current = UndoSnapshot::new(self.graph.clone(), self.pinned_nodes.clone());
         if let Some(next) = self.undo_history.redo(current) {
-            self.graph = next.graph;
+            restore_keeping_rights(&mut self.graph, next.graph);
             self.pinned_nodes = next.pinned_nodes;
             self.port_positions.clear();
             self.node_rects.clear();

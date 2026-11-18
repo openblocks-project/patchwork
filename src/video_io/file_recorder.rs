@@ -166,6 +166,11 @@ impl FileRecorder {
     /// ffmpeg isn't on PATH (with a brew install hint), or if the
     /// codec needs even dims and `(w, h)` are odd.
     pub fn new(path: &Path, codec: Codec, w: u32, h: u32) -> Result<Self, String> {
+        // P4.3.2E2: starts ffmpeg writing a file.
+        crate::capability::check_all(&[
+            crate::capability::Capability::Process,
+            crate::capability::Capability::Filesystem,
+        ])?;
         if w == 0 || h == 0 {
             return Err(format!("invalid recording dimensions {w}×{h}"));
         }
@@ -210,6 +215,11 @@ impl FileRecorder {
         // keyframe (no moov → otherwise unplayable).
         if codec.extension() == "mp4" {
             cmd.args(["-movflags", "+faststart+frag_keyframe+empty_moov"]);
+        }
+        // P4.3.2B: the output path is the last argument; one starting with
+        // '-' would be read as an ffmpeg option.
+        if path.to_string_lossy().starts_with('-') {
+            return Err("The recording path must not start with '-'.".to_string());
         }
         cmd.arg(path.as_os_str());
         cmd.stdin(Stdio::piped())
@@ -278,6 +288,11 @@ impl FileRecorder {
         if self.paused {
             return Ok(());
         }
+        // P4.3.2E2: writes nothing more once revoked.
+        crate::capability::check_all(&[
+            crate::capability::Capability::Process,
+            crate::capability::Capability::Filesystem,
+        ])?;
         if (w, h) != self.locked_dims {
             // Don't tear down — a 1-frame Camera wobble shouldn't lose
             // the recording. UI surfaces the warning via stderr_log.

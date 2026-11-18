@@ -112,6 +112,12 @@ impl ArtNetManager {
                     sequence_enabled,
                     data,
                 } => {
+                    // P4.3.2E2: sending is a network operation of the node.
+                    if crate::capability::check_for(node_id, crate::capability::Capability::Network)
+                        .is_err()
+                    {
+                        continue;
+                    }
                     // Build the packet outside the borrow scope so we can
                     // mutate `last_sent` afterward without re-borrowing self.
                     let seq = if sequence_enabled {
@@ -149,6 +155,11 @@ impl ArtNetManager {
                     if self.listeners.contains_key(&node_id) {
                         continue;
                     }
+                    if crate::capability::check_for(node_id, crate::capability::Capability::Network)
+                        .is_err()
+                    {
+                        continue;
+                    }
                     let bind_addr = format!("0.0.0.0:{}", port);
                     let socket = match UdpSocket::bind(&bind_addr) {
                         Ok(s) => s,
@@ -163,11 +174,18 @@ impl ArtNetManager {
                     let _ = socket.set_read_timeout(Some(std::time::Duration::from_millis(100)));
 
                     let (tx, rx) = mpsc::channel();
-                    let spawn_result = std::thread::Builder::new()
-                        .name(format!("artnet-listen-{}", node_id))
-                        .spawn(move || {
+                    let spawn_result = crate::capability::spawn_named(
+                        &format!("artnet-listen-{}", node_id),
+                        move || {
                             let mut buf = [0u8; 1024];
                             loop {
+                                // P4.3.2E2: stop (closing the socket) once
+                                // the node's rights are revoked.
+                                if !crate::capability::still_allowed(
+                                    crate::capability::Capability::Network,
+                                ) {
+                                    break;
+                                }
                                 match socket.recv_from(&mut buf) {
                                     Ok((size, _)) => {
                                         if let Some(frame) = decode_artdmx(&buf[..size]) {
@@ -185,7 +203,8 @@ impl ArtNetManager {
                                     Err(_) => break,
                                 }
                             }
-                        });
+                        },
+                    );
                     match spawn_result {
                         Ok(handle) => {
                             self.listeners.insert(
@@ -214,6 +233,10 @@ impl ArtNetManager {
     }
 
     pub fn poll(&mut self, node_id: NodeId) -> Vec<ReceivedDmx> {
+        if !crate::capability::still_allowed(crate::capability::Capability::Network) {
+            self.cleanup_node(node_id);
+            return Vec::new();
+        }
         let mut out = Vec::new();
         if let Some(listener) = self.listeners.get(&node_id) {
             while let Ok(msg) = listener.rx.try_recv() {

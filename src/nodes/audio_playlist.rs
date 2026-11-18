@@ -53,7 +53,8 @@ pub fn render(
                     let path = current_path.clone();
                     let ctx = ui.ctx().clone();
                     let pid = probe_id;
-                    std::thread::spawn(move || {
+                    // P4.3.2E2: probes with the node's rights.
+                    crate::capability::spawn(move || {
                         let dur = crate::audio::probe_file_duration(&path).unwrap_or(0.0);
                         ctx.data_mut(|d| d.insert_temp(pid, dur));
                         ctx.request_repaint();

@@ -591,21 +591,19 @@ fn verify_bundled_files(dir: &Path, manifest: &PackageManifest) -> Result<(), Bu
 }
 
 fn verify_nested_references(dir: &Path, manifest: &PackageManifest) -> Result<(), BundleProblem> {
-    let raw: crate::document::CustomNodeFile = std::fs::read_to_string(dir.join(&manifest.entry))
-        .map_err(|e| e.to_string())
-        .and_then(|t| serde_json::from_str(&t).map_err(|e| e.to_string()))
-        .map_err(|e| {
+    // P4.3.2A: read as plain JSON; no node is constructed.
+    let raw =
+        crate::document::read_custom_node_static(&dir.join(&manifest.entry)).map_err(|e| {
             damaged(format!(
                 "{} is not a valid custom node: {e}",
                 manifest.entry
             ))
         })?;
-    for node in raw.graph.nodes.values() {
-        let NodeType::CustomNodeInstance {
+    for instance in &raw.instances {
+        let crate::document::RawInstance {
             file,
             package: Some(stored),
-            ..
-        } = &node.node_type
+        } = instance
         else {
             continue;
         };

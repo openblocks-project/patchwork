@@ -15,9 +15,13 @@
 
 pub mod bundle;
 pub mod index;
+pub mod marketplace;
 pub mod package;
 pub mod project;
+// P4.3.2B: obvious secrets are refused when publishing or installing.
 pub mod resolve;
+pub mod secrets;
+pub mod trust;
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};

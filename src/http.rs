@@ -43,6 +43,13 @@ impl HttpManager {
                     headers,
                     body,
                 } => {
+                    // P4.3.2E2: an outgoing request is a network operation
+                    // of the node that queued it.
+                    if crate::capability::check_for(node_id, crate::capability::Capability::Network)
+                        .is_err()
+                    {
+                        continue;
+                    }
                     let (tx, rx) = mpsc::channel();
                     self.pending.insert(node_id, PendingRequest { rx });
 
@@ -64,7 +71,18 @@ impl HttpManager {
                     let log_method = method_up.clone();
                     let log_url = display_url.clone();
                     let started = std::time::Instant::now();
-                    std::thread::spawn(move || {
+                    crate::capability::spawn(move || {
+                        // Checked again in the worker: a revoked context
+                        // sends nothing.
+                        if let Err(denied) =
+                            crate::capability::check(crate::capability::Capability::Network)
+                        {
+                            let _ = tx.send(HttpResponse {
+                                status: 0,
+                                body: denied.to_string(),
+                            });
+                            return;
+                        }
                         let client = reqwest::blocking::Client::builder()
                             .timeout(std::time::Duration::from_secs(60))
                             .build()

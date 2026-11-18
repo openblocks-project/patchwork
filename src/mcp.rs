@@ -830,25 +830,13 @@ pub fn execute_command(
         }
 
         McpCommand::LoadProject { path } => {
-            let p = std::path::Path::new(&path);
-            let json_path = if p.is_file() {
-                p.to_path_buf()
-            } else {
-                p.join("project.json")
-            };
-            match std::fs::read_to_string(&json_path) {
-                Ok(content) => match serde_json::from_str::<Graph>(&content) {
-                    Ok(loaded) => {
-                        *graph = loaded;
-                        McpResult::Json(json!({ "success": true, "nodes": graph.nodes.len() }))
-                    }
-                    Err(e) => McpResult::Error {
-                        error: format!("parse: {}", e),
-                    },
-                },
-                Err(e) => McpResult::Error {
-                    error: format!("read: {}", e),
-                },
+            // P4.3.2B: the same parsing and normalization as File → Open.
+            match crate::app::load_project_graph(std::path::Path::new(&path)) {
+                Ok(loaded) => {
+                    *graph = loaded;
+                    McpResult::Json(json!({ "success": true, "nodes": graph.nodes.len() }))
+                }
+                Err(error) => McpResult::Error { error },
             }
         }
 

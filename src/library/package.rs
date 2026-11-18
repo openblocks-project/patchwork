@@ -24,7 +24,7 @@ pub const PACKAGES_DIR: &str = "packages";
 pub const LOCAL_PREFIX: &str = "local.";
 const MAX_ID_LEN: usize = 64;
 const MAX_NAME_LEN: usize = 100;
-const STAGING_PREFIX: &str = ".staging-";
+pub(crate) const STAGING_PREFIX: &str = ".staging-";
 
 // ── Identifiers and versions ─────────────────────────────────────────────
 
@@ -388,8 +388,19 @@ pub struct VerifiedPackage {
 
 /// Verify a version folder: manifest is valid, folder names match the
 /// manifest (when `expect_layout`), the entry exists, its SHA-256 matches,
-/// and it loads with nested references contained in the folder.
-pub fn verify_version_dir(dir: &Path, expect_layout: bool) -> Result<VerifiedPackage, String> {
+/// bundled files and dependencies are complete and intact, and every
+/// nested reference stays inside the folder.
+///
+/// P4.3.2A: entirely static. Graphs are read as plain JSON
+/// ([`crate::document::CustomNodeFile::check_static`]); no node type is
+/// deserialized and no dynamic node is constructed, so verifying a package
+/// (installing, scanning the Library, resolving, saving projects) never
+/// runs node code. Nodes are only constructed when a graph is loaded to be
+/// used.
+pub fn verify_version_dir_static(
+    dir: &Path,
+    expect_layout: bool,
+) -> Result<VerifiedPackage, String> {
     let manifest = read_manifest(dir)?;
     let version = manifest
         .validate()
@@ -433,7 +444,7 @@ pub fn verify_version_dir(dir: &Path, expect_layout: bool) -> Result<VerifiedPac
             manifest.id, version, problem.message
         )
     })?;
-    crate::document::CustomNodeFile::load_with_policy(
+    crate::document::CustomNodeFile::check_static(
         &entry_path,
         &crate::document::DependencyPolicy::Contained {
             root: dir.to_path_buf(),
@@ -508,6 +519,25 @@ pub fn publish_package(
     source: &Path,
     request: &PublishRequest,
 ) -> Result<VerifiedPackage, PublishError> {
+    publish_package_with_receipt(library_root, source, request).map(|(package, _)| package)
+}
+
+/// [`publish_package`], plus (P4.3.2C) a receipt for `local_publish`
+/// provenance bound to the exact content that was committed: the tree
+/// digest of the staged folder must equal the digest of the final folder.
+/// The receipt is `Err` when the content cannot be identified (the
+/// package is still published, just without provenance).
+pub fn publish_package_with_receipt(
+    library_root: &Path,
+    source: &Path,
+    request: &PublishRequest,
+) -> Result<
+    (
+        VerifiedPackage,
+        Result<super::trust::ProvenanceReceipt, String>,
+    ),
+    PublishError,
+> {
     let invalid = PublishError::Invalid;
     if !source.is_file() {
         return Err(invalid("Custom node file does not exist.".to_string()));
@@ -585,7 +615,13 @@ pub fn publish_package(
     std::fs::create_dir(&staging)
         .map_err(|e| PublishError::Io(format!("Cannot create staging folder: {e}")))?;
 
-    let result = (|| -> Result<VerifiedPackage, PublishError> {
+    let result = (|| -> Result<
+        (
+            VerifiedPackage,
+            Result<super::trust::ProvenanceReceipt, String>,
+        ),
+        PublishError,
+    > {
         let staged_entry = staging.join(&entry);
         let mut dependencies = Vec::new();
         let mut files = std::collections::BTreeMap::new();
@@ -643,7 +679,12 @@ pub fn publish_package(
             .map_err(|e| PublishError::Io(format!("Cannot write manifest: {e}")))?;
         super::copy_exclusive_from(&mut json.as_bytes(), &staging.join(MANIFEST_FILE))
             .map_err(PublishError::Io)?;
-        verify_version_dir(&staging, false).map_err(PublishError::Io)?;
+        // P4.3.2B: never publish a credential stored in the graph (the
+        // source is left unchanged; the user removes it).
+        super::secrets::check_folder(&staging).map_err(PublishError::Invalid)?;
+        verify_version_dir_static(&staging, false).map_err(PublishError::Io)?;
+        // P4.3.2C: the exact content being committed.
+        let staged_digest = super::trust::digest::read_tree(&staging).map(|tree| tree.digest);
         // Fails if another writer created the version meanwhile; never
         // replaces an existing version folder.
         if final_dir.exists() {
@@ -656,7 +697,17 @@ pub fn publish_package(
                 PublishError::Io(format!("Cannot finish publishing: {e}"))
             }
         })?;
-        verify_version_dir(&final_dir, true).map_err(PublishError::Io)
+        let package = verify_version_dir_static(&final_dir, true).map_err(PublishError::Io)?;
+        let receipt = staged_digest.and_then(|digest| {
+            super::trust::ProvenanceReceipt::for_content(
+                &final_dir,
+                Some(&digest),
+                super::trust::Provenance::LocalPublish,
+                None,
+                super::trust::Grant::NotGranted,
+            )
+        });
+        Ok((package, receipt))
     })();
 
     if result.is_err() {
@@ -675,17 +726,85 @@ pub fn is_staging_dir(name: &str) -> bool {
     name.starts_with(STAGING_PREFIX)
 }
 
+/// P4.3.2F: staging folders left by an interrupted publish or marketplace
+/// installation (`<library>/packages/<id>/.staging-*`). They are never
+/// scanned, loaded or trusted; this only finds them for clean-up.
+pub fn staging_leftovers(library_root: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let Ok(packages) = std::fs::read_dir(library_root.join("packages")) else {
+        return found;
+    };
+    for package in packages.flatten() {
+        let is_dir = package.file_type().is_ok_and(|t| t.is_dir());
+        if !is_dir {
+            continue;
+        }
+        let Ok(entries) = std::fs::read_dir(package.path()) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let is_dir = entry.file_type().is_ok_and(|t| t.is_dir());
+            if is_dir && is_staging_dir(&entry.file_name().to_string_lossy()) {
+                found.push(entry.path());
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
+/// P4.3.2F: remove one staging leftover found by [`staging_leftovers`].
+/// Refuses anything else: it must be a real folder (not a link) named
+/// `.staging-*` directly inside `<library>/packages/<id>/`. The package
+/// folder is removed too only if that leaves it empty. Nothing outside the
+/// Library (projects, user files) can be touched.
+pub fn remove_staging_leftover(library_root: &Path, path: &Path) -> Result<(), String> {
+    let refuse = || format!("{} is not an installation leftover.", path.display());
+    let name = path.file_name().ok_or_else(refuse)?.to_string_lossy();
+    if !is_staging_dir(&name) {
+        return Err(refuse());
+    }
+    let meta = std::fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+    if !meta.is_dir() || meta.file_type().is_symlink() {
+        return Err(refuse());
+    }
+    let package = path.parent().ok_or_else(refuse)?;
+    let packages = package.parent().ok_or_else(refuse)?;
+    let expected =
+        std::fs::canonicalize(library_root.join("packages")).map_err(|e| e.to_string())?;
+    if std::fs::canonicalize(packages).map_err(|e| e.to_string())? != expected {
+        return Err(refuse());
+    }
+    std::fs::remove_dir_all(path).map_err(|e| format!("Cannot remove {}: {e}", path.display()))?;
+    // Only removes an empty folder.
+    let _ = std::fs::remove_dir(package);
+    Ok(())
+}
+
 // ── Duplicate for Editing ────────────────────────────────────────────────
 
 /// Write an editable copy of `source` to `destination` (load + save, so
 /// nested references are re-written relative to the new location).
 /// Refuses to write over a published entry, or over any existing file
 /// unless `overwrite` is set by an explicit user confirmation.
+/// Used by tests (the editor records provenance with
+/// [`duplicate_for_editing_with_digest`]).
+#[cfg(test)]
 pub fn duplicate_for_editing(
     source: &Path,
     destination: &Path,
     overwrite: bool,
 ) -> Result<(), String> {
+    duplicate_for_editing_with_digest(source, destination, overwrite).map(drop)
+}
+
+/// [`duplicate_for_editing`], returning (P4.3.2E1) the content digests of
+/// the source as read and of the copy as written.
+pub fn duplicate_for_editing_with_digest(
+    source: &Path,
+    destination: &Path,
+    overwrite: bool,
+) -> Result<(String, String), String> {
     if is_inside_published_package(destination) {
         return Err(
             "The destination is a published Library package, which is read-only.".to_string(),
@@ -705,8 +824,16 @@ pub fn duplicate_for_editing(
             return Err("Choose a different file than the original.".to_string());
         }
     }
-    let file = crate::document::CustomNodeFile::load(source)?;
-    file.save(destination)
+    let text =
+        std::fs::read_to_string(source).map_err(|e| format!("Failed to read custom node: {e}"))?;
+    let source_digest = crate::library::trust::content::custom_node_digest(&text)?;
+    let file = crate::document::CustomNodeFile::load_text_with_policy(
+        source,
+        &text,
+        &crate::document::DependencyPolicy::TrustedLocal,
+    )?;
+    let copy_digest = file.save_with_digest(destination)?;
+    Ok((source_digest, copy_digest))
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────
@@ -916,7 +1043,7 @@ pub(crate) mod tests {
             std::fs::read(&source).unwrap()
         );
         assert_eq!(published.manifest.sha256, sha256_file(&source).unwrap());
-        assert!(verify_version_dir(&published.dir, true).is_ok());
+        assert!(verify_version_dir_static(&published.dir, true).is_ok());
         assert!(is_published_entry(&published.entry_path));
         assert!(!is_published_entry(&source));
         // No staging leftovers.
@@ -1026,7 +1153,7 @@ pub(crate) mod tests {
         let root = tmp.0.join("library");
         let published = publish_package(&root, &source, &request("Mixer", "1.0.0")).unwrap();
         write_node(&published.entry_path, "Tampered", None);
-        let error = verify_version_dir(&published.dir, true).unwrap_err();
+        let error = verify_version_dir_static(&published.dir, true).unwrap_err();
         assert!(error.contains("checksum"), "{error}");
         assert!(error.contains("local.mixer@1.0.0"), "{error}");
     }
@@ -1044,11 +1171,11 @@ pub(crate) mod tests {
         for f in [MANIFEST_FILE, "Mixer.pwnode"] {
             std::fs::copy(published.dir.join(f), wrong.join(f)).unwrap();
         }
-        assert!(verify_version_dir(&wrong, true).is_err());
-        assert!(verify_version_dir(&wrong, false).is_ok());
+        assert!(verify_version_dir_static(&wrong, true).is_err());
+        assert!(verify_version_dir_static(&wrong, false).is_ok());
         std::fs::remove_file(wrong.join("Mixer.pwnode")).unwrap();
         assert!(
-            verify_version_dir(&wrong, false)
+            verify_version_dir_static(&wrong, false)
                 .unwrap_err()
                 .contains("missing")
         );
@@ -1077,7 +1204,7 @@ pub(crate) mod tests {
         let error = file.save(&published.entry_path).unwrap_err();
         assert!(error.contains("read-only"), "{error}");
         assert_eq!(std::fs::read(&published.entry_path).unwrap(), before);
-        assert!(verify_version_dir(&published.dir, true).is_ok());
+        assert!(verify_version_dir_static(&published.dir, true).is_ok());
     }
 
     #[test]
@@ -1095,7 +1222,7 @@ pub(crate) mod tests {
         let loaded = crate::document::CustomNodeFile::load(&copy).unwrap();
         assert_eq!(loaded.name, "Mixer");
         loaded.save(&copy).unwrap(); // editable
-        assert!(verify_version_dir(&published.dir, true).is_ok());
+        assert!(verify_version_dir_static(&published.dir, true).is_ok());
 
         // Never silently overwrites; never targets a published entry.
         assert!(duplicate_for_editing(&published.entry_path, &copy, false).is_err());
@@ -1225,5 +1352,41 @@ pub(crate) mod tests {
         let mut req = request("Mixer", "1.0.1");
         req.existing_id = Some("local.mixer".into());
         assert!(publish_package(&root, &source, &req).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod staging_recovery_tests {
+    use super::tests::TempDir;
+    use super::*;
+
+    #[test]
+    fn only_installation_leftovers_are_found_and_removed() {
+        let tmp = TempDir::new("staging_recovery");
+        let root = tmp.0.join("library");
+        let package = root.join("packages").join("acme.chain");
+        let leftover = package.join(format!("{STAGING_PREFIX}123-456"));
+        std::fs::create_dir_all(leftover.join("nodes")).unwrap();
+        std::fs::write(leftover.join("nodes").join("Chain.pwnode"), "{}").unwrap();
+        let installed = package.join("1.0.0");
+        std::fs::create_dir_all(&installed).unwrap();
+        std::fs::write(installed.join("keep.txt"), "installed").unwrap();
+        // A user's folder that merely looks like a leftover, outside.
+        let outside = tmp.0.join("projects").join(format!("{STAGING_PREFIX}mine"));
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("project.json"), "{}").unwrap();
+
+        assert_eq!(staging_leftovers(&root), vec![leftover.clone()]);
+        assert!(remove_staging_leftover(&root, &outside).is_err());
+        assert!(remove_staging_leftover(&root, &installed).is_err());
+        assert!(outside.join("project.json").exists());
+        remove_staging_leftover(&root, &leftover).unwrap();
+        assert!(!leftover.exists());
+        assert!(
+            installed.join("keep.txt").exists(),
+            "installed versions are kept"
+        );
+        assert!(package.exists(), "a package folder with versions is kept");
+        assert!(staging_leftovers(&root).is_empty());
     }
 }

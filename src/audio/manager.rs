@@ -254,6 +254,10 @@ impl AudioManager {
 
     pub fn start_output(&mut self, device_name: Option<&str>) -> Result<(), String> {
         self.stream = None;
+        // P4.3.2E2: a graph choosing a specific output device (Audio Device
+        // node) is device access; without it the default output is used.
+        let device_name = device_name
+            .filter(|_| crate::capability::check(crate::capability::Capability::Devices).is_ok());
 
         let host = cpal::default_host();
         let device = if let Some(name) = device_name {
@@ -726,6 +730,8 @@ impl AudioManager {
     ) -> Result<(), String> {
         // Stop existing input for this node
         self.stop_input(node_id);
+        // P4.3.2E2: opening a microphone is media capture by the node.
+        crate::capability::check_for(node_id, crate::capability::Capability::MediaCapture)?;
 
         let host = cpal::default_host();
         let device = if let Some(name) = device_name {
@@ -819,13 +825,13 @@ impl AudioManager {
         req_owned.engine_sample_rate = self.engine_sample_rate;
         let tx = tts_tx.clone();
 
-        std::thread::Builder::new()
-            .name(format!("tts-synth-{}", node_id))
-            .spawn(move || {
-                let result = crate::nodes::tts_node::run_tts_synthesis(buf_clone, req_owned);
-                let _ = tx.send(result);
-            })
-            .ok();
+        // P4.3.2E2: synthesis runs with the node's rights (it starts a
+        // speech program and reads its voice files).
+        crate::capability::spawn_named(&format!("tts-synth-{}", node_id), move || {
+            let result = crate::nodes::tts_node::run_tts_synthesis(buf_clone, req_owned);
+            let _ = tx.send(result);
+        })
+        .ok();
 
         self.tts_buffers.insert(node_id, buffer.clone());
 
@@ -858,6 +864,8 @@ impl AudioManager {
     /// Play an audio file — if paused, resume; if stopped/new, start fresh.
     /// Decoded by Symphonia in a background thread → FilePlayerBuffer → CPAL callback.
     pub fn play_file(&mut self, node_id: NodeId, path: &str) -> Result<(), String> {
+        // P4.3.2E2: reading an audio file (resuming a paused one included).
+        crate::capability::check_for(node_id, crate::capability::Capability::Filesystem)?;
         // If paused, just resume
         if let Some(buf) = self.file_buffers.get(&node_id) {
             if buf.paused.load(Ordering::Relaxed) {
@@ -896,9 +904,10 @@ impl AudioManager {
         let buf_clone = buffer.clone();
         let path_owned = path.to_string();
         let looping_clone = looping.clone();
-        let handle = std::thread::Builder::new()
-            .name(format!("file-decode-{}", node_id))
-            .spawn(move || {
+        // P4.3.2E2: the decoder keeps the node's rights (checked before
+        // every file open, including loops and seeks).
+        let handle =
+            crate::capability::spawn_named(&format!("file-decode-{}", node_id), move || {
                 decode_file_thread(path_owned, buf_clone, output_sr, looping_clone);
             })
             .map_err(|e| format!("Spawn decode thread: {}", e))?;
@@ -961,12 +970,14 @@ impl AudioManager {
         //   - the decoder's reader dies (ffmpeg EOF / disconnected stream), OR
         //   - someone signals stop on the buffer.
         let buf_clone = buffer.clone();
-        let handle = std::thread::Builder::new()
-            .name(format!("url-audio-pump-{}", node_id))
-            .spawn(move || {
+        let handle =
+            crate::capability::spawn_named(&format!("url-audio-pump-{}", node_id), move || {
                 let decoder = decoder;
                 loop {
-                    if buf_clone.stop_requested.load(Ordering::Relaxed) {
+                    // P4.3.2E2: stops (dropping ffmpeg) once revoked.
+                    if buf_clone.stop_requested.load(Ordering::Relaxed)
+                        || !crate::capability::still_allowed(crate::capability::Capability::Process)
+                    {
                         break;
                     }
                     if buf_clone.paused.load(Ordering::Relaxed) {
@@ -1044,12 +1055,16 @@ impl AudioManager {
             .store(output_sr as u32, Ordering::Release);
 
         let buf_clone = buffer.clone();
-        let handle = std::thread::Builder::new()
-            .name(format!("capture-audio-pump-{}", node_id))
-            .spawn(move || {
+        let handle =
+            crate::capability::spawn_named(&format!("capture-audio-pump-{}", node_id), move || {
                 let decoder = decoder;
                 loop {
-                    if buf_clone.stop_requested.load(Ordering::Relaxed) {
+                    // P4.3.2E2: stops (dropping ffmpeg) once revoked.
+                    if buf_clone.stop_requested.load(Ordering::Relaxed)
+                        || !crate::capability::still_allowed(
+                            crate::capability::Capability::MediaCapture,
+                        )
+                    {
                         break;
                     }
                     if buf_clone.paused.load(Ordering::Relaxed) {

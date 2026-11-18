@@ -48,8 +48,22 @@ impl Drop for VideoDecoder {
     }
 }
 
+/// P4.3.2E2: the source of an ffmpeg input is a network or a file read.
+pub(crate) fn source_capability(source: &str) -> crate::capability::Capability {
+    if source.contains("://") {
+        crate::capability::Capability::Network
+    } else {
+        crate::capability::Capability::Filesystem
+    }
+}
+
 impl VideoDecoder {
     pub fn open_file(path: &str, width: u32, height: u32, start_time: f32) -> Result<Self, String> {
+        // P4.3.2E2: runs ffmpeg on a file.
+        crate::capability::check_all(&[
+            crate::capability::Capability::Process,
+            crate::capability::Capability::Filesystem,
+        ])?;
         let mut args = vec![
             "-hide_banner".to_string(),
             "-loglevel".into(),
@@ -58,9 +72,9 @@ impl VideoDecoder {
         if start_time > 0.0 {
             args.extend(["-ss".into(), format!("{:.3}", start_time)]);
         }
+        // P4.3.2B: a local file may only be read as a file.
+        args.extend(crate::external_process::ffmpeg_input_args(path)?);
         args.extend([
-            "-i".into(),
-            path.to_string(),
             "-f".into(),
             "rawvideo".into(),
             "-pix_fmt".into(),
@@ -100,6 +114,11 @@ impl VideoDecoder {
     /// of killing the stream. ffmpeg downscales server-side via `-s` so the
     /// reader thread doesn't have to deal with arbitrary network resolutions.
     pub fn open_url(url: &str, width: u32, height: u32, start_time: f32) -> Result<Self, String> {
+        // P4.3.2E2: runs ffmpeg on a network source.
+        crate::capability::check_all(&[
+            crate::capability::Capability::Process,
+            crate::capability::Capability::Network,
+        ])?;
         let mut args: Vec<String> = vec![
             "-hide_banner".into(),
             "-loglevel".into(),
@@ -122,9 +141,9 @@ impl VideoDecoder {
             // for HTTP). Keyframe-aligned, ~1–2 s precision on typical mp4.
             args.extend(["-ss".into(), format!("{:.3}", start_time)]);
         }
+        // P4.3.2B: protocol whitelist for the source.
+        args.extend(crate::external_process::ffmpeg_input_args(url)?);
         args.extend([
-            "-i".into(),
-            url.to_string(),
             "-an".into(), // discard audio in this pipe; audio uses AudioPipeDecoder
             "-f".into(),
             "rawvideo".into(),
@@ -154,6 +173,11 @@ impl VideoDecoder {
     }
 
     pub fn open_camera(device_index: u32, width: u32, height: u32) -> Result<Self, String> {
+        // P4.3.2E2: runs ffmpeg capturing a camera.
+        crate::capability::check_all(&[
+            crate::capability::Capability::Process,
+            crate::capability::Capability::MediaCapture,
+        ])?;
         // Platform-specific capture format and device input string.
         //
         // macOS (avfoundation) and Linux (v4l2) both accept numeric device
@@ -255,6 +279,11 @@ impl VideoDecoder {
         origin_x: i32,
         origin_y: i32,
     ) -> Result<Self, String> {
+        // P4.3.2E2: runs ffmpeg capturing the screen.
+        crate::capability::check_all(&[
+            crate::capability::Capability::Process,
+            crate::capability::Capability::MediaCapture,
+        ])?;
         #[cfg(target_os = "macos")]
         {
             let _ = (origin_x, origin_y); // screens are one-per-device on macOS
@@ -365,10 +394,15 @@ impl VideoDecoder {
         let (tx, rx) = mpsc::sync_channel(1);
         let frame_size = (width * height * 4) as usize;
 
-        std::thread::spawn(move || {
+        // P4.3.2E2: the reader keeps the caller's rights and stops taking
+        // frames from ffmpeg once they are revoked.
+        crate::capability::spawn(move || {
             let mut reader = std::io::BufReader::with_capacity(frame_size, stdout);
             let mut buf = vec![0u8; frame_size];
             loop {
+                if !crate::capability::still_allowed(crate::capability::Capability::Process) {
+                    break;
+                }
                 // read_exact blocks until a full frame arrives from ffmpeg — this is
                 // the natural pacing.  The bounded sync_channel(1) provides backpressure
                 // if the UI hasn't consumed the previous frame yet, so no artificial
@@ -496,6 +530,11 @@ impl AudioPipeDecoder {
     /// `-i`, byte-range fast on HTTP, instant on disk). Reader thread
     /// pushes ~10 ms chunks into `samples_rx`.
     pub fn open_url(source: &str, sample_rate: f32, start_time: f32) -> Result<Self, String> {
+        // P4.3.2E2: runs ffmpeg on a URL or a file.
+        crate::capability::check_all(&[
+            crate::capability::Capability::Process,
+            source_capability(source),
+        ])?;
         let mut args: Vec<String> = vec![
             "-hide_banner".into(),
             "-loglevel".into(),
@@ -514,9 +553,9 @@ impl AudioPipeDecoder {
         if start_time > 0.0 {
             args.extend(["-ss".into(), format!("{:.3}", start_time)]);
         }
+        // P4.3.2B: protocol whitelist for the source.
+        args.extend(crate::external_process::ffmpeg_input_args(source)?);
         args.extend([
-            "-i".into(),
-            source.to_string(),
             "-vn".into(), // drop video
             "-ac".into(),
             "1".into(), // mono
@@ -552,6 +591,11 @@ impl AudioPipeDecoder {
     /// - Linux:   format="alsa",         input="default" (or "pulse"/"default")
     /// - Windows: format="dshow",        input="audio=<friendly-name>"
     pub fn open_capture_input(format: &str, input: &str, sample_rate: f32) -> Result<Self, String> {
+        // P4.3.2E2: runs ffmpeg capturing a microphone.
+        crate::capability::check_all(&[
+            crate::capability::Capability::Process,
+            crate::capability::Capability::MediaCapture,
+        ])?;
         let args: Vec<String> = vec![
             "-hide_banner".into(),
             "-loglevel".into(),
@@ -600,12 +644,15 @@ impl AudioPipeDecoder {
         // Each chunk = ~10 ms of audio; capacity 8 = ~80 ms of slack.
         let (tx, rx) = mpsc::sync_channel::<Vec<f32>>(8);
 
-        std::thread::spawn(move || {
+        crate::capability::spawn(move || {
             let mut reader = std::io::BufReader::with_capacity(8192, stdout);
             // Read in chunks of 1024 frames (mono) ≈ 21 ms at 48 kHz.
             const CHUNK_FRAMES: usize = 1024;
             let mut byte_buf = vec![0u8; CHUNK_FRAMES * 4];
             loop {
+                if !crate::capability::still_allowed(crate::capability::Capability::Process) {
+                    break;
+                }
                 match reader.read_exact(&mut byte_buf) {
                     Ok(()) => {
                         let mut samples = Vec::with_capacity(CHUNK_FRAMES);
@@ -674,6 +721,12 @@ thread_local! {
 /// `None` for live streams (no fixed duration), unsupported sources, or
 /// when ffprobe isn't installed.
 pub(crate) fn get_duration(path: &str) -> Option<f32> {
+    // P4.3.2E2: runs ffprobe on a file or URL.
+    crate::capability::check_all(&[
+        crate::capability::Capability::Process,
+        source_capability(path),
+    ])
+    .ok()?;
     let output = Command::new("ffprobe")
         .args([
             "-v",
@@ -1600,4 +1653,20 @@ pub fn cleanup_node(node_id: NodeId) {
     // Also drop GPU cache entries for this node so VRAM is released
     // immediately rather than waiting for the frame-LRU sweep.
     crate::gpu_image::request_node_invalidation(node_id);
+}
+
+#[cfg(test)]
+mod p432b_tests {
+    use super::*;
+
+    #[test]
+    fn decoders_refuse_unsafe_sources_before_starting_ffmpeg() {
+        for bad in ["file:///etc/passwd", "concat:/a|/b", "-f lavfi", "data:,x"] {
+            let error = VideoDecoder::open_file(bad, 2, 2, 0.0).err().unwrap();
+            assert!(
+                error.contains("not supported") || error.contains("must not start"),
+                "{bad}: {error}"
+            );
+        }
+    }
 }

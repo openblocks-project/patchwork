@@ -140,9 +140,20 @@ mod canvas;
 mod group;
 mod interaction;
 mod io;
+// P4.3.2B: MCP loads projects with the same normalization.
+pub(crate) use io::load_project_graph;
 mod library;
+mod marketplace;
 mod menus;
+mod permissions;
+mod permissions_manage;
+mod provenance;
+#[cfg(test)]
+mod provenance_tests;
+#[cfg(test)]
+mod revocation_tests;
 mod toast;
+mod trust;
 pub(crate) mod undo;
 mod version;
 use undo::UndoHistory;
@@ -198,6 +209,18 @@ pub struct PatchworkApp {
     box_select_start: Option<egui::Pos2>,
     box_select_end: Option<egui::Pos2>,
     clipboard: Option<NodeType>,
+    /// P4.3.2E1: whether the clipboard came from a document allowed to run.
+    clipboard_runnable: bool,
+    /// P4.3.2E2: the rights of the document the clipboard node came from.
+    clipboard_rights: crate::capability::CapSet,
+    /// P4.3.2E2: capabilities the active graph's nodes use, cached by a
+    /// fingerprint of its node types.
+    capability_uses_cache: Option<(u64, crate::capability::CapSet)>,
+    /// P4.3.2E2: the capability context of each open document (by id).
+    document_scopes: crate::capability::DocumentScopes,
+    /// P4.3.2E2: the trust generation the open documents' runtimes were
+    /// last brought in line with.
+    trust_generation_applied: u64,
     context_menu_node: Option<NodeId>,
     show_context_menu: bool,
     context_menu_pos: egui::Pos2,
@@ -296,6 +319,12 @@ pub struct PatchworkApp {
     publish_dialog: Option<library::PublishDialog>,
     /// P4.2 Stage 5: a version switch awaiting confirmation.
     pending_version_switch: Option<version::PendingVersionSwitch>,
+    /// P4.3.1A: read-only Marketplace catalogue browser.
+    marketplace: marketplace::MarketplaceWindow,
+    /// P4.3.2C: Package Trust Review (Library migration).
+    trust_review: trust::TrustReviewWindow,
+    /// P4.3.2D: package execution permissions (banner and review window).
+    permissions: permissions::PermissionsWindow,
     // P3: Save As dialog state
     save_as_open: bool,
     save_as_name: String,
@@ -396,6 +425,9 @@ impl PatchworkApp {
             library_cache: crate::library::LibraryCache::new(),
             publish_dialog: None,
             pending_version_switch: None,
+            marketplace: Default::default(),
+            trust_review: Default::default(),
+            permissions: Default::default(),
             save_as_open: false,
             save_as_name: String::new(),
             selected_connection: None,
@@ -406,6 +438,11 @@ impl PatchworkApp {
             box_select_start: None,
             box_select_end: None,
             clipboard: None,
+            clipboard_runnable: false,
+            clipboard_rights: crate::capability::CapSet::EMPTY,
+            capability_uses_cache: None,
+            document_scopes: Default::default(),
+            trust_generation_applied: crate::library::trust::generation(),
             context_menu_node: None,
             show_context_menu: false,
             context_menu_pos: egui::Pos2::ZERO,
@@ -950,6 +987,8 @@ impl PatchworkApp {
         pinned_only: bool,
     ) {
         let node_ids: Vec<NodeId> = self.graph.nodes.keys().copied().collect();
+        // P4.3.2E1: node bodies of a graph that may not run are not drawn.
+        let inert = !self.graph.content.runnable();
         let connections = self.graph.connections.clone();
         let midi_out_ports = self.midi.cached_output_ports.clone();
         let midi_in_ports = self.midi.cached_input_ports.clone();
@@ -1026,7 +1065,7 @@ impl PatchworkApp {
             let http_pending = self.http.is_pending(node_id);
 
             let _open = true;
-            let inline = node.node_type.inline_ports();
+            let inline = node.node_type.inline_ports() && !inert;
             // set_zoom_factor(zoom) is active for the whole frame.
             // Normal: egui_pos = canvas_pos + offset/zoom
             // Pinned: egui_pos = screen_pos / zoom (fixed screen position, divided to get logical)
@@ -1288,42 +1327,50 @@ impl PatchworkApp {
                 }
 
                 let project_dir_path = self.project_path.as_deref().map(std::path::Path::new);
-                nodes::render_content(
-                    ui,
-                    &mut node.node_type,
-                    node_id,
-                    values,
-                    &connections,
-                    &midi_out_ports,
-                    &midi_in_ports,
-                    midi_conn_out,
-                    midi_conn_in,
-                    &mut midi_actions,
-                    &serial_ports,
-                    serial_conn,
-                    &mut serial_actions,
-                    &monitor_state,
-                    osc_listening,
-                    &mut osc_actions,
-                    &mut network_actions,
-                    &mut port_positions,
-                    &mut dragging_from,
-                    &mut http_actions,
-                    http_pending,
-                    &api_keys,
-                    &wgpu_render_state,
-                    &mut pending_disconnects,
-                    &mut ob_manager,
-                    &mut audio_manager,
-                    &self.mcp_log,
-                    self.mcp_rx.is_some(),
-                    &mut dmx_actions,
-                    &mut artnet_actions,
-                    dmx_output_open,
-                    dmx_listening,
-                    artnet_listening,
-                    project_dir_path,
-                );
+                // P4.3.2E1: a graph that may not run is drawn inert: its
+                // nodes, ports and wires stay editable, but node code (and
+                // the device, network and audio actions it can request) does
+                // not run. Editor chrome (File, Zoom, Palette) stays usable.
+                if inert && !crate::graph::group::is_editor_chrome(&node.node_type) {
+                    ui.weak("Not running: this document needs permission.");
+                } else {
+                    nodes::render_content(
+                        ui,
+                        &mut node.node_type,
+                        node_id,
+                        values,
+                        &connections,
+                        &midi_out_ports,
+                        &midi_in_ports,
+                        midi_conn_out,
+                        midi_conn_in,
+                        &mut midi_actions,
+                        &serial_ports,
+                        serial_conn,
+                        &mut serial_actions,
+                        &monitor_state,
+                        osc_listening,
+                        &mut osc_actions,
+                        &mut network_actions,
+                        &mut port_positions,
+                        &mut dragging_from,
+                        &mut http_actions,
+                        http_pending,
+                        &api_keys,
+                        &wgpu_render_state,
+                        &mut pending_disconnects,
+                        &mut ob_manager,
+                        &mut audio_manager,
+                        &self.mcp_log,
+                        self.mcp_rx.is_some(),
+                        &mut dmx_actions,
+                        &mut artnet_actions,
+                        dmx_output_open,
+                        dmx_listening,
+                        artnet_listening,
+                        project_dir_path,
+                    );
+                }
 
                 // Check if a Palette node wants to spawn new nodes
                 if matches!(node.node_type, NodeType::Palette { .. }) {
@@ -1575,6 +1622,24 @@ impl PatchworkApp {
                     );
                 }
 
+                // P4.3.2D: a package runtime refused by authorization keeps
+                // its node and wires; label it so it is not mistaken for a
+                // working node. Details are in Library → Permissions.
+                if let Some(blocked) = self.graph.custom_blocked(node_id) {
+                    let text = if blocked.needs_review() {
+                        "🔒 Needs permission"
+                    } else {
+                        "🔒 Blocked"
+                    };
+                    let painter = ctx.layer_painter(r.response.layer_id);
+                    painter.text(
+                        egui::pos2(r.response.rect.left(), r.response.rect.top() - 6.0),
+                        egui::Align2::LEFT_BOTTOM,
+                        text,
+                        egui::FontId::proportional(12.0),
+                        egui::Color32::from_rgb(255, 190, 80),
+                    );
+                }
                 // Error badge — red border + ⚠ corner icon when this node has a
                 // recorded evaluation error. Click/hover to read the message.
                 if let Some(err) = crate::node_errors::get(node_id) {
@@ -2378,6 +2443,11 @@ impl PatchworkApp {
 }
 impl eframe::App for PatchworkApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // P4.3.2E2: everything the open document's nodes do this frame (in
+        // node evaluation, drawing, device managers and the audio engine)
+        // is checked against its rights. Entered again below once its
+        // content state is resolved.
+        let _document_rights = self.document_rights().enter();
         if let Some(receiver) = &self.hardware_flash_receiver {
             match receiver.try_recv() {
                 Ok(result) => {
@@ -2575,6 +2645,21 @@ impl eframe::App for PatchworkApp {
                             d.insert_temp(egui::Id::new("hardware_devices_open"), true);
                         });
 
+                        ui.close_menu();
+                    }
+                });
+                // P4.3.1A: read-only catalogue browser.
+                ui.menu_button("Library", |ui| {
+                    if ui.button("Marketplace…").clicked() {
+                        self.open_marketplace();
+                        ui.close_menu();
+                    }
+                    if ui.button("Package Trust Review…").clicked() {
+                        self.open_trust_review();
+                        ui.close_menu();
+                    }
+                    if ui.button("Permissions…").clicked() {
+                        self.open_permissions();
                         ui.close_menu();
                     }
                 });
@@ -3573,6 +3658,12 @@ match validation_result {
         // P4.1: Publish to Library dialog.
         self.render_publish_dialog(ctx);
         self.render_version_switch_dialog(ctx);
+        // P4.3.1A: Marketplace browser (read-only; never edits the graph).
+        self.render_marketplace(ctx);
+        // P4.3.2C: Package Trust Review.
+        self.render_trust_review(ctx);
+        // P4.3.2D: package permission banner and review.
+        self.render_permissions(ctx);
         // Floating modal for "save before quit?" — drawn after the menu
         // so it visually layers on top of canvas chrome.
         self.render_quit_dialog(ctx);
@@ -3584,6 +3675,17 @@ match validation_result {
         // ctx.set_zoom_factor(self.canvas_zoom);
         self.apply_theme(ctx);
         self.handle_file_drop(ctx);
+        // P4.3.2E1: a document whose content is not authored here or
+        // allowed by the user does not run. For the runtime part of the
+        // frame (device polling, evaluation, hardware, plugins, image and
+        // audio processing) the live graph is parked and an empty graph
+        // stands in, so every subsystem behaves as if the document had no
+        // nodes and closes what it opened. The graph is put back before MCP
+        // and drawing, so it stays visible and editable.
+        provenance::resolve_graph(&mut self.graph);
+        let _document_rights = self.document_rights().enter();
+        let parked_graph = (!self.graph.content.runnable())
+            .then(|| std::mem::replace(&mut self.graph, Graph::new()));
         self.update_mouse_trackers(ctx);
         self.update_key_inputs(ctx);
         self.poll_midi_inputs();
@@ -3623,6 +3725,11 @@ match validation_result {
         let package_library_root = self.library_cache.root().ok();
         self.graph
             .set_package_environment(package_project_dir, package_library_root);
+        // P4.3.2D: package runtimes run only when the trust store allows
+        // them. Set on whatever graph is about to run (a loaded project, a
+        // restored session, a custom-node tab, an MCP LoadProject result).
+        self.graph
+            .set_trust_policy(permissions::editor_trust_policy());
         let mut values = self.graph.evaluate(now_secs);
         // P3: Report interface changes picked up while reloading custom nodes
         // (e.g. a .pwnode modified outside this editor).
@@ -5323,6 +5430,9 @@ match validation_result {
                 _ => {}
             }
         }
+        if let Some(graph) = parked_graph {
+            self.graph = graph;
+        }
         // Process MCP commands (if MCP server is active)
         self.process_mcp_commands(&values);
         // Store BG image/shader for canvas drawing (from Theme node's BG Image port 21)
@@ -5390,7 +5500,14 @@ match validation_result {
         self.render_nodes_filtered(ctx, &values, true);
         // Build audio chains AFTER node rendering — nodes populate s.sources
         // Sync audio engine state with the graph (start/stop, rebuild, param sync)
-        self.sync_audio_engine();
+        if self.graph.content.runnable() {
+            self.sync_audio_engine();
+        } else {
+            // The audio engine sees no nodes: chains stop, nothing starts.
+            let graph = std::mem::replace(&mut self.graph, Graph::new());
+            self.sync_audio_engine();
+            self.graph = graph;
+        }
         self.sync_console_messages();
         self.handle_system_node_actions(ctx);
         // P3: Open a custom node queued by double-click or the context menu.
@@ -5802,9 +5919,22 @@ impl PatchworkApp {
     }
     /// P3: Open a .pwnode in an editable tab, reusing its tab if already open.
     pub(super) fn open_custom_node_for_edit(&mut self, path: std::path::PathBuf) {
+        // P4.3.2D: a package version opened in a tab is authorized first.
+        self.documents
+            .set_trust_policy(permissions::editor_trust_policy());
         match self.documents.open_custom_node(path) {
             Ok(id) => {
                 self.switch_document(id);
+            }
+            Err(error)
+                if self.documents.take_blocked().is_some_and(|blocked| {
+                    self.permissions.add_refused(blocked);
+                    true
+                }) =>
+            {
+                crate::system_log::warn(format!("Not opened: {error}"));
+                self.toast_warn(error);
+                self.permissions.open = true;
             }
             Err(error) => {
                 crate::system_log::error(format!("Failed to open custom node: {error}"));
@@ -5934,7 +6064,13 @@ impl PatchworkApp {
             // Saves the outgoing document and loads the next document.
             self.switch_document(next_id);
         }
-        self.documents.close_document(document_id)
+        let closed = self.documents.close_document(document_id);
+        if closed {
+            // P4.3.2E2: the closed document's rights end now, and with
+            // them its workers' privileged operations.
+            self.revoke_closed_documents();
+        }
+        closed
     }
 }
 

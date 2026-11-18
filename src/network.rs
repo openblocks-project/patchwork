@@ -247,6 +247,22 @@ impl NetworkManager {
 
     pub fn process(&self, actions: Vec<NetworkAction>) {
         for action in actions {
+            // P4.3.2E2: creating peers and sending are network operations
+            // of the node; a node without that right is torn down instead.
+            let action = match &action {
+                NetworkAction::CreateSend { node_id, .. }
+                | NetworkAction::SendValues { node_id, .. }
+                | NetworkAction::CreateReceive { node_id, .. } => {
+                    match crate::capability::check_for(
+                        *node_id,
+                        crate::capability::Capability::Network,
+                    ) {
+                        Ok(()) => action,
+                        Err(_) => NetworkAction::DestroyNode { node_id: *node_id },
+                    }
+                }
+                NetworkAction::DestroyNode { .. } => action,
+            };
             if let Err(e) = self.action_tx.try_send(action) {
                 use tokio::sync::mpsc::error::TrySendError;
                 match e {
@@ -267,6 +283,11 @@ impl NetworkManager {
         let mut events = Vec::new();
         while let Ok(ev) = self.event_rx.try_recv() {
             events.push(ev);
+        }
+        // P4.3.2E2: nothing received reaches a graph without the network
+        // capability.
+        if !crate::capability::still_allowed(crate::capability::Capability::Network) {
+            events.clear();
         }
         events
     }

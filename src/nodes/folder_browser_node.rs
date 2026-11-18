@@ -69,7 +69,11 @@ impl NodeBehavior for FolderBrowserNode {
         results.push((1, PortValue::Text(name)));
         // Cache file content — only re-read when selected file changes
         if !self.selected_file.is_empty() {
-            if self.cached_content_path != self.selected_file {
+            // P4.3.2E2: read only with the filesystem capability (and
+            // retried once it is granted).
+            if self.cached_content_path != self.selected_file
+                && crate::capability::check(crate::capability::Capability::Filesystem).is_ok()
+            {
                 self.cached_content =
                     std::fs::read_to_string(&self.selected_file).unwrap_or_default();
                 self.cached_content_path = self.selected_file.clone();
@@ -366,7 +370,10 @@ fn node_type_for_file(path: &str, ext: &str) -> Option<NodeType> {
             duration_secs: 0.0,
         }),
         "wgsl" | "glsl" | "hlsl" => {
-            let code = std::fs::read_to_string(path).unwrap_or_default();
+            let code = crate::capability::check(crate::capability::Capability::Filesystem)
+                .ok()
+                .and_then(|()| std::fs::read_to_string(path).ok())
+                .unwrap_or_default();
             Some(NodeType::WgslViewer {
                 wgsl_code: code,
                 canvas_w: 300.0,
@@ -405,6 +412,10 @@ fn node_type_for_file(path: &str, ext: &str) -> Option<NodeType> {
 
 fn read_dir(path: &str) -> Vec<DirEntry> {
     let mut entries = Vec::new();
+    // P4.3.2E2: listing a folder is a filesystem operation.
+    if crate::capability::check(crate::capability::Capability::Filesystem).is_err() {
+        return entries;
+    }
     let Ok(rd) = std::fs::read_dir(path) else {
         return entries;
     };

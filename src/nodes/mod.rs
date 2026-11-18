@@ -59,6 +59,7 @@ pub mod wgsl_viewer;
 pub mod zoom_control;
 // Trait-based nodes
 pub mod add_node;
+// P4.3.2A: inert placeholder for unavailable dynamic node types.
 pub mod audio_analyzer_node;
 pub mod blend;
 pub mod button_node;
@@ -124,6 +125,7 @@ pub mod timer;
 pub mod timer_node;
 pub mod transform_node;
 pub mod tts_node;
+pub mod unknown_node;
 pub mod video_in_node;
 pub mod video_out_node;
 pub mod video_player;

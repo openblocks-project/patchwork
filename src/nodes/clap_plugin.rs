@@ -152,8 +152,48 @@ pub fn render(
     }
 
     // ── Load plugin if not yet in engine ──────────────────────────
-    if !audio.has_processor(node_id) && !plugin_path.is_empty() {
-        match ClapInstance::load(plugin_path, audio.engine_sample_rate as f64, 2048) {
+    // P4.3.2E2: a refused load (no native-code permission, or a binary that
+    // changed since it was approved) keeps the plugin path and is retried
+    // every few seconds, not every frame (it hashes the binary).
+    let refused_id = egui::Id::new(("clap_refused", node_id));
+    let refused: Option<(String, String, std::time::Instant)> =
+        ui.ctx().data_mut(|d| d.get_temp(refused_id));
+    let refused = refused.filter(|(path, _, _)| path == plugin_path);
+    let waiting = refused
+        .as_ref()
+        .is_some_and(|(_, _, at)| at.elapsed() < std::time::Duration::from_secs(3));
+    // P4.3.2F: a loaded plugin whose approval was withdrawn (or whose
+    // binary changed) is unloaded at once, without a restart. Checked when
+    // native approvals change, not every frame.
+    if audio.has_processor(node_id) && !plugin_path.is_empty() {
+        let checked_id = egui::Id::new(("clap_native_generation", node_id));
+        let generation = crate::plugin_trust::native_generation();
+        let checked: Option<u64> = ui.ctx().data_mut(|d| d.get_temp(checked_id));
+        if checked != Some(generation) {
+            ui.ctx().data_mut(|d| d.insert_temp(checked_id, generation));
+            if !crate::audio::clap_host::still_approved(plugin_path) {
+                audio.remove_processor(node_id);
+                audio.clap_gui_handles.remove(&node_id);
+                crate::node_errors::report_for(
+                    node_id,
+                    format!(
+                        "{}: its approval was withdrawn.",
+                        crate::plugin_trust::NATIVE_CHANGED
+                    ),
+                );
+                crate::system_log::warn(format!(
+                    "Plugin unloaded: its approval was withdrawn ({plugin_path})."
+                ));
+            }
+        }
+    }
+    if !audio.has_processor(node_id) && !plugin_path.is_empty() && !waiting {
+        let loaded = ClapInstance::load(plugin_path, audio.engine_sample_rate as f64, 2048);
+        if loaded.is_ok() {
+            ui.ctx()
+                .data_mut(|d| d.remove::<(String, String, std::time::Instant)>(refused_id));
+        }
+        match loaded {
             Ok(instance) => {
                 // Cache plugin info for UI
                 *plugin_name = instance.info.name.clone();
@@ -217,9 +257,40 @@ pub fn render(
                     }
                 }
             }
+            Err(e)
+                if e.starts_with(crate::plugin_trust::NATIVE_CHANGED)
+                    || e.starts_with("Not permitted") =>
+            {
+                ui.ctx().data_mut(|d| {
+                    d.insert_temp(
+                        refused_id,
+                        (plugin_path.clone(), e, std::time::Instant::now()),
+                    )
+                });
+            }
             Err(e) => {
                 crate::system_log::error(format!("Failed to load CLAP: {}", e));
                 *plugin_path = String::new(); // reset so user can try again
+            }
+        }
+    }
+    if let Some((_, message, _)) = &refused {
+        if !audio.has_processor(node_id) {
+            ui.colored_label(egui::Color32::from_rgb(255, 180, 80), message.as_str());
+            if message.starts_with(crate::plugin_trust::NATIVE_CHANGED)
+                && ui
+                    .small_button("Approve this plugin binary")
+                    .on_hover_text("Native code runs with all of Patchwork's access.")
+                    .clicked()
+            {
+                match crate::plugin_trust::approve_native_binary(std::path::Path::new(
+                    plugin_path.as_str(),
+                )) {
+                    Ok(()) => ui
+                        .ctx()
+                        .data_mut(|d| d.remove::<(String, String, std::time::Instant)>(refused_id)),
+                    Err(e) => crate::system_log::warn(e),
+                }
             }
         }
     }

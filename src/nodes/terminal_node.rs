@@ -28,8 +28,14 @@ impl Default for TerminalRuntime {
 
 // ── Background command execution ──────────────────────────────────────────────
 
-fn run_command(cmd: String, working_dir: String, tx: mpsc::Sender<(String, String)>) {
-    std::thread::spawn(move || {
+pub(crate) fn run_command(cmd: String, working_dir: String, tx: mpsc::Sender<(String, String)>) {
+    // P4.3.2E2: runs another program; checked in the worker, with the
+    // node's rights.
+    crate::capability::spawn(move || {
+        if let Err(denied) = crate::capability::check(crate::capability::Capability::Process) {
+            let _ = tx.send((String::new(), denied.to_string()));
+            return;
+        }
         #[cfg(target_os = "windows")]
         let (sh, flag) = ("cmd", "/C");
         #[cfg(not(target_os = "windows"))]

@@ -322,6 +322,8 @@ pub fn primitive_sphere(radius: f32, lon_segments: u32, lat_segments: u32) -> Ar
 /// Errors (file missing, parse failure, no primitives) collapse to `None`
 /// so the calling node can show a "—" state instead of crashing.
 pub fn load_gltf_or_glb(path: &str) -> Option<Arc<MeshData>> {
+    // P4.3.2E2: reads a model file (and the files it references).
+    crate::capability::check(crate::capability::Capability::Filesystem).ok()?;
     let (doc, buffers, _images) = gltf::import(path).ok()?;
 
     let mut all_vertices: Vec<Vertex> = Vec::new();

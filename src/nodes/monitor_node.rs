@@ -72,59 +72,67 @@ impl MonitorNode {
         if self.thread_started {
             return;
         }
+        // P4.3.2E2: reading this computer's load and hardware is system
+        // information. Retried until allowed.
+        if crate::capability::check(crate::capability::Capability::SystemInfo).is_err() {
+            return;
+        }
         self.thread_started = true;
 
         let metrics = self.metrics.clone();
-        std::thread::Builder::new()
-            .name("monitor-sysinfo".to_string())
-            .spawn(move || {
-                use sysinfo::{Pid, System};
-                let mut sys = System::new_all();
-                let pid = Pid::from_u32(std::process::id());
+        // The sampler keeps the node's rights and stops once they are
+        // revoked.
+        crate::capability::spawn_named("monitor-sysinfo", move || {
+            use sysinfo::{Pid, System};
+            let mut sys = System::new_all();
+            let pid = Pid::from_u32(std::process::id());
 
-                // GPU name (once)
-                {
-                    let name = get_gpu_name();
-                    if let Ok(mut m) = metrics.lock() {
-                        m.gpu_name = name;
-                    }
+            // GPU name (once)
+            {
+                let name = get_gpu_name();
+                if let Ok(mut m) = metrics.lock() {
+                    m.gpu_name = name;
                 }
+            }
 
-                loop {
-                    sys.refresh_all();
-                    let cpu = sys.global_cpu_usage();
-                    let cores: Vec<f32> = sys.cpus().iter().map(|c| c.cpu_usage()).collect();
-                    let mem_used = sys.used_memory() as f64 / 1_073_741_824.0;
-                    let mem_total = sys.total_memory() as f64 / 1_073_741_824.0;
-                    let mem_pct = if mem_total > 0.0 {
-                        (mem_used / mem_total * 100.0) as f32
-                    } else {
-                        0.0
-                    };
-                    let (proc_mem, proc_cpu) = sys
-                        .process(pid)
-                        .map(|p| (p.memory() as f32 / 1_048_576.0, p.cpu_usage()))
-                        .unwrap_or((0.0, 0.0));
+            loop {
+                sys.refresh_all();
+                let cpu = sys.global_cpu_usage();
+                let cores: Vec<f32> = sys.cpus().iter().map(|c| c.cpu_usage()).collect();
+                let mem_used = sys.used_memory() as f64 / 1_073_741_824.0;
+                let mem_total = sys.total_memory() as f64 / 1_073_741_824.0;
+                let mem_pct = if mem_total > 0.0 {
+                    (mem_used / mem_total * 100.0) as f32
+                } else {
+                    0.0
+                };
+                let (proc_mem, proc_cpu) = sys
+                    .process(pid)
+                    .map(|p| (p.memory() as f32 / 1_048_576.0, p.cpu_usage()))
+                    .unwrap_or((0.0, 0.0));
 
-                    // Normalize process CPU to overall percentage
-                    // sysinfo returns per-core percentage (e.g., 200% = 2 full cores)
-                    // Divide by core count to get percentage of total system CPU
-                    let num_cores = cores.len().max(1) as f32;
-                    let proc_cpu_normalized = proc_cpu / num_cores;
+                // Normalize process CPU to overall percentage
+                // sysinfo returns per-core percentage (e.g., 200% = 2 full cores)
+                // Divide by core count to get percentage of total system CPU
+                let num_cores = cores.len().max(1) as f32;
+                let proc_cpu_normalized = proc_cpu / num_cores;
 
-                    if let Ok(mut m) = metrics.lock() {
-                        m.cpu_usage = cpu;
-                        m.cpu_per_core = cores;
-                        m.mem_used_gb = mem_used as f32;
-                        m.mem_total_gb = mem_total as f32;
-                        m.mem_percent = mem_pct;
-                        m.process_mem_mb = proc_mem;
-                        m.process_cpu = proc_cpu_normalized;
-                    }
-                    std::thread::sleep(std::time::Duration::from_secs(1));
+                if let Ok(mut m) = metrics.lock() {
+                    m.cpu_usage = cpu;
+                    m.cpu_per_core = cores;
+                    m.mem_used_gb = mem_used as f32;
+                    m.mem_total_gb = mem_total as f32;
+                    m.mem_percent = mem_pct;
+                    m.process_mem_mb = proc_mem;
+                    m.process_cpu = proc_cpu_normalized;
                 }
-            })
-            .ok();
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                if !crate::capability::still_allowed(crate::capability::Capability::SystemInfo) {
+                    break;
+                }
+            }
+        })
+        .ok();
     }
 
     fn tick(&mut self) {
@@ -463,6 +471,15 @@ fn draw_sparkline(
 }
 
 fn get_gpu_name() -> String {
+    // P4.3.2E2: asks the system (another program) about its hardware.
+    if crate::capability::check_all(&[
+        crate::capability::Capability::SystemInfo,
+        crate::capability::Capability::Process,
+    ])
+    .is_err()
+    {
+        return String::new();
+    }
     #[cfg(target_os = "macos")]
     {
         if let Ok(output) = std::process::Command::new("system_profiler")

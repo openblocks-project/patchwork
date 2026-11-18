@@ -126,9 +126,11 @@ impl NeuralAudioNode {
             return;
         }
         let bridge = self.bridge.clone();
-        self.inference_thread = std::thread::Builder::new()
-            .name("neural-audio-inference".to_string())
-            .spawn(move || run_inference_thread(bridge))
+        // P4.3.2E2: the worker loads models with the node's rights.
+        self.inference_thread =
+            crate::capability::spawn_named("neural-audio-inference", move || {
+                run_inference_thread(bridge)
+            })
             .ok();
     }
 
@@ -836,6 +838,8 @@ fn set_error(bridge: &NeuralAudioBridge, msg: String) {
 }
 
 fn build_session(path: &PathBuf) -> Result<(ort::session::Session, String, usize), String> {
+    // P4.3.2E2: reads a model file.
+    crate::capability::check(crate::capability::Capability::Filesystem)?;
     let mut builder =
         crate::ml::ep::session_builder().map_err(|e| format!("session_builder: {e}"))?;
     let session = builder

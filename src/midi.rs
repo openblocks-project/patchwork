@@ -97,6 +97,22 @@ impl MidiManager {
     /// Process actions collected during the render pass.
     pub fn process(&mut self, actions: Vec<MidiAction>) {
         for action in actions {
+            // P4.3.2E2: connecting to and sending on MIDI ports drives
+            // hardware devices; a node without that right is disconnected.
+            let node_id = match &action {
+                MidiAction::ConnectOutput { node_id, .. }
+                | MidiAction::Send { node_id, .. }
+                | MidiAction::ConnectInput { node_id, .. } => Some(*node_id),
+                _ => None,
+            };
+            if let Some(node_id) = node_id {
+                if crate::capability::check_for(node_id, crate::capability::Capability::Devices)
+                    .is_err()
+                {
+                    self.cleanup_node(node_id);
+                    continue;
+                }
+            }
             match action {
                 MidiAction::ConnectOutput { node_id, port_name } => {
                     self.connect_output(node_id, &port_name);
@@ -181,6 +197,9 @@ impl MidiManager {
 
     /// Drain latest received MIDI message for an input node.
     pub fn poll_input(&self, node_id: NodeId) -> Option<Vec<u8>> {
+        if !crate::capability::still_allowed(crate::capability::Capability::Devices) {
+            return None;
+        }
         let rx = self.input_rx.get(&node_id)?;
         let mut last = None;
         while let Ok(msg) = rx.try_recv() {

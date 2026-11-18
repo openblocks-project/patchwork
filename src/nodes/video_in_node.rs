@@ -1209,6 +1209,14 @@ fn extract_vimeo_id(url: &str) -> Option<String> {
 /// we go through yt-dlp; for direct URLs ffmpeg's stream copy (`-c copy`)
 /// gives us a byte-accurate file with no transcoding cost.
 fn download_to_disk(url: &str, dest: &std::path::Path) -> Result<(), String> {
+    // P4.3.2E2: downloads (network, other programs) into a file.
+    crate::capability::check_all(&[
+        crate::capability::Capability::Network,
+        crate::capability::Capability::Process,
+        crate::capability::Capability::Filesystem,
+    ])?;
+    // P4.3.2B: only http(s) URLs, never readable as an option.
+    crate::external_process::check_web_url(url)?;
     // Make sure the parent dir exists — caller passes
     // <project>/assets/video_in/<file>, so create that tree.
     if let Some(parent) = dest.parent() {
@@ -1222,6 +1230,8 @@ fn download_to_disk(url: &str, dest: &std::path::Path) -> Result<(), String> {
                 "-o",
             ])
             .arg(dest)
+            // P4.3.2B: `--` ends options (no `--exec` from a URL).
+            .arg("--")
             .arg(url)
             .status()
             .map_err(|e| {
@@ -1236,6 +1246,9 @@ fn download_to_disk(url: &str, dest: &std::path::Path) -> Result<(), String> {
                 "-loglevel",
                 "error",
                 "-y", // overwrite if exists
+                // P4.3.2B: network protocols only (no local files).
+                "-protocol_whitelist",
+                crate::external_process::FFMPEG_NETWORK_PROTOCOLS,
                 "-i",
                 url,
                 "-c",
@@ -1264,11 +1277,19 @@ fn download_to_disk(url: &str, dest: &std::path::Path) -> Result<(), String> {
 /// network roundtrips even on slow connections; longer than that almost
 /// always means yt-dlp is hung against an unsupported site.
 fn run_yt_dlp(url: &str) -> Result<String, String> {
+    // P4.3.2E2: runs another program that uses the network.
+    crate::capability::check_all(&[
+        crate::capability::Capability::Network,
+        crate::capability::Capability::Process,
+    ])?;
+    // P4.3.2B: only http(s) URLs, after `--` (never an option).
+    crate::external_process::check_web_url(url)?;
     let output = std::process::Command::new("yt-dlp")
         .args([
             "--no-playlist",                   // a single video, not the whole channel
             "-f", "best[ext=mp4]/best",
             "-g",                              // print resolved URL(s) to stdout
+            "--",
             url,
         ])
         .output()
@@ -1459,7 +1480,7 @@ impl VideoInNode {
                         });
                         let ectx = ui.ctx().clone();
                         let url2 = url.clone();
-                        std::thread::spawn(move || {
+                        crate::capability::spawn(move || {
                             match run_yt_dlp(&url2) {
                                 Ok(u) => ectx.data_mut(|d| d.insert_temp(resolved_ok_id, u)),
                                 Err(e) => ectx.data_mut(|d| d.insert_temp(resolved_err_id, e)),
@@ -1556,7 +1577,7 @@ impl VideoInNode {
                         d.insert_temp(status_id, "Caching…".to_string());
                     });
                     let ectx = ui.ctx().clone();
-                    std::thread::spawn(move || {
+                    crate::capability::spawn(move || {
                         match download_to_disk(&url, &abs_dst) {
                             Ok(()) => ectx.data_mut(|d|
                                 d.insert_temp(cache_done_id, rel_str)),
@@ -2488,9 +2509,10 @@ impl VideoInNode {
         let stop_worker = stop.clone();
         let _ = ctx; // ctx only used by caller; worker doesn't need it
 
-        let thread = std::thread::Builder::new()
-            .name(format!("ndi-recv-{}", self.device_id))
-            .spawn(move || {
+        // P4.3.2E2: the receiver keeps the node's rights and stops once
+        // they are revoked.
+        let thread =
+            crate::capability::spawn_named(&format!("ndi-recv-{}", self.device_id), move || {
                 // Capture in 100 ms chunks — balances CPU (vs a tight
                 // poll) against stop-flag latency (worst case 100 ms
                 // after the user clicks Stop). The worker ONLY exits
@@ -2500,7 +2522,9 @@ impl VideoInNode {
                 // Empty forever — main thread can show that as
                 // "no frames" via an idle-timeout check if useful,
                 // but doesn't need to tear the worker down.
-                while !stop_worker.load(Ordering::Relaxed) {
+                while !stop_worker.load(Ordering::Relaxed)
+                    && crate::capability::still_allowed(crate::capability::Capability::Network)
+                {
                     match receiver.capture_video(100) {
                         crate::video_io::ndi::CaptureOutcome::Frame(cf) => {
                             // NDI gave us BGRA; PatchWork's ImageData
@@ -2701,4 +2725,28 @@ pub fn register(registry: &mut crate::node_trait::NodeRegistryInner) {
         n.load_state(state);
         Box::new(n)
     });
+}
+
+#[cfg(test)]
+mod p432b_tests {
+    use super::*;
+
+    #[test]
+    fn urls_are_never_passed_as_downloader_options() {
+        // Refused before yt-dlp or ffmpeg is started.
+        for bad in [
+            "--exec=calc youtube.com",
+            "-o x https://youtube.com",
+            "file:///etc/passwd",
+        ] {
+            let error = run_yt_dlp(bad).unwrap_err();
+            assert!(
+                error.contains("not an http(s) URL") || error.contains("must not start"),
+                "{error}"
+            );
+            let dest = std::env::temp_dir().join("p432b_never_written.mp4");
+            assert!(download_to_disk(bad, &dest).is_err());
+            assert!(!dest.exists());
+        }
+    }
 }

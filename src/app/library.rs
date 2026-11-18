@@ -351,9 +351,25 @@ impl PatchworkApp {
         request: &PublishRequest,
     ) -> Result<(), String> {
         let root = self.library_cache.root()?;
-        match package::publish_package(&root, source, request) {
-            Ok(published) => {
+        // P4.3.2C: record `local_publish` provenance for the exact content
+        // published. A failure to record never undoes the publish; the
+        // version is then listed in Package Trust Review.
+        let result = match crate::library::trust::TrustStore::default_location() {
+            Ok(store) => crate::library::trust::publish_and_record(&store, &root, source, request),
+            Err(error) => package::publish_package(&root, source, request).map(|p| (p, Err(error))),
+        };
+        match result {
+            Ok((published, recorded)) => {
                 self.library_cache.invalidate();
+                self.trust_review.invalidate();
+                if let Err(why) = recorded {
+                    let text = format!(
+                        "Published {}@{}, but its provenance could not be recorded: {why}",
+                        published.manifest.id, published.version
+                    );
+                    crate::system_log::warn(text.clone());
+                    self.toast_warn(text);
+                }
                 crate::system_log::log(format!(
                     "Published {}@{} to the Library: {}",
                     published.manifest.id,
@@ -439,7 +455,7 @@ impl PatchworkApp {
 
     /// Insert a package version after re-verifying its checksum.
     fn insert_library_package(&mut self, ctx: &egui::Context, version: &InstalledVersion) {
-        match package::verify_version_dir(&version.dir, true) {
+        match package::verify_version_dir_static(&version.dir, true) {
             Ok(verified) => {
                 // P4.2 Stage 2: record the exact package version portably.
                 let reference = crate::library::resolve::InstancePackageRef {
@@ -495,6 +511,28 @@ impl PatchworkApp {
         if self.documents.is_locked() {
             return;
         }
+        // P4.3.2D: a duplicate is a plain, editable file that runs without
+        // package permissions, so a package may only be duplicated once it
+        // is allowed to run (and copying it constructs its nodes).
+        // P4.3.2E2: the copy keeps exactly the package's rights.
+        let mut package_rights = crate::capability::CapSet::EMPTY;
+        if crate::library::package::is_inside_published_package(&source) {
+            let policy = super::permissions::editor_trust_policy();
+            let mut resolver =
+                crate::library::resolve::PackageResolver::new(None, self.library_cache.root().ok());
+            resolver.set_trust(policy.clone());
+            match crate::library::trust::authorize::authorize_entry(&policy, &source, &resolver) {
+                Ok(authorized) => package_rights = authorized.capabilities,
+                Err(blocked) => {
+                    let message = blocked.message();
+                    crate::system_log::warn(format!("Not duplicated: {message}"));
+                    self.toast_warn(message);
+                    self.permissions.add_refused(blocked);
+                    self.permissions.open = true;
+                    return;
+                }
+            }
+        }
         let stem = source
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
@@ -546,8 +584,26 @@ impl PatchworkApp {
             overwrite = true;
         }
 
-        match package::duplicate_for_editing(&source, &destination, overwrite) {
-            Ok(()) => {
+        match package::duplicate_for_editing_with_digest(&source, &destination, overwrite) {
+            Ok((source_digest, copy_digest)) => {
+                // P4.3.2E1: the copy inherits the provenance of its source:
+                // an authorized package (checked above) or a loose file as
+                // recorded in the content ledger.
+                let source_state = if package::is_inside_published_package(&source) {
+                    crate::library::trust::content::ContentState::Allowed(package_rights)
+                } else {
+                    let mut state = crate::library::trust::content::ContentState::Pending {
+                        kind: crate::library::trust::content::ContentKind::CustomNode,
+                        digest: source_digest,
+                    };
+                    super::provenance::resolve(&mut state);
+                    state
+                };
+                super::provenance::record_written(
+                    &source_state,
+                    crate::library::trust::content::ContentKind::CustomNode,
+                    &copy_digest,
+                );
                 crate::system_log::log(format!(
                     "Duplicated {} for editing as {}",
                     source.display(),

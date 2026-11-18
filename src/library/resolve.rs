@@ -232,6 +232,9 @@ pub struct PackageResolver {
     /// Keyed by folder and expected identity (a result verified without an
     /// identity check is never reused for one with it).
     cache: HashMap<(PathBuf, Option<PackageRef>), (Fingerprint, CandidateResult)>,
+    /// P4.3.2D: which trust store authorizes package runtimes resolved
+    /// here (copied to nested runtimes with the resolver).
+    trust: super::trust::authorize::TrustPolicy,
 }
 
 impl PackageResolver {
@@ -243,7 +246,17 @@ impl PackageResolver {
             project_dir,
             library_root,
             cache: HashMap::new(),
+            trust: super::trust::authorize::TrustPolicy::default(),
         }
+    }
+
+    /// P4.3.2D: the trust policy for package runtimes.
+    pub fn trust(&self) -> &super::trust::authorize::TrustPolicy {
+        &self.trust
+    }
+
+    pub fn set_trust(&mut self, trust: super::trust::authorize::TrustPolicy) {
+        self.trust = trust;
     }
 
     /// The package whose bundled `deps/` is searched first.
@@ -759,10 +772,8 @@ fn verify_candidate(
     }
 
     // ── Nested references: classify before loading ─────────────────────
-    let raw: crate::document::CustomNodeFile = match std::fs::read_to_string(&entry_path)
-        .map_err(|e| e.to_string())
-        .and_then(|t| serde_json::from_str(&t).map_err(|e| e.to_string()))
-    {
+    // P4.3.2A: read as plain JSON; no node is constructed.
+    let raw = match crate::document::read_custom_node_static(&entry_path) {
         Ok(file) => file,
         Err(e) => {
             return fail(
@@ -787,20 +798,17 @@ fn verify_candidate(
         };
         return fail(kind, bundle_problem.message);
     }
-    for node in raw.graph.nodes.values() {
-        let crate::graph::NodeType::CustomNodeInstance { file, package, .. } = &node.node_type
-        else {
-            continue;
-        };
-        if package.is_some() {
+    for instance in &raw.instances {
+        if instance.package.is_some() {
             continue;
         }
-        if let Err(problem) = check_nested_reference(origin, dir, &canonical_dir, file) {
+        if let Err(problem) = check_nested_reference(origin, dir, &canonical_dir, &instance.file) {
             return Err(problem);
         }
     }
-    // Final parse with the contained policy (same rules the loader uses).
-    if let Err(message) = crate::document::CustomNodeFile::load_with_policy(
+    // Final check with the contained policy (the loader's rules, applied
+    // statically: nothing is constructed).
+    if let Err(message) = crate::document::CustomNodeFile::check_static(
         &entry_path,
         &crate::document::DependencyPolicy::Contained {
             root: dir.to_path_buf(),
@@ -1063,7 +1071,7 @@ impl PackageResolver {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::document::LOAD_COUNT;
+    use crate::document::STATIC_READ_COUNT;
     use crate::library::package::tests::{TempDir, write_node};
 
     fn reference(id: &str, version: &str, entry: &str) -> PackageRef {
@@ -1676,11 +1684,15 @@ mod tests {
         let r = reference("local.node", "1.0.0", "Node.pwnode");
         let mut resolver = PackageResolver::new(None, Some(library));
         resolver.resolve(&r).unwrap();
-        let loads = LOAD_COUNT.with(|c| c.get());
+        let loads = STATIC_READ_COUNT.with(|c| c.get());
         for _ in 0..10 {
             resolver.resolve(&r).unwrap();
         }
-        assert_eq!(LOAD_COUNT.with(|c| c.get()), loads, "cached, no reloads");
+        assert_eq!(
+            STATIC_READ_COUNT.with(|c| c.get()),
+            loads,
+            "cached, no reloads"
+        );
 
         // A changed entry (different size) is noticed without clearing.
         write_node(&dir.join("Node.pwnode"), "A longer changed name", None);
@@ -1918,10 +1930,14 @@ mod tests {
         let mut resolver = PackageResolver::new(None, Some(library));
         let reference = stored("local.node", "1.0.0");
         resolver.resolve_instance("", Some(&reference)).unwrap();
-        let loads = LOAD_COUNT.with(|c| c.get());
+        let loads = STATIC_READ_COUNT.with(|c| c.get());
         for _ in 0..10 {
             resolver.resolve_instance("", Some(&reference)).unwrap();
         }
-        assert_eq!(LOAD_COUNT.with(|c| c.get()), loads, "no re-verification");
+        assert_eq!(
+            STATIC_READ_COUNT.with(|c| c.get()),
+            loads,
+            "no re-verification"
+        );
     }
 }

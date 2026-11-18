@@ -91,7 +91,7 @@ pub fn scan_packages(library_root: &Path) -> PackageScan {
             if !dir.is_dir() || package::is_staging_dir(&name) {
                 continue;
             }
-            match package::verify_version_dir(&dir, true) {
+            match package::verify_version_dir_static(&dir, true) {
                 Ok(verified) => versions.push(InstalledVersion {
                     manifest: verified.manifest,
                     version: verified.version,

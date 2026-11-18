@@ -51,6 +51,8 @@ impl H264Encoder {
     /// `Err` if ffmpeg isn't on PATH (with install hint) or dims are
     /// invalid.
     pub fn new(w: u32, h: u32, sink: NalSink) -> Result<Self, String> {
+        // P4.3.2E2: starts ffmpeg.
+        crate::capability::check(crate::capability::Capability::Process)?;
         if w == 0 || h == 0 {
             return Err(format!("invalid stream dimensions {w}×{h}"));
         }
@@ -188,7 +190,7 @@ impl H264Encoder {
         // Stdout reader — splits the byte stream on Annex-B start
         // codes, hands each complete NAL to `sink`. Exits on EOF
         // when ffmpeg dies.
-        thread::spawn(move || nal_reader_loop(stdout, sink));
+        spawn_nal_reader(stdout, sink);
 
         Ok(Self {
             process: Some(process),
@@ -204,6 +206,8 @@ impl H264Encoder {
     /// dim mismatch (caller drops + recreates with new dims) or broken
     /// pipe (ffmpeg crashed; stderr is included).
     pub fn write_frame(&mut self, rgba: &[u8], w: u32, h: u32) -> Result<(), String> {
+        // P4.3.2E2: feeds nothing more once revoked.
+        crate::capability::check(crate::capability::Capability::Process)?;
         if (w, h) != self.locked_dims {
             return Err(format!(
                 "dims changed {}×{} → {w}×{h}; respawn",
@@ -267,6 +271,18 @@ impl Drop for H264Encoder {
             let _ = p.wait();
         }
     }
+}
+
+/// P4.3.2E2: start the thread that reads the encoder's output and hands
+/// each access unit to `sink`. The sink sends on the network, so the thread
+/// keeps the context of the node that created the encoder (a thread
+/// without one is refused everything), and its sends stop once that
+/// context is revoked.
+pub(crate) fn spawn_nal_reader<R: Read + Send + 'static>(
+    stdout: R,
+    sink: NalSink,
+) -> thread::JoinHandle<()> {
+    crate::capability::spawn(move || nal_reader_loop(stdout, sink))
 }
 
 /// Read Annex-B NALs from ffmpeg stdout, group them into access
