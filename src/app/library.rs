@@ -34,6 +34,8 @@ pub(super) enum LibraryAction {
     Insert(Box<InstalledVersion>),
     Convert(std::path::PathBuf),
     Duplicate(std::path::PathBuf),
+    /// P4.3.3: prepare a marketplace submission for this version.
+    Share(Box<InstalledVersion>),
 }
 
 impl PatchworkApp {
@@ -450,6 +452,7 @@ impl PatchworkApp {
                 self.open_publish_dialog(path, name, true);
             }
             LibraryAction::Duplicate(path) => self.duplicate_for_editing(path),
+            LibraryAction::Share(version) => self.open_share_dialog(*version),
         }
     }
 

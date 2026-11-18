@@ -39,6 +39,14 @@ use eframe::egui;
 use std::sync::Arc;
 
 fn main() -> eframe::Result {
+    // P4.3.4: `patchwork catalogue …` is the headless tool the marketplace
+    // catalogue repository's CI runs (same validation and artifact code as
+    // the app). It exits before anything else starts.
+    if std::env::args().nth(1).as_deref() == Some("catalogue") {
+        std::process::exit(library::marketplace::repository::cli::run(
+            std::env::args().skip(2).collect(),
+        ));
+    }
     audio::clap_host::init_main_thread();
     let icon = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icons/icon.png"))
         .expect("Failed to decode embedded icon PNG");

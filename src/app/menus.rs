@@ -521,6 +521,26 @@ impl super::PatchworkApp {
                                 ));
                                 ui.close_menu();
                             }
+                            // P4.3.3: only verified versions published on
+                            // this computer can be shared.
+                            let shareable: Vec<_> = pkg
+                                .versions
+                                .iter()
+                                .filter(|v| v.integrity.is_ok() && v.manifest.source == "local")
+                                .collect();
+                            if !shareable.is_empty() {
+                                ui.menu_button("Share to Marketplace…", |ui| {
+                                    for version in shareable {
+                                        if ui.button(format!("v{}", version.version)).clicked() {
+                                            library_action =
+                                                Some(super::library::LibraryAction::Share(
+                                                    Box::new(version.clone()),
+                                                ));
+                                            ui.close_menu();
+                                        }
+                                    }
+                                });
+                            }
                         });
                     }
 

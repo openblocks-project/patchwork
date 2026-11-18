@@ -152,6 +152,7 @@ mod provenance;
 mod provenance_tests;
 #[cfg(test)]
 mod revocation_tests;
+mod share;
 mod toast;
 mod trust;
 pub(crate) mod undo;
@@ -317,6 +318,8 @@ pub struct PatchworkApp {
     library_cache: crate::library::LibraryCache,
     /// P4.1: "Publish to Library" dialog state.
     publish_dialog: Option<library::PublishDialog>,
+    /// P4.3.3: Share to Marketplace window.
+    share: Option<share::ShareWindow>,
     /// P4.2 Stage 5: a version switch awaiting confirmation.
     pending_version_switch: Option<version::PendingVersionSwitch>,
     /// P4.3.1A: read-only Marketplace catalogue browser.
@@ -424,6 +427,7 @@ impl PatchworkApp {
             project_custom_nodes: Vec::new(),
             library_cache: crate::library::LibraryCache::new(),
             publish_dialog: None,
+            share: None,
             pending_version_switch: None,
             marketplace: Default::default(),
             trust_review: Default::default(),
@@ -3657,6 +3661,8 @@ match validation_result {
         self.render_group_dialog(ctx);
         // P4.1: Publish to Library dialog.
         self.render_publish_dialog(ctx);
+        // P4.3.3: Share to Marketplace.
+        self.render_share_dialog(ctx);
         self.render_version_switch_dialog(ctx);
         // P4.3.1A: Marketplace browser (read-only; never edits the graph).
         self.render_marketplace(ctx);

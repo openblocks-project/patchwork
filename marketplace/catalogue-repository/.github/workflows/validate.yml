@@ -1,0 +1,111 @@
+# Validates every pull request with the Patchwork binary's headless
+# `catalogue check-pr` command, built from a reviewed Patchwork commit.
+#
+# Security:
+# - `pull_request` (never `pull_request_target`): fork pull requests get a
+#   read-only token and no secrets.
+# - The pull request's files are only read as data by the validator; nothing
+#   in the repository is executed. The validator is built from
+#   vars.PATCHWORK_REPOSITORY at vars.PATCHWORK_COMMIT, never from the pull
+#   request.
+# - A pull request can change this file for its own run, so changes under
+#   .github/ need a maintainer's review (CODEOWNERS) and the publish workflow
+#   validates everything again after merge.
+# - Pull-request values reach the script through environment variables only
+#   (never interpolated into the script).
+name: Validate
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Validate submission
+    # The same build environment as Patchwork's own CI.
+    runs-on: windows-2022
+    timeout-minutes: 90
+    env:
+      CMAKE_GENERATOR: "Visual Studio 17 2022"
+      CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+      CMAKE_MSVC_RUNTIME_LIBRARY: "MultiThreadedDLL"
+      RUSTFLAGS: "-C target-feature=-crt-static"
+      CARGO_TERM_COLOR: always
+    steps:
+      - name: Keep exact bytes (no line-ending conversion)
+        shell: bash
+        run: git config --global core.autocrlf false
+
+      - name: Require the validator configuration
+        shell: bash
+        env:
+          PATCHWORK_REPOSITORY: ${{ vars.PATCHWORK_REPOSITORY }}
+          PATCHWORK_COMMIT: ${{ vars.PATCHWORK_COMMIT }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$PATCHWORK_REPOSITORY" || ! "$PATCHWORK_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::repository variables PATCHWORK_REPOSITORY and PATCHWORK_COMMIT (full 40-character hash) must be set"
+            exit 1
+          fi
+
+      - name: Check out the pull request (merge result)
+        uses: actions/checkout@v4
+        with:
+          path: head
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Check out the target branch as it is (its first parent)
+        shell: bash
+        run: git -C head worktree add --detach ../base HEAD^1
+
+      - name: Check out the validator (Patchwork at a reviewed commit)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.PATCHWORK_REPOSITORY }}
+          ref: ${{ vars.PATCHWORK_COMMIT }}
+          path: patchwork
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: patchwork
+
+      - name: Configure CMake compatibility
+        shell: pwsh
+        run: '"CMAKE_ARGS=-DCMAKE_POLICY_VERSION_MINIMUM=3.5" >> $env:GITHUB_ENV'
+
+      - name: Build the validator
+        shell: bash
+        run: cargo build --release --locked --manifest-path patchwork/Cargo.toml
+
+      - name: Validate the pull request
+        shell: bash
+        env:
+          AUTHOR_LOGIN: ${{ github.event.pull_request.user.login }}
+          AUTHOR_ID: ${{ github.event.pull_request.user.id }}
+          BASE_BRANCH: ${{ github.event.pull_request.base.ref }}
+          MAINTAINER_IDS: ${{ vars.MAINTAINER_IDS }}
+        run: |
+          set -euo pipefail
+          flags=()
+          # Maintainers (by numeric account id, from a repository variable)
+          # may change configuration; never generated files or published bytes.
+          if [[ ",${MAINTAINER_IDS// /}," == *",${AUTHOR_ID},"* ]]; then
+            flags+=(--maintainer)
+          fi
+          patchwork/target/release/patchwork.exe catalogue check-pr \
+            --base base --head head \
+            --repository "$GITHUB_REPOSITORY" --branch "$BASE_BRANCH" \
+            --author-login "$AUTHOR_LOGIN" --author-id "$AUTHOR_ID" \
+            "${flags[@]}"

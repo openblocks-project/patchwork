@@ -1,0 +1,3 @@
+# Exact bytes everywhere: published versions and artifacts are hashed, so
+# no line-ending or encoding conversion may ever be applied.
+* -text

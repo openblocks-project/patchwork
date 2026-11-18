@@ -1,0 +1,14 @@
+# CODEOWNERS for the Patchwork marketplace catalogue.
+#
+# Fill this in when the repository is created (see MAINTAINERS.md,
+# "Repository setup"). Every rule must name real accounts or teams.
+#
+# 1. The maintainers own everything by default, including the workflows,
+#    this file, moderation.json and every publisher claim:
+#
+#      *                         @<owner>/<maintainers-team>
+#
+# 2. When a namespace is registered, add its owner for its packages, so
+#    their pull requests need their own approval as well as a maintainer's:
+#
+#      /packages/<namespace>/    @<github-login> @<owner>/<maintainers-team>

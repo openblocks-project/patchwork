@@ -1626,6 +1626,9 @@ pub mod source;
 pub mod artifact;
 pub mod install;
 pub mod scan;
+pub mod submit;
+// P4.3.4: the catalogue repository's CI tooling.
+pub mod repository;
 
 #[cfg(test)]
 mod tests;
