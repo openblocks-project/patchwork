@@ -120,6 +120,22 @@ impl UndoHistory {
         Some(next)
     }
 
+    /// Apply `change` to every undo and redo snapshot graph, recomputing
+    /// their content hashes. Used to keep history consistent with a change
+    /// that is not itself an edit (P4.2 Stage 4: packaged nodes moved to
+    /// their project copies by a save). Adds no undo step.
+    pub fn map_graphs(&mut self, mut change: impl FnMut(&mut Graph)) {
+        for snapshot in self.undo_stack.iter_mut().chain(self.redo_stack.iter_mut()) {
+            change(&mut snapshot.graph);
+            snapshot.hash = UndoSnapshot::content_hash(&snapshot.graph, &snapshot.pinned_nodes);
+        }
+    }
+
+    #[cfg(test)]
+    pub fn depth(&self) -> (usize, usize) {
+        (self.undo_stack.len(), self.redo_stack.len())
+    }
+
     pub fn can_undo(&self) -> bool {
         !self.undo_stack.is_empty()
     }

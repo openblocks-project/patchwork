@@ -181,6 +181,23 @@ pub struct PackageManifest {
     /// Unix seconds.
     #[serde(default)]
     pub published_at: u64,
+    /// P4.2 Stage 3: SHA-256 of every bundled dependency file, keyed by its
+    /// `/`-separated path inside the version folder (all under `deps/`).
+    /// Absent for packages without bundled dependencies (P4.1 and
+    /// standalone packages), which are verified by `sha256` alone.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub files: std::collections::BTreeMap<String, String>,
+    /// P4.2 Stage 3 capability marker. `0` (absent): no complete bundle
+    /// (P4.1 and standalone packages). `1`: a complete flat bundle; every
+    /// declared dependency is bundled, everything bundled is declared, and
+    /// nested instances never resolve outside the bundle. Higher values
+    /// are not readable by this Patchwork.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub bundle_format: u32,
+}
+
+fn is_zero(value: &u32) -> bool {
+    *value == 0
 }
 
 impl PackageManifest {
@@ -207,6 +224,12 @@ impl PackageManifest {
                 self.pwnode_version
             ));
         }
+        if self.bundle_format > super::bundle::BUNDLE_FORMAT {
+            return Err(format!(
+                "Package uses dependency bundle format {}, which this Patchwork cannot read.",
+                self.bundle_format
+            ));
+        }
         Ok(version)
     }
 
@@ -223,8 +246,8 @@ impl PackageManifest {
 
 /// Location-independent reference to a package entry: `id@version/entry`.
 ///
-/// P4.1 instances still store absolute file paths; this is the form that
-/// P4.2 portable project references will use. Not stored in `.pwnode`.
+/// Instances store it (as `resolve::InstancePackageRef`, plain strings)
+/// next to their compatibility `file` path since P4.2 Stage 2.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PackageRef {
     pub id: String,
@@ -278,25 +301,68 @@ pub fn version_dir(library_root: &Path, id: &str, version: &semver::Version) -> 
     package_dir(library_root, id).join(version.to_string())
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Number of files hashed on this thread (tests check that verification
+    /// results are cached instead of re-hashing every frame).
+    pub(crate) static HASH_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// Hex SHA-256 of a file.
 pub fn sha256_file(path: &Path) -> Result<String, String> {
     use sha2::{Digest, Sha256};
+    #[cfg(test)]
+    HASH_COUNT.with(|count| count.set(count.get() + 1));
     let bytes =
         std::fs::read(path).map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
     let digest = Sha256::digest(&bytes);
     Ok(digest.iter().map(|b| format!("{b:02x}")).collect())
 }
 
-fn read_manifest(dir: &Path) -> Result<PackageManifest, String> {
+pub(crate) fn read_manifest(dir: &Path) -> Result<PackageManifest, String> {
     let path = dir.join(MANIFEST_FILE);
     let text = std::fs::read_to_string(&path)
         .map_err(|e| format!("Cannot read {}: {e}", path.display()))?;
     serde_json::from_str(&text).map_err(|e| format!("Invalid {}: {e}", path.display()))
 }
 
+/// True when `dir` holds a readable package manifest.
+fn is_package_dir(dir: &Path) -> bool {
+    dir.join(MANIFEST_FILE).is_file() && read_manifest(dir).is_ok()
+}
+
+/// P4.2 Stage 3: the outermost published version folder containing `path`
+/// (a package, or the package that bundles it). `None` outside packages.
+pub fn containing_package_root(path: &Path) -> Option<PathBuf> {
+    let mut found = None;
+    for dir in path.ancestors().skip(1).take(64) {
+        if dir.as_os_str().is_empty() {
+            break;
+        }
+        if is_package_dir(dir) {
+            found = Some(dir.to_path_buf());
+        }
+    }
+    found
+}
+
+/// P4.2 Stage 3: true for any file inside a published package version,
+/// including bundled dependencies. Such files are read-only in every
+/// Patchwork editing workflow.
+pub fn is_inside_published_package(path: &Path) -> bool {
+    path.ancestors()
+        .skip(1)
+        .take(64)
+        .take_while(|dir| !dir.as_os_str().is_empty())
+        .any(is_package_dir)
+}
+
 /// True when `path` is the entry of a published package version, i.e. a
 /// `package.json` next to it names it as the entry. Such files are
 /// read-only in every Patchwork editing workflow.
+/// (Editing workflows use [`is_inside_published_package`], which also
+/// covers bundled dependencies.)
+#[cfg(test)]
 pub fn is_published_entry(path: &Path) -> bool {
     let (Some(dir), Some(file_name)) = (path.parent(), path.file_name()) else {
         return false;
@@ -360,6 +426,13 @@ pub fn verify_version_dir(dir: &Path, expect_layout: bool) -> Result<VerifiedPac
             manifest.id, version, manifest.entry
         ));
     }
+    // P4.2 Stage 3: bundled dependency files and nested package references.
+    super::bundle::verify_bundle(dir, &manifest).map_err(|problem| {
+        format!(
+            "Package {}@{} is damaged: {}",
+            manifest.id, version, problem.message
+        )
+    })?;
     crate::document::CustomNodeFile::load_with_policy(
         &entry_path,
         &crate::document::DependencyPolicy::Contained {
@@ -471,19 +544,20 @@ pub fn publish_package(
         }
     };
 
-    // P4.1 publishes standalone nodes only; nested packaging is P4.2.
     let custom = crate::document::CustomNodeFile::load(source)
         .map_err(|e| invalid(format!("Cannot read the custom node: {e}")))?;
-    if custom.graph.nodes.values().any(|n| {
+    // P4.2 Stage 3: nested custom nodes must be exact, verified packages;
+    // they are bundled into the new version (sources are only read).
+    let plan = if custom.graph.nodes.values().any(|n| {
         matches!(
             n.node_type,
             crate::graph::NodeType::CustomNodeInstance { .. }
         )
     }) {
-        return Err(invalid(
-            "Custom nodes that contain other custom nodes can't be published yet.".to_string(),
-        ));
-    }
+        Some(super::bundle::collect_dependencies(&custom, library_root).map_err(invalid)?)
+    } else {
+        None
+    };
 
     let entry = source
         .file_name()
@@ -513,9 +587,35 @@ pub fn publish_package(
 
     let result = (|| -> Result<VerifiedPackage, PublishError> {
         let staged_entry = staging.join(&entry);
-        let mut input = std::fs::File::open(source)
-            .map_err(|e| PublishError::Io(format!("Failed to read custom node: {e}")))?;
-        super::copy_exclusive_from(&mut input, &staged_entry).map_err(PublishError::Io)?;
+        let mut dependencies = Vec::new();
+        let mut files = std::collections::BTreeMap::new();
+        match &plan {
+            // Standalone: the file is published byte for byte (P4.1).
+            None => {
+                let mut input = std::fs::File::open(source)
+                    .map_err(|e| PublishError::Io(format!("Failed to read custom node: {e}")))?;
+                super::copy_exclusive_from(&mut input, &staged_entry).map_err(PublishError::Io)?;
+            }
+            // With dependencies: nested instances name their exact package
+            // and point at the bundled copy, which is copied into deps/.
+            Some(plan) => {
+                let json =
+                    super::bundle::rewrite_root_entry(&custom, plan).map_err(PublishError::Io)?;
+                super::copy_exclusive_from(&mut json.as_bytes(), &staged_entry)
+                    .map_err(PublishError::Io)?;
+                files =
+                    super::bundle::bundle_dependencies(&staging, plan).map_err(PublishError::Io)?;
+                dependencies = plan
+                    .dependencies
+                    .iter()
+                    .map(|d| PackageDependency {
+                        id: d.reference.id.clone(),
+                        version: d.reference.version.to_string(),
+                        entry: Some(d.reference.entry.clone()),
+                    })
+                    .collect();
+            }
+        }
         let manifest = PackageManifest {
             format: MANIFEST_FORMAT,
             id: id.clone(),
@@ -528,9 +628,16 @@ pub fn publish_package(
             sha256: sha256_file(&staged_entry).map_err(PublishError::Io)?,
             pwnode_version: custom.version,
             min_app_version: None,
-            dependencies: Vec::new(),
+            dependencies,
             source: default_source(),
             published_at: unix_now(),
+            // Packages with nested nodes are always complete bundles.
+            bundle_format: if plan.is_some() {
+                super::bundle::BUNDLE_FORMAT
+            } else {
+                0
+            },
+            files,
         };
         let json = serde_json::to_string_pretty(&manifest)
             .map_err(|e| PublishError::Io(format!("Cannot write manifest: {e}")))?;
@@ -579,7 +686,7 @@ pub fn duplicate_for_editing(
     destination: &Path,
     overwrite: bool,
 ) -> Result<(), String> {
-    if is_published_entry(destination) {
+    if is_inside_published_package(destination) {
         return Err(
             "The destination is a published Library package, which is read-only.".to_string(),
         );
@@ -645,6 +752,7 @@ pub(crate) mod tests {
                     file: reference.into(),
                     inputs: Vec::new(),
                     outputs: Vec::new(),
+                    package: None,
                 },
                 [0.0, 0.0],
             );

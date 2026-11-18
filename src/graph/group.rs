@@ -239,9 +239,16 @@ pub fn check_group_dependencies(
 ) -> Result<(), String> {
     let target = canonical_target_path(target)?;
     for node in group_graph.nodes.values() {
-        let NodeType::CustomNodeInstance { file, .. } = &node.node_type else {
+        let NodeType::CustomNodeInstance { file, package, .. } = &node.node_type else {
             continue;
         };
+        // P4.2 Stage 2: a packaged instance resolved by its reference may
+        // have no file here. Published packages are immutable and only
+        // reference other published packages (or files inside their own
+        // folder), so they cannot reach `target`, a writable user file.
+        if package.is_some() && !Path::new(file).exists() {
+            continue;
+        }
         let mut visited: HashSet<PathBuf> = HashSet::new();
         visited.insert(target.clone());
         for path in forbidden {
@@ -515,6 +522,7 @@ impl Graph {
                 file: file.to_string(),
                 inputs: extraction.inputs.clone(),
                 outputs: extraction.outputs.clone(),
+                package: None,
             },
             extraction.position,
         );
@@ -843,6 +851,7 @@ mod tests {
                 file: existing.to_string_lossy().into_owned(),
                 inputs: vec![],
                 outputs: vec![],
+                package: None,
             },
             [0.0, 0.0],
         );
@@ -874,6 +883,7 @@ mod tests {
                 file: inner.to_string_lossy().into_owned(),
                 inputs: vec![],
                 outputs: vec![],
+                package: None,
             },
             [200.0, 100.0],
         );

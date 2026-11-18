@@ -89,7 +89,8 @@ impl DocumentManager {
 
         document.graph = custom_node.graph;
         // P4.1: published package versions open read-only.
-        document.read_only = crate::library::package::is_published_entry(&canonical_path);
+        // Published packages and their bundled dependencies are read-only.
+        document.read_only = crate::library::package::is_inside_published_package(&canonical_path);
         document.path = Some(canonical_path);
         document.is_dirty = false;
 
@@ -215,6 +216,7 @@ mod tests {
             file: file.to_string_lossy().into_owned(),
             inputs: Vec::new(),
             outputs: Vec::new(),
+            package: None,
         }
     }
 
@@ -576,6 +578,7 @@ mod save_as_tests {
                 file: target.to_string_lossy().into_owned(),
                 inputs: Vec::new(),
                 outputs: Vec::new(),
+                package: None,
             },
             [0.0, 0.0],
         );

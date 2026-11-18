@@ -2180,7 +2180,12 @@ pub fn render_content(
             file,
             inputs,
             outputs,
+            package,
         } => {
+            // P4.2 Stage 2: a packaged node is identified by its package.
+            if let Some(package) = package {
+                ui.label(format!("Package: {}@{}", package.id, package.version));
+            }
             ui.label(format!(
                 "File: {}",
                 std::path::Path::new(file)

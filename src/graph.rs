@@ -590,6 +590,14 @@ pub enum NodeType {
 
         /// External output port definitions.
         outputs: Vec<crate::document::CustomNodePort>,
+
+        /// P4.2 Stage 2: portable package reference (`id@version/entry`).
+        /// When present it is authoritative and `file` is only a
+        /// compatibility path. Absent for legacy instances, unversioned
+        /// Library nodes and ordinary custom nodes, and then not written,
+        /// so their serialization is unchanged.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        package: Option<crate::library::resolve::InstancePackageRef>,
     },
     Slider {
         value: f32,
@@ -2709,6 +2717,10 @@ const CUSTOM_FAILURE_RECHECK: std::time::Duration = std::time::Duration::from_se
 struct CustomRuntimeStamp {
     /// The instance's `file` value at load time.
     file: String,
+    /// The instance's package reference at load time.
+    package: Option<crate::library::resolve::InstancePackageRef>,
+    /// The file actually loaded (`file`, or the resolved package entry).
+    source: std::path::PathBuf,
     /// Canonical path resolved at load time.
     resolved: std::path::PathBuf,
     modified: std::time::SystemTime,
@@ -2719,11 +2731,35 @@ struct CustomRuntimeStamp {
 #[derive(Debug, Clone)]
 struct CustomRuntimeFailure {
     file: String,
+    package: Option<crate::library::resolve::InstancePackageRef>,
     /// File modification time and size when it failed (`None` = missing).
     stamp: Option<(std::time::SystemTime, u64)>,
     error: String,
     next_check: std::time::Instant,
 }
+
+/// P4.2 Stage 2: cached resolution of a packaged instance. Reused while the
+/// instance is unchanged and the resolved entry's mtime and size are the
+/// same, so a resolved package is not re-verified (or hashed) every frame.
+#[derive(Debug, Clone)]
+struct CustomPackagePath {
+    file: String,
+    /// `None` for a path-only instance whose file lies inside a package.
+    package: Option<crate::library::resolve::InstancePackageRef>,
+    path: std::path::PathBuf,
+    stamp: (std::time::SystemTime, u64),
+    /// Stage 3 hardening: outermost package folder the entry belongs to,
+    /// and a metadata fingerprint (no hashing) of everything inside it.
+    root: std::path::PathBuf,
+    root_print: crate::library::resolve::Fingerprint,
+    /// When the fingerprint is compared again.
+    next_check: std::time::Instant,
+}
+
+/// How often a loaded package's folder (including bundled dependencies and
+/// manifests) is compared with its fingerprint. Bounds how long a changed
+/// or damaged package can keep running; unchanged files are never hashed.
+const PACKAGE_RECHECK: std::time::Duration = std::time::Duration::from_secs(2);
 
 fn custom_file_stamp(path: &std::path::Path) -> Result<(std::time::SystemTime, u64), String> {
     let metadata = std::fs::metadata(path)
@@ -2751,6 +2787,19 @@ pub struct Graph {
     /// Cached load failures, so broken files are not re-read every frame.
     #[serde(skip)]
     custom_runtime_failures: HashMap<NodeId, CustomRuntimeFailure>,
+    /// P4.2 Stage 2: resolved package entries per packaged instance.
+    #[serde(skip)]
+    custom_package_paths: HashMap<NodeId, CustomPackagePath>,
+    /// Stage 3 hardening: whether a path-only instance's file lies inside a
+    /// published package (then it is verified like a package), cached per
+    /// file value so ordinary files cost nothing per frame.
+    #[serde(skip)]
+    custom_file_in_package: HashMap<NodeId, (String, bool)>,
+    /// P4.2 Stage 2: resolves package references (project copy first, then
+    /// the Library). Its locations are set by the editor with
+    /// `set_package_environment`; verification results are cached.
+    #[serde(skip)]
+    package_resolver: crate::library::resolve::PackageResolver,
     /// Port-sync events raised while reloading custom nodes during evaluation.
     /// Drained by the editor with `take_custom_port_events`.
     #[serde(skip)]
@@ -2788,6 +2837,9 @@ impl Graph {
             custom_runtimes: HashMap::new(),
             custom_runtime_modified: HashMap::new(),
             custom_runtime_failures: HashMap::new(),
+            custom_package_paths: HashMap::new(),
+            custom_file_in_package: HashMap::new(),
+            package_resolver: crate::library::resolve::PackageResolver::default(),
             custom_port_events: CustomPortSyncReport::default(),
 
             last_eval_time: 0.0,
@@ -2853,6 +2905,8 @@ impl Graph {
         self.custom_runtimes.remove(&id);
         self.custom_runtime_modified.remove(&id);
         self.custom_runtime_failures.remove(&id);
+        self.custom_package_paths.remove(&id);
+        self.custom_file_in_package.remove(&id);
         self.connections
             .retain(|c| c.from_node != id && c.to_node != id);
         crate::node_errors::remove_for(id);
@@ -3707,15 +3761,15 @@ impl Graph {
             let inputs = self.collect_inputs(id, &values);
 
             let custom_file = self.nodes.get(&id).and_then(|node| {
-                if let NodeType::CustomNodeInstance { file, .. } = &node.node_type {
-                    Some(file.clone())
+                if let NodeType::CustomNodeInstance { file, package, .. } = &node.node_type {
+                    Some((file.clone(), package.clone()))
                 } else {
                     None
                 }
             });
 
-            if let Some(file) = custom_file {
-                match self.ensure_custom_runtime(id, &file) {
+            if let Some((file, package)) = custom_file {
+                match self.ensure_custom_runtime(id, &file, package.as_ref()) {
                     Ok(()) => {
                         if let Some(runtime) = self.custom_runtimes.get_mut(&id) {
                             let mut input_nodes: Vec<NodeId> = runtime
@@ -3797,14 +3851,15 @@ impl Graph {
                     let inputs = self.collect_inputs(id, &values);
                     // Handle custom-node instances separately to avoid mutable borrow conflicts.
                     let custom_file = self.nodes.get(&id).and_then(|node| {
-                        if let NodeType::CustomNodeInstance { file, .. } = &node.node_type {
-                            Some(file.clone())
+                        if let NodeType::CustomNodeInstance { file, package, .. } = &node.node_type
+                        {
+                            Some((file.clone(), package.clone()))
                         } else {
                             None
                         }
                     });
-                    if let Some(file) = custom_file {
-                        match self.ensure_custom_runtime(id, &file) {
+                    if let Some((file, package)) = custom_file {
+                        match self.ensure_custom_runtime(id, &file, package.as_ref()) {
                             Ok(()) => {
                                 if let Some(runtime) = self.custom_runtimes.get_mut(&id) {
                                     // Match the stable port ordering used when saving .pwnode.
@@ -3891,6 +3946,7 @@ impl Graph {
             file,
             inputs,
             outputs,
+            ..
         } = &mut node.node_type
         else {
             return report;
@@ -3994,6 +4050,8 @@ impl Graph {
             self.custom_runtimes.remove(&id);
             self.custom_runtime_modified.remove(&id);
             self.custom_runtime_failures.remove(&id);
+            self.custom_package_paths.remove(&id);
+            self.custom_file_in_package.remove(&id);
         }
 
         for runtime in self.custom_runtimes.values_mut() {
@@ -4026,6 +4084,8 @@ impl Graph {
             }
             self.custom_runtime_modified.remove(&id);
             self.custom_runtime_failures.remove(&id);
+            self.custom_package_paths.remove(&id);
+            self.custom_file_in_package.remove(&id);
         }
 
         for runtime in self.custom_runtimes.values_mut() {
@@ -4044,9 +4104,15 @@ impl Graph {
     /// Explicit refresh: forget every cached custom-node load failure
     /// (recursively), so the next evaluation retries those files.
     /// Returns the number of failures cleared.
+    /// P4.2 Stage 2: cached package resolutions and verification results
+    /// are forgotten too, so a package installed, repaired or added to the
+    /// project since is picked up.
     pub fn clear_custom_runtime_failures(&mut self) -> usize {
         let mut count = self.custom_runtime_failures.len();
         self.custom_runtime_failures.clear();
+        self.custom_package_paths.clear();
+        self.custom_file_in_package.clear();
+        self.package_resolver.clear_cache();
         for runtime in self.custom_runtimes.values_mut() {
             count += runtime.clear_custom_runtime_failures();
         }
@@ -4057,7 +4123,10 @@ impl Graph {
     /// runtime and failure state. Ports are re-synchronised from the new
     /// file on the next evaluation. Returns false when `id` is not a
     /// custom-node instance or already references `file`.
-    #[allow(dead_code)] // first UI caller is P4.2 version switching
+    ///
+    /// Only `file` changes. A packaged instance keeps its package reference
+    /// (version switching, which would change both, is not implemented).
+    /// Used after a portable project save (P4.2 Stage 4).
     pub fn retarget_custom_instance(&mut self, id: NodeId, file: &str) -> bool {
         let Some(NodeType::CustomNodeInstance { file: current, .. }) =
             self.nodes.get_mut(&id).map(|n| &mut n.node_type)
@@ -4071,7 +4140,74 @@ impl Graph {
         self.custom_runtimes.remove(&id);
         self.custom_runtime_modified.remove(&id);
         self.custom_runtime_failures.remove(&id);
+        self.custom_package_paths.remove(&id);
         true
+    }
+
+    /// P4.2 Stage 2: set where package references are resolved: the
+    /// project folder (its `packages/` has priority) and the Library root.
+    /// Cheap when unchanged, so the editor calls it before every
+    /// evaluation. On a change, packaged instances are re-resolved; nested
+    /// runtimes use the same locations.
+    pub fn set_package_environment(
+        &mut self,
+        project_dir: Option<std::path::PathBuf>,
+        library_root: Option<std::path::PathBuf>,
+    ) {
+        if self.package_resolver.project_dir() == project_dir.as_deref()
+            && self.package_resolver.library_root() == library_root.as_deref()
+        {
+            return;
+        }
+        // A nested runtime keeps its containing package (Stage 3).
+        let bundle = self
+            .package_resolver
+            .bundle()
+            .map(std::path::Path::to_path_buf);
+        self.package_resolver = crate::library::resolve::PackageResolver::new(
+            project_dir.clone(),
+            library_root.clone(),
+        );
+        self.package_resolver.set_bundle(bundle);
+        let packaged: Vec<NodeId> = self
+            .nodes
+            .iter()
+            .filter(|(_, node)| {
+                matches!(
+                    &node.node_type,
+                    NodeType::CustomNodeInstance {
+                        package: Some(_),
+                        ..
+                    }
+                )
+            })
+            .map(|(&id, _)| id)
+            .collect();
+        for id in packaged {
+            self.custom_runtimes.remove(&id);
+            self.custom_runtime_modified.remove(&id);
+            self.custom_runtime_failures.remove(&id);
+        }
+        self.custom_package_paths.clear();
+        for runtime in self.custom_runtimes.values_mut() {
+            runtime.set_package_environment(project_dir.clone(), library_root.clone());
+        }
+    }
+
+    /// The `.pwnode` a custom-node instance currently loads: the resolved
+    /// package entry for a resolved packaged instance, otherwise `file`.
+    /// Used to open the node for viewing or editing.
+    pub fn custom_instance_source(&self, id: NodeId) -> Option<String> {
+        let NodeType::CustomNodeInstance { file, package, .. } = &self.nodes.get(&id)?.node_type
+        else {
+            return None;
+        };
+        if let Some(cached) = self.custom_package_paths.get(&id) {
+            if cached.file == *file && cached.package == *package {
+                return Some(cached.path.to_string_lossy().into_owned());
+            }
+        }
+        Some(file.clone())
     }
     pub(crate) fn validate_custom_node_save(
         graph: &Graph,
@@ -4142,6 +4278,20 @@ impl Graph {
         visited: &mut std::collections::HashSet<std::path::PathBuf>,
         depth: usize,
     ) -> Result<(), String> {
+        Self::check_custom_node_dependencies_resolving(path, visited, depth, None)
+    }
+
+    /// Recursion check. With a resolver, packaged nested instances are
+    /// followed to their resolved entry (and an unresolvable one is an
+    /// error, like a missing legacy file). Without one, a packaged nested
+    /// instance whose file is absent is skipped; it is checked when its
+    /// own runtime loads.
+    fn check_custom_node_dependencies_resolving(
+        path: &std::path::Path,
+        visited: &mut std::collections::HashSet<std::path::PathBuf>,
+        depth: usize,
+        mut resolver: Option<&mut crate::library::resolve::PackageResolver>,
+    ) -> Result<(), String> {
         const MAX_DEPTH: usize = 8;
 
         if depth > MAX_DEPTH {
@@ -4164,10 +4314,18 @@ impl Graph {
             let custom = crate::document::CustomNodeFile::load(&canonical)?;
 
             for node in custom.graph.nodes.values() {
-                if let NodeType::CustomNodeInstance { file, .. } = &node.node_type {
+                if let NodeType::CustomNodeInstance { file, package, .. } = &node.node_type {
                     let child_path = std::path::Path::new(file);
 
-                    let resolved = if child_path.is_absolute() {
+                    let resolved = if let Some(stored) = package {
+                        match resolver.as_deref_mut() {
+                            Some(resolver) => resolver
+                                .resolve_instance(file, Some(stored))
+                                .map_err(|e| e.to_string())?,
+                            None if child_path.exists() => child_path.to_path_buf(),
+                            None => continue,
+                        }
+                    } else if child_path.is_absolute() {
                         child_path.to_path_buf()
                     } else {
                         canonical
@@ -4176,7 +4334,12 @@ impl Graph {
                             .join(child_path)
                     };
 
-                    Self::check_custom_node_dependencies(&resolved, visited, depth + 1)?;
+                    Self::check_custom_node_dependencies_resolving(
+                        &resolved,
+                        visited,
+                        depth + 1,
+                        resolver.as_deref_mut(),
+                    )?;
                 }
             }
 
@@ -4186,17 +4349,31 @@ impl Graph {
         visited.remove(&canonical);
         result
     }
-    fn ensure_custom_runtime(&mut self, instance_id: NodeId, file: &str) -> Result<(), String> {
+    fn ensure_custom_runtime(
+        &mut self,
+        instance_id: NodeId,
+        file: &str,
+        package: Option<&crate::library::resolve::InstancePackageRef>,
+    ) -> Result<(), String> {
         // A cached failure for the same reference is reused without touching
-        // the filesystem until the recheck time; after that the file is only
-        // reloaded if its modification time or size changed.
+        // the filesystem until the recheck time. After that a legacy file is
+        // only reloaded if its modification time or size changed; a packaged
+        // reference is resolved again (verification results stay cached by
+        // file stamps), so installing the package recovers the instance.
         if let Some(failure) = self.custom_runtime_failures.get_mut(&instance_id) {
-            if failure.file == file {
+            if failure.file == file && failure.package.as_ref() == package {
                 let now = std::time::Instant::now();
                 if now < failure.next_check {
                     return Err(failure.error.clone());
                 }
-                if custom_file_stamp(std::path::Path::new(file)).ok() == failure.stamp {
+                let in_package = self
+                    .custom_file_in_package
+                    .get(&instance_id)
+                    .is_some_and(|(f, inside)| f == file && *inside);
+                if package.is_none()
+                    && !in_package
+                    && custom_file_stamp(std::path::Path::new(file)).ok() == failure.stamp
+                {
                     failure.next_check = now + CUSTOM_FAILURE_RECHECK;
                     return Err(failure.error.clone());
                 }
@@ -4204,16 +4381,21 @@ impl Graph {
             self.custom_runtime_failures.remove(&instance_id);
         }
 
-        let result = self.load_custom_runtime(instance_id, file);
+        let result = self
+            .custom_source_path(instance_id, file, package)
+            .and_then(|source| self.load_custom_runtime(instance_id, file, package, &source));
         if let Err(error) = &result {
             // The previous runtime (if any) belongs to a file that no longer
-            // loads; drop it and remember the failure.
+            // loads; drop it and remember the failure. The instance itself
+            // (ports, connections, references) is left untouched.
             self.custom_runtimes.remove(&instance_id);
             self.custom_runtime_modified.remove(&instance_id);
+            self.custom_package_paths.remove(&instance_id);
             self.custom_runtime_failures.insert(
                 instance_id,
                 CustomRuntimeFailure {
                     file: file.to_string(),
+                    package: package.cloned(),
                     stamp: custom_file_stamp(std::path::Path::new(file)).ok(),
                     error: error.clone(),
                     next_check: std::time::Instant::now() + CUSTOM_FAILURE_RECHECK,
@@ -4223,35 +4405,166 @@ impl Graph {
         result
     }
 
-    fn load_custom_runtime(&mut self, instance_id: NodeId, file: &str) -> Result<(), String> {
-        let path = std::path::Path::new(file);
-        let (modified, len) = custom_file_stamp(path)?;
-        // Reuse the runtime only for the same reference, mtime and size.
+    /// The file an instance loads.
+    ///
+    /// * Ordinary path-only instances: `file`, unchanged.
+    /// * Packaged instances, and path-only instances whose file lies inside
+    ///   a published package: the verified entry. Verification happens
+    ///   before the first load. Afterwards the entry's mtime/size is checked
+    ///   every frame and the whole package folder's metadata fingerprint at
+    ///   most every [`PACKAGE_RECHECK`]; any change re-verifies (hashing
+    ///   once). A failure is returned, so the caller drops the runtime.
+    fn custom_source_path(
+        &mut self,
+        instance_id: NodeId,
+        file: &str,
+        package: Option<&crate::library::resolve::InstancePackageRef>,
+    ) -> Result<std::path::PathBuf, String> {
+        if package.is_none() && !self.file_in_package(instance_id, file) {
+            return Ok(std::path::PathBuf::from(file));
+        }
+        let now = std::time::Instant::now();
+        if let Some(cached) = self.custom_package_paths.get_mut(&instance_id) {
+            if cached.file == file
+                && cached.package.as_ref() == package
+                && custom_file_stamp(&cached.path).ok() == Some(cached.stamp)
+            {
+                if now < cached.next_check {
+                    return Ok(cached.path.clone());
+                }
+                if crate::library::resolve::package_fingerprint(&cached.root) == cached.root_print {
+                    cached.next_check = now + PACKAGE_RECHECK;
+                    return Ok(cached.path.clone());
+                }
+            }
+        }
+        self.custom_package_paths.remove(&instance_id);
+        let path = match package {
+            Some(stored) => self
+                .package_resolver
+                .resolve_instance(file, Some(stored))
+                .map_err(|error| error.to_string())?,
+            None => self
+                .package_resolver
+                .verify_package_file(std::path::Path::new(file))
+                .map_err(|error| error.to_string())?,
+        };
+        let stamp = custom_file_stamp(&path)?;
+        let root = crate::library::package::containing_package_root(&path)
+            .or_else(|| path.parent().map(std::path::Path::to_path_buf))
+            .unwrap_or_default();
+        let root_print = crate::library::resolve::package_fingerprint(&root);
+        self.custom_package_paths.insert(
+            instance_id,
+            CustomPackagePath {
+                file: file.to_string(),
+                package: package.cloned(),
+                path: path.clone(),
+                stamp,
+                root,
+                root_print,
+                next_check: now + PACKAGE_RECHECK,
+            },
+        );
+        Ok(path)
+    }
+
+    /// Whether a path-only instance's file lies inside a published package
+    /// (cached per file value; cleared by an explicit refresh).
+    fn file_in_package(&mut self, instance_id: NodeId, file: &str) -> bool {
+        if let Some((cached_file, inside)) = self.custom_file_in_package.get(&instance_id) {
+            if cached_file == file {
+                return *inside;
+            }
+        }
+        let inside = !file.is_empty()
+            && crate::library::package::is_inside_published_package(std::path::Path::new(file));
+        self.custom_file_in_package
+            .insert(instance_id, (file.to_string(), inside));
+        inside
+    }
+
+    /// Test hook: make every loaded package (recursively) compare its
+    /// fingerprint, and every cached failure retry, on the next evaluation.
+    #[cfg(test)]
+    pub(crate) fn expire_package_rechecks(&mut self) {
+        let now = std::time::Instant::now();
+        for cached in self.custom_package_paths.values_mut() {
+            cached.next_check = now;
+        }
+        for failure in self.custom_runtime_failures.values_mut() {
+            failure.next_check = now;
+        }
+        for runtime in self.custom_runtimes.values_mut() {
+            runtime.expire_package_rechecks();
+        }
+    }
+
+    /// Test hook: the cached load error of an instance, if any.
+    #[cfg(test)]
+    pub(crate) fn custom_failure(&self, id: NodeId) -> Option<String> {
+        self.custom_runtime_failures
+            .get(&id)
+            .map(|f| f.error.clone())
+    }
+
+    /// Test hook: whether an instance currently has a loaded runtime.
+    #[cfg(test)]
+    pub(crate) fn has_custom_runtime(&self, id: NodeId) -> bool {
+        self.custom_runtimes.contains_key(&id)
+    }
+
+    fn load_custom_runtime(
+        &mut self,
+        instance_id: NodeId,
+        file: &str,
+        package: Option<&crate::library::resolve::InstancePackageRef>,
+        source: &std::path::Path,
+    ) -> Result<(), String> {
+        let (modified, len) = custom_file_stamp(source)?;
+        // Reuse the runtime only for the same reference, source, mtime and size.
         if self.custom_runtimes.contains_key(&instance_id)
             && self
                 .custom_runtime_modified
                 .get(&instance_id)
                 .is_some_and(|stamp| {
-                    stamp.file == file && stamp.modified == modified && stamp.len == len
+                    stamp.file == file
+                        && stamp.package.as_ref() == package
+                        && stamp.source == source
+                        && stamp.modified == modified
+                        && stamp.len == len
                 })
         {
             return Ok(());
         }
-        let custom = crate::document::CustomNodeFile::load(path)?;
+        let custom = crate::document::CustomNodeFile::load(source)?;
+        // P4.2 Stage 3: nested instances of a package resolve against the
+        // outermost package containing it (its bundled deps/ first).
+        let mut child_resolver = self.package_resolver.clone();
+        child_resolver.set_bundle(crate::library::package::containing_package_root(source));
         // Reject direct and indirect recursive custom-node references.
-        Self::check_custom_node_dependencies(path, &mut std::collections::HashSet::new(), 0)?;
+        Self::check_custom_node_dependencies_resolving(
+            source,
+            &mut std::collections::HashSet::new(),
+            0,
+            Some(&mut child_resolver),
+        )?;
         // Synchronize the instance's external ports with the source file.
         let report = self.sync_custom_ports(instance_id, custom.inputs, custom.outputs);
         self.custom_port_events.merge(report);
-        // Replace the cached runtime with the updated internal graph.
-        self.custom_runtimes
-            .insert(instance_id, Box::new(custom.graph));
+        // Replace the cached runtime with the updated internal graph. Nested
+        // package references resolve against the same locations.
+        let mut runtime = custom.graph;
+        runtime.package_resolver = child_resolver;
+        self.custom_runtimes.insert(instance_id, Box::new(runtime));
 
         self.custom_runtime_modified.insert(
             instance_id,
             CustomRuntimeStamp {
                 file: file.to_string(),
-                resolved: std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()),
+                package: package.cloned(),
+                source: source.to_path_buf(),
+                resolved: std::fs::canonicalize(source).unwrap_or_else(|_| source.to_path_buf()),
                 modified,
                 len,
             },
@@ -4407,6 +4720,7 @@ mod custom_node_sync_tests {
             file: file.to_string(),
             inputs,
             outputs,
+            package: None,
         }
     }
 
@@ -4638,6 +4952,7 @@ mod custom_runtime_cache_tests {
                 file: file.to_string_lossy().into_owned(),
                 inputs: Vec::new(),
                 outputs: Vec::new(),
+                package: None,
             },
             [0.0, 0.0],
         );
@@ -4680,10 +4995,13 @@ mod custom_runtime_cache_tests {
         let file = file_of(&graph, id);
 
         let before = loads();
-        let first = graph.ensure_custom_runtime(id, &file).unwrap_err();
+        let first = graph.ensure_custom_runtime(id, &file, None).unwrap_err();
         assert_eq!(loads(), before + 1);
         for _ in 0..50 {
-            assert_eq!(graph.ensure_custom_runtime(id, &file).unwrap_err(), first);
+            assert_eq!(
+                graph.ensure_custom_runtime(id, &file, None).unwrap_err(),
+                first
+            );
         }
         assert_eq!(
             loads(),
@@ -4693,7 +5011,7 @@ mod custom_runtime_cache_tests {
 
         // After the recheck time an unchanged file is still not re-parsed.
         expire_rechecks(&mut graph);
-        assert!(graph.ensure_custom_runtime(id, &file).is_err());
+        assert!(graph.ensure_custom_runtime(id, &file, None).is_err());
         assert_eq!(loads(), before + 1);
     }
 
@@ -4704,15 +5022,15 @@ mod custom_runtime_cache_tests {
         std::fs::write(&path, "not json").unwrap();
         let (mut graph, id) = instance_graph(&path);
         let file = file_of(&graph, id);
-        assert!(graph.ensure_custom_runtime(id, &file).is_err());
+        assert!(graph.ensure_custom_runtime(id, &file, None).is_err());
 
         write_node(&path, "out"); // different size, so a different stamp
         assert!(
-            graph.ensure_custom_runtime(id, &file).is_err(),
+            graph.ensure_custom_runtime(id, &file, None).is_err(),
             "still inside the recheck window"
         );
         expire_rechecks(&mut graph);
-        graph.ensure_custom_runtime(id, &file).unwrap();
+        graph.ensure_custom_runtime(id, &file, None).unwrap();
         assert_eq!(output_names(&graph, id), vec!["out"]);
         assert!(graph.custom_runtime_failures.is_empty());
     }
@@ -4724,11 +5042,11 @@ mod custom_runtime_cache_tests {
         std::fs::write(&path, "not json").unwrap();
         let (mut graph, id) = instance_graph(&path);
         let file = file_of(&graph, id);
-        assert!(graph.ensure_custom_runtime(id, &file).is_err());
+        assert!(graph.ensure_custom_runtime(id, &file, None).is_err());
         write_node(&path, "out");
 
         assert_eq!(graph.clear_custom_runtime_failures(), 1);
-        graph.ensure_custom_runtime(id, &file).unwrap();
+        graph.ensure_custom_runtime(id, &file, None).unwrap();
         assert_eq!(output_names(&graph, id), vec!["out"]);
     }
 
@@ -4738,12 +5056,12 @@ mod custom_runtime_cache_tests {
         let path = tmp.0.join("later.pwnode");
         let (mut graph, id) = instance_graph(&path);
         let file = file_of(&graph, id);
-        assert!(graph.ensure_custom_runtime(id, &file).is_err());
+        assert!(graph.ensure_custom_runtime(id, &file, None).is_err());
         assert!(graph.custom_runtime_failures[&id].stamp.is_none());
 
         write_node(&path, "out");
         expire_rechecks(&mut graph);
-        graph.ensure_custom_runtime(id, &file).unwrap();
+        graph.ensure_custom_runtime(id, &file, None).unwrap();
         assert_eq!(output_names(&graph, id), vec!["out"]);
     }
 
@@ -4776,7 +5094,7 @@ mod custom_runtime_cache_tests {
         let (a, b) = twin_files(&tmp);
         let (mut graph, id) = instance_graph(&a);
         graph
-            .ensure_custom_runtime(id, &file_of(&graph, id))
+            .ensure_custom_runtime(id, &file_of(&graph, id), None)
             .unwrap();
         assert_eq!(output_names(&graph, id), vec!["outA"]);
         assert_eq!(
@@ -4793,7 +5111,7 @@ mod custom_runtime_cache_tests {
             *file = b.to_string_lossy().into_owned();
         }
         graph
-            .ensure_custom_runtime(id, &file_of(&graph, id))
+            .ensure_custom_runtime(id, &file_of(&graph, id), None)
             .unwrap();
         assert_eq!(output_names(&graph, id), vec!["outB"]);
     }
@@ -4806,7 +5124,7 @@ mod custom_runtime_cache_tests {
         std::fs::write(&broken, "not json").unwrap();
         let (mut graph, id) = instance_graph(&a);
         graph
-            .ensure_custom_runtime(id, &file_of(&graph, id))
+            .ensure_custom_runtime(id, &file_of(&graph, id), None)
             .unwrap();
 
         let b_file = b.to_string_lossy().into_owned();
@@ -4816,16 +5134,16 @@ mod custom_runtime_cache_tests {
             !graph.retarget_custom_instance(id, &b_file),
             "already there"
         );
-        graph.ensure_custom_runtime(id, &b_file).unwrap();
+        graph.ensure_custom_runtime(id, &b_file, None).unwrap();
         assert_eq!(output_names(&graph, id), vec!["outB"]);
 
         // A cached failure is dropped on retarget as well.
         let broken_file = broken.to_string_lossy().into_owned();
         assert!(graph.retarget_custom_instance(id, &broken_file));
-        assert!(graph.ensure_custom_runtime(id, &broken_file).is_err());
+        assert!(graph.ensure_custom_runtime(id, &broken_file, None).is_err());
         assert!(graph.retarget_custom_instance(id, &b_file));
         assert!(graph.custom_runtime_failures.is_empty());
-        graph.ensure_custom_runtime(id, &b_file).unwrap();
+        graph.ensure_custom_runtime(id, &b_file, None).unwrap();
 
         // Not a custom-node instance.
         let other = graph.add_node(
@@ -4845,10 +5163,10 @@ mod custom_runtime_cache_tests {
         write_node(&path, "out");
         let (mut graph, id) = instance_graph(&path);
         let file = file_of(&graph, id);
-        graph.ensure_custom_runtime(id, &file).unwrap();
+        graph.ensure_custom_runtime(id, &file, None).unwrap();
         let before = loads();
         for _ in 0..20 {
-            graph.ensure_custom_runtime(id, &file).unwrap();
+            graph.ensure_custom_runtime(id, &file, None).unwrap();
         }
         assert_eq!(loads(), before);
     }
@@ -4877,5 +5195,493 @@ mod custom_runtime_cache_tests {
             [0.0, 0.0],
         );
         assert!(Graph::validate_custom_node_save(&normal, &path).is_ok());
+    }
+}
+
+/// P4.2 Stage 2: portable package references on custom-node instances.
+#[cfg(test)]
+mod package_reference_tests {
+    use super::*;
+    use crate::document::{CustomNodeFile, CustomNodePort, LOAD_COUNT};
+    use crate::library::package::tests::{TempDir, request};
+    use crate::library::package::{HASH_COUNT, publish_package};
+    use crate::library::resolve::InstancePackageRef;
+    use std::path::{Path, PathBuf};
+
+    fn port(name: &str) -> CustomNodePort {
+        CustomNodePort {
+            name: name.into(),
+            kind: "Number".into(),
+        }
+    }
+
+    /// A local custom node with one input and one output.
+    fn source_node(dir: &Path, name: &str) -> PathBuf {
+        std::fs::create_dir_all(dir).unwrap();
+        let path = dir.join(format!("{name}.pwnode"));
+        CustomNodeFile {
+            version: 1,
+            name: name.into(),
+            graph: Graph::new(),
+            inputs: vec![port("in")],
+            outputs: vec![port("out")],
+        }
+        .save(&path)
+        .unwrap();
+        path
+    }
+
+    /// Publish `source` to `library`; returns the stored reference and entry.
+    fn publish(
+        library: &Path,
+        source: &Path,
+        existing: Option<&str>,
+        version: &str,
+    ) -> (InstancePackageRef, PathBuf) {
+        let mut req = request("Gain", version);
+        req.existing_id = existing.map(str::to_string);
+        let published = publish_package(library, source, &req).unwrap();
+        (
+            InstancePackageRef {
+                id: published.manifest.id.clone(),
+                version: published.version.to_string(),
+                entry: published.manifest.entry.clone(),
+            },
+            published.entry_path,
+        )
+    }
+
+    /// A graph with a packaged instance (ports as inserted) wired into a
+    /// second, legacy instance. Returns (graph, packaged id, other id).
+    fn wired_graph(file: &str, package: Option<InstancePackageRef>) -> (Graph, NodeId, NodeId) {
+        let mut graph = Graph::new();
+        let id = graph.add_node(
+            NodeType::CustomNodeInstance {
+                file: file.to_string(),
+                inputs: vec![port("in")],
+                outputs: vec![port("out")],
+                package,
+            },
+            [0.0, 0.0],
+        );
+        let other = graph.add_node(
+            NodeType::CustomNodeInstance {
+                file: String::new(),
+                inputs: vec![port("in")],
+                outputs: vec![port("out")],
+                package: None,
+            },
+            [200.0, 0.0],
+        );
+        graph.add_connection(id, 0, other, 0);
+        (graph, id, other)
+    }
+
+    fn instance(
+        graph: &Graph,
+        id: NodeId,
+    ) -> (String, Vec<String>, Vec<String>, Option<InstancePackageRef>) {
+        match &graph.nodes[&id].node_type {
+            NodeType::CustomNodeInstance {
+                file,
+                inputs,
+                outputs,
+                package,
+            } => (
+                file.clone(),
+                inputs.iter().map(|p| p.name.clone()).collect(),
+                outputs.iter().map(|p| p.name.clone()).collect(),
+                package.clone(),
+            ),
+            _ => unreachable!(),
+        }
+    }
+
+    fn error_of(graph: &Graph, id: NodeId) -> String {
+        graph.custom_runtime_failures[&id].error.clone()
+    }
+
+    fn expire_rechecks(graph: &mut Graph) {
+        let now = std::time::Instant::now();
+        for failure in graph.custom_runtime_failures.values_mut() {
+            failure.next_check = now;
+        }
+    }
+
+    fn loads() -> usize {
+        LOAD_COUNT.with(|c| c.get())
+    }
+
+    fn hashes() -> usize {
+        HASH_COUNT.with(|c| c.get())
+    }
+
+    // ── Serialization ────────────────────────────────────────────────
+
+    #[test]
+    fn legacy_instances_deserialize_and_serialize_unchanged() {
+        let legacy = r#"{"CustomNodeInstance":{"file":"C:/nodes/Gain.pwnode","inputs":[],"outputs":[{"name":"out","kind":"Number"}]}}"#;
+        let node: NodeType = serde_json::from_str(legacy).unwrap();
+        let NodeType::CustomNodeInstance { package, .. } = &node else {
+            panic!("not an instance");
+        };
+        assert!(package.is_none());
+        // Written back without a "package" key: byte-identical to before.
+        assert_eq!(serde_json::to_string(&node).unwrap(), legacy);
+    }
+
+    #[test]
+    fn packaged_instances_round_trip() {
+        let reference = InstancePackageRef {
+            id: "local.gain".into(),
+            version: "1.2.0".into(),
+            entry: "Gain.pwnode".into(),
+        };
+        let (graph, id, other) = wired_graph("C:/lib/Gain.pwnode", Some(reference.clone()));
+        let json = serde_json::to_string(&graph).unwrap();
+        assert!(
+            json.contains(
+                r#""package":{"id":"local.gain","version":"1.2.0","entry":"Gain.pwnode"}"#
+            )
+        );
+        let back: Graph = serde_json::from_str(&json).unwrap();
+        assert_eq!(instance(&back, id), instance(&graph, id));
+        assert_eq!(instance(&back, id).3, Some(reference));
+        assert_eq!(instance(&back, other).3, None);
+        assert_eq!(back.connections.len(), 1);
+    }
+
+    // ── Evaluation ───────────────────────────────────────────────────
+
+    #[test]
+    fn exact_version_resolves_when_the_file_is_missing() {
+        let tmp = TempDir::new("s2_missing_file");
+        let library = tmp.0.join("library");
+        let source = source_node(&tmp.0.join("src"), "Gain");
+        let (v1, entry_v1) = publish(&library, &source, None, "1.0.0");
+        let (_v2, _) = publish(&library, &source, Some(&v1.id), "1.1.0");
+        let gone = tmp.0.join("other-machine").join("Gain.pwnode");
+        let (mut graph, id, _) = wired_graph(&gone.to_string_lossy(), Some(v1.clone()));
+        graph.set_package_environment(None, Some(library));
+
+        graph.evaluate(0.0);
+        assert!(
+            graph.custom_runtimes.contains_key(&id),
+            "loaded from the package"
+        );
+        assert_eq!(
+            graph.custom_instance_source(id).map(PathBuf::from),
+            Some(entry_v1),
+            "exact version 1.0.0, not the newer 1.1.0"
+        );
+        // The stored file and reference are untouched; no port changes.
+        let (file, _, _, package) = instance(&graph, id);
+        assert_eq!(file, gone.to_string_lossy());
+        assert_eq!(package, Some(v1));
+        assert!(!graph.take_custom_port_events().changed);
+    }
+
+    #[test]
+    fn matching_file_and_package_load_normally() {
+        let tmp = TempDir::new("s2_matching");
+        let library = tmp.0.join("library");
+        let source = source_node(&tmp.0.join("src"), "Gain");
+        let (reference, entry) = publish(&library, &source, None, "1.0.0");
+        let (mut graph, id, _) = wired_graph(&entry.to_string_lossy(), Some(reference));
+        graph.set_package_environment(None, Some(library));
+        graph.evaluate(0.0);
+        assert!(graph.custom_runtimes.contains_key(&id));
+        assert!(!graph.custom_runtime_failures.contains_key(&id));
+    }
+
+    #[test]
+    fn file_package_conflict_is_reported_and_not_loaded() {
+        let tmp = TempDir::new("s2_conflict");
+        let library = tmp.0.join("library");
+        let source = source_node(&tmp.0.join("src"), "Gain");
+        let (v1, _) = publish(&library, &source, None, "1.0.0");
+        let (_, entry_v2) = publish(&library, &source, Some(&v1.id), "1.1.0");
+        let (mut graph, id, _) = wired_graph(&entry_v2.to_string_lossy(), Some(v1));
+        graph.set_package_environment(None, Some(library));
+        graph.evaluate(0.0);
+        assert!(!graph.custom_runtimes.contains_key(&id));
+        assert!(
+            error_of(&graph, id).contains("conflict"),
+            "{}",
+            error_of(&graph, id)
+        );
+    }
+
+    #[test]
+    fn missing_package_preserves_ports_and_connections() {
+        let tmp = TempDir::new("s2_missing_pkg");
+        let library = tmp.0.join("library");
+        std::fs::create_dir_all(&library).unwrap();
+        let reference = InstancePackageRef {
+            id: "local.gain".into(),
+            version: "1.0.0".into(),
+            entry: "Gain.pwnode".into(),
+        };
+        let gone = tmp.0.join("gone").join("Gain.pwnode");
+        let (mut graph, id, other) = wired_graph(&gone.to_string_lossy(), Some(reference));
+        graph.set_package_environment(None, Some(library));
+        let before = instance(&graph, id);
+        let connections = graph.connections.clone();
+
+        for _ in 0..3 {
+            graph.evaluate(0.0);
+        }
+        assert!(!graph.custom_runtimes.contains_key(&id));
+        assert!(
+            error_of(&graph, id).contains("not installed"),
+            "{}",
+            error_of(&graph, id)
+        );
+        assert_eq!(instance(&graph, id), before, "file, ports and package kept");
+        assert!(graph.nodes.contains_key(&other));
+        assert_eq!(graph.connections.len(), connections.len());
+        assert!(!graph.take_custom_port_events().changed);
+    }
+
+    #[test]
+    fn corrupted_package_is_refused() {
+        let tmp = TempDir::new("s2_corrupt");
+        let library = tmp.0.join("library");
+        let source = source_node(&tmp.0.join("src"), "Gain");
+        let (reference, entry) = publish(&library, &source, None, "1.0.0");
+        // Damage the published entry behind the package's back.
+        let mut text = std::fs::read_to_string(&entry).unwrap();
+        text = text.replace("\"Gain\"", "\"Tampered\"");
+        std::fs::write(&entry, text).unwrap();
+
+        let (mut graph, id, _) = wired_graph(&entry.to_string_lossy(), Some(reference));
+        graph.set_package_environment(None, Some(library));
+        let before = instance(&graph, id);
+        graph.evaluate(0.0);
+        assert!(!graph.custom_runtimes.contains_key(&id), "not evaluated");
+        assert!(
+            error_of(&graph, id).contains("damaged"),
+            "{}",
+            error_of(&graph, id)
+        );
+        assert_eq!(instance(&graph, id), before);
+    }
+
+    #[test]
+    fn missing_package_recovers_after_installation_or_refresh() {
+        let tmp = TempDir::new("s2_recover");
+        let library = tmp.0.join("library");
+        let staging = tmp.0.join("staging-library");
+        let source = source_node(&tmp.0.join("src"), "Gain");
+        // Publish into another Library, so the id and checksum are real.
+        let (reference, staged_entry) = publish(&staging, &source, None, "1.0.0");
+        std::fs::create_dir_all(&library).unwrap();
+        let gone = tmp.0.join("gone").join("Gain.pwnode");
+        let (mut graph, id, _) = wired_graph(&gone.to_string_lossy(), Some(reference.clone()));
+        graph.set_package_environment(None, Some(library.clone()));
+        graph.evaluate(0.0);
+        assert!(!graph.custom_runtimes.contains_key(&id));
+
+        // "Install" the package: copy the version folder into the Library.
+        let staged_dir = staged_entry.parent().unwrap();
+        let target = library
+            .join("packages")
+            .join(&reference.id)
+            .join(&reference.version);
+        std::fs::create_dir_all(&target).unwrap();
+        for item in std::fs::read_dir(staged_dir).unwrap() {
+            let item = item.unwrap();
+            std::fs::copy(item.path(), target.join(item.file_name())).unwrap();
+        }
+
+        // Within the recheck window the cached failure is reused...
+        graph.evaluate(0.0);
+        assert!(!graph.custom_runtimes.contains_key(&id));
+        // ...and once it expires the instance recovers on its own.
+        expire_rechecks(&mut graph);
+        graph.evaluate(0.0);
+        assert!(graph.custom_runtimes.contains_key(&id), "recovered");
+
+        // Explicit Library refresh recovers immediately.
+        let (mut graph, id, _) = wired_graph(&gone.to_string_lossy(), Some(reference));
+        graph.set_package_environment(None, Some(tmp.0.join("empty")));
+        graph.evaluate(0.0);
+        assert!(!graph.custom_runtimes.contains_key(&id));
+        graph.set_package_environment(None, Some(library));
+        graph.evaluate(0.0);
+        assert!(
+            graph.custom_runtimes.contains_key(&id),
+            "new Library location"
+        );
+        graph.custom_runtimes.clear();
+        graph.custom_runtime_failures.insert(
+            id,
+            CustomRuntimeFailure {
+                file: gone.to_string_lossy().into_owned(),
+                package: instance(&graph, id).3,
+                stamp: None,
+                error: "stale".into(),
+                next_check: std::time::Instant::now() + std::time::Duration::from_secs(60),
+            },
+        );
+        graph.evaluate(0.0);
+        assert!(!graph.custom_runtimes.contains_key(&id));
+        assert!(graph.clear_custom_runtime_failures() >= 1);
+        graph.evaluate(0.0);
+        assert!(graph.custom_runtimes.contains_key(&id), "refresh retried");
+    }
+
+    #[test]
+    fn resolved_packages_are_not_reverified_every_frame() {
+        let tmp = TempDir::new("s2_frames");
+        let library = tmp.0.join("library");
+        let source = source_node(&tmp.0.join("src"), "Gain");
+        let (reference, _) = publish(&library, &source, None, "1.0.0");
+        let (mut graph, id, _) = wired_graph("", Some(reference));
+        graph.set_package_environment(None, Some(library.clone()));
+        graph.evaluate(0.0);
+        assert!(graph.custom_runtimes.contains_key(&id));
+        let after_first = (loads(), hashes());
+        for frame in 1..30 {
+            graph.evaluate(frame as f64 / 60.0);
+            // Unchanged environment: a no-op.
+            graph.set_package_environment(None, Some(library.clone()));
+        }
+        assert_eq!(
+            (loads(), hashes()),
+            after_first,
+            "no reloads, re-verification or hashing per frame"
+        );
+    }
+
+    #[test]
+    fn broken_package_failures_are_not_rechecked_every_frame() {
+        let tmp = TempDir::new("s2_broken_frames");
+        let library = tmp.0.join("library");
+        let source = source_node(&tmp.0.join("src"), "Gain");
+        let (reference, entry) = publish(&library, &source, None, "1.0.0");
+        std::fs::write(&entry, "{ damaged").unwrap();
+        let (mut graph, id, _) = wired_graph("", Some(reference));
+        graph.set_package_environment(None, Some(library));
+        graph.evaluate(0.0);
+        assert!(graph.custom_runtime_failures.contains_key(&id));
+        let first = error_of(&graph, id);
+        // After the recheck time the unchanged package is not re-hashed:
+        // the resolver's verification result is reused.
+        expire_rechecks(&mut graph);
+        let before = hashes();
+        for _ in 0..5 {
+            expire_rechecks(&mut graph);
+            graph.evaluate(0.0);
+        }
+        assert_eq!(hashes(), before, "verification result reused");
+        assert_eq!(error_of(&graph, id), first);
+    }
+
+    #[test]
+    fn nested_packaged_instance_resolves_inside_a_custom_node() {
+        let tmp = TempDir::new("s2_nested");
+        let library = tmp.0.join("library");
+        let source = source_node(&tmp.0.join("src"), "Gain");
+        let (reference, _) = publish(&library, &source, None, "1.0.0");
+
+        // A local custom node containing the packaged instance, whose
+        // compatibility path is unusable here (written on another OS).
+        let outer_path = tmp.0.join("project").join("Outer.pwnode");
+        std::fs::create_dir_all(outer_path.parent().unwrap()).unwrap();
+        let mut outer = CustomNodeFile {
+            version: 1,
+            name: "Outer".into(),
+            graph: Graph::new(),
+            inputs: Vec::new(),
+            outputs: Vec::new(),
+        };
+        let foreign = if cfg!(windows) {
+            "/home/someone/.patchwork/library/packages/x/1.0.0/Gain.pwnode"
+        } else {
+            "C:\\Users\\someone\\.patchwork\\library\\packages\\x\\1.0.0\\Gain.pwnode"
+        };
+        let inner_id = outer.graph.add_node(
+            NodeType::CustomNodeInstance {
+                file: foreign.into(),
+                inputs: vec![port("in")],
+                outputs: vec![port("out")],
+                package: Some(reference.clone()),
+            },
+            [0.0, 0.0],
+        );
+        outer.save(&outer_path).unwrap();
+
+        // Saving and loading the .pwnode keeps the package reference.
+        let loaded = CustomNodeFile::load(&outer_path).unwrap();
+        assert_eq!(instance(&loaded.graph, inner_id).3, Some(reference));
+
+        let mut graph = Graph::new();
+        let id = graph.add_node(
+            NodeType::CustomNodeInstance {
+                file: outer_path.to_string_lossy().into_owned(),
+                inputs: Vec::new(),
+                outputs: Vec::new(),
+                package: None,
+            },
+            [0.0, 0.0],
+        );
+        graph.set_package_environment(None, Some(library));
+        graph.evaluate(0.0);
+        assert!(
+            graph.custom_runtimes.contains_key(&id),
+            "{:?}",
+            graph.custom_runtime_failures.get(&id).map(|f| &f.error)
+        );
+        let runtime = &graph.custom_runtimes[&id];
+        assert!(
+            runtime.custom_runtimes.contains_key(&inner_id),
+            "nested package resolved: {:?}",
+            runtime
+                .custom_runtime_failures
+                .get(&inner_id)
+                .map(|f| &f.error)
+        );
+    }
+
+    #[test]
+    fn legacy_instances_ignore_the_package_environment() {
+        let tmp = TempDir::new("s2_legacy_eval");
+        let source = source_node(&tmp.0.join("src"), "Gain");
+        let (mut graph, id, _) = wired_graph(&source.to_string_lossy(), None);
+        // No package locations at all: legacy instances still load by file.
+        graph.evaluate(0.0);
+        assert!(graph.custom_runtimes.contains_key(&id));
+        assert_eq!(
+            graph.custom_instance_source(id),
+            Some(source.to_string_lossy().into_owned())
+        );
+    }
+
+    #[test]
+    fn grouping_accepts_packaged_instances_resolved_by_reference() {
+        let tmp = TempDir::new("s2_group");
+        let reference = InstancePackageRef {
+            id: "local.gain".into(),
+            version: "1.0.0".into(),
+            entry: "Gain.pwnode".into(),
+        };
+        let gone = tmp.0.join("gone").join("Gain.pwnode");
+        let target = tmp.0.join("Group.pwnode");
+        let (packaged, _, _) = wired_graph(&gone.to_string_lossy(), Some(reference));
+        let mut packaged_only = packaged.clone();
+        packaged_only.nodes.retain(|_, n| {
+            matches!(
+                &n.node_type,
+                NodeType::CustomNodeInstance {
+                    package: Some(_),
+                    ..
+                }
+            )
+        });
+        assert!(group::check_group_dependencies(&packaged_only, &target, &[]).is_ok());
+        // A legacy instance with a missing file is still refused.
+        let (legacy, _, _) = wired_graph(&gone.to_string_lossy(), None);
+        assert!(group::check_group_dependencies(&legacy, &target, &[]).is_err());
     }
 }

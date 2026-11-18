@@ -13,8 +13,10 @@
 //! deleted, so projects that still reference the old absolute paths keep
 //! working.
 
+pub mod bundle;
 pub mod index;
 pub mod package;
+pub mod project;
 pub mod resolve;
 
 use std::io::{Read, Write};

@@ -652,13 +652,10 @@ impl super::PatchworkApp {
                             }
                         }
                         // P3: Edit the .pwnode referenced by a custom-node instance.
+                        // P4.2 Stage 2: a packaged instance opens its resolved entry.
                         let custom_node_file = self
                             .context_menu_node
-                            .and_then(|id| self.graph.nodes.get(&id))
-                            .and_then(|node| match &node.node_type {
-                                NodeType::CustomNodeInstance { file, .. } => Some(file.clone()),
-                                _ => None,
-                            });
+                            .and_then(|id| self.graph.custom_instance_source(id));
                         if let Some(file) = custom_node_file {
                             if icon_menu_item(ui, icons::PENCIL, "Edit Custom Node").clicked() {
                                 self.pending_edit_custom_node = Some(file);

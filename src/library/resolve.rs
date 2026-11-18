@@ -41,8 +41,9 @@
 //!    checksum, containment) are checked separately from file location; a
 //!    file's location never decides which package or version it is.
 
-// Not wired into the editor yet: Stage 2 (serialization) and the Player
-// are the first callers. Until then only the tests use it.
+// Stage 2 uses `resolve_instance` during evaluation. Parts of the API
+// (`resolve_in`, origins, error details) are reserved for explicit repair
+// UI and the standalone Player.
 #![allow(dead_code)]
 
 use std::collections::HashMap;
@@ -55,6 +56,9 @@ use super::package::{
 /// Where a package was found.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PackageOrigin {
+    /// P4.2 Stage 3: `<bundle root>/deps/...`, the dependencies bundled in
+    /// the package that contains the instance being resolved.
+    Bundle,
     /// `<project>/packages/...`
     Project,
     /// `<library root>/packages/...`
@@ -66,6 +70,7 @@ pub enum PackageOrigin {
 impl std::fmt::Display for PackageOrigin {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
+            PackageOrigin::Bundle => "bundled",
             PackageOrigin::Project => "project",
             PackageOrigin::Library => "Library",
             PackageOrigin::Direct => "file location",
@@ -168,7 +173,18 @@ pub enum ResolvedFile {
 }
 
 /// Fingerprint of the files a verification depended on.
-type Fingerprint = Vec<(PathBuf, Option<(std::time::SystemTime, u64)>)>;
+pub type Fingerprint = Vec<(PathBuf, Option<(std::time::SystemTime, u64)>)>;
+
+/// Metadata fingerprint (paths, mtimes, sizes; no hashing) of everything
+/// inside a version folder, bundled dependencies included. Used to notice
+/// changes cheaply before re-verifying.
+pub fn package_fingerprint(dir: &Path) -> Fingerprint {
+    let mut paths = vec![dir.join(MANIFEST_FILE)];
+    version_dir_paths(dir, &mut paths);
+    paths.sort();
+    paths.dedup();
+    fingerprint(&paths)
+}
 
 fn fingerprint(paths: &[PathBuf]) -> Fingerprint {
     paths
@@ -182,16 +198,40 @@ fn fingerprint(paths: &[PathBuf]) -> Fingerprint {
         .collect()
 }
 
+/// Every path below `dir` (links not followed), sorted. P4.2 Stage 3: a
+/// verification depends on bundled files too, so any change, addition or
+/// removal inside the version folder invalidates it.
+fn version_dir_paths(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let is_dir = std::fs::symlink_metadata(&path)
+            .map(|m| m.is_dir())
+            .unwrap_or(false);
+        out.push(path.clone());
+        if is_dir {
+            version_dir_paths(&path, out);
+        }
+    }
+}
+
 type CandidateResult = Result<(PackageManifest, PathBuf), CandidateProblem>;
 
 /// Resolves package references against a project folder and the Library.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct PackageResolver {
+    /// P4.2 Stage 3: outermost package containing the custom node whose
+    /// nested instances are resolved; its `deps/` is searched first.
+    bundle: Option<PathBuf>,
     project_dir: Option<PathBuf>,
     library_root: Option<PathBuf>,
     /// Verification results per version folder, reused while none of the
     /// files they depended on changed.
-    cache: HashMap<PathBuf, (Fingerprint, CandidateResult)>,
+    /// Keyed by folder and expected identity (a result verified without an
+    /// identity check is never reused for one with it).
+    cache: HashMap<(PathBuf, Option<PackageRef>), (Fingerprint, CandidateResult)>,
 }
 
 impl PackageResolver {
@@ -199,10 +239,22 @@ impl PackageResolver {
     /// searched first). `library_root`: e.g. `~/.patchwork/library`.
     pub fn new(project_dir: Option<PathBuf>, library_root: Option<PathBuf>) -> Self {
         Self {
+            bundle: None,
             project_dir,
             library_root,
             cache: HashMap::new(),
         }
+    }
+
+    /// The package whose bundled `deps/` is searched first.
+    pub fn bundle(&self) -> Option<&Path> {
+        self.bundle.as_deref()
+    }
+
+    /// Set (or clear) the containing package. Verification results stay
+    /// cached (they are keyed by folder).
+    pub fn set_bundle(&mut self, bundle: Option<PathBuf>) {
+        self.bundle = bundle;
     }
 
     pub fn project_dir(&self) -> Option<&Path> {
@@ -220,6 +272,14 @@ impl PackageResolver {
 
     fn candidates(&self, reference: &PackageRef) -> Vec<(PackageOrigin, PathBuf, PathBuf)> {
         let mut out = Vec::new();
+        if let Some(bundle) = &self.bundle {
+            let deps = bundle.join(super::bundle::DEPS_DIR);
+            out.push((
+                PackageOrigin::Bundle,
+                deps.clone(),
+                deps.join(&reference.id).join(reference.version.to_string()),
+            ));
+        }
         if let Some(project) = &self.project_dir {
             out.push((
                 PackageOrigin::Project,
@@ -244,8 +304,76 @@ impl PackageResolver {
         // package folder (fields are public, so re-check).
         unsafe_reference_error(reference)?;
 
+        // P4.2 Stage 3: inside a complete bundle, a dependency is only ever
+        // taken from that bundle (no project or Library fallback).
+        if let Some(root) = self.bundle.clone() {
+            let complete = package::read_manifest(&root)
+                .map(|m| super::bundle::is_complete_bundle(&m))
+                .unwrap_or(false);
+            if complete {
+                let candidates: Vec<_> = self
+                    .candidates(reference)
+                    .into_iter()
+                    .filter(|(origin, _, _)| *origin == PackageOrigin::Bundle)
+                    .collect();
+                let bundled_dir = candidates.first().map(|(_, _, dir)| dir.clone());
+                return match self.resolve_candidates(reference, label.clone(), candidates) {
+                    Err(error) if error.kind == ResolveErrorKind::Missing => {
+                        let dir = bundled_dir.unwrap_or_default();
+                        Err(ResolveError {
+                            reference: label,
+                            kind: ResolveErrorKind::Corrupted,
+                            problems: vec![problem(
+                                PackageOrigin::Bundle,
+                                &dir,
+                                ResolveErrorKind::Corrupted,
+                                format!(
+                                    "it is missing from the bundle of {}; complete bundles \
+                                     never use copies from elsewhere.",
+                                    root.display()
+                                ),
+                            )],
+                            searched: error.searched,
+                        })
+                    }
+                    other => other,
+                };
+            }
+        }
         let candidates = self.candidates(reference);
         self.resolve_candidates(reference, label, candidates)
+    }
+
+    /// P4.2 Stage 3: verify a plain file reference that lies inside a
+    /// published package (a P4.1-style path-only instance). The outermost
+    /// package is verified first (so a bundled copy is only used while its
+    /// bundle verifies), then the file itself if it is a package entry.
+    /// Returns the file to load.
+    pub fn verify_package_file(&mut self, file: &Path) -> Result<PathBuf, ResolveError> {
+        let Some(root) = package::containing_package_root(file) else {
+            return Ok(file.to_path_buf());
+        };
+        let packages_root = root
+            .parent()
+            .and_then(Path::parent)
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| root.clone());
+        if let Err(problem) = self.verify_cached(PackageOrigin::Direct, &packages_root, &root, None)
+        {
+            let label = package::read_manifest(&root)
+                .map(|m| format!("{}@{}/{}", m.id, m.version, m.entry))
+                .unwrap_or_else(|_| root.display().to_string());
+            return Err(ResolveError {
+                reference: label,
+                kind: problem.kind,
+                searched: vec![root.clone()],
+                problems: vec![problem],
+            });
+        }
+        match self.resolve_file(file)? {
+            ResolvedFile::Package(found) => Ok(found.entry_path),
+            ResolvedFile::Plain(path) => Ok(path),
+        }
     }
 
     /// Resolve from one location only (no priority, no fallback). This is
@@ -281,6 +409,32 @@ impl PackageResolver {
             searched.push(dir.clone());
             if std::fs::symlink_metadata(&dir).is_err() {
                 continue; // absent here: a lower-priority location may be used
+            }
+            // A bundled copy is only trusted while the package that bundles
+            // it verifies (its manifest holds the bundled files' checksums).
+            if origin == PackageOrigin::Bundle {
+                if let Some(root) = self.bundle.clone() {
+                    let root_packages = root
+                        .parent()
+                        .and_then(Path::parent)
+                        .map(Path::to_path_buf)
+                        .unwrap_or_else(|| root.clone());
+                    if let Err(mut problem) =
+                        self.verify_cached(PackageOrigin::Bundle, &root_packages, &root, None)
+                    {
+                        problem.message = format!(
+                            "the package that bundles it ({}) is damaged: {}",
+                            root.display(),
+                            problem.message
+                        );
+                        return Err(ResolveError {
+                            reference: label,
+                            kind: problem.kind,
+                            problems: vec![problem],
+                            searched,
+                        });
+                    }
+                }
             }
             return match self.verify_cached(origin, &packages_root, &dir, Some(reference)) {
                 Ok((manifest, entry_path)) => Ok(ResolvedPackage {
@@ -352,8 +506,12 @@ impl PackageResolver {
         if let Some(reference) = expected {
             deps.push(dir.join(&reference.entry));
         }
+        version_dir_paths(dir, &mut deps);
+        deps.sort();
+        deps.dedup();
         let print = fingerprint(&deps);
-        if let Some((cached_print, result)) = self.cache.get(dir) {
+        let key = (dir.to_path_buf(), expected.cloned());
+        if let Some((cached_print, result)) = self.cache.get(&key) {
             if *cached_print == print {
                 return result.clone().map_err(|mut p| {
                     p.origin = origin;
@@ -362,8 +520,7 @@ impl PackageResolver {
             }
         }
         let result = verify_candidate(origin, packages_root, dir, expected);
-        self.cache
-            .insert(dir.to_path_buf(), (print, result.clone()));
+        self.cache.insert(key, (print, result.clone()));
         result
     }
 }
@@ -498,6 +655,16 @@ fn verify_candidate(
             ),
         );
     }
+    if manifest.bundle_format > super::bundle::BUNDLE_FORMAT {
+        return fail(
+            Incompatible,
+            format!(
+                "Dependency bundle format {} is not supported (this Patchwork reads format {}).",
+                manifest.bundle_format,
+                super::bundle::BUNDLE_FORMAT
+            ),
+        );
+    }
     if manifest.pwnode_version != 1 {
         return fail(
             Incompatible,
@@ -610,10 +777,24 @@ fn verify_candidate(
             format!("Custom node format {} is not supported.", raw.version),
         );
     }
+    // P4.2 Stage 3: bundled files, and nested package references (which
+    // must be declared dependencies; they are resolved when loaded).
+    if let Err(bundle_problem) = super::bundle::verify_bundle(dir, &manifest) {
+        let kind = if bundle_problem.unsafe_ {
+            Unsafe
+        } else {
+            Corrupted
+        };
+        return fail(kind, bundle_problem.message);
+    }
     for node in raw.graph.nodes.values() {
-        let crate::graph::NodeType::CustomNodeInstance { file, .. } = &node.node_type else {
+        let crate::graph::NodeType::CustomNodeInstance { file, package, .. } = &node.node_type
+        else {
             continue;
         };
+        if package.is_some() {
+            continue;
+        }
         if let Err(problem) = check_nested_reference(origin, dir, &canonical_dir, file) {
             return Err(problem);
         }
@@ -693,6 +874,192 @@ pub fn app_version() -> semver::Version {
         .unwrap_or_else(|_| semver::Version::new(0, 0, 0))
 }
 
+// ── P4.2 Stage 2: portable instance references ───────────────────────────
+
+/// Package reference as stored on a custom-node instance
+/// (`"package": { "id", "version", "entry" }`).
+///
+/// Kept as plain strings so a malformed or future reference never stops a
+/// project from loading; it is validated when the instance is resolved.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct InstancePackageRef {
+    pub id: String,
+    pub version: String,
+    pub entry: String,
+}
+
+impl InstancePackageRef {
+    pub fn from_ref(reference: &PackageRef) -> Self {
+        Self {
+            id: reference.id.clone(),
+            version: reference.version.to_string(),
+            entry: reference.entry.clone(),
+        }
+    }
+
+    /// Validate into an exact reference (stable version, safe id and entry).
+    pub fn to_ref(&self) -> Result<PackageRef, String> {
+        let reference = PackageRef {
+            id: self.id.clone(),
+            version: package::parse_stable_version(&self.version)?,
+            entry: self.entry.clone(),
+        };
+        check_reference(&reference)?;
+        Ok(reference)
+    }
+}
+
+impl std::fmt::Display for InstancePackageRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}@{}/{}", self.id, self.version, self.entry)
+    }
+}
+
+/// Why a packaged instance cannot be evaluated.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InstanceError {
+    /// The stored reference itself is not valid.
+    Invalid { reference: String, message: String },
+    /// The instance `file` is a different package, version or file.
+    Conflict {
+        reference: String,
+        file: String,
+        found: Option<String>,
+    },
+    /// The package could not be resolved (missing, corrupted, ...).
+    Package(ResolveError),
+}
+
+impl InstanceError {
+    /// Category for callers and tests: `None` for a conflict or an invalid
+    /// reference.
+    pub fn resolve_kind(&self) -> Option<ResolveErrorKind> {
+        match self {
+            InstanceError::Package(error) => Some(error.kind),
+            _ => None,
+        }
+    }
+
+    pub fn is_conflict(&self) -> bool {
+        matches!(self, InstanceError::Conflict { .. })
+    }
+}
+
+impl std::fmt::Display for InstanceError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            InstanceError::Invalid { reference, message } => {
+                write!(f, "Invalid package reference {reference}: {message}")
+            }
+            InstanceError::Conflict {
+                reference,
+                file,
+                found: Some(found),
+            } => write!(
+                f,
+                "Package conflict: this node uses {reference}, but its file {file} is {found}. \
+                 Nothing was changed; fix the file or reinsert the node."
+            ),
+            InstanceError::Conflict {
+                reference,
+                file,
+                found: None,
+            } => write!(
+                f,
+                "Package conflict: this node uses {reference}, but its file {file} is not that \
+                 package. Nothing was changed; fix the file or reinsert the node."
+            ),
+            InstanceError::Package(error) => error.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for InstanceError {}
+
+/// What an instance's `file` field points at.
+enum FileIdentity {
+    /// Empty, or nothing exists there.
+    Missing,
+    /// The entry of this exact package version.
+    Package(PackageRef),
+    /// Some other file.
+    Other,
+}
+
+fn file_identity(file: &str) -> FileIdentity {
+    if file.is_empty() {
+        return FileIdentity::Missing;
+    }
+    let path = Path::new(file);
+    if std::fs::symlink_metadata(path).is_err() {
+        return FileIdentity::Missing;
+    }
+    match package_ref_for_path(path) {
+        Some((reference, _)) => FileIdentity::Package(reference),
+        None => FileIdentity::Other,
+    }
+}
+
+impl PackageResolver {
+    /// Decide which `.pwnode` a custom-node instance loads (Stage 2).
+    ///
+    /// * No package reference (legacy, unversioned, ordinary custom nodes):
+    ///   `file` is returned unchanged, exactly as before Stage 2.
+    /// * With a package reference, the package is authoritative:
+    ///   - `file` naming another package, version or file is a conflict;
+    ///   - the exact version is resolved (project copy first, then the
+    ///     Library); a present but damaged/incompatible/unsafe copy is an
+    ///     error and is never replaced by another copy;
+    ///   - if it is installed nowhere but `file` is that exact package entry
+    ///     (e.g. a Library on another drive), it is verified in place;
+    ///   - otherwise it is missing. Versions are never upgraded.
+    ///
+    /// Never modifies the instance; callers keep its ports and connections
+    /// on error.
+    pub fn resolve_instance(
+        &mut self,
+        file: &str,
+        package: Option<&InstancePackageRef>,
+    ) -> Result<PathBuf, InstanceError> {
+        let Some(stored) = package else {
+            return Ok(PathBuf::from(file));
+        };
+        let reference = stored.to_ref().map_err(|message| InstanceError::Invalid {
+            reference: stored.to_string(),
+            message,
+        })?;
+        let identity = file_identity(file);
+        let conflict = |found: Option<String>| InstanceError::Conflict {
+            reference: reference.to_string(),
+            file: file.to_string(),
+            found,
+        };
+        if let FileIdentity::Package(other) = &identity {
+            if *other != reference {
+                return Err(conflict(Some(other.to_string())));
+            }
+        }
+        match self.resolve(&reference) {
+            Ok(resolved) => match identity {
+                FileIdentity::Other => Err(conflict(None)),
+                _ => Ok(resolved.entry_path),
+            },
+            Err(error) if error.kind != ResolveErrorKind::Missing => {
+                Err(InstanceError::Package(error))
+            }
+            Err(missing) => match identity {
+                FileIdentity::Package(_) => match self.resolve_file(Path::new(file)) {
+                    Ok(ResolvedFile::Package(resolved)) => Ok(resolved.entry_path),
+                    Ok(ResolvedFile::Plain(_)) => Err(InstanceError::Package(missing)),
+                    Err(error) => Err(InstanceError::Package(error)),
+                },
+                FileIdentity::Other => Err(conflict(None)),
+                FileIdentity::Missing => Err(InstanceError::Package(missing)),
+            },
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -729,6 +1096,8 @@ mod tests {
             dependencies: Vec::new(),
             source: "local".into(),
             published_at: 0,
+            files: Default::default(),
+            bundle_format: 0,
         };
         std::fs::write(
             dir.join(MANIFEST_FILE),
@@ -1148,7 +1517,9 @@ mod tests {
     fn nested_dependency_inside_package_is_accepted_and_missing_one_is_corrupted() {
         let tmp = TempDir::new("res_nested_ok");
         let (_, library) = roots(&tmp);
-        let dir = make_package(&library, "local.outer", "1.0.0", Some("deps/Inner.pwnode"));
+        // (`deps/` is reserved for Stage 3 bundles, so a loose nested file
+        // lives in another subfolder.)
+        let dir = make_package(&library, "local.outer", "1.0.0", Some("lib/Inner.pwnode"));
         assert_eq!(
             kind_of(
                 PackageResolver::new(None, Some(library.clone())).resolve(&reference(
@@ -1159,8 +1530,8 @@ mod tests {
             ),
             ResolveErrorKind::Corrupted
         );
-        std::fs::create_dir_all(dir.join("deps")).unwrap();
-        write_node(&dir.join("deps").join("Inner.pwnode"), "Inner", None);
+        std::fs::create_dir_all(dir.join("lib")).unwrap();
+        write_node(&dir.join("lib").join("Inner.pwnode"), "Inner", None);
         assert!(
             PackageResolver::new(None, Some(library))
                 .resolve(&reference("local.outer", "1.0.0", "Node.pwnode"))
@@ -1316,5 +1687,241 @@ mod tests {
         assert_eq!(kind_of(resolver.resolve(&r)), ResolveErrorKind::Corrupted);
         resolver.clear_cache();
         assert_eq!(kind_of(resolver.resolve(&r)), ResolveErrorKind::Corrupted);
+    }
+
+    // ── Stage 2: instance references ─────────────────────────────────
+
+    fn stored(id: &str, version: &str) -> InstancePackageRef {
+        InstancePackageRef {
+            id: id.into(),
+            version: version.into(),
+            entry: "Node.pwnode".into(),
+        }
+    }
+
+    fn text(path: &Path) -> String {
+        path.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn legacy_instances_resolve_to_their_file_unchanged() {
+        let mut resolver = PackageResolver::new(None, None);
+        for file in ["", "C:/nowhere/Missing.pwnode", "relative/Node.pwnode"] {
+            assert_eq!(
+                resolver.resolve_instance(file, None).unwrap(),
+                PathBuf::from(file)
+            );
+        }
+    }
+
+    #[test]
+    fn matching_file_and_package_load_the_exact_version() {
+        let tmp = TempDir::new("inst_match");
+        let (_, library) = roots(&tmp);
+        let v1 = make_package(&library, "local.node", "1.0.0", None);
+        make_package(&library, "local.node", "1.1.0", None);
+        let mut resolver = PackageResolver::new(None, Some(library));
+        let entry = v1.join("Node.pwnode");
+        assert_eq!(
+            resolver
+                .resolve_instance(&text(&entry), Some(&stored("local.node", "1.0.0")))
+                .unwrap(),
+            entry
+        );
+    }
+
+    #[test]
+    fn missing_file_resolves_the_installed_exact_package() {
+        let tmp = TempDir::new("inst_missing_file");
+        let (_, library) = roots(&tmp);
+        let dir = make_package(&library, "local.node", "1.0.0", None);
+        let mut resolver = PackageResolver::new(None, Some(library));
+        let reference = stored("local.node", "1.0.0");
+        let elsewhere = tmp.0.join("other-machine").join("Node.pwnode");
+        for file in [text(&elsewhere), String::new()] {
+            assert_eq!(
+                resolver.resolve_instance(&file, Some(&reference)).unwrap(),
+                dir.join("Node.pwnode")
+            );
+        }
+    }
+
+    #[test]
+    fn file_of_another_version_or_package_is_a_conflict() {
+        let tmp = TempDir::new("inst_conflict");
+        let (_, library) = roots(&tmp);
+        make_package(&library, "local.node", "1.0.0", None);
+        let newer = make_package(&library, "local.node", "1.1.0", None);
+        let other = make_package(&library, "local.other", "1.0.0", None);
+        let plain = tmp.0.join("Plain.pwnode");
+        write_node(&plain, "Plain", None);
+        let mut resolver = PackageResolver::new(None, Some(library));
+        let reference = stored("local.node", "1.0.0");
+
+        let error = resolver
+            .resolve_instance(&text(&newer.join("Node.pwnode")), Some(&reference))
+            .unwrap_err();
+        assert!(error.is_conflict());
+        assert!(error.to_string().contains("local.node@1.1.0"));
+
+        let error = resolver
+            .resolve_instance(&text(&other.join("Node.pwnode")), Some(&reference))
+            .unwrap_err();
+        assert!(error.is_conflict());
+        assert!(error.to_string().contains("local.other@1.0.0"));
+
+        let error = resolver
+            .resolve_instance(&text(&plain), Some(&reference))
+            .unwrap_err();
+        assert!(error.is_conflict(), "a plain file is not the package");
+    }
+
+    #[test]
+    fn package_missing_everywhere_is_missing_and_never_upgraded() {
+        let tmp = TempDir::new("inst_never_upgrade");
+        let (project, library) = roots(&tmp);
+        let newer = make_package(&library, "local.node", "1.1.0", None);
+        let mut resolver = PackageResolver::new(Some(project), Some(library));
+        let reference = stored("local.node", "1.0.0");
+        let gone = tmp.0.join("gone").join("Node.pwnode");
+        let error = resolver
+            .resolve_instance(&text(&gone), Some(&reference))
+            .unwrap_err();
+        assert_eq!(error.resolve_kind(), Some(ResolveErrorKind::Missing));
+        // A file naming the installed newer version is not used either.
+        let error = resolver
+            .resolve_instance(&text(&newer.join("Node.pwnode")), Some(&reference))
+            .unwrap_err();
+        assert!(error.is_conflict());
+    }
+
+    #[test]
+    fn corrupted_or_incompatible_package_is_refused() {
+        let tmp = TempDir::new("inst_corrupt");
+        let (_, library) = roots(&tmp);
+        let damaged = make_package(&library, "local.node", "1.0.0", None);
+        write_node(
+            &damaged.join("Node.pwnode"),
+            "Changed after publishing",
+            None,
+        );
+        let newer_format = make_package(&library, "local.future", "1.0.0", None);
+        edit_manifest(&newer_format, |v| v["format"] = serde_json::json!(99));
+        let mut resolver = PackageResolver::new(None, Some(library));
+
+        let reference = stored("local.node", "1.0.0");
+        for file in [text(&damaged.join("Node.pwnode")), String::new()] {
+            let error = resolver
+                .resolve_instance(&file, Some(&reference))
+                .unwrap_err();
+            assert_eq!(error.resolve_kind(), Some(ResolveErrorKind::Corrupted));
+        }
+        let error = resolver
+            .resolve_instance(
+                &text(&newer_format.join("Node.pwnode")),
+                Some(&stored("local.future", "1.0.0")),
+            )
+            .unwrap_err();
+        assert_eq!(error.resolve_kind(), Some(ResolveErrorKind::Incompatible));
+    }
+
+    #[test]
+    fn damaged_project_copy_is_not_replaced_by_the_library_copy() {
+        let tmp = TempDir::new("inst_project_damaged");
+        let (project, library) = roots(&tmp);
+        let project_copy = make_package(&project, "local.node", "1.0.0", None);
+        write_node(
+            &project_copy.join("Node.pwnode"),
+            "Damaged project copy",
+            None,
+        );
+        let library_copy = make_package(&library, "local.node", "1.0.0", None);
+        let mut resolver = PackageResolver::new(Some(project), Some(library));
+        // Even when the instance file points at the intact Library copy.
+        let error = resolver
+            .resolve_instance(
+                &text(&library_copy.join("Node.pwnode")),
+                Some(&stored("local.node", "1.0.0")),
+            )
+            .unwrap_err();
+        assert_eq!(error.resolve_kind(), Some(ResolveErrorKind::Corrupted));
+        assert!(error.to_string().contains("project copy"));
+    }
+
+    #[test]
+    fn exact_entry_outside_known_locations_is_verified_in_place() {
+        let tmp = TempDir::new("inst_direct");
+        let (_, library) = roots(&tmp);
+        let shared = make_package(&tmp.0.join("shared"), "local.node", "1.0.0", None);
+        let entry = shared.join("Node.pwnode");
+        let mut resolver = PackageResolver::new(None, Some(library));
+        let reference = stored("local.node", "1.0.0");
+        assert_eq!(
+            resolver
+                .resolve_instance(&text(&entry), Some(&reference))
+                .unwrap(),
+            entry
+        );
+        write_node(&entry, "Changed after publishing", None);
+        let error = resolver
+            .resolve_instance(&text(&entry), Some(&reference))
+            .unwrap_err();
+        assert_eq!(error.resolve_kind(), Some(ResolveErrorKind::Corrupted));
+    }
+
+    #[test]
+    fn invalid_stored_references_are_rejected_without_lookup() {
+        let mut resolver = PackageResolver::new(None, None);
+        for (id, version, entry) in [
+            ("../evil", "1.0.0", "Node.pwnode"),
+            ("local.node", "latest", "Node.pwnode"),
+            ("local.node", "1.0.0-beta", "Node.pwnode"),
+            ("local.node", "1.0.0", "../Node.pwnode"),
+            ("local.node", "1.0.0", "sub/Node.pwnode"),
+        ] {
+            let reference = InstancePackageRef {
+                id: id.into(),
+                version: version.into(),
+                entry: entry.into(),
+            };
+            let error = resolver.resolve_instance("", Some(&reference)).unwrap_err();
+            assert!(
+                matches!(error, InstanceError::Invalid { .. }),
+                "{id}@{version}/{entry}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn instance_package_ref_serializes_portably() {
+        let exact = reference("local.node", "1.2.3", "Node.pwnode");
+        let stored = InstancePackageRef::from_ref(&exact);
+        assert_eq!(
+            serde_json::to_value(&stored).unwrap(),
+            serde_json::json!({"id": "local.node", "version": "1.2.3", "entry": "Node.pwnode"})
+        );
+        let back: InstancePackageRef =
+            serde_json::from_value(serde_json::to_value(&stored).unwrap()).unwrap();
+        assert_eq!(back, stored);
+        assert_eq!(back.to_ref().unwrap(), exact);
+        // A malformed reference still deserializes; it is refused when used.
+        let odd: InstancePackageRef =
+            serde_json::from_str(r#"{"id":"x/../y","version":"one","entry":"a"}"#).unwrap();
+        assert!(odd.to_ref().is_err());
+    }
+
+    #[test]
+    fn resolving_instances_does_not_reverify_unchanged_packages() {
+        let tmp = TempDir::new("inst_cache");
+        let (_, library) = roots(&tmp);
+        make_package(&library, "local.node", "1.0.0", None);
+        let mut resolver = PackageResolver::new(None, Some(library));
+        let reference = stored("local.node", "1.0.0");
+        resolver.resolve_instance("", Some(&reference)).unwrap();
+        let loads = LOAD_COUNT.with(|c| c.get());
+        for _ in 0..10 {
+            resolver.resolve_instance("", Some(&reference)).unwrap();
+        }
+        assert_eq!(LOAD_COUNT.with(|c| c.get()), loads, "no re-verification");
     }
 }

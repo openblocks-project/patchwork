@@ -1147,8 +1147,9 @@ impl PatchworkApp {
             let is_comment = node.node_type.title() == "Comment";
             // Read-only tab, or editing paused while quitting (R3).
             let read_only_doc = !self.active_is_editable();
+            // P4.2 Stage 2: a packaged instance opens its resolved entry.
             let custom_node_file = match &node.node_type {
-                NodeType::CustomNodeInstance { file, .. } => Some(file.clone()),
+                NodeType::CustomNodeInstance { .. } => self.graph.custom_instance_source(node_id),
                 _ => None,
             };
             let mut win = egui::Window::new(title_rt)
@@ -3600,6 +3601,17 @@ match validation_result {
         self.gpu_tex_cache
             .begin_frame(self.wgpu_render_state.as_ref());
         let now_secs = self.app_start_instant.elapsed().as_secs_f64();
+        // P4.2 Stage 2: package references resolve against this project's
+        // folder (projects only) and the Library. No-op when unchanged.
+        let package_project_dir = match self.documents.active().kind {
+            crate::document::DocumentKind::Project => {
+                self.project_path.as_ref().map(std::path::PathBuf::from)
+            }
+            crate::document::DocumentKind::CustomNode => None,
+        };
+        let package_library_root = self.library_cache.root().ok();
+        self.graph
+            .set_package_environment(package_project_dir, package_library_root);
         let mut values = self.graph.evaluate(now_secs);
         // P3: Report interface changes picked up while reloading custom nodes
         // (e.g. a .pwnode modified outside this editor).

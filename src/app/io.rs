@@ -142,6 +142,162 @@ fn relativize_paths(graph: &mut Graph, project_dir: &str) {
     }
 }
 
+/// Outcome of [`save_project_files`].
+pub(super) struct PortableSave {
+    pub plan: crate::library::project::ProjectPackagePlan,
+    pub portability: crate::library::project::PortabilityReport,
+}
+
+/// P4.2 Stage 4: write a project portably. The graph is serialized from a
+/// copy, so the live graph is untouched unless the save succeeds. On
+/// success, packaged nodes in the live graph and in every undo/redo
+/// snapshot are pointed at their project copies (the same paths a reopen
+/// produces), their runtimes are invalidated, and no undo step is added.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn save_project_files(
+    graph: &mut Graph,
+    undo_history: &mut UndoHistory,
+    pinned_nodes: Vec<NodeId>,
+    canvas_offset: [f32; 2],
+    canvas_zoom: f32,
+    dir: &Path,
+    source_project: Option<&Path>,
+    library_root: Option<&Path>,
+) -> Result<PortableSave, String> {
+    let plan =
+        crate::library::project::plan_project_packages(graph, dir, source_project, library_root)?;
+    std::fs::create_dir_all(dir).map_err(|e| format!("Failed to create project folder: {e}"))?;
+    let dir_str = dir.to_string_lossy().into_owned();
+    let mut saved_graph = graph.clone();
+    relativize_paths(&mut saved_graph, &dir_str);
+    apply_project_package_paths(&mut saved_graph, &plan);
+    let pf = ProjectFile {
+        graph: saved_graph,
+        pinned_nodes,
+        canvas_offset,
+        canvas_zoom,
+    };
+    let json =
+        serde_json::to_string_pretty(&pf).map_err(|e| format!("Serialization failed: {e}"))?;
+    if json.len() < 10 {
+        return Err("Save produced empty JSON — skipping write".to_string());
+    }
+    let report = crate::library::project::commit_project_save(dir, &plan, &json)?;
+
+    // Saved: synchronize the live state with what project.json now says.
+    let files = live_package_files(graph, &plan, &dir_str);
+    sync_live_package_paths(graph, &files);
+    undo_history.map_graphs(|snapshot| {
+        sync_live_package_paths(snapshot, &files);
+    });
+    let portability = crate::library::project::PortabilityReport::new(
+        &plan,
+        &report,
+        count_external_assets(graph, dir),
+    );
+    Ok(PortableSave { plan, portability })
+}
+
+/// Absolute project-copy path per package reference, exactly as a reopen
+/// of the saved project produces it.
+fn live_package_files(
+    graph: &Graph,
+    plan: &crate::library::project::ProjectPackagePlan,
+    dir: &str,
+) -> HashMap<crate::library::resolve::InstancePackageRef, String> {
+    let mut files = HashMap::new();
+    for (id, relative) in &plan.instance_files {
+        if let Some(NodeType::CustomNodeInstance {
+            package: Some(package),
+            ..
+        }) = graph.nodes.get(id).map(|n| &n.node_type)
+        {
+            files.insert(package.clone(), make_absolute(relative, dir));
+        }
+    }
+    files
+}
+
+/// Point packaged instances at their project copies (by package
+/// reference). The reference is kept; path-only instances are untouched.
+/// Changed instances drop their cached runtime and resolution, so they
+/// reload from the new location. Returns how many changed.
+fn sync_live_package_paths(
+    graph: &mut Graph,
+    files: &HashMap<crate::library::resolve::InstancePackageRef, String>,
+) -> usize {
+    let targets: Vec<(NodeId, String)> = graph
+        .nodes
+        .iter()
+        .filter_map(|(&id, node)| match &node.node_type {
+            NodeType::CustomNodeInstance {
+                package: Some(package),
+                ..
+            } => files.get(package).map(|file| (id, file.clone())),
+            _ => None,
+        })
+        .collect();
+    targets
+        .into_iter()
+        .filter(|(id, file)| graph.retarget_custom_instance(*id, file))
+        .count()
+}
+
+/// Tracked asset files (media, models, plugins; the same fields saved as
+/// relative paths) that lie outside `dir`.
+fn count_external_assets(graph: &Graph, dir: &Path) -> usize {
+    let mut paths: Vec<&str> = Vec::new();
+    for node in graph.nodes.values() {
+        match &node.node_type {
+            NodeType::ImageNode { path, .. } => paths.push(path),
+            NodeType::AudioPlayer { file_path, .. } => paths.push(file_path),
+            NodeType::VideoPlayer { path, .. } => paths.push(path),
+            NodeType::ClapPlugin { plugin_path, .. } => paths.push(plugin_path),
+            NodeType::MlModel {
+                model_path,
+                labels_path,
+                ..
+            } => {
+                paths.push(model_path);
+                paths.push(labels_path);
+            }
+            _ => {}
+        }
+    }
+    let mut outside: Vec<&str> = paths
+        .into_iter()
+        .filter(|p| !p.trim().is_empty())
+        .filter(|p| {
+            let path = Path::new(p);
+            path.is_absolute() && !crate::library::project::is_within(path, dir)
+        })
+        .collect();
+    outside.sort_unstable();
+    outside.dedup();
+    outside.len()
+}
+
+/// P4.2 Stage 4: point packaged instances at their bundled project copy
+/// (relative `packages/<id>/<version>/<entry>`). The package reference
+/// stays authoritative; path-only instances are left as they are.
+fn apply_project_package_paths(
+    graph: &mut Graph,
+    plan: &crate::library::project::ProjectPackagePlan,
+) {
+    for (id, relative) in &plan.instance_files {
+        if let Some(node) = graph.nodes.get_mut(id) {
+            if let NodeType::CustomNodeInstance {
+                file,
+                package: Some(_),
+                ..
+            } = &mut node.node_type
+            {
+                *file = relative.clone();
+            }
+        }
+    }
+}
+
 /// Convert all asset paths in a graph to absolute (after loading).
 fn absolutize_paths(graph: &mut Graph, project_dir: &str) {
     for node in graph.nodes.values_mut() {
@@ -1907,39 +2063,52 @@ impl super::PatchworkApp {
                 }
             }
         }
-        if let Err(e) = std::fs::create_dir_all(dir) {
-            crate::system_log::error(format!("Failed to create project folder: {}", e));
-            return false;
-        }
-        // Temporarily relativize paths, serialize, then restore absolute paths
-        relativize_paths(&mut self.graph, &dir_str);
-        let pf = ProjectFile {
-            graph: self.graph.clone(),
-            pinned_nodes: self.pinned_nodes.iter().copied().collect(),
-            canvas_offset: [self.canvas_offset.x, self.canvas_offset.y],
-            canvas_zoom: self.canvas_zoom,
+        // P4.2 Stage 4: bundle the exact packages this project uses and
+        // write project.json atomically with them. A failure leaves both
+        // the files on disk and the live graph as they were.
+        let source_project = match self.documents.active().kind {
+            crate::document::DocumentKind::Project => {
+                self.project_path.as_ref().map(std::path::PathBuf::from)
+            }
+            crate::document::DocumentKind::CustomNode => None,
         };
+        let library_root = self.library_cache.root().ok();
         let project_file = dir.join("project.json");
-        let mut ok = false;
-        match serde_json::to_string_pretty(&pf) {
-            Ok(json) => {
-                if json.len() < 10 {
-                    crate::system_log::error(
-                        "Save produced empty JSON — skipping write".to_string(),
-                    );
-                } else if let Err(e) = std::fs::write(&project_file, &json) {
-                    crate::system_log::error(format!("Save failed: {}", e));
-                } else {
-                    crate::system_log::log(format!("Saved to {}", project_file.display()));
-                    ok = true;
+        let ok = match save_project_files(
+            &mut self.graph,
+            &mut self.undo_history,
+            self.pinned_nodes.iter().copied().collect(),
+            [self.canvas_offset.x, self.canvas_offset.y],
+            self.canvas_zoom,
+            dir,
+            source_project.as_deref(),
+            library_root.as_deref(),
+        ) {
+            Ok(saved) => {
+                crate::system_log::log(format!(
+                    "Saved to {}. {}",
+                    project_file.display(),
+                    saved.portability.summary()
+                ));
+                for warning in &saved.plan.warnings {
+                    crate::system_log::warn(format!("Portability: {warning}"));
                 }
+                let summary = saved.portability.summary();
+                if saved.portability.custom_nodes_portable()
+                    && saved.portability.external_assets == 0
+                {
+                    self.toast_info(summary);
+                } else {
+                    self.toast_warn(format!("{summary} See the System Log."));
+                }
+                true
             }
-            Err(e) => {
-                crate::system_log::error(format!("Serialization failed: {}", e));
+            Err(error) => {
+                crate::system_log::error(format!("Save failed: {error}"));
+                self.toast_error(format!("Save failed: {error}"));
+                false
             }
-        }
-        // Restore absolute paths so the running app continues working
-        absolutize_paths(&mut self.graph, &dir_str);
+        };
         // P0-2: API keys NEVER write into the project folder anymore — they
         // would ride along when a user zips/shares the project. Persist to the
         // per-user `~/.patchwork/keys.json` store on every save instead.
@@ -3239,6 +3408,1546 @@ mod shutdown_tests {
         assert_eq!(
             quit_step(QuitChoice::DiscardAll, None, Some(2)),
             QuitStep::Close { discard: true }
+        );
+    }
+}
+
+/// P4.2 Stage 2: package references through project save/open, undo and
+/// tab switching.
+#[cfg(test)]
+mod package_reference_tests {
+    use super::super::undo::{UndoHistory, UndoSnapshot};
+    use super::*;
+    use crate::document::{CustomNodeFile, CustomNodePort, DocumentManager};
+    use crate::library::package::publish_package;
+    use crate::library::package::tests::{TempDir, request};
+    use crate::library::resolve::InstancePackageRef;
+    use std::collections::HashSet;
+    use std::path::PathBuf;
+
+    /// Publish a one-port custom node; returns (library, reference, entry).
+    fn published(tmp: &TempDir) -> (PathBuf, InstancePackageRef, PathBuf) {
+        let library = tmp.0.join("library");
+        let src = tmp.0.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        let source = src.join("Gain.pwnode");
+        CustomNodeFile {
+            version: 1,
+            name: "Gain".into(),
+            graph: Graph::new(),
+            inputs: Vec::new(),
+            outputs: vec![CustomNodePort {
+                name: "out".into(),
+                kind: "Number".into(),
+            }],
+        }
+        .save(&source)
+        .unwrap();
+        let version = publish_package(&library, &source, &request("Gain", "1.0.0")).unwrap();
+        let reference = InstancePackageRef {
+            id: version.manifest.id.clone(),
+            version: version.version.to_string(),
+            entry: version.manifest.entry.clone(),
+        };
+        (library, reference, version.entry_path)
+    }
+
+    fn packaged_graph(file: &str, reference: &InstancePackageRef) -> (Graph, NodeId) {
+        let mut graph = Graph::new();
+        let id = graph.add_node(
+            NodeType::CustomNodeInstance {
+                file: file.to_string(),
+                inputs: Vec::new(),
+                outputs: vec![CustomNodePort {
+                    name: "out".into(),
+                    kind: "Number".into(),
+                }],
+                package: Some(reference.clone()),
+            },
+            [0.0, 0.0],
+        );
+        (graph, id)
+    }
+
+    fn package_of(graph: &Graph, id: NodeId) -> Option<InstancePackageRef> {
+        match &graph.nodes.get(&id)?.node_type {
+            NodeType::CustomNodeInstance { package, .. } => package.clone(),
+            _ => None,
+        }
+    }
+
+    fn file_of(graph: &Graph, id: NodeId) -> String {
+        match &graph.nodes[&id].node_type {
+            NodeType::CustomNodeInstance { file, .. } => file.clone(),
+            _ => unreachable!(),
+        }
+    }
+
+    /// Evaluate like the editor does and report whether `id` loaded and
+    /// whether evaluation produced interface changes (which mark a
+    /// document modified).
+    fn evaluate(
+        graph: &mut Graph,
+        project: Option<PathBuf>,
+        library: &Path,
+        id: NodeId,
+    ) -> (bool, bool) {
+        graph.set_package_environment(project, Some(library.to_path_buf()));
+        graph.evaluate(0.0);
+        let changed = graph.take_custom_port_events().changed;
+        (
+            graph
+                .custom_instance_source(id)
+                .is_some_and(|s| Path::new(&s).is_file()),
+            changed,
+        )
+    }
+
+    fn write_project(dir: &Path, graph: &Graph) {
+        let mut saved = graph.clone();
+        relativize_paths(&mut saved, &dir.to_string_lossy());
+        let pf = ProjectFile {
+            graph: saved,
+            pinned_nodes: Vec::new(),
+            canvas_offset: [0.0, 0.0],
+            canvas_zoom: 1.0,
+        };
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(
+            dir.join("project.json"),
+            serde_json::to_string_pretty(&pf).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn open_project(dir: &Path) -> Graph {
+        let mut pf = read_project_file(dir).unwrap();
+        absolutize_paths(&mut pf.graph, &dir.to_string_lossy());
+        pf.graph
+    }
+
+    #[test]
+    fn project_save_and_open_preserve_package_references_without_rewriting() {
+        let tmp = TempDir::new("s2_project");
+        let (library, reference, entry) = published(&tmp);
+        let project = tmp.0.join("project");
+        let (graph, id) = packaged_graph(&entry.to_string_lossy(), &reference);
+        write_project(&project, &graph);
+
+        let json_path = project.join("project.json");
+        let bytes = std::fs::read(&json_path).unwrap();
+        let modified = std::fs::metadata(&json_path).unwrap().modified().unwrap();
+        assert!(String::from_utf8_lossy(&bytes).contains("\"package\""));
+
+        let mut opened = open_project(&project);
+        assert_eq!(package_of(&opened, id), Some(reference.clone()));
+        assert_eq!(PathBuf::from(file_of(&opened, id)), entry);
+        let (loaded, changed) = evaluate(&mut opened, Some(project.clone()), &library, id);
+        assert!(loaded);
+        assert!(!changed, "opening does not mark the project modified");
+
+        // Opening and evaluating never wrote the project file.
+        assert_eq!(std::fs::read(&json_path).unwrap(), bytes);
+        assert_eq!(
+            std::fs::metadata(&json_path).unwrap().modified().unwrap(),
+            modified
+        );
+
+        // Saving again keeps the reference.
+        write_project(&project, &opened);
+        let reopened = open_project(&project);
+        assert_eq!(package_of(&reopened, id), Some(reference));
+    }
+
+    #[test]
+    fn project_from_another_machine_resolves_by_package_reference() {
+        let tmp = TempDir::new("s2_moved");
+        let (library, reference, _) = published(&tmp);
+        let project = tmp.0.join("project");
+        let foreign = tmp.0.join("old-machine").join("Gain.pwnode");
+        let (graph, id) = packaged_graph(&foreign.to_string_lossy(), &reference);
+        write_project(&project, &graph);
+
+        let mut opened = open_project(&project);
+        let (loaded, changed) = evaluate(&mut opened, Some(project.clone()), &library, id);
+        assert!(loaded, "resolved from the Library by id@version/entry");
+        assert!(!changed);
+        // The compatibility path is not rewritten by opening.
+        assert_eq!(PathBuf::from(file_of(&opened, id)), foreign);
+    }
+
+    #[test]
+    fn undo_and_redo_keep_package_references() {
+        let tmp = TempDir::new("s2_undo");
+        let (library, reference, entry) = published(&tmp);
+        let (graph, id) = packaged_graph(&entry.to_string_lossy(), &reference);
+
+        let mut history = UndoHistory::new(10);
+        history.push(UndoSnapshot::new(graph.clone(), HashSet::new()));
+        let mut edited = graph.clone();
+        edited.remove_node(id);
+        let undone = history
+            .undo(UndoSnapshot::new(edited.clone(), HashSet::new()))
+            .expect("undo");
+        assert_eq!(package_of(&undone.graph, id), Some(reference.clone()));
+        let redone = history
+            .redo(UndoSnapshot::new(undone.graph.clone(), HashSet::new()))
+            .expect("redo");
+        assert!(!redone.graph.nodes.contains_key(&id));
+
+        // A snapshot that differs only in its package reference is a
+        // different state (not deduplicated).
+        let mut unpackaged = graph.clone();
+        if let Some(node) = unpackaged.nodes.get_mut(&id) {
+            if let NodeType::CustomNodeInstance { package, .. } = &mut node.node_type {
+                *package = None;
+            }
+        }
+        assert!(
+            !UndoSnapshot::new(unpackaged, HashSet::new())
+                .has_same_content(&UndoSnapshot::new(graph.clone(), HashSet::new()))
+        );
+
+        // The restored graph still resolves and evaluates.
+        let mut restored = undone.graph;
+        assert!(evaluate(&mut restored, None, &library, id).0);
+    }
+
+    #[test]
+    fn tab_switching_keeps_package_references() {
+        let tmp = TempDir::new("s2_tabs");
+        let (library, reference, entry) = published(&tmp);
+        let (graph, id) = packaged_graph(&entry.to_string_lossy(), &reference);
+
+        let mut documents = DocumentManager::new();
+        let first = documents.active().id;
+        assert!(documents.active_mut().store_graph(&graph));
+        let second = documents.new_document("Second");
+        assert!(documents.activate(second));
+        assert!(documents.active().graph.nodes.is_empty());
+        assert!(documents.activate(first));
+
+        let mut restored = documents.active().graph.clone();
+        assert_eq!(package_of(&restored, id), Some(reference));
+        let (loaded, changed) = evaluate(&mut restored, None, &library, id);
+        assert!(loaded);
+        assert!(!changed);
+    }
+}
+
+/// P4.2 Stage 4: portable project bundling (save, move, reopen).
+#[cfg(test)]
+mod project_bundle_tests {
+    use super::*;
+    use crate::document::CustomNodeFile;
+    use crate::library::bundle::tests::{child, composite, files_under, leaf, publish, stored};
+    use crate::library::package::tests::TempDir;
+    use crate::library::package::{PACKAGES_DIR, VerifiedPackage};
+    use crate::library::project::{
+        FAIL_AT, FailPoint, SaveReport, commit_project_save, plan_project_packages,
+    };
+    use crate::library::resolve::InstancePackageRef;
+    use std::path::PathBuf;
+
+    /// Save like `save_to_dir` does: plan, relativize, point packaged
+    /// instances at their project copies, commit atomically.
+    fn save(
+        graph: &Graph,
+        dest: &Path,
+        source: Option<&Path>,
+        library: &Path,
+    ) -> Result<SaveReport, String> {
+        let plan = plan_project_packages(graph, dest, source, Some(library))?;
+        let mut saved = graph.clone();
+        relativize_paths(&mut saved, &dest.to_string_lossy());
+        apply_project_package_paths(&mut saved, &plan);
+        let pf = ProjectFile {
+            graph: saved,
+            pinned_nodes: Vec::new(),
+            canvas_offset: [0.0, 0.0],
+            canvas_zoom: 1.0,
+        };
+        commit_project_save(dest, &plan, &serde_json::to_string_pretty(&pf).unwrap())
+    }
+
+    fn open(dest: &Path) -> Graph {
+        let mut pf = read_project_file(dest).unwrap();
+        absolutize_paths(&mut pf.graph, &dest.to_string_lossy());
+        pf.graph
+    }
+
+    /// A project graph with one instance per child, each feeding a Slider
+    /// (so connections can be checked). Returns the instance ids.
+    fn project_graph(children: &[(String, Option<InstancePackageRef>)]) -> (Graph, Vec<NodeId>) {
+        let mut graph = Graph::new();
+        let mut ids = Vec::new();
+        for (index, (file, package)) in children.iter().enumerate() {
+            let outputs = if file.is_empty() {
+                vec![crate::document::CustomNodePort {
+                    name: "out".into(),
+                    kind: "Number".into(),
+                }]
+            } else {
+                CustomNodeFile::load(Path::new(file)).unwrap().outputs
+            };
+            let id = graph.add_node(
+                NodeType::CustomNodeInstance {
+                    file: file.clone(),
+                    inputs: Vec::new(),
+                    outputs,
+                    package: package.clone(),
+                },
+                [0.0, index as f32 * 100.0],
+            );
+            let slider = graph.add_node(
+                NodeType::Slider {
+                    value: 0.0,
+                    min: 0.0,
+                    max: 1.0,
+                    step: 0.01,
+                    slider_color: [0, 0, 0],
+                    label: String::new(),
+                },
+                [300.0, index as f32 * 100.0],
+            );
+            graph.add_connection(id, 0, slider, 0);
+            ids.push(id);
+        }
+        (graph, ids)
+    }
+
+    fn outputs(
+        graph: &mut Graph,
+        ids: &[NodeId],
+        project: &Path,
+        library: &Path,
+    ) -> Vec<Option<f32>> {
+        graph.set_package_environment(Some(project.to_path_buf()), Some(library.to_path_buf()));
+        let values = graph.evaluate(0.0);
+        ids.iter()
+            .map(|id| match values.get(&(*id, 0)) {
+                Some(PortValue::Float(v)) => Some(*v),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn snapshot(dir: &Path) -> Vec<(String, Vec<u8>)> {
+        files_under(dir)
+            .into_iter()
+            .map(|rel| {
+                let bytes = std::fs::read(dir.join(&rel)).unwrap();
+                (rel, bytes)
+            })
+            .collect()
+    }
+
+    fn copy_dir(from: &Path, to: &Path) {
+        for rel in files_under(from) {
+            let target = to.join(&rel);
+            std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+            std::fs::copy(from.join(&rel), target).unwrap();
+        }
+    }
+
+    fn package_ref(graph: &Graph, id: NodeId) -> Option<InstancePackageRef> {
+        match &graph.nodes[&id].node_type {
+            NodeType::CustomNodeInstance { package, .. } => package.clone(),
+            _ => None,
+        }
+    }
+
+    struct Fixture {
+        tmp: TempDir,
+        library: PathBuf,
+        project: PathBuf,
+    }
+
+    fn fixture(tag: &str) -> Fixture {
+        let tmp = TempDir::new(tag);
+        let library = tmp.0.join("library");
+        let project = tmp.0.join("project");
+        std::fs::create_dir_all(&library).unwrap();
+        Fixture {
+            library,
+            project,
+            tmp,
+        }
+    }
+
+    fn src(f: &Fixture) -> PathBuf {
+        f.tmp.0.join("src")
+    }
+
+    fn pkg_dir(project: &Path, v: &VerifiedPackage) -> PathBuf {
+        project
+            .join(PACKAGES_DIR)
+            .join(&v.manifest.id)
+            .join(v.version.to_string())
+    }
+
+    // ── Saving ──────────────────────────────────────────────────────
+
+    #[test]
+    fn saves_a_project_with_one_package_portably() {
+        let f = fixture("s4_one");
+        let b = publish(&f.library, &leaf(&src(&f), "B", 0.25), "B", None, "1.0.0").unwrap();
+        let library_bytes = snapshot(&b.dir);
+        let (graph, ids) = project_graph(&[child(&b)]);
+        let report = save(&graph, &f.project, None, &f.library).unwrap();
+        assert_eq!(
+            report,
+            SaveReport {
+                copied: 1,
+                reused: 0
+            }
+        );
+
+        // Exact copy, manifests and checksums preserved; source untouched.
+        assert_eq!(snapshot(&pkg_dir(&f.project, &b)), library_bytes);
+        assert_eq!(snapshot(&b.dir), library_bytes);
+
+        // Relative compatibility path, no machine path, reference kept.
+        let json = std::fs::read_to_string(f.project.join("project.json")).unwrap();
+        assert!(
+            json.contains("\"file\": \"packages/local.b/1.0.0/B.pwnode\""),
+            "{json}"
+        );
+        assert!(!json.contains(&*f.library.to_string_lossy().replace('\\', "\\\\")));
+        let reopened = open(&f.project);
+        assert_eq!(package_ref(&reopened, ids[0]), Some(stored(&b)));
+        assert_eq!(
+            PathBuf::from(file_of(&reopened, ids[0])),
+            f.project.join("packages/local.b/1.0.0/B.pwnode")
+        );
+    }
+
+    fn file_of(graph: &Graph, id: NodeId) -> String {
+        match &graph.nodes[&id].node_type {
+            NodeType::CustomNodeInstance { file, .. } => file.clone(),
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn saves_nested_dependencies_and_multiple_versions() {
+        let f = fixture("s4_nested");
+        let s = src(&f);
+        let c1 = publish(
+            &f.library,
+            &leaf(&s.join("v1"), "C", 0.25),
+            "C",
+            None,
+            "1.0.0",
+        )
+        .unwrap();
+        let c2 = publish(
+            &f.library,
+            &leaf(&s.join("v2"), "C", 0.75),
+            "C",
+            Some(&c1.manifest.id),
+            "2.0.0",
+        )
+        .unwrap();
+        let b = publish(
+            &f.library,
+            &composite(&s, "B", &[child(&c1)]),
+            "B",
+            None,
+            "1.0.0",
+        )
+        .unwrap();
+        let a = publish(
+            &f.library,
+            &composite(&s, "A", &[child(&b)]),
+            "A",
+            None,
+            "1.0.0",
+        )
+        .unwrap();
+        let (graph, _) = project_graph(&[child(&a), child(&c1), child(&c2)]);
+        let report = save(&graph, &f.project, None, &f.library).unwrap();
+        // A (with its complete bundle), C@1 and C@2 at the top level.
+        assert_eq!(report.copied, 3);
+        let a_copy = pkg_dir(&f.project, &a);
+        assert!(
+            a_copy
+                .join("deps")
+                .join(&b.manifest.id)
+                .join("1.0.0")
+                .is_dir()
+        );
+        assert!(
+            a_copy
+                .join("deps")
+                .join(&c1.manifest.id)
+                .join("1.0.0")
+                .is_dir()
+        );
+        assert!(pkg_dir(&f.project, &c1).is_dir() && pkg_dir(&f.project, &c2).is_dir());
+        assert!(crate::library::package::verify_version_dir(&a_copy, true).is_ok());
+        assert!(
+            !pkg_dir(&f.project, &b).exists(),
+            "B travels inside A's bundle"
+        );
+    }
+
+    #[test]
+    fn packages_used_inside_local_custom_nodes_are_bundled() {
+        // P2 grouping writes local .pwnode files into the project folder;
+        // packages used inside them must travel too (the files are not
+        // copied: they are already in the project).
+        let f = fixture("s4_grouped");
+        let b = publish(&f.library, &leaf(&src(&f), "B", 0.5), "B", None, "1.0.0").unwrap();
+        std::fs::create_dir_all(&f.project).unwrap();
+        let group = composite(&f.project, "Group", &[child(&b)]);
+        let (graph, ids) = project_graph(&[(group.to_string_lossy().into_owned(), None)]);
+        let plan = plan_project_packages(&graph, &f.project, None, Some(&f.library)).unwrap();
+        assert!(plan.warnings.is_empty(), "{:?}", plan.warnings);
+        save(&graph, &f.project, None, &f.library).unwrap();
+        assert!(pkg_dir(&f.project, &b).is_dir());
+
+        // Works from the project alone.
+        let moved = f.tmp.0.join("moved");
+        copy_dir(&f.project, &moved);
+        let empty = f.tmp.0.join("empty-library");
+        std::fs::create_dir_all(&empty).unwrap();
+        let mut reopened = open(&moved);
+        assert_eq!(
+            outputs(&mut reopened, &ids, &moved, &empty),
+            vec![Some(0.5)]
+        );
+    }
+
+    #[test]
+    fn saving_twice_does_not_copy_again() {
+        let f = fixture("s4_twice");
+        let b = publish(&f.library, &leaf(&src(&f), "B", 0.25), "B", None, "1.0.0").unwrap();
+        let (graph, _) = project_graph(&[child(&b)]);
+        save(&graph, &f.project, None, &f.library).unwrap();
+        let entry = pkg_dir(&f.project, &b).join("B.pwnode");
+        let modified = std::fs::metadata(&entry).unwrap().modified().unwrap();
+        let report = save(&graph, &f.project, None, &f.library).unwrap();
+        assert_eq!(
+            report,
+            SaveReport {
+                copied: 0,
+                reused: 1
+            }
+        );
+        assert_eq!(
+            std::fs::metadata(&entry).unwrap().modified().unwrap(),
+            modified
+        );
+        let names: Vec<String> = std::fs::read_dir(&f.project)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            !names.iter().any(|n| n.starts_with(".patchwork-staging-")),
+            "{names:?}"
+        );
+    }
+
+    #[test]
+    fn moved_project_runs_with_an_empty_library_and_identical_output() {
+        let f = fixture("s4_moved");
+        let s = src(&f);
+        let c1 = publish(
+            &f.library,
+            &leaf(&s.join("v1"), "C", 0.125),
+            "C",
+            None,
+            "1.0.0",
+        )
+        .unwrap();
+        let c2 = publish(
+            &f.library,
+            &leaf(&s.join("v2"), "C", 0.875),
+            "C",
+            Some(&c1.manifest.id),
+            "2.0.0",
+        )
+        .unwrap();
+        let b = publish(
+            &f.library,
+            &composite(&s, "B", &[child(&c1)]),
+            "B",
+            None,
+            "1.0.0",
+        )
+        .unwrap();
+        let a = publish(
+            &f.library,
+            &composite(&s, "A", &[child(&b)]),
+            "A",
+            None,
+            "1.0.0",
+        )
+        .unwrap();
+        let (mut graph, ids) = project_graph(&[child(&a), child(&c2), child(&c1)]);
+        let before = outputs(&mut graph, &ids, &f.tmp.0.join("not-saved"), &f.library);
+        assert_eq!(before, vec![Some(0.125), Some(0.875), Some(0.125)]);
+        save(&graph, &f.project, None, &f.library).unwrap();
+
+        // Another computer: different folder, empty Library, old paths gone.
+        let moved = f.tmp.0.join("elsewhere").join("Moved Project");
+        copy_dir(&f.project, &moved);
+        std::fs::remove_dir_all(&f.library).unwrap();
+        std::fs::remove_dir_all(&f.project).unwrap();
+        let empty = f.tmp.0.join("empty-library");
+        std::fs::create_dir_all(&empty).unwrap();
+        let json_before = std::fs::read(moved.join("project.json")).unwrap();
+
+        let mut reopened = open(&moved);
+        assert_eq!(outputs(&mut reopened, &ids, &moved, &empty), before);
+        assert!(
+            !reopened.take_custom_port_events().changed,
+            "not marked modified"
+        );
+        assert_eq!(
+            std::fs::read(moved.join("project.json")).unwrap(),
+            json_before
+        );
+
+        // Saving it again there needs nothing from a Library.
+        let report = save(&reopened, &moved, None, &empty).unwrap();
+        assert_eq!(report.copied, 0);
+    }
+
+    // ── Failures leave the project intact ──────────────────────────
+
+    #[test]
+    fn missing_or_corrupted_package_leaves_the_saved_project_intact() {
+        let f = fixture("s4_fail");
+        let s = src(&f);
+        let b = publish(&f.library, &leaf(&s, "B", 0.25), "B", None, "1.0.0").unwrap();
+        let (graph, _) = project_graph(&[child(&b)]);
+        save(&graph, &f.project, None, &f.library).unwrap();
+        let saved = snapshot(&f.project);
+
+        // A package installed nowhere.
+        let missing = InstancePackageRef {
+            id: "local.missing".into(),
+            version: "1.0.0".into(),
+            entry: "Missing.pwnode".into(),
+        };
+        let (graph2, _) = project_graph(&[child(&b), (String::new(), Some(missing))]);
+        let error = save(&graph2, &f.project, None, &f.library).unwrap_err();
+        assert!(
+            error.contains("local.missing@1.0.0") && error.contains("not saved"),
+            "{error}"
+        );
+        assert_eq!(snapshot(&f.project), saved);
+
+        // A damaged Library package.
+        let c = publish(&f.library, &leaf(&s, "C", 0.5), "C", None, "1.0.0").unwrap();
+        std::fs::write(&c.entry_path, "{ damaged").unwrap();
+        let (graph3, _) = project_graph(&[child(&b), (String::new(), Some(stored(&c)))]);
+        let error = save(&graph3, &f.project, None, &f.library).unwrap_err();
+        assert!(error.contains("damaged"), "{error}");
+        assert_eq!(snapshot(&f.project), saved);
+    }
+
+    #[test]
+    fn existing_project_copies_are_never_overwritten() {
+        let f = fixture("s4_conflict");
+        let s = src(&f);
+        // The project holds local.x@1 (0.25); this Library has a different
+        // local.x@1 (0.75), as on another machine.
+        let other_library = f.tmp.0.join("other-library");
+        let x_project = publish(
+            &other_library,
+            &leaf(&s.join("p"), "X", 0.25),
+            "X",
+            None,
+            "1.0.0",
+        )
+        .unwrap();
+        let x_library = publish(
+            &f.library,
+            &leaf(&s.join("l"), "X", 0.75),
+            "X",
+            None,
+            "1.0.0",
+        )
+        .unwrap();
+        copy_dir(&x_project.dir, &pkg_dir(&f.project, &x_project));
+        let project_copy = snapshot(&pkg_dir(&f.project, &x_project));
+
+        // The project copy has priority: reused, never replaced.
+        let (mut graph, ids) = project_graph(&[child(&x_library)]);
+        let report = save(&graph, &f.project, None, &f.library).unwrap();
+        assert_eq!(
+            report,
+            SaveReport {
+                copied: 0,
+                reused: 1
+            }
+        );
+        assert_eq!(snapshot(&pkg_dir(&f.project, &x_project)), project_copy);
+        let mut reopened = open(&f.project);
+        assert_eq!(
+            outputs(&mut reopened, &ids, &f.project, &f.library),
+            vec![Some(0.25)]
+        );
+        let _ = outputs(&mut graph, &ids, &f.project, &f.library);
+
+        // A damaged project copy stops the save; it is not repaired from
+        // the Library behind the user's back.
+        let copy_entry = pkg_dir(&f.project, &x_project).join("X.pwnode");
+        std::fs::write(&copy_entry, "{ damaged").unwrap();
+        let damaged = snapshot(&f.project);
+        let error = save(&graph, &f.project, None, &f.library).unwrap_err();
+        assert!(error.contains("project copy"), "{error}");
+        assert_eq!(snapshot(&f.project), damaged);
+    }
+
+    #[test]
+    fn a_copy_appearing_during_the_save_is_not_overwritten() {
+        let f = fixture("s4_race");
+        let s = src(&f);
+        let b = publish(&f.library, &leaf(&s, "B", 0.25), "B", None, "1.0.0").unwrap();
+        let (graph, _) = project_graph(&[child(&b)]);
+        std::fs::create_dir_all(&f.project).unwrap();
+        std::fs::write(
+            f.project.join("project.json"),
+            "{\"graph\":{\"nodes\":{},\"connections\":[],\"next_id\":1}}",
+        )
+        .unwrap();
+        let plan = plan_project_packages(&graph, &f.project, None, Some(&f.library)).unwrap();
+
+        // Another writer adds a different local.b@1.0.0 before the commit.
+        let other = f.tmp.0.join("other");
+        let rival = publish(
+            &other,
+            &leaf(&s.join("rival"), "B", 0.9),
+            "B",
+            None,
+            "1.0.0",
+        )
+        .unwrap();
+        copy_dir(&rival.dir, &pkg_dir(&f.project, &b));
+        let before = snapshot(&f.project);
+        let error = commit_project_save(&f.project, &plan, "{}").unwrap_err();
+        assert!(error.contains("not overwritten"), "{error}");
+        assert_eq!(snapshot(&f.project), before);
+    }
+
+    #[test]
+    fn conflicting_content_for_one_version_is_refused() {
+        let f = fixture("s4_content");
+        let s = src(&f);
+        let lib1 = f.tmp.0.join("lib1");
+        let c1 = publish(&lib1, &leaf(&s.join("c1"), "C", 0.5), "C", None, "1.0.0").unwrap();
+        let a = publish(
+            &lib1,
+            &composite(&s, "A", &[child(&c1)]),
+            "A",
+            None,
+            "1.0.0",
+        )
+        .unwrap();
+        // This Library: A (bundling the first C@1) and a different C@1.
+        copy_dir(
+            &a.dir,
+            &f.library
+                .join(PACKAGES_DIR)
+                .join(&a.manifest.id)
+                .join("1.0.0"),
+        );
+        let c_other = publish(
+            &f.library,
+            &leaf(&s.join("c2"), "C", 0.9),
+            "C",
+            None,
+            "1.0.0",
+        )
+        .unwrap();
+        let (graph, _) = project_graph(&[
+            (String::new(), Some(stored(&a))),
+            (String::new(), Some(stored(&c_other))),
+        ]);
+        let error = save(&graph, &f.project, None, &f.library).unwrap_err();
+        assert!(error.contains("different content"), "{error}");
+        assert!(!f.project.join("project.json").exists());
+    }
+
+    #[test]
+    fn interrupted_saves_leave_the_previous_project_untouched() {
+        let f = fixture("s4_interrupt");
+        let s = src(&f);
+        let b = publish(&f.library, &leaf(&s, "B", 0.25), "B", None, "1.0.0").unwrap();
+        let (graph, ids) = project_graph(&[child(&b)]);
+        save(&graph, &f.project, None, &f.library).unwrap();
+        let saved = snapshot(&f.project);
+
+        let c = publish(&f.library, &leaf(&s, "C", 0.5), "C", None, "1.0.0").unwrap();
+        let d = publish(&f.library, &leaf(&s, "D", 0.75), "D", None, "1.0.0").unwrap();
+        let (bigger, _) = project_graph(&[child(&b), child(&c), child(&d)]);
+        for point in [FailPoint::AfterStaging, FailPoint::AfterFirstPackage] {
+            FAIL_AT.with(|cell| cell.set(Some(point)));
+            let result = save(&bigger, &f.project, None, &f.library);
+            FAIL_AT.with(|cell| cell.set(None));
+            assert!(result.is_err(), "{point:?}");
+            assert_eq!(snapshot(&f.project), saved, "{point:?}: nothing changed");
+        }
+
+        // A crash mid-staging leaves only a staging folder behind: the
+        // project still opens unchanged, and the next save cleans it up.
+        let stale = f.project.join(".patchwork-staging-1-1");
+        std::fs::create_dir_all(stale.join("packages").join("half")).unwrap();
+        std::fs::write(stale.join("project.json"), "{ partial").unwrap();
+        let mut reopened = open(&f.project);
+        assert_eq!(
+            outputs(&mut reopened, &ids, &f.project, &f.library),
+            vec![Some(0.25)]
+        );
+        save(&bigger, &f.project, None, &f.library).unwrap();
+        assert!(!stale.exists());
+        assert!(pkg_dir(&f.project, &c).is_dir() && pkg_dir(&f.project, &d).is_dir());
+    }
+
+    // ── Loading ─────────────────────────────────────────────────────
+
+    #[test]
+    fn missing_packages_keep_nodes_ports_and_connections() {
+        let f = fixture("s4_missing_on_load");
+        let b = publish(&f.library, &leaf(&src(&f), "B", 0.25), "B", None, "1.0.0").unwrap();
+        let (graph, ids) = project_graph(&[child(&b)]);
+        save(&graph, &f.project, None, &f.library).unwrap();
+        std::fs::remove_dir_all(f.project.join(PACKAGES_DIR)).unwrap();
+        let empty = f.tmp.0.join("empty-library");
+        std::fs::create_dir_all(&empty).unwrap();
+
+        let mut reopened = open(&f.project);
+        let nodes = reopened.nodes.len();
+        let connections = reopened.connections.len();
+        assert_eq!(outputs(&mut reopened, &ids, &f.project, &empty), vec![None]);
+        assert_eq!(reopened.nodes.len(), nodes);
+        assert_eq!(reopened.connections.len(), connections);
+        assert_eq!(package_ref(&reopened, ids[0]), Some(stored(&b)));
+        assert!(!reopened.take_custom_port_events().changed);
+        let error = reopened.custom_failure(ids[0]).unwrap();
+        assert!(error.contains("not installed"), "{error}");
+    }
+
+    #[test]
+    fn corrupted_project_copy_does_not_fall_back_to_the_library() {
+        let f = fixture("s4_corrupt_load");
+        let b = publish(&f.library, &leaf(&src(&f), "B", 0.25), "B", None, "1.0.0").unwrap();
+        let (graph, ids) = project_graph(&[child(&b)]);
+        save(&graph, &f.project, None, &f.library).unwrap();
+        let copy_entry = pkg_dir(&f.project, &b).join("B.pwnode");
+        let text = std::fs::read_to_string(&copy_entry)
+            .unwrap()
+            .replace("0.25", "0.95");
+        std::fs::write(&copy_entry, text).unwrap();
+        let mut reopened = open(&f.project);
+        // The intact Library copy is not used instead.
+        assert_eq!(
+            outputs(&mut reopened, &ids, &f.project, &f.library),
+            vec![None]
+        );
+    }
+
+    #[test]
+    fn old_projects_and_loose_nodes_still_load_and_warn_when_not_portable() {
+        let f = fixture("s4_legacy");
+        let s = src(&f);
+        // An absolute-path project (P3) and a P4.0 unversioned Library node.
+        let loose = leaf(&s, "Loose", 0.4);
+        let unversioned = leaf(&f.library.join("nodes"), "Unversioned", 0.6);
+        let (graph, ids) = project_graph(&[
+            (loose.to_string_lossy().into_owned(), None),
+            (unversioned.to_string_lossy().into_owned(), None),
+        ]);
+        std::fs::create_dir_all(&f.project).unwrap();
+        let legacy = ProjectFile {
+            graph: graph.clone(),
+            pinned_nodes: Vec::new(),
+            canvas_offset: [0.0, 0.0],
+            canvas_zoom: 1.0,
+        };
+        std::fs::write(
+            f.project.join("project.json"),
+            serde_json::to_string_pretty(&legacy).unwrap(),
+        )
+        .unwrap();
+        let mut reopened = open(&f.project);
+        assert_eq!(
+            outputs(&mut reopened, &ids, &f.project, &f.library),
+            vec![Some(0.4), Some(0.6)]
+        );
+
+        // Saving keeps their paths, copies no files and warns.
+        let plan = plan_project_packages(&reopened, &f.project, None, Some(&f.library)).unwrap();
+        assert!(plan.to_copy.is_empty());
+        assert_eq!(plan.warnings.len(), 2, "{:?}", plan.warnings);
+        assert!(plan.warnings[0].contains("outside the project folder"));
+        save(&reopened, &f.project, None, &f.library).unwrap();
+        assert!(!f.project.join(PACKAGES_DIR).exists());
+        let again = open(&f.project);
+        assert_eq!(PathBuf::from(file_of(&again, ids[0])), loose);
+    }
+
+    #[test]
+    fn save_as_takes_packages_from_the_current_project() {
+        let f = fixture("s4_save_as");
+        let b = publish(&f.library, &leaf(&src(&f), "B", 0.25), "B", None, "1.0.0").unwrap();
+        let (graph, ids) = project_graph(&[child(&b)]);
+        save(&graph, &f.project, None, &f.library).unwrap();
+        // On a machine without B in the Library: Save As to a new folder.
+        let empty = f.tmp.0.join("empty-library");
+        std::fs::create_dir_all(&empty).unwrap();
+        let opened = open(&f.project);
+        let copy = f.tmp.0.join("copy");
+        let report = save(&opened, &copy, Some(&f.project), &empty).unwrap();
+        assert_eq!(report.copied, 1);
+        let mut reopened = open(&copy);
+        assert_eq!(
+            outputs(&mut reopened, &ids, &copy, &empty),
+            vec![Some(0.25)]
+        );
+    }
+}
+
+/// P4.2 Stage 4 consistency: live state after a portable save, and the
+/// portability report.
+#[cfg(test)]
+mod portable_save_sync_tests {
+    use super::super::undo::{UndoHistory, UndoSnapshot};
+    use super::*;
+    use crate::document::{CustomNodeFile, DocumentManager};
+    use crate::library::bundle::tests::{child, leaf, publish};
+    use crate::library::package::tests::TempDir;
+    use crate::library::project::{FAIL_AT, FailPoint, PortabilityReport};
+    use crate::library::resolve::InstancePackageRef;
+    use std::path::PathBuf;
+
+    struct Env {
+        tmp: TempDir,
+        library: PathBuf,
+        project: PathBuf,
+    }
+
+    fn env(tag: &str) -> Env {
+        let tmp = TempDir::new(tag);
+        let library = tmp.0.join("library");
+        std::fs::create_dir_all(&library).unwrap();
+        Env {
+            library,
+            project: tmp.0.join("project"),
+            tmp,
+        }
+    }
+
+    fn add_instance(graph: &mut Graph, file: &str, package: Option<InstancePackageRef>) -> NodeId {
+        let outputs = if Path::new(file).is_file() {
+            CustomNodeFile::load(Path::new(file)).unwrap().outputs
+        } else {
+            Vec::new()
+        };
+        graph.add_node(
+            NodeType::CustomNodeInstance {
+                file: file.to_string(),
+                inputs: Vec::new(),
+                outputs,
+                package,
+            },
+            [0.0, 0.0],
+        )
+    }
+
+    fn slider() -> NodeType {
+        NodeType::Slider {
+            value: 0.0,
+            min: 0.0,
+            max: 1.0,
+            step: 0.01,
+            slider_color: [0, 0, 0],
+            label: String::new(),
+        }
+    }
+
+    fn file_of(graph: &Graph, id: NodeId) -> String {
+        match &graph.nodes[&id].node_type {
+            NodeType::CustomNodeInstance { file, .. } => file.clone(),
+            _ => unreachable!(),
+        }
+    }
+
+    fn package_of(graph: &Graph, id: NodeId) -> Option<InstancePackageRef> {
+        match &graph.nodes[&id].node_type {
+            NodeType::CustomNodeInstance { package, .. } => package.clone(),
+            _ => None,
+        }
+    }
+
+    fn open(dir: &Path) -> Graph {
+        let mut pf = read_project_file(dir).unwrap();
+        absolutize_paths(&mut pf.graph, &dir.to_string_lossy());
+        pf.graph
+    }
+
+    fn save(
+        graph: &mut Graph,
+        history: &mut UndoHistory,
+        dir: &Path,
+        source: Option<&Path>,
+        library: &Path,
+    ) -> Result<PortableSave, String> {
+        save_project_files(
+            graph,
+            history,
+            Vec::new(),
+            [0.0, 0.0],
+            1.0,
+            dir,
+            source,
+            Some(library),
+        )
+    }
+
+    fn json(graph: &Graph) -> String {
+        serde_json::to_string(graph).unwrap()
+    }
+
+    fn snapshot_dir(dir: &Path) -> Vec<(String, Vec<u8>)> {
+        crate::library::bundle::tests::files_under(dir)
+            .into_iter()
+            .map(|rel| {
+                let bytes = std::fs::read(dir.join(&rel)).unwrap();
+                (rel, bytes)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn live_graph_paths_match_the_saved_project_after_success() {
+        let e = env("s4b_live");
+        let b = publish(
+            &e.library,
+            &leaf(&e.tmp.0.join("src"), "B", 0.25),
+            "B",
+            None,
+            "1.0.0",
+        )
+        .unwrap();
+        let (file, package) = child(&b);
+        let mut graph = Graph::new();
+        let id = add_instance(&mut graph, &file, package.clone());
+        graph.set_package_environment(None, Some(e.library.clone()));
+        graph.evaluate(0.0);
+        assert!(graph.has_custom_runtime(id));
+
+        let mut history = UndoHistory::new(10);
+        save(&mut graph, &mut history, &e.project, None, &e.library).unwrap();
+
+        let reopened = open(&e.project);
+        assert_eq!(file_of(&graph, id), file_of(&reopened, id), "live == saved");
+        assert_eq!(
+            PathBuf::from(file_of(&graph, id)),
+            e.project.join("packages/local.b/1.0.0/B.pwnode")
+        );
+        assert_eq!(package_of(&graph, id), package, "reference kept");
+        assert!(!graph.has_custom_runtime(id), "runtime invalidated");
+        // Reloads from the project copy without reporting changes.
+        graph.set_package_environment(Some(e.project.clone()), Some(e.library.clone()));
+        graph.evaluate(0.0);
+        assert!(graph.has_custom_runtime(id));
+        assert!(!graph.take_custom_port_events().changed, "not modified");
+        assert_eq!(history.depth(), (0, 0), "no undo step added");
+    }
+
+    #[test]
+    fn failed_saves_leave_the_live_graph_and_history_untouched() {
+        let e = env("s4b_failed");
+        let b = publish(
+            &e.library,
+            &leaf(&e.tmp.0.join("src"), "B", 0.25),
+            "B",
+            None,
+            "1.0.0",
+        )
+        .unwrap();
+        let (file, package) = child(&b);
+        let mut graph = Graph::new();
+        add_instance(&mut graph, &file, package);
+        let missing = InstancePackageRef {
+            id: "local.missing".into(),
+            version: "1.0.0".into(),
+            entry: "Missing.pwnode".into(),
+        };
+        let mut history = UndoHistory::new(10);
+        history.push(UndoSnapshot::new(graph.clone(), Default::default()));
+
+        // Planning failure (missing package).
+        let mut broken = graph.clone();
+        add_instance(&mut broken, "", Some(missing));
+        let before = json(&broken);
+        assert!(save(&mut broken, &mut history, &e.project, None, &e.library).is_err());
+        assert_eq!(json(&broken), before);
+        assert!(!e.project.join("project.json").exists());
+
+        // Commit failure (interrupted after staging).
+        let before = json(&graph);
+        FAIL_AT.with(|f| f.set(Some(FailPoint::AfterStaging)));
+        let result = save(&mut graph, &mut history, &e.project, None, &e.library);
+        FAIL_AT.with(|f| f.set(None));
+        assert!(result.is_err());
+        assert_eq!(json(&graph), before, "live graph unchanged");
+        assert!(!e.project.join("project.json").exists(), "disk unchanged");
+        assert_eq!(history.depth(), (1, 0));
+        let undone = history
+            .undo(UndoSnapshot::new(Graph::new(), Default::default()))
+            .unwrap();
+        assert_eq!(json(&undone.graph), before, "snapshots unchanged");
+    }
+
+    #[test]
+    fn undo_and_redo_follow_the_portable_save() {
+        let e = env("s4b_undo");
+        let b = publish(
+            &e.library,
+            &leaf(&e.tmp.0.join("src"), "B", 0.25),
+            "B",
+            None,
+            "1.0.0",
+        )
+        .unwrap();
+        let (file, package) = child(&b);
+        let mut graph = Graph::new();
+        let id = add_instance(&mut graph, &file, package.clone());
+        let mut history = UndoHistory::new(10);
+        history.push(UndoSnapshot::new(graph.clone(), Default::default()));
+        let extra = graph.add_node(slider(), [100.0, 0.0]);
+
+        save(&mut graph, &mut history, &e.project, None, &e.library).unwrap();
+        assert_eq!(history.depth(), (1, 0), "no extra undo step");
+        let saved_file = file_of(&graph, id);
+
+        let undone = history
+            .undo(UndoSnapshot::new(graph.clone(), Default::default()))
+            .expect("undo");
+        assert!(!undone.graph.nodes.contains_key(&extra));
+        assert_eq!(
+            file_of(&undone.graph, id),
+            saved_file,
+            "history follows the save"
+        );
+        assert_eq!(package_of(&undone.graph, id), package);
+        let redone = history
+            .redo(UndoSnapshot::new(undone.graph.clone(), Default::default()))
+            .expect("redo");
+        assert!(redone.graph.nodes.contains_key(&extra));
+        assert_eq!(file_of(&redone.graph, id), saved_file);
+    }
+
+    #[test]
+    fn save_as_moves_live_paths_to_the_new_project() {
+        let e = env("s4b_save_as");
+        let b = publish(
+            &e.library,
+            &leaf(&e.tmp.0.join("src"), "B", 0.25),
+            "B",
+            None,
+            "1.0.0",
+        )
+        .unwrap();
+        let (file, package) = child(&b);
+        let mut graph = Graph::new();
+        let id = add_instance(&mut graph, &file, package);
+        let mut history = UndoHistory::new(10);
+        save(&mut graph, &mut history, &e.project, None, &e.library).unwrap();
+        let first = snapshot_dir(&e.project);
+
+        // Save As elsewhere, with no Library: the copy comes from the
+        // current project, which is left as it was.
+        let empty = e.tmp.0.join("empty");
+        std::fs::create_dir_all(&empty).unwrap();
+        let second = e.tmp.0.join("second");
+        let saved = save(&mut graph, &mut history, &second, Some(&e.project), &empty).unwrap();
+        assert_eq!(saved.portability.copied, 1);
+        assert_eq!(file_of(&graph, id), file_of(&open(&second), id));
+        assert!(PathBuf::from(file_of(&graph, id)).starts_with(&second));
+        assert_eq!(snapshot_dir(&e.project), first, "first project untouched");
+    }
+
+    #[test]
+    fn tabs_and_session_keep_the_saved_paths() {
+        let e = env("s4b_tabs");
+        let b = publish(
+            &e.library,
+            &leaf(&e.tmp.0.join("src"), "B", 0.25),
+            "B",
+            None,
+            "1.0.0",
+        )
+        .unwrap();
+        let (file, package) = child(&b);
+        let mut graph = Graph::new();
+        let id = add_instance(&mut graph, &file, package.clone());
+        let mut history = UndoHistory::new(10);
+        save(&mut graph, &mut history, &e.project, None, &e.library).unwrap();
+        let saved_file = file_of(&graph, id);
+
+        // Tab switching stores and restores the synchronized graph.
+        let mut documents = DocumentManager::new();
+        let first = documents.active().id;
+        assert!(documents.active_mut().store_graph(&graph));
+        let second = documents.new_document("Second");
+        assert!(documents.activate(second));
+        assert!(documents.activate(first));
+        assert_eq!(file_of(&documents.active().graph, id), saved_file);
+
+        // The session written on exit carries the same paths.
+        let state = session_state_from(
+            Some(SessionSnapshot {
+                graph: graph.clone(),
+                canvas_offset: [0.0, 0.0],
+                canvas_zoom: 1.0,
+                pinned_nodes: Vec::new(),
+                project_path: Some(e.project.to_string_lossy().into_owned()),
+                is_dirty: false,
+            }),
+            HashMap::new(),
+            Vec::new(),
+        );
+        let restored: SessionState =
+            serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
+        assert_eq!(file_of(&restored.graph, id), saved_file);
+        assert_eq!(package_of(&restored.graph, id), package);
+        assert!(!restored.is_dirty);
+    }
+
+    #[test]
+    fn path_only_nodes_stay_unchanged_and_are_counted() {
+        let e = env("s4b_report");
+        let src = e.tmp.0.join("src");
+        let b = publish(&e.library, &leaf(&src, "B", 0.25), "B", None, "1.0.0").unwrap();
+        let c = publish(&e.library, &leaf(&src, "C", 0.5), "C", None, "1.0.0").unwrap();
+        let outside = leaf(&src, "Outside", 0.1);
+        std::fs::create_dir_all(&e.project).unwrap();
+        let inside = leaf(&e.project, "Inside", 0.2);
+        let missing = e.tmp.0.join("gone").join("Missing.pwnode");
+
+        let mut graph = Graph::new();
+        let (bf, bp) = child(&b);
+        let (cf, cp) = child(&c);
+        add_instance(&mut graph, &bf, bp);
+        add_instance(&mut graph, &cf, cp);
+        let loose = add_instance(&mut graph, &outside.to_string_lossy(), None);
+        let by_path = add_instance(&mut graph, &b.entry_path.to_string_lossy(), None);
+        let local = add_instance(&mut graph, &inside.to_string_lossy(), None);
+        let gone = add_instance(&mut graph, &missing.to_string_lossy(), None);
+        let path_only: Vec<(NodeId, String)> = [loose, by_path, local, gone]
+            .iter()
+            .map(|&id| (id, file_of(&graph, id)))
+            .collect();
+
+        let mut history = UndoHistory::new(10);
+        let saved = save(&mut graph, &mut history, &e.project, None, &e.library).unwrap();
+        // Path-only nodes are neither rewritten nor bundled.
+        for (id, file) in &path_only {
+            assert_eq!(&file_of(&graph, *id), file);
+            assert_eq!(package_of(&graph, *id), None);
+        }
+        assert_eq!(
+            saved.portability,
+            PortabilityReport {
+                bundled: 2,
+                copied: 2,
+                external_custom_nodes: 3,
+                external_assets: 0,
+            }
+        );
+        assert!(!saved.portability.custom_nodes_portable());
+        let summary = saved.portability.summary();
+        assert!(
+            summary.contains("2 verified package(s) bundled (2 newly copied)"),
+            "{summary}"
+        );
+        assert!(
+            summary.contains("not portable, 3 path-only node(s)"),
+            "{summary}"
+        );
+
+        // Saving again: nothing copied, same counts.
+        let again = save(&mut graph, &mut history, &e.project, None, &e.library).unwrap();
+        assert_eq!(again.portability.bundled, 2);
+        assert_eq!(again.portability.copied, 0);
+    }
+
+    #[test]
+    fn report_never_claims_whole_project_portability() {
+        let portable = PortabilityReport {
+            bundled: 1,
+            copied: 0,
+            external_custom_nodes: 0,
+            external_assets: 0,
+        };
+        let text = portable.summary();
+        assert!(portable.custom_nodes_portable());
+        assert!(text.contains("Custom nodes: fully portable."), "{text}");
+        assert!(text.contains("not checked"), "{text}");
+        assert!(!text.to_lowercase().contains("project is fully portable"));
+        let with_assets = PortabilityReport {
+            external_assets: 2,
+            ..portable
+        };
+        assert!(
+            with_assets
+                .summary()
+                .contains("2 other file(s) are outside the project")
+        );
+    }
+
+    #[test]
+    fn external_asset_paths_are_counted() {
+        let e = env("s4b_assets");
+        std::fs::create_dir_all(&e.project).unwrap();
+        let mut graph: Graph = serde_json::from_value(serde_json::json!({
+            "nodes": {}, "connections": [], "next_id": 1
+        }))
+        .unwrap();
+        let outside = e.tmp.0.join("media").join("clip.wav");
+        let inside = e.project.join("clip.wav");
+        for path in [&outside, &inside, &outside] {
+            let node: NodeType = serde_json::from_value(serde_json::json!({
+                "AudioPlayer": { "file_path": path.to_string_lossy() }
+            }))
+            .unwrap();
+            graph.add_node(node, [0.0, 0.0]);
+        }
+        assert_eq!(
+            count_external_assets(&graph, &e.project),
+            1,
+            "distinct outside paths"
+        );
+    }
+}
+
+/// P4.2 Stage 4: undo snapshots keep their own package version through
+/// portable saves.
+#[cfg(test)]
+mod snapshot_version_tests {
+    use super::super::undo::{UndoHistory, UndoSnapshot};
+    use super::*;
+    use crate::document::{CustomNodeFile, DocumentManager};
+    use crate::library::bundle::tests::{leaf, publish, stored};
+    use crate::library::package::VerifiedPackage;
+    use crate::library::package::tests::TempDir;
+    use crate::library::resolve::InstancePackageRef;
+    use std::path::PathBuf;
+
+    fn instance(graph: &Graph, id: NodeId) -> (String, Option<InstancePackageRef>) {
+        match &graph.nodes[&id].node_type {
+            NodeType::CustomNodeInstance { file, package, .. } => (file.clone(), package.clone()),
+            _ => unreachable!(),
+        }
+    }
+
+    /// Point node `id` at version `v` in place (same node id, as a future
+    /// version switch would do).
+    fn use_version(graph: &mut Graph, id: NodeId, v: &VerifiedPackage) {
+        if let Some(node) = graph.nodes.get_mut(&id) {
+            if let NodeType::CustomNodeInstance { file, package, .. } = &mut node.node_type {
+                *file = v.entry_path.to_string_lossy().into_owned();
+                *package = Some(stored(v));
+            }
+        }
+        // No explicit invalidation: the cached v1 runtime is keyed by file
+        // and package, so it must not be reused for v2.
+    }
+
+    fn value(graph: &mut Graph, id: NodeId, project: &Path, library: &Path) -> Option<f32> {
+        graph.set_package_environment(Some(project.to_path_buf()), Some(library.to_path_buf()));
+        match graph.evaluate(0.0).get(&(id, 0)) {
+            Some(PortValue::Float(v)) => Some(*v),
+            _ => None,
+        }
+    }
+
+    fn save(graph: &mut Graph, history: &mut UndoHistory, dir: &Path, library: &Path) {
+        save_project_files(
+            graph,
+            history,
+            Vec::new(),
+            [0.0, 0.0],
+            1.0,
+            dir,
+            None,
+            Some(library),
+        )
+        .unwrap();
+    }
+
+    fn snap(graph: &Graph) -> UndoSnapshot {
+        UndoSnapshot::new(graph.clone(), Default::default())
+    }
+
+    #[test]
+    fn snapshots_keep_their_own_version_and_path_across_saves() {
+        let tmp = TempDir::new("s4c_versions");
+        let library = tmp.0.join("library");
+        let project = tmp.0.join("project");
+        let v1 = publish(
+            &library,
+            &leaf(&tmp.0.join("v1"), "C", 0.25),
+            "C",
+            None,
+            "1.0.0",
+        )
+        .unwrap();
+        let v2 = publish(
+            &library,
+            &leaf(&tmp.0.join("v2"), "C", 0.75),
+            "C",
+            Some(&v1.manifest.id),
+            "2.0.0",
+        )
+        .unwrap();
+        let v1_project = project.join("packages/local.c/1.0.0/C.pwnode");
+        let v2_project = project.join("packages/local.c/2.0.0/C.pwnode");
+
+        // State 1: the node uses v1 (with a loaded v1 runtime).
+        let mut graph = Graph::new();
+        let outputs = CustomNodeFile::load(&v1.entry_path).unwrap().outputs;
+        let id = graph.add_node(
+            NodeType::CustomNodeInstance {
+                file: v1.entry_path.to_string_lossy().into_owned(),
+                inputs: Vec::new(),
+                outputs,
+                package: Some(stored(&v1)),
+            },
+            [0.0, 0.0],
+        );
+        assert_eq!(value(&mut graph, id, &project, &library), Some(0.25));
+        let mut history = UndoHistory::new(10);
+        history.push(snap(&graph));
+
+        // State 2 (live): the same node now uses v2; no stale v1 runtime.
+        use_version(&mut graph, id, &v2);
+        assert_eq!(value(&mut graph, id, &project, &library), Some(0.75));
+
+        // Save with v2 live: only v2 is bundled and normalized.
+        save(&mut graph, &mut history, &project, &library);
+        assert_eq!(
+            instance(&graph, id),
+            (v2_project.to_string_lossy().into_owned(), Some(stored(&v2)))
+        );
+        assert!(!v1_project.exists(), "v1 is not used by the saved state");
+        assert_eq!(history.depth(), (1, 0));
+
+        // Undo: the v1 snapshot was not rewritten to v2 (or to any project
+        // path, since v1 was not bundled); it evaluates v1.
+        let mut undone = history.undo(snap(&graph)).expect("undo").graph;
+        assert_eq!(
+            instance(&undone, id),
+            (
+                v1.entry_path.to_string_lossy().into_owned(),
+                Some(stored(&v1))
+            )
+        );
+        assert_eq!(value(&mut undone, id, &project, &library), Some(0.25));
+
+        // Save in the v1 state: now v1 is bundled; the redo snapshot (v2)
+        // keeps its own v2 project path, not v1's.
+        save(&mut undone, &mut history, &project, &library);
+        assert_eq!(
+            PathBuf::from(instance(&undone, id).0),
+            v1_project,
+            "v1 normalized to its own project copy"
+        );
+        assert!(v2_project.exists(), "v2 copy kept");
+        let mut redone = history.redo(snap(&undone)).expect("redo").graph;
+        assert_eq!(
+            instance(&redone, id),
+            (v2_project.to_string_lossy().into_owned(), Some(stored(&v2)))
+        );
+        assert_eq!(value(&mut redone, id, &project, &library), Some(0.75));
+
+        // And back again: undo restores v1 at its project path.
+        let mut again = history.undo(snap(&redone)).expect("undo again").graph;
+        assert_eq!(PathBuf::from(instance(&again, id).0), v1_project);
+        assert_eq!(instance(&again, id).1, Some(stored(&v1)));
+        assert_eq!(value(&mut again, id, &project, &library), Some(0.25));
+        // Both work from the project alone.
+        let empty = tmp.0.join("empty");
+        std::fs::create_dir_all(&empty).unwrap();
+        assert_eq!(value(&mut again, id, &project, &empty), Some(0.25));
+    }
+
+    #[test]
+    fn successful_and_failed_saves_keep_document_state_consistent() {
+        let tmp = TempDir::new("s4c_documents");
+        let library = tmp.0.join("library");
+        let project = tmp.0.join("project");
+        let v1 = publish(
+            &library,
+            &leaf(&tmp.0.join("src"), "C", 0.25),
+            "C",
+            None,
+            "1.0.0",
+        )
+        .unwrap();
+        let mut graph = Graph::new();
+        let id = graph.add_node(
+            NodeType::CustomNodeInstance {
+                file: v1.entry_path.to_string_lossy().into_owned(),
+                inputs: Vec::new(),
+                outputs: Vec::new(),
+                package: Some(stored(&v1)),
+            },
+            [0.0, 0.0],
+        );
+        let mut history = UndoHistory::new(10);
+        let mut documents = DocumentManager::new();
+        assert!(documents.active_mut().store_graph(&graph));
+        documents.active_mut().undo_history = history.clone();
+
+        // Failed save (package removed from the Library): graph, history,
+        // document and disk are all unchanged.
+        let hidden = tmp.0.join("hidden");
+        std::fs::rename(&library, &hidden).unwrap();
+        std::fs::create_dir_all(&library).unwrap();
+        let before = serde_json::to_string(&graph).unwrap();
+        assert!(
+            save_project_files(
+                &mut graph,
+                &mut history,
+                Vec::new(),
+                [0.0, 0.0],
+                1.0,
+                &project,
+                None,
+                Some(&library)
+            )
+            .is_err()
+        );
+        assert_eq!(serde_json::to_string(&graph).unwrap(), before);
+        assert_eq!(
+            serde_json::to_string(&documents.active().graph).unwrap(),
+            before,
+            "document untouched"
+        );
+        assert!(!project.join("project.json").exists());
+        std::fs::remove_dir_all(&library).unwrap();
+        std::fs::rename(&hidden, &library).unwrap();
+
+        // Successful save, then the editor's post-save sync: live graph,
+        // document and history agree with project.json.
+        save(&mut graph, &mut history, &project, &library);
+        assert!(documents.active_mut().store_graph(&graph));
+        documents.active_mut().undo_history = history.clone();
+        let mut pf = read_project_file(&project).unwrap();
+        absolutize_paths(&mut pf.graph, &project.to_string_lossy());
+        assert_eq!(instance(&pf.graph, id), instance(&graph, id));
+        assert_eq!(
+            instance(&documents.active().graph, id),
+            instance(&graph, id)
         );
     }
 }

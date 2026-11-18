@@ -77,11 +77,17 @@ impl PatchworkApp {
             .nodes
             .values()
             .any(|node| matches!(&node.node_type, NodeType::CustomNodeInstance { .. }));
+        // P4.2 Stage 3: nested custom nodes are bundled. Check them now so
+        // the user learns which nodes must be published first before
+        // filling in the dialog (publishing checks again).
         if has_nested_nodes {
-            self.publish_failed(
-                "Custom nodes that contain other custom nodes can't be published yet.",
-            );
-            return;
+            let checked = self.library_cache.root().and_then(|root| {
+                crate::library::bundle::collect_dependencies(&custom_node, &root).map(|_| ())
+            });
+            if let Err(error) = checked {
+                self.publish_failed(&error);
+                return;
+            }
         }
         self.open_publish_dialog(path, custom_node.name, false);
     }
@@ -434,7 +440,15 @@ impl PatchworkApp {
     /// Insert a package version after re-verifying its checksum.
     fn insert_library_package(&mut self, ctx: &egui::Context, version: &InstalledVersion) {
         match package::verify_version_dir(&version.dir, true) {
-            Ok(verified) => self.insert_custom_node_from_path(ctx, &verified.entry_path),
+            Ok(verified) => {
+                // P4.2 Stage 2: record the exact package version portably.
+                let reference = crate::library::resolve::InstancePackageRef {
+                    id: verified.manifest.id.clone(),
+                    version: verified.version.to_string(),
+                    entry: verified.manifest.entry.clone(),
+                };
+                self.insert_custom_node_with_package(ctx, &verified.entry_path, Some(reference));
+            }
             Err(error) => {
                 self.library_cache.invalidate();
                 crate::system_log::error(format!("Cannot insert Library package: {error}"));

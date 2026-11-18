@@ -870,11 +870,24 @@ impl super::PatchworkApp {
 
         self.insert_custom_node_from_path(ctx, &path);
     }
-    /// Insert a custom node from a known file path.
+    /// Insert a custom node from a known file path (ordinary custom nodes
+    /// and unversioned Library nodes: no package reference).
     pub(super) fn insert_custom_node_from_path(
         &mut self,
         ctx: &egui::Context,
         path: &std::path::Path,
+    ) {
+        self.insert_custom_node_with_package(ctx, path, None);
+    }
+
+    /// Insert a custom node. `package` is the portable reference recorded
+    /// for a versioned Library package (P4.2 Stage 2); `path` is its entry,
+    /// kept in `file` for compatibility.
+    pub(super) fn insert_custom_node_with_package(
+        &mut self,
+        ctx: &egui::Context,
+        path: &std::path::Path,
+        package: Option<crate::library::resolve::InstancePackageRef>,
     ) {
         use crate::document::{CustomNodeFile, DocumentKind};
         // Stage 0: every insertion path (palette, Library, File menu) ends here.
@@ -954,6 +967,7 @@ impl super::PatchworkApp {
             file: path.to_string_lossy().into_owned(),
             inputs: custom_node.inputs,
             outputs: custom_node.outputs,
+            package,
         };
 
         let instance_count = self

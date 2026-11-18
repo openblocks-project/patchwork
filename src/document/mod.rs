@@ -105,7 +105,7 @@ impl CustomNodeFile {
     pub fn save(&self, path: &std::path::Path) -> Result<(), String> {
         // P4.1: published Library package versions are immutable from every
         // editing workflow (tab save, grouping, duplicate, ...).
-        if crate::library::package::is_published_entry(path) {
+        if crate::library::package::is_inside_published_package(path) {
             return Err(format!(
                 "{} is a published Library package version and is read-only. \
                  Use Duplicate for Editing to make an editable copy.",
@@ -186,13 +186,50 @@ impl CustomNodeFile {
         let parent = path.parent().unwrap_or(std::path::Path::new("."));
 
         for node in custom_node.graph.nodes.values_mut() {
-            if let crate::graph::NodeType::CustomNodeInstance { file, .. } = &mut node.node_type {
+            if let crate::graph::NodeType::CustomNodeInstance { file, package, .. } =
+                &mut node.node_type
+            {
                 if file.is_empty() && *policy == DependencyPolicy::TrustedLocal {
                     // Unchanged legacy behaviour for an unset reference.
                     continue;
                 }
-                let resolved = resolve_nested_reference(parent, file, policy)
-                    .map_err(|e| format!("{}: {e}", path.display()))?;
+                // P4.2 Stage 3: in a package, a packaged nested instance is
+                // resolved by its reference (often from the containing
+                // package's deps/), so its compatibility path may be absent.
+                // It must still be a plain path inside the folder.
+                if package.is_some() && matches!(policy, DependencyPolicy::Contained { .. }) {
+                    if file.is_empty() {
+                        continue;
+                    }
+                    let lexical =
+                        resolve_nested_reference(parent, file, &DependencyPolicy::TrustedLocal)
+                            .map_err(|e| format!("{}: {e}", path.display()))?;
+                    if std::path::Path::new(file.as_str()).is_absolute() {
+                        return Err(format!(
+                            "{}: Nested custom node uses an absolute path ({file}).",
+                            path.display()
+                        ));
+                    }
+                    let resolved = if lexical.exists() {
+                        resolve_nested_reference(parent, file, policy)
+                            .map_err(|e| format!("{}: {e}", path.display()))?
+                    } else {
+                        lexical
+                    };
+                    *file = resolved.to_string_lossy().into_owned();
+                    continue;
+                }
+                let resolved = match resolve_nested_reference(parent, file, policy) {
+                    Ok(resolved) => resolved,
+                    // P4.2 Stage 2: in a local file, a packaged instance is
+                    // identified by its package; an unusable compatibility
+                    // path (e.g. written on another OS) is kept as-is and
+                    // the package is resolved instead.
+                    Err(_) if package.is_some() && *policy == DependencyPolicy::TrustedLocal => {
+                        continue;
+                    }
+                    Err(e) => return Err(format!("{}: {e}", path.display())),
+                };
                 *file = resolved.to_string_lossy().into_owned();
             }
         }
@@ -432,6 +469,7 @@ mod dependency_tests {
                 file: reference.to_string(),
                 inputs: Vec::new(),
                 outputs: Vec::new(),
+                package: None,
             },
             [0.0, 0.0],
         );
@@ -586,6 +624,7 @@ mod dependency_tests {
                 file: inner.to_string_lossy().into_owned(),
                 inputs: Vec::new(),
                 outputs: Vec::new(),
+                package: None,
             },
             [0.0, 0.0],
         );
