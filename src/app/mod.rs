@@ -144,6 +144,7 @@ mod library;
 mod menus;
 mod toast;
 pub(crate) mod undo;
+mod version;
 use undo::UndoHistory;
 /// Identity of a connection — survives array reindexing, node deletion, undo/redo.
 /// Using (from_node, from_port, to_node, to_port) instead of a Vec index
@@ -293,6 +294,8 @@ pub struct PatchworkApp {
     library_cache: crate::library::LibraryCache,
     /// P4.1: "Publish to Library" dialog state.
     publish_dialog: Option<library::PublishDialog>,
+    /// P4.2 Stage 5: a version switch awaiting confirmation.
+    pending_version_switch: Option<version::PendingVersionSwitch>,
     // P3: Save As dialog state
     save_as_open: bool,
     save_as_name: String,
@@ -392,6 +395,7 @@ impl PatchworkApp {
             project_custom_nodes: Vec::new(),
             library_cache: crate::library::LibraryCache::new(),
             publish_dialog: None,
+            pending_version_switch: None,
             save_as_open: false,
             save_as_name: String::new(),
             selected_connection: None,
@@ -1454,7 +1458,13 @@ impl PatchworkApp {
                 } else {
                     r.response.clicked() || r.response.drag_started()
                 };
-                if !self.save_as_open && select_trigger && !ctx.input(|i| i.modifiers.alt) {
+                // Stage 5: no selection changes while a version switch is
+                // being confirmed.
+                if !self.save_as_open
+                    && self.pending_version_switch.is_none()
+                    && select_trigger
+                    && !ctx.input(|i| i.modifiers.alt)
+                {
                     let shift = ctx.input(|i| i.modifiers.shift);
                     if shift {
                         if self.selected_nodes.contains(&node_id) {
@@ -3562,6 +3572,7 @@ match validation_result {
         self.render_group_dialog(ctx);
         // P4.1: Publish to Library dialog.
         self.render_publish_dialog(ctx);
+        self.render_version_switch_dialog(ctx);
         // Floating modal for "save before quit?" — drawn after the menu
         // so it visually layers on top of canvas chrome.
         self.render_quit_dialog(ctx);
@@ -5552,7 +5563,8 @@ match validation_result {
         // Canvas input (incl. keyboard shortcuts) pauses while a modal is open.
         // R3: while the quit dialog is open the canvas still pans and
         // renders, but nothing can be edited.
-        let quitting = self.pending_quit_dialog;
+        // Stage 5: the version-switch confirmation pauses canvas input too.
+        let quitting = self.modal_lock();
         if quitting {
             self.show_node_menu = false;
             self.show_context_menu = false;
@@ -5698,6 +5710,9 @@ impl PatchworkApp {
     /// cancelled, which changes nothing.
     pub(super) fn set_quit_dialog_open(&mut self, open: bool) {
         self.pending_quit_dialog = open;
+        if open {
+            self.pending_version_switch = None;
+        }
         self.documents.set_locked(open);
         if open {
             self.pending_close_tab = None;
@@ -5756,7 +5771,9 @@ impl PatchworkApp {
     /// Stage 0: whether the active document accepts graph changes.
     /// R3: editing is also paused while the quit dialog is open.
     pub(super) fn active_is_editable(&self) -> bool {
-        self.documents.active().is_editable() && !self.pending_quit_dialog
+        // R3 / P4.2 Stage 5: editing pauses while a modal confirmation
+        // (quit dialog or version switch) is open.
+        self.documents.active().is_editable() && !self.modal_lock()
     }
 
     /// Stage 0: gate for every graph-mutating entry point. Shows a warning
@@ -5768,6 +5785,12 @@ impl PatchworkApp {
         if self.pending_quit_dialog {
             self.toast_warn(format!(
                 "{action} is paused while the quit dialog is open. Choose Cancel to keep editing."
+            ));
+            return false;
+        }
+        if self.pending_version_switch.is_some() {
+            self.toast_warn(format!(
+                "{action} is paused while the version switch is being confirmed."
             ));
             return false;
         }

@@ -1027,9 +1027,9 @@ impl super::PatchworkApp {
             d.insert_temp(egui::Id::new("file_action_insert_custom_node"), false);
         });
 
-        // R3: File-menu and system-node actions are ignored while quitting
-        // (their flags were cleared above).
-        if self.pending_quit_dialog {
+        // R3 / Stage 5: File-menu and system-node actions are ignored while
+        // a modal confirmation is open (their flags were cleared above).
+        if self.modal_lock() {
             return;
         }
         if new_project {

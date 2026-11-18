@@ -2617,6 +2617,22 @@ pub struct Node {
     /// disable a node without deleting it. Defaults to false (active).
     #[serde(default)]
     pub bypassed: bool,
+    /// P4.2 Stage 5: runtime-only identity, unique per created node in
+    /// this process. Copied by `Clone` (so undo restores the same node with
+    /// the same token) but never serialized, and never reused: a node
+    /// created later gets a new token even when undo made it reuse an id.
+    /// Uniqueness is per logical node, not per in-memory copy: copies of
+    /// the same node (undo snapshots, a tab's stored graph, the temporary
+    /// graph built while grouping) intentionally share its token. Loading
+    /// from disk (deserializing) always assigns new tokens.
+    #[serde(skip, default = "fresh_node_token")]
+    pub(crate) token: u64,
+}
+
+static NEXT_NODE_TOKEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+fn fresh_node_token() -> u64 {
+    NEXT_NODE_TOKEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2632,6 +2648,7 @@ pub struct Connection {
 
 /// P2: Custom node grouping (selection → reusable .pwnode).
 pub mod group;
+pub mod version;
 
 // ── Custom-node port synchronisation ────────────────────────────────────────
 
@@ -2879,6 +2896,7 @@ impl Graph {
                 node_type,
                 pos,
                 bypassed: false,
+                token: fresh_node_token(),
             },
         );
         self.topo_dirty = true;

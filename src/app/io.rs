@@ -1997,6 +1997,12 @@ impl super::PatchworkApp {
     /// Asset paths are temporarily converted to relative for portability, then restored.
     /// Returns true on successful write — callers use this to update dirty/recent state.
     pub(super) fn save_to_dir(&mut self, dir_str: String) -> bool {
+        // Stage 5: saving updates the live graph (package paths), so it waits
+        // for a pending version-switch confirmation.
+        if self.pending_version_switch.is_some() {
+            self.toast_warn("Saving is paused while the version switch is being confirmed.");
+            return false;
+        }
         let dir = Path::new(&dir_str);
         // P3: Prevent different tabs from saving to the same project.
         let target_path = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
@@ -4949,5 +4955,877 @@ mod snapshot_version_tests {
             instance(&documents.active().graph, id),
             instance(&graph, id)
         );
+    }
+}
+
+/// P4.2 Stage 5: version switching with undo/redo, tabs and project saving.
+#[cfg(test)]
+mod version_switch_app_tests {
+    use super::super::undo::{UndoHistory, UndoSnapshot};
+    use super::super::version::describe_affected_ports;
+    use super::*;
+    use crate::document::{CustomNodeFile, CustomNodePort, DocumentManager};
+    use crate::library::bundle::tests::{leaf, publish, stored};
+    use crate::library::package::VerifiedPackage;
+    use crate::library::package::tests::TempDir;
+    use std::path::PathBuf;
+
+    struct Versions {
+        tmp: TempDir,
+        library: PathBuf,
+        v1: VerifiedPackage,
+        v2: VerifiedPackage,
+    }
+
+    /// v1 (0.25) has an extra input `trim`; v2 (0.75) does not.
+    fn versions(tag: &str) -> Versions {
+        let tmp = TempDir::new(tag);
+        let library = tmp.0.join("library");
+        let with_trim = |dir: &Path, value: f32, trim: bool| {
+            let path = leaf(dir, "Gain", value);
+            let mut file = CustomNodeFile::load(&path).unwrap();
+            if trim {
+                file.inputs.push(CustomNodePort {
+                    name: "trim".into(),
+                    kind: "Number".into(),
+                });
+            }
+            file.save(&path).unwrap();
+            path
+        };
+        let v1 = publish(
+            &library,
+            &with_trim(&tmp.0.join("v1"), 0.25, true),
+            "Gain",
+            None,
+            "1.0.0",
+        )
+        .unwrap();
+        let v2 = publish(
+            &library,
+            &with_trim(&tmp.0.join("v2"), 0.75, false),
+            "Gain",
+            Some(&v1.manifest.id),
+            "2.0.0",
+        )
+        .unwrap();
+        Versions {
+            tmp,
+            library,
+            v1,
+            v2,
+        }
+    }
+
+    fn slider() -> NodeType {
+        NodeType::Slider {
+            value: 0.5,
+            min: 0.0,
+            max: 1.0,
+            step: 0.01,
+            slider_color: [0, 0, 0],
+            label: String::new(),
+        }
+    }
+
+    /// Instance of v1 with `trim` wired from a slider and its output wired
+    /// to another slider.
+    fn wired(vs: &Versions) -> (Graph, NodeId) {
+        let interface = CustomNodeFile::load(&vs.v1.entry_path).unwrap();
+        let mut graph = Graph::new();
+        graph.set_package_environment(None, Some(vs.library.clone()));
+        let id = graph.add_node(
+            NodeType::CustomNodeInstance {
+                file: vs.v1.entry_path.to_string_lossy().into_owned(),
+                inputs: interface.inputs,
+                outputs: interface.outputs,
+                package: Some(stored(&vs.v1)),
+            },
+            [0.0, 0.0],
+        );
+        let source = graph.add_node(slider(), [-200.0, 0.0]);
+        let sink = graph.add_node(slider(), [200.0, 0.0]);
+        graph.add_connection(source, 0, id, 0);
+        graph.add_connection(id, 0, sink, 0);
+        (graph, id)
+    }
+
+    fn value(graph: &mut Graph, id: NodeId) -> Option<f32> {
+        match graph.evaluate(0.0).get(&(id, 0)) {
+            Some(PortValue::Float(v)) => Some(*v),
+            _ => None,
+        }
+    }
+
+    fn package_of(
+        graph: &Graph,
+        id: NodeId,
+    ) -> Option<crate::library::resolve::InstancePackageRef> {
+        match &graph.nodes[&id].node_type {
+            NodeType::CustomNodeInstance { package, .. } => package.clone(),
+            _ => None,
+        }
+    }
+
+    fn input_names(graph: &Graph, id: NodeId) -> Vec<String> {
+        match &graph.nodes[&id].node_type {
+            NodeType::CustomNodeInstance { inputs, .. } => {
+                inputs.iter().map(|p| p.name.clone()).collect()
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    /// What the editor does on a confirmed switch: one undo step, apply.
+    fn switch(graph: &mut Graph, history: &mut UndoHistory, id: NodeId, to: &VerifiedPackage) {
+        let plan = graph.plan_version_switch(id, &stored(to)).unwrap();
+        history.push(UndoSnapshot::new(graph.clone(), Default::default()));
+        graph.apply_version_switch(&plan).unwrap();
+    }
+
+    #[test]
+    fn one_switch_is_one_undo_step_and_undo_redo_restore_everything() {
+        let vs = versions("s5a_undo");
+        let (mut graph, id) = wired(&vs);
+        assert_eq!(value(&mut graph, id), Some(0.25));
+        let v1_state = serde_json::to_string(&graph).unwrap();
+        let mut history = UndoHistory::new(10);
+
+        switch(&mut graph, &mut history, id, &vs.v2);
+        assert_eq!(history.depth(), (1, 0), "exactly one undo step");
+        assert_eq!(graph.connections.len(), 1, "the trim wire was removed");
+        assert_eq!(value(&mut graph, id), Some(0.75));
+        let v2_state = serde_json::to_string(&graph).unwrap();
+
+        let mut undone = history
+            .undo(UndoSnapshot::new(graph.clone(), Default::default()))
+            .unwrap()
+            .graph;
+        assert_eq!(serde_json::to_string(&undone).unwrap(), v1_state);
+        assert_eq!(package_of(&undone, id), Some(stored(&vs.v1)));
+        assert_eq!(input_names(&undone, id), vec!["trim"]);
+        assert_eq!(undone.connections.len(), 2, "wires restored");
+        assert_eq!(value(&mut undone, id), Some(0.25), "v1 evaluates again");
+
+        let mut redone = history
+            .redo(UndoSnapshot::new(undone.clone(), Default::default()))
+            .unwrap()
+            .graph;
+        assert_eq!(serde_json::to_string(&redone).unwrap(), v2_state);
+        assert_eq!(value(&mut redone, id), Some(0.75));
+    }
+
+    #[test]
+    fn confirmation_lists_ports_and_a_changed_graph_is_planned_again() {
+        let vs = versions("s5a_dialog");
+        let (mut graph, id) = wired(&vs);
+        let plan = graph.plan_version_switch(id, &stored(&vs.v2)).unwrap();
+        assert!(plan.needs_confirmation());
+        let source = graph
+            .connections
+            .iter()
+            .find(|c| c.to_node == id)
+            .map(|c| c.from_node)
+            .unwrap();
+        assert_eq!(
+            describe_affected_ports(&plan, &graph),
+            vec![
+                "input 'trim': removed (1 connection removed)".to_string(),
+                format!("    from Slider #{source}"),
+            ],
+            "grouped by port, with the exact wire"
+        );
+        // The `trim` wire is removed while the dialog is open: the confirmed
+        // plan no longer describes the switch, so it is planned again.
+        graph.connections.retain(|c| c.to_node != id);
+        let fresh = graph.plan_version_switch(id, &stored(&vs.v2)).unwrap();
+        assert!(!fresh.same_effect(&plan));
+        assert_eq!(fresh.removed_connections, 0);
+        assert!(fresh.same_effect(&graph.plan_version_switch(id, &stored(&vs.v2)).unwrap()));
+    }
+
+    #[test]
+    fn switching_in_one_tab_leaves_other_tabs_alone() {
+        let vs = versions("s5a_tabs");
+        let (graph_a, id) = wired(&vs);
+        let (graph_b, id_b) = wired(&vs);
+        let mut documents = DocumentManager::new();
+        let first = documents.active().id;
+        assert!(documents.active_mut().store_graph(&graph_b));
+        let second = documents.new_document("Second");
+        assert!(documents.activate(second));
+
+        let mut live = graph_a;
+        let mut history = UndoHistory::new(10);
+        switch(&mut live, &mut history, id, &vs.v2);
+        assert!(documents.active_mut().store_graph(&live));
+
+        assert!(documents.activate(first));
+        assert_eq!(
+            package_of(&documents.active().graph, id_b),
+            Some(stored(&vs.v1)),
+            "the other tab still uses v1"
+        );
+        assert!(documents.activate(second));
+        assert_eq!(
+            package_of(&documents.active().graph, id),
+            Some(stored(&vs.v2))
+        );
+    }
+
+    #[test]
+    fn saving_after_switching_bundles_the_selected_version_and_reopens() {
+        let vs = versions("s5a_save");
+        let project = vs.tmp.0.join("project");
+        let (mut graph, id) = wired(&vs);
+        let mut history = UndoHistory::new(10);
+        save_project_files(
+            &mut graph,
+            &mut history,
+            Vec::new(),
+            [0.0, 0.0],
+            1.0,
+            &project,
+            None,
+            Some(&vs.library),
+        )
+        .unwrap();
+        let v1_copy = project
+            .join("packages")
+            .join(&vs.v1.manifest.id)
+            .join("1.0.0");
+        let v1_bytes: Vec<Vec<u8>> = crate::library::bundle::tests::files_under(&v1_copy)
+            .iter()
+            .map(|rel| std::fs::read(v1_copy.join(rel)).unwrap())
+            .collect();
+
+        graph.set_package_environment(Some(project.clone()), Some(vs.library.clone()));
+        switch(&mut graph, &mut history, id, &vs.v2);
+        let saved = save_project_files(
+            &mut graph,
+            &mut history,
+            Vec::new(),
+            [0.0, 0.0],
+            1.0,
+            &project,
+            Some(&project),
+            Some(&vs.library),
+        )
+        .unwrap();
+        assert_eq!(saved.portability.copied, 1, "v2 bundled");
+        let v2_copy = project
+            .join("packages")
+            .join(&vs.v1.manifest.id)
+            .join("2.0.0");
+        assert!(v2_copy.is_dir());
+        let still: Vec<Vec<u8>> = crate::library::bundle::tests::files_under(&v1_copy)
+            .iter()
+            .map(|rel| std::fs::read(v1_copy.join(rel)).unwrap())
+            .collect();
+        assert_eq!(still, v1_bytes, "previous version kept, unchanged");
+
+        // Reopen on a machine with an empty Library.
+        let empty = vs.tmp.0.join("empty");
+        std::fs::create_dir_all(&empty).unwrap();
+        let mut pf = read_project_file(&project).unwrap();
+        absolutize_paths(&mut pf.graph, &project.to_string_lossy());
+        let mut reopened = pf.graph;
+        assert_eq!(package_of(&reopened, id), Some(stored(&vs.v2)));
+        assert_eq!(input_names(&reopened, id), Vec::<String>::new());
+        reopened.set_package_environment(Some(project.clone()), Some(empty));
+        assert_eq!(value(&mut reopened, id), Some(0.75));
+        assert!(!reopened.take_custom_port_events().changed);
+    }
+}
+
+/// P4.2 Stage 5 correctness fixes: modal confirmation, node identity,
+/// exact wires, re-planning and undo safety.
+#[cfg(test)]
+mod version_switch_fix_tests {
+    use super::super::undo::UndoHistory;
+    use super::super::version::{SwitchOutcome, confirm_version_switch, editing_paused};
+    use super::*;
+    use crate::document::{CustomNodeFile, CustomNodePort, DocumentManager};
+    use crate::library::bundle::tests::{files_under, leaf, publish, stored};
+    use crate::library::package::VerifiedPackage;
+    use crate::library::package::tests::TempDir;
+    use std::collections::HashSet;
+    use std::path::PathBuf;
+
+    struct Versions {
+        tmp: TempDir,
+        library: PathBuf,
+        v1: VerifiedPackage,
+        v2: VerifiedPackage,
+    }
+
+    fn gain(dir: &Path, value: f32, trim: bool) -> PathBuf {
+        let path = leaf(dir, "Gain", value);
+        let mut file = CustomNodeFile::load(&path).unwrap();
+        if trim {
+            file.inputs.push(CustomNodePort {
+                name: "trim".into(),
+                kind: "Number".into(),
+            });
+        }
+        file.save(&path).unwrap();
+        path
+    }
+
+    /// v1 (0.25) has an input `trim`; v2 (0.75) does not.
+    fn versions(tag: &str) -> Versions {
+        let tmp = TempDir::new(tag);
+        let library = tmp.0.join("library");
+        let v1 = publish(
+            &library,
+            &gain(&tmp.0.join("v1"), 0.25, true),
+            "Gain",
+            None,
+            "1.0.0",
+        )
+        .unwrap();
+        let v2 = publish(
+            &library,
+            &gain(&tmp.0.join("v2"), 0.75, false),
+            "Gain",
+            Some(&v1.manifest.id),
+            "2.0.0",
+        )
+        .unwrap();
+        Versions {
+            tmp,
+            library,
+            v1,
+            v2,
+        }
+    }
+
+    fn slider() -> NodeType {
+        NodeType::Slider {
+            value: 0.5,
+            min: 0.0,
+            max: 1.0,
+            step: 0.01,
+            slider_color: [0, 0, 0],
+            label: String::new(),
+        }
+    }
+
+    fn v1_instance(vs: &Versions) -> NodeType {
+        let interface = CustomNodeFile::load(&vs.v1.entry_path).unwrap();
+        NodeType::CustomNodeInstance {
+            file: vs.v1.entry_path.to_string_lossy().into_owned(),
+            inputs: interface.inputs,
+            outputs: interface.outputs,
+            package: Some(stored(&vs.v1)),
+        }
+    }
+
+    /// Two sliders (sources) and a sink, then the v1 instance with `trim`
+    /// wired from `source_a` and its output wired to the sink.
+    struct Scene {
+        graph: Graph,
+        id: NodeId,
+        source_a: NodeId,
+        source_b: NodeId,
+    }
+
+    fn scene(vs: &Versions) -> Scene {
+        let mut graph = Graph::new();
+        graph.set_package_environment(None, Some(vs.library.clone()));
+        let source_a = graph.add_node(slider(), [-200.0, 0.0]);
+        let source_b = graph.add_node(slider(), [-200.0, 100.0]);
+        let sink = graph.add_node(slider(), [200.0, 0.0]);
+        let id = graph.add_node(v1_instance(vs), [0.0, 0.0]);
+        graph.add_connection(source_a, 0, id, 0);
+        graph.add_connection(id, 0, sink, 0);
+        Scene {
+            graph,
+            id,
+            source_a,
+            source_b,
+        }
+    }
+
+    fn state(graph: &Graph) -> String {
+        serde_json::to_string(graph).unwrap()
+    }
+
+    fn confirm(
+        graph: &mut Graph,
+        history: &mut UndoHistory,
+        plan: &crate::graph::version::VersionSwitchPlan,
+    ) -> SwitchOutcome {
+        confirm_version_switch(graph, history, &HashSet::new(), plan)
+    }
+
+    fn value(graph: &mut Graph, id: NodeId) -> Option<f32> {
+        match graph.evaluate(0.0).get(&(id, 0)) {
+            Some(PortValue::Float(v)) => Some(*v),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn normal_switching_still_works_with_one_undo_step() {
+        let vs = versions("s5f_normal");
+        let mut s = scene(&vs);
+        let mut history = UndoHistory::new(10);
+        let plan = s.graph.plan_version_switch(s.id, &stored(&vs.v2)).unwrap();
+        assert!(plan.needs_confirmation());
+        match confirm(&mut s.graph, &mut history, &plan) {
+            SwitchOutcome::Applied { removed } => assert_eq!(removed, 1),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(history.depth(), (1, 0));
+        assert_eq!(value(&mut s.graph, s.id), Some(0.75));
+    }
+
+    #[test]
+    fn deleted_node_and_reused_id_never_receive_a_pending_switch() {
+        let vs = versions("s5f_reuse");
+        // State before the instance existed (what undo would restore).
+        let mut s = scene(&vs);
+        let plan = s.graph.plan_version_switch(s.id, &stored(&vs.v2)).unwrap();
+        let mut history = UndoHistory::new(10);
+
+        // Deleted while pending: refused, nothing recorded.
+        let mut deleted = s.graph.clone();
+        deleted.remove_node(s.id);
+        let before = state(&deleted);
+        assert!(matches!(
+            confirm(&mut deleted, &mut history, &plan),
+            SwitchOutcome::Invalidated(_)
+        ));
+        assert_eq!(state(&deleted), before);
+        assert_eq!(history.depth(), (0, 0));
+
+        // Undo past its creation, then an identical node is inserted: it
+        // gets the same id, type, position and wires, but is not the
+        // previewed node.
+        let mut recreated: Graph = s.graph.clone();
+        recreated.remove_node(s.id);
+        recreated.fix_next_id();
+        let reused = recreated.add_node(v1_instance(&vs), [0.0, 0.0]);
+        assert_eq!(reused, s.id, "id reused");
+        let sink = s
+            .graph
+            .connections
+            .iter()
+            .find(|c| c.from_node == s.id)
+            .unwrap()
+            .to_node;
+        recreated.add_connection(s.source_a, 0, reused, 0);
+        recreated.add_connection(reused, 0, sink, 0);
+        let fresh_context = recreated.switch_context(reused).unwrap();
+        assert_eq!(
+            fresh_context.node_state, plan.context.node_state,
+            "byte-identical node"
+        );
+        assert_eq!(fresh_context.connections, plan.context.connections);
+        let before = state(&recreated);
+        assert!(matches!(
+            confirm(&mut recreated, &mut history, &plan),
+            SwitchOutcome::Invalidated(_)
+        ));
+        assert_eq!(state(&recreated), before, "the new node was not switched");
+        assert_eq!(history.depth(), (0, 0));
+        // The graph model refuses the stale plan as well.
+        assert!(recreated.apply_version_switch(&plan).is_err());
+        assert_eq!(state(&recreated), before);
+        let _ = &mut s.graph;
+    }
+
+    #[test]
+    fn different_wires_with_identical_counts_need_a_new_confirmation() {
+        let vs = versions("s5f_wires");
+        let mut s = scene(&vs);
+        let plan = s.graph.plan_version_switch(s.id, &stored(&vs.v2)).unwrap();
+        assert_eq!(plan.removed.len(), 1);
+        assert_eq!(plan.removed[0].from_node, s.source_a);
+
+        // Replace the trim wire with one from another source: same count.
+        s.graph.connections.retain(|c| c.to_node != s.id);
+        s.graph.add_connection(s.source_b, 0, s.id, 0);
+        let fresh = s.graph.plan_version_switch(s.id, &stored(&vs.v2)).unwrap();
+        assert_eq!(fresh.removed_connections, plan.removed_connections);
+        assert!(
+            !fresh.same_effect(&plan),
+            "different wires are not equivalent"
+        );
+
+        let mut history = UndoHistory::new(10);
+        let before = state(&s.graph);
+        let renewed = match confirm(&mut s.graph, &mut history, &plan) {
+            SwitchOutcome::Reconfirm(fresh) => *fresh,
+            other => panic!("expected a new confirmation, got {other:?}"),
+        };
+        assert_eq!(state(&s.graph), before, "nothing applied");
+        assert_eq!(history.depth(), (0, 0));
+        assert_eq!(renewed.removed[0].from_node, s.source_b);
+        // Confirming the renewed preview applies it.
+        assert!(matches!(
+            confirm(&mut s.graph, &mut history, &renewed),
+            SwitchOutcome::Applied { removed: 1 }
+        ));
+    }
+
+    #[test]
+    fn port_changes_after_preview_are_never_applied_silently() {
+        let vs = versions("s5f_ports");
+        let mut s = scene(&vs);
+        let plan = s.graph.plan_version_switch(s.id, &stored(&vs.v2)).unwrap();
+        let mut history = UndoHistory::new(10);
+
+        // An extra port appears on the instance (e.g. its file changed).
+        let mut extra = s.graph.clone();
+        if let Some(NodeType::CustomNodeInstance { inputs, .. }) =
+            extra.nodes.get_mut(&s.id).map(|n| &mut n.node_type)
+        {
+            inputs.push(CustomNodePort {
+                name: "extra".into(),
+                kind: "Number".into(),
+            });
+        }
+        let before = state(&extra);
+        assert!(matches!(
+            confirm(&mut extra, &mut history, &plan),
+            SwitchOutcome::Reconfirm(_)
+        ));
+        assert_eq!(state(&extra), before);
+
+        // The `trim` port and its wire disappear: the switch would now lose
+        // nothing, but the node changed, so the preview is invalidated
+        // instead of applied.
+        let mut trimmed = s.graph.clone();
+        trimmed.connections.retain(|c| c.to_node != s.id);
+        if let Some(NodeType::CustomNodeInstance { inputs, .. }) =
+            trimmed.nodes.get_mut(&s.id).map(|n| &mut n.node_type)
+        {
+            inputs.clear();
+        }
+        let before = state(&trimmed);
+        assert!(matches!(
+            confirm(&mut trimmed, &mut history, &plan),
+            SwitchOutcome::Invalidated(_)
+        ));
+        assert_eq!(state(&trimmed), before);
+        assert_eq!(history.depth(), (0, 0));
+        let _ = &mut s.graph;
+    }
+
+    #[test]
+    fn stale_preview_that_becomes_compatible_applies_directly() {
+        let vs = versions("s5f_compatible");
+        // The project gets its own copy of 2.0.0 (priority over the
+        // Library) that still has `trim`: nothing would be lost any more.
+        let project = vs.tmp.0.join("project");
+        let mut s = scene(&vs);
+        s.graph
+            .set_package_environment(Some(project.clone()), Some(vs.library.clone()));
+        let plan = s.graph.plan_version_switch(s.id, &stored(&vs.v2)).unwrap();
+        assert!(plan.needs_confirmation());
+
+        let elsewhere = vs.tmp.0.join("elsewhere");
+        let first = publish(
+            &elsewhere,
+            &gain(&vs.tmp.0.join("o1"), 0.1, true),
+            "Gain",
+            None,
+            "1.0.0",
+        )
+        .unwrap();
+        let with_trim = publish(
+            &elsewhere,
+            &gain(&vs.tmp.0.join("o2"), 0.9, true),
+            "Gain",
+            Some(&first.manifest.id),
+            "2.0.0",
+        )
+        .unwrap();
+        let target = project
+            .join(crate::library::package::PACKAGES_DIR)
+            .join(&vs.v2.manifest.id)
+            .join("2.0.0");
+        for rel in files_under(&with_trim.dir) {
+            let to = target.join(&rel);
+            std::fs::create_dir_all(to.parent().unwrap()).unwrap();
+            std::fs::copy(with_trim.dir.join(&rel), to).unwrap();
+        }
+
+        let mut history = UndoHistory::new(10);
+        match confirm(&mut s.graph, &mut history, &plan) {
+            SwitchOutcome::Applied { removed } => assert_eq!(removed, 0, "no wire removed"),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(s.graph.connections.len(), 2);
+        assert_eq!(history.depth(), (1, 0));
+    }
+
+    #[test]
+    fn cancel_preserves_graph_and_undo_history() {
+        let vs = versions("s5f_cancel");
+        let mut s = scene(&vs);
+        let mut history = UndoHistory::new(10);
+        history.push(super::super::undo::UndoSnapshot::new(
+            s.graph.clone(),
+            Default::default(),
+        ));
+        let before = state(&s.graph);
+        let plan = s.graph.plan_version_switch(s.id, &stored(&vs.v2)).unwrap();
+        drop(plan); // Cancel: the plan is discarded, nothing is applied.
+        assert_eq!(state(&s.graph), before);
+        assert_eq!(history.depth(), (1, 0));
+    }
+
+    #[test]
+    fn failed_application_records_no_undo_step() {
+        let vs = versions("s5f_failed");
+        let mut s = scene(&vs);
+        assert_eq!(value(&mut s.graph, s.id), Some(0.25));
+        let plan = s.graph.plan_version_switch(s.id, &stored(&vs.v2)).unwrap();
+        std::fs::write(&vs.v2.entry_path, "{ damaged").unwrap();
+        let mut history = UndoHistory::new(10);
+        let before = state(&s.graph);
+        assert!(matches!(
+            confirm(&mut s.graph, &mut history, &plan),
+            SwitchOutcome::Failed(_)
+        ));
+        assert_eq!(state(&s.graph), before);
+        assert_eq!(history.depth(), (0, 0), "no empty undo step");
+        assert_eq!(value(&mut s.graph, s.id), Some(0.25), "v1 keeps running");
+    }
+
+    #[test]
+    fn the_confirmation_locks_documents_and_pauses_editing() {
+        // The modal rule used by `active_is_editable`, the canvas gate, the
+        // shortcut and system-action guards (undo/redo, insertion, grouping,
+        // duplicate, automatic insertion all check it).
+        assert!(!editing_paused(false, false));
+        assert!(editing_paused(false, true));
+        assert!(editing_paused(true, false));
+
+        // The document lock the confirmation holds: no tab switching,
+        // closing or opening while it is open.
+        let vs = versions("s5f_lock");
+        let node = vs.v1.entry_path.clone();
+        let mut documents = DocumentManager::new();
+        let first = documents.active().id;
+        let second = documents.new_document("Second");
+        assert!(documents.activate(first));
+        documents.set_locked(true);
+        assert!(!documents.activate(second), "no tab switching");
+        assert!(!documents.close_document(first), "no closing");
+        assert!(
+            documents.open_custom_node(node.clone()).is_err(),
+            "no opening"
+        );
+        assert_eq!(documents.active().id, first);
+        documents.set_locked(false); // Cancel / Switch Version
+        assert!(documents.activate(second));
+    }
+}
+
+/// P4.2 Stage 5: runtime node identity tokens.
+#[cfg(test)]
+mod node_token_tests {
+    use super::super::undo::{UndoHistory, UndoSnapshot};
+    use super::*;
+    use crate::document::{CustomNodeFile, custom_node_interface};
+    use crate::graph::PortKind;
+    use crate::library::package::tests::TempDir;
+    use std::collections::HashSet;
+
+    fn slider(value: f32) -> NodeType {
+        NodeType::Slider {
+            value,
+            min: 0.0,
+            max: 1.0,
+            step: 0.01,
+            slider_color: [0, 0, 0],
+            label: String::new(),
+        }
+    }
+
+    fn token(graph: &Graph, id: NodeId) -> u64 {
+        graph.nodes[&id].token
+    }
+
+    fn tokens(graph: &Graph) -> HashSet<u64> {
+        graph.nodes.values().map(|n| n.token).collect()
+    }
+
+    /// True if any object in `value` has a key named `key`.
+    fn has_key(value: &serde_json::Value, key: &str) -> bool {
+        match value {
+            serde_json::Value::Object(map) => {
+                map.contains_key(key) || map.values().any(|v| has_key(v, key))
+            }
+            serde_json::Value::Array(items) => items.iter().any(|v| has_key(v, key)),
+            _ => false,
+        }
+    }
+
+    fn three_nodes() -> (Graph, Vec<NodeId>) {
+        let mut graph = Graph::new();
+        let ids = (0..3)
+            .map(|i| graph.add_node(slider(i as f32 / 10.0), [i as f32 * 100.0, 0.0]))
+            .collect();
+        (graph, ids)
+    }
+
+    #[test]
+    fn new_nodes_get_distinct_nonzero_tokens() {
+        let (graph, ids) = three_nodes();
+        let all = tokens(&graph);
+        assert_eq!(all.len(), ids.len(), "every node has its own token");
+        assert!(!all.contains(&0), "tokens are nonzero");
+    }
+
+    #[test]
+    fn deserializing_assigns_distinct_fresh_tokens() {
+        let (graph, _) = three_nodes();
+        let text = serde_json::to_string(&graph).unwrap();
+        let first: Graph = serde_json::from_str(&text).unwrap();
+        let second: Graph = serde_json::from_str(&text).unwrap();
+        for loaded in [&first, &second] {
+            let all = tokens(loaded);
+            assert_eq!(all.len(), 3, "distinct tokens after loading");
+            assert!(!all.contains(&0));
+            assert!(
+                all.is_disjoint(&tokens(&graph)),
+                "never the saved node's token"
+            );
+        }
+        assert!(
+            tokens(&first).is_disjoint(&tokens(&second)),
+            "each load (reopen) gets new identities"
+        );
+    }
+
+    /// Duplicate (`duplicate_selected`) and paste (the clipboard holds a
+    /// `NodeType`) both copy only the node type and call `add_node`.
+    #[test]
+    fn duplicate_and_paste_create_new_identities() {
+        let (mut graph, ids) = three_nodes();
+        let source = ids[0];
+        let clipboard = graph.nodes[&source].node_type.clone();
+        let duplicate = graph.add_node(graph.nodes[&source].node_type.clone(), [30.0, 30.0]);
+        let pasted = graph.add_node(clipboard.clone(), [60.0, 60.0]);
+        let pasted_again = graph.add_node(clipboard, [90.0, 90.0]);
+        let copies = [duplicate, pasted, pasted_again];
+        for copy in copies {
+            assert_ne!(copy, source);
+            assert_ne!(token(&graph, copy), token(&graph, source));
+            assert_ne!(token(&graph, copy), 0);
+        }
+        assert_eq!(tokens(&graph).len(), graph.nodes.len(), "no shared tokens");
+    }
+
+    #[test]
+    fn clones_and_undo_snapshots_keep_identities() {
+        let (mut graph, ids) = three_nodes();
+        let before: Vec<u64> = ids.iter().map(|id| token(&graph, *id)).collect();
+
+        let cloned = graph.clone();
+        for (id, t) in ids.iter().zip(&before) {
+            assert_eq!(token(&cloned, *id), *t, "a clone is the same logical node");
+        }
+
+        let mut history = UndoHistory::new(10);
+        history.push(UndoSnapshot::new(graph.clone(), Default::default()));
+        graph.remove_node(ids[1]);
+        let restored = history
+            .undo(UndoSnapshot::new(graph.clone(), Default::default()))
+            .unwrap()
+            .graph;
+        for (id, t) in ids.iter().zip(&before) {
+            assert_eq!(token(&restored, *id), *t, "undo restores the same node");
+        }
+        let redone = history
+            .redo(UndoSnapshot::new(restored.clone(), Default::default()))
+            .unwrap()
+            .graph;
+        assert!(!redone.nodes.contains_key(&ids[1]));
+        assert_eq!(token(&redone, ids[0]), before[0]);
+        assert_eq!(token(&redone, ids[2]), before[2]);
+    }
+
+    #[test]
+    fn recreating_a_node_after_undo_gets_a_new_token() {
+        let (mut graph, _) = three_nodes();
+        let mut history = UndoHistory::new(10);
+        history.push(UndoSnapshot::new(graph.clone(), Default::default()));
+        let added = graph.add_node(slider(0.9), [0.0, 200.0]);
+        let old_token = token(&graph, added);
+
+        graph = history
+            .undo(UndoSnapshot::new(graph.clone(), Default::default()))
+            .unwrap()
+            .graph;
+        assert!(!graph.nodes.contains_key(&added));
+        let recreated = graph.add_node(slider(0.9), [0.0, 200.0]);
+        assert_eq!(recreated, added, "undo made the id reusable");
+        assert_ne!(token(&graph, recreated), old_token, "but never the token");
+        assert_eq!(tokens(&graph).len(), graph.nodes.len());
+    }
+
+    #[test]
+    fn saved_project_and_custom_node_files_contain_no_tokens() {
+        let tmp = TempDir::new("token_files");
+        let (mut graph, _) = three_nodes();
+        // Interface nodes so the graph is a valid custom node.
+        graph.add_node(
+            NodeType::CustomInput {
+                name: "in".into(),
+                kind: PortKind::Number,
+            },
+            [0.0, 100.0],
+        );
+        graph.add_node(
+            NodeType::CustomOutput {
+                name: "out".into(),
+                kind: PortKind::Number,
+            },
+            [0.0, 200.0],
+        );
+        assert!(!has_key(&serde_json::to_value(&graph).unwrap(), "token"));
+
+        let project = tmp.0.join("project");
+        let mut history = UndoHistory::new(10);
+        save_project_files(
+            &mut graph,
+            &mut history,
+            Vec::new(),
+            [0.0, 0.0],
+            1.0,
+            &project,
+            None,
+            None,
+        )
+        .unwrap();
+        let text = std::fs::read_to_string(project.join("project.json")).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert!(
+            !has_key(&value, "token"),
+            "project.json has no runtime tokens"
+        );
+
+        let (inputs, outputs) = custom_node_interface(&graph);
+        let path = tmp.0.join("Tokens.pwnode");
+        CustomNodeFile {
+            version: 1,
+            name: "Tokens".into(),
+            graph: graph.clone(),
+            inputs,
+            outputs,
+        }
+        .save(&path)
+        .unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert!(!has_key(&value, "token"), ".pwnode has no runtime tokens");
+        let loaded = CustomNodeFile::load(&path).unwrap();
+        assert!(tokens(&loaded.graph).is_disjoint(&tokens(&graph)));
     }
 }

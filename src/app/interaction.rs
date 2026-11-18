@@ -179,8 +179,9 @@ impl super::PatchworkApp {
         // ── File shortcuts (only when no text field is focused) ───────
         let no_focus = ctx.memory(|mem| mem.focused().is_none());
         let cmd = modifiers.mac_cmd || modifiers.ctrl;
-        // R3: no new/open/save shortcuts while the quit dialog is open.
-        if no_focus && cmd && !self.pending_quit_dialog {
+        // R3 / Stage 5: no new/open/save shortcuts while a modal
+        // confirmation (quit dialog, version switch) is open.
+        if no_focus && cmd && !self.modal_lock() {
             // Cmd+N → New project. H1: same path as File → New Project, which
             // opens a new tab and never replaces the active document.
             if ctx.input(|i| i.key_pressed(egui::Key::N)) {
@@ -660,6 +661,12 @@ impl super::PatchworkApp {
                             if icon_menu_item(ui, icons::PENCIL, "Edit Custom Node").clicked() {
                                 self.pending_edit_custom_node = Some(file);
                                 keep_open = false;
+                            }
+                            // P4.2 Stage 5: explicit version switching.
+                            if let Some(id) = self.context_menu_node {
+                                if self.version_menu(ui, id) {
+                                    keep_open = false;
+                                }
                             }
                             ui.separator();
                         }
