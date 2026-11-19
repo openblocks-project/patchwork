@@ -1,0 +1,180 @@
+# The trusted "Submission paths" guard for Marketplace submissions.
+#
+# INSTALL ON THE DEFAULT BRANCH (main), not on the catalogue branch. Since
+# 8 December 2025 GitHub always takes `pull_request_target` workflows from
+# the repository's default branch, so a pull request can never change this
+# file for its own run. It runs only for pull requests that target the
+# `catalogue` branch.
+#
+# Why it exists: the catalogue's validate.yml runs on `pull_request`, so a
+# pull request can replace it for its own run and report a green "Validate
+# submission". This guard refuses every pull request that touches anything
+# outside publishers/ and packages/ (so .github/ too) unless the author is
+# a maintainer. While it passes, "Validate submission" ran the reviewed
+# workflow.
+#
+# Result: a commit status named "Submission paths" on the pull request's
+# exact head commit (github.event.pull_request.head.sha). That is the
+# required check on the catalogue branch. A status is used instead of
+# relying on this workflow's own check run because GitHub documents both
+# where a status attaches and how it is required (a check run of the same
+# name must ALSO pass, so a look-alike job cannot satisfy it). Fork pull
+# requests only ever get read-only tokens and cannot post statuses.
+#
+# Security:
+# - Never checks out, builds or runs anything from the pull request. The
+#   catalogue itself is not checked out; the changed-file list comes from
+#   GitHub's API, the author's numeric id from GitHub's own pull request
+#   record.
+# - Two jobs with separate permissions. `check` (read-only: contents,
+#   pull-requests) builds the pinned validator and decides. `report`
+#   (statuses: write only) checks out and builds nothing; it only posts the
+#   status from `check`'s result.
+# - No secrets are used. Keep repository-level secrets empty: the deploy
+#   key lives only in the `publish` environment.
+# - The checker is Patchwork's `catalogue check-paths`, built from
+#   vars.PATCHWORK_REPOSITORY at vars.PATCHWORK_COMMIT.
+# - Fails closed: an API error, a missing page, a count that does not add
+#   up, a pull request that changed during the check, or a target other
+#   than `catalogue` is a failure.
+# - Pull-request values reach the scripts through environment variables only.
+name: Submission paths
+
+on:
+  pull_request_target:
+    # `edited` covers a change of target branch.
+    types: [opened, synchronize, reopened, edited]
+    branches: [catalogue]
+
+# Nothing by default; each job is granted only what it needs.
+permissions: {}
+
+concurrency:
+  group: submission-paths-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Check submission paths
+    # The same build environment as Patchwork's own CI.
+    runs-on: windows-2022
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      pull-requests: read
+    env:
+      CMAKE_GENERATOR: "Visual Studio 17 2022"
+      CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+      CMAKE_MSVC_RUNTIME_LIBRARY: "MultiThreadedDLL"
+      RUSTFLAGS: "-C target-feature=-crt-static"
+      CARGO_TERM_COLOR: always
+    steps:
+      - name: Require the validator configuration
+        shell: bash
+        env:
+          PATCHWORK_REPOSITORY: ${{ vars.PATCHWORK_REPOSITORY }}
+          PATCHWORK_COMMIT: ${{ vars.PATCHWORK_COMMIT }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$PATCHWORK_REPOSITORY" || ! "$PATCHWORK_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::repository variables PATCHWORK_REPOSITORY and PATCHWORK_COMMIT (full 40-character hash) must be set"
+            exit 1
+          fi
+
+      - name: Check out the checker (Patchwork at a reviewed commit)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.PATCHWORK_REPOSITORY }}
+          ref: ${{ vars.PATCHWORK_COMMIT }}
+          path: patchwork
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies (restore only)
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: patchwork
+          save-if: false
+
+      - name: Configure CMake compatibility
+        shell: pwsh
+        run: '"CMAKE_ARGS=-DCMAKE_POLICY_VERSION_MINIMUM=3.5" >> $env:GITHUB_ENV'
+
+      - name: Build the checker
+        shell: bash
+        run: cargo build --release --locked --manifest-path patchwork/Cargo.toml
+
+      - name: Retrieve the changed files (GitHub API only)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          api="repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}"
+          mkdir -p api/pages
+          # Any API error stops the job (fails closed).
+          gh api "$api" > api/before.json
+          count="$(gh api "$api" --jq .changed_files)"
+          if [[ ! "$count" =~ ^[0-9]+$ ]]; then
+            echo "::error::the API did not report the number of changed files"; exit 1
+          fi
+          # Every page up to and including the first short one (per_page must
+          # stay 100: the checker requires full pages before the last). The
+          # checker refuses more than 3000 files.
+          pages=$(( count / 100 + 1 ))
+          if (( pages > 31 )); then pages=31; fi
+          for (( page = 1; page <= pages; page++ )); do
+            gh api "${api}/files?per_page=100&page=${page}" > "api/pages/${page}.json"
+          done
+          gh api "$api" > api/after.json
+
+      - name: Check the changed paths
+        shell: bash
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          MAINTAINER_IDS: ${{ vars.MAINTAINER_IDS }}
+        run: |
+          set -euo pipefail
+          # Submissions must target the catalogue branch (the event's
+          # default branch is the application's, never used here).
+          patchwork/target/release/patchwork.exe catalogue check-paths \
+            --repository "$GITHUB_REPOSITORY" \
+            --pull-before api/before.json --pull-after api/after.json --pages api/pages \
+            --head-sha "$HEAD_SHA" --default-branch catalogue \
+            --maintainer-ids "$MAINTAINER_IDS"
+
+  report:
+    name: Report submission paths
+    needs: check
+    # A cancelled run was replaced by a newer one, which reports for its own
+    # head commit; every other outcome is reported.
+    if: ${{ always() && needs.check.result != 'cancelled' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      statuses: write
+    steps:
+      - name: Set the "Submission paths" status on the pull request's head commit
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          RESULT: ${{ needs.check.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::unexpected head commit"; exit 1
+          fi
+          if [[ "$RESULT" == "success" ]]; then
+            state=success; text="Only publishers/ and packages/ changed."
+          else
+            state=failure; text="Refused or not verified; see the run."
+          fi
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/${HEAD_SHA}" \
+            -f state="$state" -f context="Submission paths" \
+            -f description="$text" -f target_url="$RUN_URL" > /dev/null
+          echo "Submission paths: $state on $HEAD_SHA"
