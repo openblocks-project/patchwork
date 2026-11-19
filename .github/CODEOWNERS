@@ -1,0 +1,11 @@
+# CODEOWNERS for the default branch (main) of the Patchwork repository.
+#
+# The Submission paths guard decides which Marketplace catalogue pull
+# requests may pass, so any change to it, or to this file, needs review by
+# its owner, not just any collaborator with write access. The main branch
+# ruleset must require review from Code Owners for this to take effect.
+#
+# Every rule must name real accounts or teams with write access.
+
+/.github/workflows/submission-paths.yml    @AshwiniSReddy
+/.github/CODEOWNERS                        @AshwiniSReddy
