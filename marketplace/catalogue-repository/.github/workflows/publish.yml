@@ -1,10 +1,17 @@
 # Publishes merged submissions: generates the artifacts of new versions,
 # commits them, then generates index.json with every new version pinned to
-# that commit, and pushes both commits to the default branch.
+# that commit, and pushes both commits to the `catalogue` branch.
+#
+# Lives on the `catalogue` branch (an orphan branch of the Patchwork
+# repository). Push workflows come from the pushed commit, so only this
+# branch's workflows run here; the application's workflows never do.
 #
 # Security:
-# - Runs only for the default branch (after review and merge), never for
-#   pull requests.
+# - Runs only for pushes to `catalogue` (after review and merge), never for
+#   pull requests, and writes only to `catalogue`.
+# - There is no manual trigger: GitHub offers manual runs only for workflows
+#   on the default branch. To retry, re-run the latest Publish run; it
+#   checks out the current `catalogue` tip.
 # - The validator is built from vars.PATCHWORK_REPOSITORY at
 #   vars.PATCHWORK_COMMIT. Nothing in the catalogue is executed; packages are
 #   only read as JSON.
@@ -14,14 +21,12 @@
 #   rules allow to bypass pull requests. Secrets are never available to
 #   pull-request workflows. The job token is read-only.
 # - Runs are serialized; a push that lost a race fails and is retried by the
-#   next run (both commands are idempotent).
+#   next run or a re-run (both commands are idempotent).
 name: Publish
 
 on:
   push:
-    # The catalogue's default branch (change if it is not "main").
-    branches: [main]
-  workflow_dispatch:
+    branches: [catalogue]
 
 permissions:
   contents: read
@@ -33,7 +38,7 @@ concurrency:
 jobs:
   publish:
     name: Publish catalogue
-    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    if: github.ref == 'refs/heads/catalogue'
     runs-on: windows-2022
     timeout-minutes: 90
     environment: publish
@@ -94,7 +99,7 @@ jobs:
       - name: Validate, generate and push
         shell: bash
         env:
-          BRANCH: ${{ github.event.repository.default_branch }}
+          BRANCH: catalogue
         run: |
           set -euo pipefail
           tool="$PWD/patchwork/target/release/patchwork.exe"

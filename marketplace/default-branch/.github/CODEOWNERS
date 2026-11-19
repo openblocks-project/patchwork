@@ -1,0 +1,14 @@
+# CODEOWNERS additions for the DEFAULT BRANCH (main) of the Patchwork
+# repository. Merge these lines into main's .github/CODEOWNERS (create it if
+# it does not exist).
+#
+# The Submission paths guard decides which catalogue pull requests may
+# pass, so any change to it needs review by a small, named security team,
+# not just any collaborator with write access. Every rule must name real
+# accounts or teams; replace the placeholder before installing:
+#
+#      /.github/workflows/submission-paths.yml    @<owner>/<security-team>
+#      /.github/CODEOWNERS                        @<owner>/<security-team>
+#
+# The main branch ruleset must require review from Code Owners for this to
+# take effect (see the catalogue branch's MAINTAINERS.md).

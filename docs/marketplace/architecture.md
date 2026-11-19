@@ -2,8 +2,10 @@
 
 Status: **P4.3.0–P4.3.4 implemented** (catalogue contract; catalogue browser
 with cache; verified installation; runtime trust and permissions; submission
-preparation, §6a; the catalogue repository template, its validator and its
+preparation, §6a; the catalogue branch template, its validator and its
 publication workflows, [catalogue-repository.md](catalogue-repository.md)).
+The catalogue is the orphan `catalogue` branch of the Patchwork repository;
+the trusted Submission paths guard is installed on `main`.
 
 Code: `src/library/marketplace.rs` (tests in `src/library/marketplace/tests.rs`).
 Example catalogue: [`index.example.json`](index.example.json). A test parses
@@ -18,8 +20,9 @@ this file, so it always matches the validator.
 - Users can browse a public catalogue of custom nodes and install exact,
   reviewed versions into their existing versioned Library
   (`~/.patchwork/library/packages/<id>/<version>/`).
-- No custom backend: the catalogue is a public GitHub repository holding a
-  generated `index.json` and immutable artifacts.
+- No custom backend: the catalogue is a public GitHub repository branch
+  (`catalogue` of the Patchwork repository) holding a generated `index.json`
+  and immutable artifacts. Clients configure it as `owner/repo@branch`.
 - The catalogue is **untrusted input**. A catalogue entry never makes a
   package trusted; Patchwork verifies everything itself.
 - Existing behaviour is unchanged: P4.0 flat Library nodes, P4.1 versioned
@@ -40,7 +43,7 @@ this file, so it always matches the validator.
 ## 2. Components
 
 ```text
- GitHub repository  (reviewed by maintainers, validated by CI)
+ GitHub repository branch `catalogue`  (reviewed by maintainers, validated by CI)
  ├── packages/…      unpacked, human-reviewable version folders
  ├── artifacts/…     generated .pwpkg files (immutable once merged)
  └── index.json      generated catalogue
@@ -97,7 +100,8 @@ patchwork-catalogue/                      (repository name and owner to be decid
 P4.3.4: each version's `package.json` must state `min_app_version` (the
 catalogue's `min_patchwork`); listed capabilities are the scanned ones. The
 template, workflows and operating procedures are in
-`marketplace/catalogue-repository/` and
+`marketplace/catalogue-repository/` (the `catalogue` branch),
+`marketplace/default-branch/` (the guard installed on `main`) and
 [catalogue-repository.md](catalogue-repository.md).
 ```
 

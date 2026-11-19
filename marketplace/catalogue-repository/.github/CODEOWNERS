@@ -1,7 +1,10 @@
-# CODEOWNERS for the Patchwork marketplace catalogue.
+# CODEOWNERS for the Patchwork marketplace catalogue (the `catalogue`
+# branch). GitHub reads CODEOWNERS from a pull request's base branch, so this
+# file governs catalogue pull requests; main's CODEOWNERS governs the
+# application and the Submission paths guard.
 #
-# Fill this in when the repository is created (see MAINTAINERS.md,
-# "Repository setup"). Every rule must name real accounts or teams.
+# Fill this in when the branch is created (see MAINTAINERS.md, "Setup").
+# Every rule must name real accounts or teams.
 #
 # 1. The maintainers own everything by default, including the workflows,
 #    this file, moderation.json and every publisher claim:

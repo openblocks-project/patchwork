@@ -1,25 +1,42 @@
-# The trusted "Submission paths" guard, a required check next to
-# "Validate submission".
+# The trusted "Submission paths" guard for Marketplace submissions.
 #
-# Why it exists: validate.yml runs on `pull_request`, so a pull request can
-# replace that workflow for its own run and report a green "Validate
-# submission". This guard runs on `pull_request_target`, which GitHub always
-# takes from the default branch, so a pull request cannot change it. It
-# refuses every pull request that touches anything outside publishers/ and
-# packages/ (so .github/ too) unless the author is a maintainer. While it
-# passes, the "Validate submission" run is the reviewed one.
+# INSTALL ON THE DEFAULT BRANCH (main), not on the catalogue branch. Since
+# 8 December 2025 GitHub always takes `pull_request_target` workflows from
+# the repository's default branch, so a pull request can never change this
+# file for its own run. It runs only for pull requests that target the
+# `catalogue` branch.
+#
+# Why it exists: the catalogue's validate.yml runs on `pull_request`, so a
+# pull request can replace it for its own run and report a green "Validate
+# submission". This guard refuses every pull request that touches anything
+# outside publishers/ and packages/ (so .github/ too) unless the author is
+# a maintainer. While it passes, "Validate submission" ran the reviewed
+# workflow.
+#
+# Result: a commit status named "Submission paths" on the pull request's
+# exact head commit (github.event.pull_request.head.sha). That is the
+# required check on the catalogue branch. A status is used instead of
+# relying on this workflow's own check run because GitHub documents both
+# where a status attaches and how it is required (a check run of the same
+# name must ALSO pass, so a look-alike job cannot satisfy it). Fork pull
+# requests only ever get read-only tokens and cannot post statuses.
 #
 # Security:
 # - Never checks out, builds or runs anything from the pull request. The
-#   catalogue is not checked out at all; the changed-file list comes from
+#   catalogue itself is not checked out; the changed-file list comes from
 #   GitHub's API, the author's numeric id from GitHub's own pull request
 #   record.
-# - Read-only token (contents, pull-requests). No secrets are used; keep the
-#   deploy key in the `publish` environment, never as a repository secret.
+# - Two jobs with separate permissions. `check` (read-only: contents,
+#   pull-requests) builds the pinned validator and decides. `report`
+#   (statuses: write only) checks out and builds nothing; it only posts the
+#   status from `check`'s result.
+# - No secrets are used. Keep repository-level secrets empty: the deploy
+#   key lives only in the `publish` environment.
 # - The checker is Patchwork's `catalogue check-paths`, built from
 #   vars.PATCHWORK_REPOSITORY at vars.PATCHWORK_COMMIT.
 # - Fails closed: an API error, a missing page, a count that does not add
-#   up, or a pull request that changed during the check is a failure.
+#   up, a pull request that changed during the check, or a target other
+#   than `catalogue` is a failure.
 # - Pull-request values reach the scripts through environment variables only.
 name: Submission paths
 
@@ -27,22 +44,24 @@ on:
   pull_request_target:
     # `edited` covers a change of target branch.
     types: [opened, synchronize, reopened, edited]
+    branches: [catalogue]
 
-permissions:
-  contents: read
-  pull-requests: read
+# Nothing by default; each job is granted only what it needs.
+permissions: {}
 
 concurrency:
   group: submission-paths-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
-  submission-paths:
-    # The required check's name. Keep it stable.
-    name: Submission paths
+  check:
+    name: Check submission paths
     # The same build environment as Patchwork's own CI.
     runs-on: windows-2022
     timeout-minutes: 90
+    permissions:
+      contents: read
+      pull-requests: read
     env:
       CMAKE_GENERATOR: "Visual Studio 17 2022"
       CMAKE_POLICY_VERSION_MINIMUM: "3.5"
@@ -116,12 +135,46 @@ jobs:
         shell: bash
         env:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           MAINTAINER_IDS: ${{ vars.MAINTAINER_IDS }}
         run: |
           set -euo pipefail
+          # Submissions must target the catalogue branch (the event's
+          # default branch is the application's, never used here).
           patchwork/target/release/patchwork.exe catalogue check-paths \
             --repository "$GITHUB_REPOSITORY" \
             --pull-before api/before.json --pull-after api/after.json --pages api/pages \
-            --head-sha "$HEAD_SHA" --default-branch "$DEFAULT_BRANCH" \
+            --head-sha "$HEAD_SHA" --default-branch catalogue \
             --maintainer-ids "$MAINTAINER_IDS"
+
+  report:
+    name: Report submission paths
+    needs: check
+    # A cancelled run was replaced by a newer one, which reports for its own
+    # head commit; every other outcome is reported.
+    if: ${{ always() && needs.check.result != 'cancelled' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      statuses: write
+    steps:
+      - name: Set the "Submission paths" status on the pull request's head commit
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          RESULT: ${{ needs.check.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::unexpected head commit"; exit 1
+          fi
+          if [[ "$RESULT" == "success" ]]; then
+            state=success; text="Only publishers/ and packages/ changed."
+          else
+            state=failure; text="Refused or not verified; see the run."
+          fi
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/${HEAD_SHA}" \
+            -f state="$state" -f context="Submission paths" \
+            -f description="$text" -f target_url="$RUN_URL" > /dev/null
+          echo "Submission paths: $state on $HEAD_SHA"

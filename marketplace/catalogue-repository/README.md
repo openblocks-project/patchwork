@@ -1,11 +1,14 @@
 # Patchwork Marketplace Catalogue
 
-This repository is the public catalogue of custom nodes for Patchwork.
-Patchwork reads `index.json` from here and
-installs exact, reviewed package versions into the user's Library.
+This branch, `catalogue`, is the public catalogue of custom nodes for
+Patchwork. It lives in the Patchwork repository as an orphan branch: it
+shares no history with the application, and the application's branches
+never merge into it or out of it. Patchwork reads `index.json` from here
+(marketplace source `<owner>/<repo>`, branch `catalogue`) and installs
+exact, reviewed package versions into the user's Library.
 
-There is no server: everything is a file in this repository, reviewed in
-pull requests and published by automation.
+There is no server: everything is a file on this branch, reviewed in pull
+requests that target `catalogue` and published by automation.
 
 | Path | What it is | Who changes it |
 |---|---|---|

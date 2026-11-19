@@ -779,79 +779,152 @@ fn the_repository_template_is_a_valid_empty_catalogue() {
         Some("* -text"),
         "exact bytes"
     );
+    // Single repository: the catalogue branch holds Validate and Publish;
+    // the Submission paths guard is installed on the default branch (main),
+    // because GitHub takes `pull_request_target` workflows from there.
+    let listing = |dir: &Path| -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    };
     let workflows = template.join(".github/workflows");
-    let mut names: Vec<String> = std::fs::read_dir(&workflows)
-        .unwrap()
-        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-        .collect();
-    names.sort();
     assert_eq!(
-        names,
-        ["publish.yml", "submission-paths.yml", "validate.yml"],
-        "every workflow is reviewed here"
+        listing(&workflows),
+        ["publish.yml", "validate.yml"],
+        "every catalogue workflow is reviewed here; the guard is not one of them"
     );
-    for workflow in ["validate.yml", "publish.yml", "submission-paths.yml"] {
-        let text = std::fs::read_to_string(workflows.join(workflow)).unwrap();
+    let default_branch = Path::new(env!("CARGO_MANIFEST_DIR")).join("marketplace/default-branch");
+    assert_eq!(listing(&default_branch), [".github"]);
+    assert_eq!(
+        listing(&default_branch.join(".github")),
+        ["CODEOWNERS", "workflows"]
+    );
+    assert_eq!(
+        listing(&default_branch.join(".github/workflows")),
+        ["submission-paths.yml"],
+        "exactly two files are installed on main"
+    );
+    for (workflow, file) in [
+        ("validate.yml", workflows.join("validate.yml")),
+        ("publish.yml", workflows.join("publish.yml")),
+        (
+            "submission-paths.yml",
+            default_branch.join(".github/workflows/submission-paths.yml"),
+        ),
+    ] {
+        // Line endings may differ outside the catalogue template's `-text`.
+        let text = std::fs::read_to_string(file).unwrap().replace("\r\n", "\n");
         let code: Vec<&str> = text
             .lines()
             .filter(|l| !l.trim_start().starts_with('#'))
             .collect();
         let has = |needle: &str| code.iter().any(|l| l.contains(needle));
-        if workflow == "submission-paths.yml" {
-            // The trusted guard: taken from the default branch, read-only,
-            // never touching pull-request code.
-            assert!(has("  pull_request_target:"), "{workflow}");
-            assert!(!has("  pull_request:"), "{workflow}");
-            let permissions = text
-                .split("\npermissions:\n")
-                .nth(1)
-                .and_then(|rest| rest.split("\n\n").next())
-                .unwrap();
-            assert_eq!(
-                permissions, "  contents: read\n  pull-requests: read",
-                "{workflow}: minimal read-only permissions"
-            );
-            assert!(
-                has("    name: Submission paths"),
-                "{workflow}: stable check name"
-            );
-            assert_eq!(
-                code.iter()
-                    .filter(|l| l.contains("actions/checkout"))
-                    .count(),
-                1,
-                "{workflow}: only the checker is checked out"
-            );
-            assert!(has("repository: ${{ vars.PATCHWORK_REPOSITORY }}"));
-            for forbidden in [
-                "github.event.pull_request.head.ref",
-                "github.event.pull_request.head.repo",
-                "github.head_ref",
-                "refs/pull/",
-                "secrets.",
-                "${{ github.event.pull_request.title",
-                "${{ github.event.pull_request.body",
-            ] {
-                assert!(!has(forbidden), "{workflow}: {forbidden}");
-            }
-            // Every value from the event reaches scripts through `env:`.
-            for line in code.iter().filter(|l| l.contains("${{ github.event")) {
-                let key = line.trim_start().split(':').next().unwrap();
+        // Everything is bound to the catalogue branch by name. The event's
+        // default branch is the application's and is never used.
+        assert!(has("    branches: [catalogue]"), "{workflow}");
+        assert!(!has("default_branch"), "{workflow}");
+        assert!(!has("workflow_dispatch"), "{workflow}: default branch only");
+        match workflow {
+            "submission-paths.yml" => {
+                // The trusted guard, never touching pull-request code.
+                assert!(has("  pull_request_target:"), "{workflow}");
+                assert!(!has("  pull_request:"), "{workflow}");
+                assert!(has("--default-branch catalogue"), "{workflow}");
+                // Nothing by default; a read-only checker; a reporter that
+                // may only set commit statuses.
+                assert!(text.contains("\npermissions: {}\n"), "{workflow}");
+                let (check, report) = text.split_once("\n  report:\n").unwrap();
                 assert!(
-                    ["HEAD_SHA", "DEFAULT_BRANCH", "PR_NUMBER", "group"].contains(&key),
-                    "{workflow}: {line}"
+                    check.contains(
+                        "    permissions:\n      contents: read\n      pull-requests: read\n    env:"
+                    ),
+                    "{workflow}: read-only checker"
+                );
+                assert!(
+                    report.contains("    permissions:\n      statuses: write\n    steps:"),
+                    "{workflow}: status-only reporter"
+                );
+                assert_eq!(
+                    code.iter().filter(|l| l.contains("permissions:")).count(),
+                    3,
+                    "{workflow}"
+                );
+                assert_eq!(
+                    code.iter().filter(|l| l.contains(": write")).count(),
+                    1,
+                    "{workflow}: statuses is the only write permission"
+                );
+                // The reporter checks out, builds and runs nothing; it sets
+                // the required status on the exact head commit.
+                for line in report.lines().filter(|l| !l.trim_start().starts_with('#')) {
+                    let key = line.trim_start().trim_start_matches("- ");
+                    assert!(!key.starts_with("uses:"), "{workflow}: report: {line}");
+                    for forbidden in ["cargo", "patchwork.exe", "checkout"] {
+                        assert!(!line.contains(forbidden), "{workflow}: report: {line}");
+                    }
+                }
+                assert!(report.contains("    needs: check\n"));
+                assert!(report.contains("statuses/${HEAD_SHA}"));
+                assert!(report.contains("-f context=\"Submission paths\""));
+                assert!(report.contains("HEAD_SHA: ${{ github.event.pull_request.head.sha }}"));
+                assert!(
+                    check.contains("    name: Check submission paths\n"),
+                    "{workflow}: the job is not named like the required status"
+                );
+                assert_eq!(
+                    code.iter()
+                        .filter(|l| l.contains("actions/checkout"))
+                        .count(),
+                    1,
+                    "{workflow}: only the checker is checked out"
+                );
+                assert!(has("repository: ${{ vars.PATCHWORK_REPOSITORY }}"));
+                for forbidden in [
+                    "github.event.pull_request.head.ref",
+                    "github.event.pull_request.head.repo",
+                    "github.head_ref",
+                    "refs/pull/",
+                    "secrets.",
+                    "${{ github.event.pull_request.title",
+                    "${{ github.event.pull_request.body",
+                ] {
+                    assert!(!has(forbidden), "{workflow}: {forbidden}");
+                }
+                // Every value from the event reaches scripts through `env:`.
+                for line in code.iter().filter(|l| l.contains("${{ github.event")) {
+                    let key = line.trim_start().split(':').next().unwrap();
+                    assert!(
+                        ["HEAD_SHA", "PR_NUMBER", "group"].contains(&key),
+                        "{workflow}: {line}"
+                    );
+                }
+                assert!(has("files?per_page=100&page="));
+                assert_eq!(paths::PER_PAGE, 100);
+            }
+            "validate.yml" => {
+                assert!(!has("pull_request_target"), "{workflow}");
+                assert!(has("  pull_request:"), "{workflow}");
+                assert!(
+                    has("    name: Validate submission"),
+                    "{workflow}: stable check name"
                 );
             }
-            assert!(has("files?per_page=100&page="));
-            assert_eq!(paths::PER_PAGE, 100);
-        } else {
-            assert!(!has("pull_request_target"), "{workflow}");
-        }
-        if workflow == "validate.yml" {
-            assert!(
-                has("    name: Validate submission"),
-                "{workflow}: stable check name"
-            );
+            _ => {
+                // Publish: only pushes to catalogue, and only writes there.
+                assert!(!has("pull_request"), "{workflow}");
+                assert!(has("  push:"), "{workflow}");
+                assert!(has("    if: github.ref == 'refs/heads/catalogue'"));
+                assert!(has("          BRANCH: catalogue"));
+                let pushes: Vec<&&str> = code.iter().filter(|l| l.contains("git push")).collect();
+                assert_eq!(
+                    pushes,
+                    [&"          git push origin \"HEAD:refs/heads/${BRANCH}\""],
+                    "{workflow}"
+                );
+            }
         }
         let mut calls = 0;
         for line in code {

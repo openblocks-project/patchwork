@@ -255,9 +255,10 @@ impl super::PatchworkApp {
                             open_folder = Some(path.clone());
                         }
                         ui.label(
-                            "Next: fork the catalogue repository, copy the folder's \
-                             repository/ contents into your fork, and open a pull request. \
-                             SUBMISSION.md in the folder has the exact steps.",
+                            "Next: fork the repository including its catalogue branch, \
+                             copy the folder's repository/ contents into that branch of \
+                             your fork, and open a pull request against the catalogue \
+                             branch. SUBMISSION.md in the folder has the exact steps.",
                         );
                     }
                     Some(Err(why)) => {

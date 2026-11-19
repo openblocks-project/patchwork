@@ -1,8 +1,9 @@
 # Publishing a package
 
-You publish through a normal GitHub pull request. Patchwork never asks for
-your GitHub password, token or login: GitHub identifies you when you open
-the pull request, and that account must own the namespace you publish in.
+You publish through a normal GitHub pull request into the **`catalogue`
+branch** of the Patchwork repository. Patchwork never asks for your GitHub
+password, token or login: GitHub identifies you when you open the pull
+request, and that account must own the namespace you publish in.
 
 ## 1. Prepare the submission in Patchwork
 
@@ -49,12 +50,18 @@ example after a login rename).
 
 ## 3. Open the pull request
 
-1. Fork this repository and clone your fork (or use GitHub's web upload).
-2. Copy everything inside the submission's `repository/` folder into the
-   root of your fork, keeping the folders. Do **not** add `artifact/`,
-   `SUBMISSION.md` or `catalogue-entry.json`.
-3. Commit and push to your fork, then open a pull request against this
-   repository **from the account that owns the namespace**.
+1. Fork the Patchwork repository. When forking, untick "Copy the `main`
+   branch only", so your fork includes `catalogue`. (If your fork already
+   exists without it, fetch `catalogue` from this repository into your fork.)
+2. In your fork, switch to the `catalogue` branch (or clone it with
+   `git clone --branch catalogue --single-branch <your fork>`, which skips
+   the application source). Copy everything inside the submission's
+   `repository/` folder into the root of that branch, keeping the folders.
+   Do **not** add `artifact/`, `SUBMISSION.md` or `catalogue-entry.json`.
+3. Commit and push to `catalogue` (or a branch made from it) in your fork,
+   then open a pull request with **base `catalogue`** (not `main`) **from
+   the account that owns the namespace**. GitHub suggests `main` by default;
+   change it.
 
 A pull request may only:
 
@@ -64,6 +71,7 @@ A pull request may only:
 
 It may never change an existing version folder, `artifacts/`, `index.json`,
 `moderation.json`, another namespace, or the repository's configuration.
+Pull requests into any other branch are not submissions.
 
 ## 4. Automated validation
 
@@ -71,7 +79,9 @@ Two checks must pass.
 
 **Submission paths** checks GitHub's list of changed files. Any change
 outside `publishers/` and `packages/` fails it, including renames and
-deletions. Workflow changes (`.github/`) fail it too.
+deletions. Workflow changes (`.github/`) fail it too, and so does a pull
+request that does not target `catalogue`. It appears as a commit status on
+your pull request.
 
 **Validate submission** runs the same validator Patchwork uses. It checks:
 

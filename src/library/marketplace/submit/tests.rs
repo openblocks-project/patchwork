@@ -171,6 +171,20 @@ fn submissions_are_deterministic_verified_and_install_from_the_marketplace() {
     let readme = std::fs::read_to_string(folder.join("SUBMISSION.md")).unwrap();
     assert!(readme.contains(&prepared.sha256));
     assert!(readme.contains("never asks for your GitHub password"));
+    // The pull request targets the configured catalogue branch, which a
+    // fork must include.
+    let branch = f.location.branch().to_string();
+    assert!(readme.contains(&format!("(base: `{branch}`)")));
+    assert!(readme.contains(&format!("so the fork includes the `{branch}` branch")));
+    // The single-repository catalogue: a branch of the Patchwork repository.
+    let single = CatalogueLocation::new("openblocks-project", "patchwork", "catalogue").unwrap();
+    let steps = super::readme(&prepared, &single);
+    assert!(
+        steps
+            .contains("The catalogue is the `catalogue` branch of `openblocks-project/patchwork`.")
+    );
+    assert!(steps.contains("switch to the `catalogue` branch"));
+    assert!(steps.contains("(base: `catalogue`)"));
     let all = files_in(&folder).unwrap();
     assert!(
         !all.iter()

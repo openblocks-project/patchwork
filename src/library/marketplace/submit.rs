@@ -667,16 +667,20 @@ fn readme(prepared: &Prepared, location: &CatalogueLocation) -> String {
          Patchwork never asks for your GitHub password, token or login. GitHub\n\
          identifies you when you open the pull request.\n\
          \n\
+         The catalogue is the `{branch}` branch of `{owner}/{repo}`.\n\
+         \n\
          1. Sign in to GitHub in your browser and fork\n\
-            <https://github.com/{owner}/{repo}>.\n\
-         2. Copy everything inside `repository/` into your fork, keeping the folder\n\
-            structure. Never change existing files under `packages/` or\n\
-            `artifacts/`: published versions are immutable.\n\
+            <https://github.com/{owner}/{repo}>. Untick the option to copy only the\n\
+            default branch, so the fork includes the `{branch}` branch.\n\
+         2. In your fork, switch to the `{branch}` branch and copy everything inside\n\
+            `repository/` into it, keeping the folder structure. Never change existing\n\
+            files under `packages/` or `artifacts/`: published versions are immutable.\n\
          3. If your namespace `{ns}` is not claimed yet, add `publishers/{ns}.json` with\n\
             your GitHub login and numeric account id, as described in the repository's\n\
             CONTRIBUTING.md. The namespace must be your GitHub login in lowercase.\n\
-         4. Commit, push to your fork and open a pull request against\n\
-            `{owner}/{repo}` from the GitHub account that owns `{ns}`.\n\
+         4. Commit to `{branch}` in your fork, push, and open a pull request against\n\
+            the `{branch}` branch of `{owner}/{repo}` (base: `{branch}`), from the\n\
+            GitHub account that owns `{ns}`.\n\
          5. Automated validation runs the same checks Patchwork ran. It only reads\n\
             the files; it never runs them. Fix anything it reports and push again.\n\
          6. A maintainer (and the namespace owner) reviews the pull request. Once\n\
@@ -690,6 +694,7 @@ fn readme(prepared: &Prepared, location: &CatalogueLocation) -> String {
         size = prepared.size,
         files = prepared.file_count,
         ext = ARTIFACT_EXTENSION,
+        branch = location.branch(),
     )
 }
 

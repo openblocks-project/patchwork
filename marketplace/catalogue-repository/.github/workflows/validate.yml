@@ -1,5 +1,6 @@
-# Validates every pull request with the Patchwork binary's headless
-# `catalogue check-pr` command, built from a reviewed Patchwork commit.
+# Validates every pull request to the `catalogue` branch with the Patchwork
+# binary's headless `catalogue check-pr` command, built from a reviewed
+# Patchwork commit. Lives on the `catalogue` branch.
 #
 # Security:
 # - `pull_request` (never `pull_request_target`): fork pull requests get a
@@ -9,9 +10,10 @@
 #   vars.PATCHWORK_REPOSITORY at vars.PATCHWORK_COMMIT, never from the pull
 #   request.
 # - A pull request can change this file for its own run. The required
-#   "Submission paths" check (submission-paths.yml, pull_request_target,
-#   taken from the default branch) fails any contributor pull request that
-#   touches .github/, so this check counts only together with that one.
+#   "Submission paths" status (submission-paths.yml on the repository's
+#   default branch, pull_request_target, which GitHub always takes from the
+#   default branch) fails any contributor pull request that touches
+#   .github/, so this check counts only together with that one.
 #   Changes under .github/ also need CODEOWNERS review, and the publish
 #   workflow validates everything again after merge.
 # - Pull-request values reach the script through environment variables only
@@ -20,6 +22,7 @@ name: Validate
 
 on:
   pull_request:
+    branches: [catalogue]
 
 permissions:
   contents: read
