@@ -219,8 +219,8 @@ pub const VC_RUNTIME_NOTICE: &str = "\
 Microsoft Visual C++ runtime
 Copyright (c) Microsoft Corporation. All rights reserved.
 
-Included unmodified from the Visual Studio installation named in
-THIRD-PARTY-NOTICES.txt (its VC\\Redist\\MSVC folder). These files are
+Included unmodified from the Visual Studio installation whose
+VC\\Redist\\MSVC folder is named below (\"Source folder\"). These files are
 \"Distributable Code\" under the Microsoft Software License Terms for Visual
 Studio, which permit holders of a validly licensed copy of Visual Studio to
 distribute them with their programs, subject to those terms. The

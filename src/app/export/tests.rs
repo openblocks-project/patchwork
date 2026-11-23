@@ -406,6 +406,11 @@ fn a_minimal_project_exports_to_a_launchable_folder() {
     assert!(source.contains("exactly this commit"), "{source}");
     let vc = std::fs::read_to_string(dest.join("licenses").join("VCRuntime-NOTICE.txt")).unwrap();
     assert!(vc.contains(&fx.redist.display().to_string()), "{vc}");
+    // The notice points at its own "Source folder" line, which is where
+    // the folder is recorded (THIRD-PARTY-NOTICES.txt does not name it).
+    assert!(vc.contains("named below (\"Source folder\")"), "{vc}");
+    assert!(!vc.contains("named in\r\nTHIRD-PARTY-NOTICES"), "{vc}");
+    assert!(!vc.contains("named in\nTHIRD-PARTY-NOTICES"), "{vc}");
     // The program is the Player runtime: no console window.
     let exe = std::fs::read(dest.join("My Show.exe")).unwrap();
     assert_eq!(super::pe::subsystem(&exe), Ok(super::pe::SUBSYSTEM_GUI));
