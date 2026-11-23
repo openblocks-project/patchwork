@@ -11,6 +11,14 @@ description = "A node-based visual programming environment in Rust"
 # `cargo run --bin syphon_spike`.
 default-run = "patchwork"
 
+# P6 Stage 2.3: the runtime of exported apps. The same modules as the
+# editor, built for the Windows GUI subsystem (no console window); it only
+# plays the project its `player.json` names. Tests run in the editor binary.
+[[bin]]
+name = "patchwork-player"
+path = "src/player_main.rs"
+test = false
+
 [dependencies]
 #eframe = { version = "0.31.0", features = ["wgpu"] }
 eframe = { version = "0.31.0", default-features = false, features = ["wgpu", "glow", "default_fonts"] }

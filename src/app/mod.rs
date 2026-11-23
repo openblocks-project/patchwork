@@ -137,9 +137,16 @@ pub(crate) fn draw_shaped_port(
 }
 
 mod canvas;
+// P6 Stage 2.2: Windows portable export.
+pub(crate) mod export;
+// P6 Stage 2.3: File → Export as App → Windows Portable…
+mod export_dialog;
 mod group;
 mod interaction;
 mod io;
+// P6 Stage 2.3: program start, shared by the editor and the exported apps'
+// runtime.
+pub(crate) mod launch;
 // P4.3.2B: MCP loads projects with the same normalization.
 pub(crate) use io::load_project_graph;
 mod library;
@@ -147,6 +154,7 @@ mod marketplace;
 mod menus;
 mod permissions;
 mod permissions_manage;
+pub(crate) mod player;
 mod provenance;
 #[cfg(test)]
 mod provenance_tests;
@@ -328,6 +336,8 @@ pub struct PatchworkApp {
     trust_review: trust::TrustReviewWindow,
     /// P4.3.2D: package execution permissions (banner and review window).
     permissions: permissions::PermissionsWindow,
+    /// P6 Stage 2.3: File → Export as App → Windows Portable…
+    export_dialog: Option<export_dialog::ExportDialog>,
     // P3: Save As dialog state
     save_as_open: bool,
     save_as_name: String,
@@ -371,6 +381,8 @@ pub struct PatchworkApp {
     /// Active toast notifications (top-center, auto-dismiss or sticky).
     /// Pushed via `toast_warn` / `toast_info` / etc; rendered every frame.
     toasts: Vec<toast::Toast>,
+    /// P6: set when running as the Player (`--player`); the editor is off.
+    player: Option<player::PlayerState>,
 }
 
 /// Results from background device enumeration thread
@@ -386,6 +398,15 @@ struct DeviceRefreshResult {
 
 impl PatchworkApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        Self::build(cc, None)
+    }
+
+    /// P6: the Player for `launch` (no editor, no session, no MCP).
+    pub fn new_player(cc: &eframe::CreationContext<'_>, start: player::PlayerStart) -> Self {
+        Self::build(cc, Some(start))
+    }
+
+    fn build(cc: &eframe::CreationContext<'_>, player_launch: Option<player::PlayerStart>) -> Self {
         crate::icons::setup(&cc.egui_ctx);
 
         // Apply persisted user settings — currently runs LRU eviction
@@ -432,6 +453,7 @@ impl PatchworkApp {
             marketplace: Default::default(),
             trust_review: Default::default(),
             permissions: Default::default(),
+            export_dialog: None,
             save_as_open: false,
             save_as_name: String::new(),
             selected_connection: None,
@@ -578,10 +600,12 @@ impl PatchworkApp {
             discard_on_exit: false,
             recent_projects: Vec::new(),
             toasts: Vec::new(),
+            player: None,
         };
         // Always start MCP server thread — auto-detects if stdin is a pipe (Claude Desktop)
         // vs terminal (normal launch). If stdin is a terminal, the thread exits immediately.
-        {
+        // P6: never in the Player (MCP commands edit the graph).
+        if player_launch.is_none() {
             let (tx, rx) = std::sync::mpsc::channel();
             let log = app.mcp_log.clone();
             std::thread::spawn(move || crate::mcp::run_mcp_thread(tx, log));
@@ -593,6 +617,13 @@ impl PatchworkApp {
         // here so HID devices are detected even before the user places an
         // OB Knob node.
         let _ = crate::hid::global();
+
+        // P6: the Player loads its project read-only and never restores or
+        // saves the editor session.
+        if let Some(start) = player_launch {
+            app.start_player(start);
+            return app;
+        }
 
         // Try restoring previous session; fall back to default nodes
         // Try restoring previous session; fall back to default nodes
@@ -982,2714 +1013,39 @@ impl PatchworkApp {
 
     // Pinned nodes: pos is screen pixels, computed to egui coords inline in render
 
-    /// Render nodes. If `pinned_only` is true, only render pinned nodes (at zoom 1.0).
-    /// If false, only render non-pinned nodes (at canvas zoom).
-    fn render_nodes_filtered(
-        &mut self,
-        ctx: &egui::Context,
-        values: &HashMap<(NodeId, usize), PortValue>,
-        pinned_only: bool,
-    ) {
-        let node_ids: Vec<NodeId> = self.graph.nodes.keys().copied().collect();
-        // P4.3.2E1: node bodies of a graph that may not run are not drawn.
-        let inert = !self.graph.content.runnable();
-        let connections = self.graph.connections.clone();
-        let midi_out_ports = self.midi.cached_output_ports.clone();
-        let midi_in_ports = self.midi.cached_input_ports.clone();
-        let serial_ports = self.serial.cached_ports.clone();
-        let monitor_state = std::mem::take(&mut self.monitor);
-        let offset = self.canvas_offset;
-        let zoom = self.canvas_zoom;
-        // Don't create fresh — extend existing to preserve positions from other passes
-        let mut port_positions: HashMap<(NodeId, usize, bool), egui::Pos2> = if pinned_only {
-            std::mem::take(&mut self.port_positions)
-        } else {
-            HashMap::new()
+    /// The runtime part of a frame, shared by the editor and the Player
+    /// (P6): device polling, graph evaluation, packages, GPU and image
+    /// processing. A document that may not run is parked for its duration
+    /// (an empty graph stands in, so every subsystem closes what it
+    /// opened) and put back before returning. Callers resolve the content
+    /// state and enter the document's rights first.
+    /// Where the active graph's package references resolve, and under
+    /// which trust policy. No-op when unchanged.
+    fn set_graph_package_environment(&mut self) {
+        // P4.2 Stage 2: package references resolve against this project's
+        // folder (projects only) and the Library.
+        let package_project_dir = match self.documents.active().kind {
+            crate::document::DocumentKind::Project => {
+                self.project_path.as_ref().map(std::path::PathBuf::from)
+            }
+            crate::document::DocumentKind::CustomNode => None,
         };
-        let mut node_rects: HashMap<NodeId, egui::Rect> = if pinned_only {
-            std::mem::take(&mut self.node_rects)
+        // P6 Stage 2.1: an exported Player uses only what it bundles.
+        let package_library_root = if self.player_isolated() {
+            None
         } else {
-            HashMap::new()
+            self.library_cache.root().ok()
         };
-        let mut pending_connections: Vec<(NodeId, usize, NodeId, usize)> = Vec::new();
-        let mut nodes_to_delete: Vec<NodeId> = Vec::new();
-        let mut osc_actions: Vec<OscAction> = Vec::new();
-        let mut network_actions: Vec<NetworkAction> = Vec::new();
-        let mut dragging_from = self.dragging_from;
-        let mut palette_spawns: Vec<([f32; 2], NodeType)> = Vec::new();
-        let mut midi_actions: Vec<MidiAction> = Vec::new();
-        let mut serial_actions: Vec<SerialAction> = Vec::new();
-        let mut dmx_actions: Vec<crate::dmx::DmxAction> = Vec::new();
-        let mut artnet_actions: Vec<crate::artnet::ArtNetAction> = Vec::new();
-        let mut pending_disconnects: Vec<(NodeId, usize)> = Vec::new();
-        let mut ob_manager = std::mem::replace(&mut self.ob, ObManager::new());
-        let mut audio_manager = std::mem::replace(&mut self.audio, AudioManager::placeholder());
-        let mut http_actions: Vec<HttpAction> = Vec::new();
-        let mut multi_drag: Option<(NodeId, egui::Vec2)> = None; // (dragged_node, delta)
-        let api_keys = self.api_keys.clone();
-        let wgpu_render_state = self.wgpu_render_state.clone();
-
-        // With set_zoom_factor, normal nodes scale automatically via GPU.
-        // We only need the original style to restore after pinned nodes' inverse-zoom.
-        let _original_style = ctx.style();
-        // Capture a baseline when any pointer gesture begins. If the gesture
-        // changed the graph (slider drag, field edit), it's committed as one
-        // undo step on release. push()'s hash dedup drops no-op gestures.
-        if ctx.input(|i| i.pointer.any_pressed()) && self.pending_gesture_snapshot.is_none() {
-            self.pending_gesture_snapshot = Some(UndoSnapshot::new(
-                self.graph.clone(),
-                self.pinned_nodes.clone(),
-            ));
-        }
-
-        for node_id in node_ids {
-            let is_pinned = self.pinned_nodes.contains(&node_id);
-            // Skip nodes not in the current pass
-            if pinned_only != is_pinned {
-                continue;
-            }
-            let mut node = match self.graph.nodes.remove(&node_id) {
-                Some(n) => n,
-                None => continue,
-            };
-            let input_defs = node.node_type.inputs();
-            let output_defs = node.node_type.outputs();
-            let n_inputs = input_defs.len();
-            let n_outputs = output_defs.len();
-            let [cr, cg, cb] = node.node_type.color_hint();
-            let accent = egui::Color32::from_rgb(cr, cg, cb);
-            let title = node.node_type.title().to_string();
-            let midi_conn_out = self.midi.is_output_connected(node_id);
-            let midi_conn_in = self.midi.is_input_connected(node_id);
-            let serial_conn = self.serial.is_connected(node_id);
-            let osc_listening = self.osc.is_listening(node_id);
-            let dmx_output_open = self.dmx.is_output_open(node_id);
-            let dmx_listening = self.dmx.is_listening(node_id);
-            let artnet_listening = self.artnet.is_listening(node_id);
-            let http_pending = self.http.is_pending(node_id);
-
-            let _open = true;
-            let inline = node.node_type.inline_ports() && !inert;
-            // set_zoom_factor(zoom) is active for the whole frame.
-            // Normal: egui_pos = canvas_pos + offset/zoom
-            // Pinned: egui_pos = screen_pos / zoom (fixed screen position, divided to get logical)
-            let offset_egui = offset / zoom;
-            let inv = 1.0 / zoom;
-            let (egui_x, egui_y) = if is_pinned {
-                (node.pos[0] / zoom, node.pos[1] / zoom)
-            } else {
-                (node.pos[0] + offset_egui.x, node.pos[1] + offset_egui.y)
-            };
-            // Use trait method for min_width if available, else defaults
-            let node_width = if let Some(w) = node.node_type.min_width() {
-                if is_pinned { w * inv } else { w }
-            } else {
-                match &node.node_type {
-                    NodeType::Slider { .. } => 50.0,
-                    _ if node.node_type.custom_render() => 50.0,
-                    _ if is_pinned => 180.0 * inv,
-                    _ => 180.0,
-                }
-            };
-            let is_display = node.node_type.title() == "Display";
-            let is_monitor = node.node_type.title() == "Monitor";
-            let is_audio_player = matches!(
-                node.node_type,
-                NodeType::AudioPlayer { .. } | NodeType::AudioPlaylist { .. }
-            );
-            let is_speaker = matches!(node.node_type, NodeType::Speaker { .. });
-            let no_title = node.node_type.no_title()
-                || is_display
-                || is_monitor
-                || is_audio_player
-                || is_speaker;
-            let port_sz = if is_pinned {
-                PORT_INTERACT * inv
-            } else {
-                PORT_INTERACT
-            };
-            let port_r = if is_pinned {
-                PORT_RADIUS * inv
-            } else {
-                PORT_RADIUS
-            };
-            let title_size = if is_pinned { 14.0 * inv } else { 14.0 };
-            let node_icon = crate::icons::node_icon(node.node_type.title());
-            let title_with_icon = format!("{} {}", node_icon, title);
-            let title_rt = egui::RichText::new(&title_with_icon)
-                .color(accent)
-                .strong()
-                .size(title_size);
-            // Pinned windows use zoom-bucketed ID to reset egui's cached window size on zoom change
-            let zoom_bucket = if is_pinned {
-                (zoom * 10.0).round() as i32
-            } else {
-                0
-            };
-            // Apply inverse-zoom style for pinned nodes
-            // Inverse-zoom style for pinned nodes: cancel out set_zoom_factor so they
-            // appear at native screen size regardless of canvas zoom level.
-            if is_pinned {
-                let mut style = ctx.style().as_ref().clone();
-                for (_, font_id) in style.text_styles.iter_mut() {
-                    font_id.size *= inv;
-                }
-                style.spacing.item_spacing *= inv;
-                style.spacing.button_padding *= inv;
-                style.spacing.interact_size *= inv;
-                style.spacing.window_margin *= inv;
-                style.spacing.indent *= inv;
-                style.spacing.icon_width *= inv;
-                style.spacing.icon_width_inner *= inv;
-                style.spacing.icon_spacing *= inv;
-                style.spacing.slider_width *= inv;
-                style.spacing.combo_width *= inv;
-                style.spacing.scroll.bar_width *= inv;
-                style.spacing.scroll.bar_inner_margin *= inv;
-                style.spacing.scroll.bar_outer_margin *= inv;
-                let scale_cr = |r: &mut egui::CornerRadius| {
-                    r.nw = (r.nw as f32 * inv).round().max(1.0) as u8;
-                    r.ne = (r.ne as f32 * inv).round().max(1.0) as u8;
-                    r.sw = (r.sw as f32 * inv).round().max(1.0) as u8;
-                    r.se = (r.se as f32 * inv).round().max(1.0) as u8;
-                };
-                let scale_stroke = |s: &mut egui::Stroke| {
-                    s.width *= inv;
-                };
-                scale_cr(&mut style.visuals.window_corner_radius);
-                scale_stroke(&mut style.visuals.window_stroke);
-                style.visuals.window_shadow.blur =
-                    (style.visuals.window_shadow.blur as f32 * inv).round() as u8;
-                style.visuals.window_shadow.spread =
-                    (style.visuals.window_shadow.spread as f32 * inv).round() as u8;
-                for ws in [
-                    &mut style.visuals.widgets.noninteractive,
-                    &mut style.visuals.widgets.inactive,
-                    &mut style.visuals.widgets.hovered,
-                    &mut style.visuals.widgets.active,
-                ] {
-                    scale_cr(&mut ws.corner_radius);
-                    scale_stroke(&mut ws.bg_stroke);
-                    scale_stroke(&mut ws.fg_stroke);
-                }
-                style.visuals.resize_corner_size *= inv;
-                ctx.set_style(std::sync::Arc::new(style));
-            }
-            let is_custom_render = node.node_type.custom_render();
-            // Custom frame — render_background for trait nodes, legacy match for enum nodes
-            let bg_painter = ctx.layer_painter(egui::LayerId::new(
-                egui::Order::Background,
-                egui::Id::new(("node_bg", node_id)),
-            ));
-            let approx_rect = egui::Rect::from_min_size(
-                egui::pos2(egui_x, egui_y),
-                egui::vec2(node_width, 100.0),
-            );
-            let custom_frame =
-                if let Some(frame) = node.node_type.render_background(&bg_painter, approx_rect) {
-                    Some(frame)
-                } else {
-                    None
-                };
-            let is_comment = node.node_type.title() == "Comment";
-            // Read-only tab, or editing paused while quitting (R3).
-            let read_only_doc = !self.active_is_editable();
-            // P4.2 Stage 2: a packaged instance opens its resolved entry.
-            let custom_node_file = match &node.node_type {
-                NodeType::CustomNodeInstance { .. } => self.graph.custom_instance_source(node_id),
-                _ => None,
-            };
-            let mut win = egui::Window::new(title_rt)
-                .id(egui::Id::new((
-                    "node",
-                    self.documents.active().id,
-                    node_id,
-                    zoom_bucket,
-                )))
-                .current_pos(egui::pos2(egui_x, egui_y))
-                .default_width(node_width)
-                .resizable(is_display && !read_only_doc)
-                .movable(!read_only_doc)
-                .constrain(false)
-                .collapsible(
-                    // Custom-node instances use double-click to open their
-                    // .pwnode, which would otherwise also toggle collapse.
-                    !is_custom_render && !no_title && !is_pinned && custom_node_file.is_none(),
-                )
-                .title_bar(!is_custom_render && !no_title);
-            if is_pinned {
-                win = win.order(egui::Order::Foreground);
-            }
-            if is_display {
-                win = win.default_height(120.0).scroll([false, false]);
-            }
-            if let Some(frame) = custom_frame {
-                win = win.frame(frame);
-            }
-            let resp = win.show(ctx, |ui| {
-                // P4.1: nothing inside a read-only package tab is editable.
-                if read_only_doc {
-                    ui.disable();
-                }
-                // Constrain width to prevent expanding nodes — but Comment
-                // sizes itself tightly to its text (see comment_node.rs
-                // body_w computation), so the 180-floor here was leaving
-                // empty padding to the right of short notes. Skip the
-                // clamp for Comment so its window fits the visible card.
-                if !is_comment {
-                    ui.set_max_width(node_width.max(180.0));
-                }
-
-                // Top input ports (skip for inline-port nodes)
-                if !inline {
-                    for (i, pdef) in input_defs.iter().enumerate() {
-                        ui.horizontal(|ui| {
-                            let (rect, response) = ui.allocate_exact_size(
-                                egui::vec2(port_sz, port_sz),
-                                egui::Sense::click_and_drag(),
-                            );
-                            let val = Graph::static_input_value(&connections, values, node_id, i);
-                            let kind = pdef.kind; // Use semantic kind from port definition
-                            let is_connected = connections
-                                .iter()
-                                .any(|c| c.to_node == node_id && c.to_port == i);
-                            let (type_fill, type_border) = port_colors_for_kind(kind, false);
-                            let (fill, border) = if response.hovered() || response.dragged() {
-                                (egui::Color32::YELLOW, egui::Color32::WHITE)
-                            } else {
-                                (type_fill, type_border)
-                            };
-                            // Highlight port if click-wiring and hovering a compatible target
-                            let click_wiring_hover =
-                                self.click_wiring && dragging_from.is_some() && response.hovered();
-                            let (fill, border) = if click_wiring_hover {
-                                (egui::Color32::from_rgb(100, 255, 100), egui::Color32::WHITE)
-                            } else {
-                                (fill, border)
-                            };
-                            draw_shaped_port(
-                                ui.painter(),
-                                rect.center(),
-                                port_r,
-                                fill,
-                                border,
-                                PORT_BORDER,
-                                kind,
-                                is_connected,
-                            );
-                            port_positions.insert((node_id, i, true), rect.center());
-                            ui.label(format!("{}: {}", pdef.name, val));
-                            if !self.save_as_open && response.drag_started() {
-                                if let Some(existing) = connections
-                                    .iter()
-                                    .find(|c| c.to_node == node_id && c.to_port == i)
-                                {
-                                    let src_node = existing.from_node;
-                                    let src_port = existing.from_port;
-                                    dragging_from = Some((src_node, src_port, true));
-                                    pending_disconnects.push((node_id, i));
-                                } else {
-                                    dragging_from = Some((node_id, i, false));
-                                }
-                            }
-                            // Click-to-connect: click on input port starts or completes wiring
-                            // Click-to-connect: click on input port starts or completes wiring
-                            if !self.save_as_open && response.clicked() {
-                                if let Some((src_node, src_port, is_output)) = dragging_from {
-                                    if self.click_wiring && is_output && node_id != src_node {
-                                        // Complete: output → this input
-                                        pending_connections.push((src_node, src_port, node_id, i));
-                                        dragging_from = None;
-                                        self.click_wiring = false;
-                                    } else if self.click_wiring && !is_output && node_id != src_node
-                                    {
-                                        // Complete: this input ← input (reverse)
-                                        pending_connections.push((node_id, i, src_node, src_port));
-                                        dragging_from = None;
-                                        self.click_wiring = false;
-                                    }
-                                } else {
-                                    // Start click-wiring from input port
-                                    if let Some(existing) = connections
-                                        .iter()
-                                        .find(|c| c.to_node == node_id && c.to_port == i)
-                                    {
-                                        dragging_from =
-                                            Some((existing.from_node, existing.from_port, true));
-                                        pending_disconnects.push((node_id, i));
-                                    } else {
-                                        dragging_from = Some((node_id, i, false));
-                                    }
-                                    self.click_wiring = true;
-                                }
-                            }
-                        });
-                    }
-                    if !input_defs.is_empty() {
-                        ui.separator();
-                    }
-                }
-
-                let project_dir_path = self.project_path.as_deref().map(std::path::Path::new);
-                // P4.3.2E1: a graph that may not run is drawn inert: its
-                // nodes, ports and wires stay editable, but node code (and
-                // the device, network and audio actions it can request) does
-                // not run. Editor chrome (File, Zoom, Palette) stays usable.
-                if inert && !crate::graph::group::is_editor_chrome(&node.node_type) {
-                    ui.weak("Not running: this document needs permission.");
-                } else {
-                    nodes::render_content(
-                        ui,
-                        &mut node.node_type,
-                        node_id,
-                        values,
-                        &connections,
-                        &midi_out_ports,
-                        &midi_in_ports,
-                        midi_conn_out,
-                        midi_conn_in,
-                        &mut midi_actions,
-                        &serial_ports,
-                        serial_conn,
-                        &mut serial_actions,
-                        &monitor_state,
-                        osc_listening,
-                        &mut osc_actions,
-                        &mut network_actions,
-                        &mut port_positions,
-                        &mut dragging_from,
-                        &mut http_actions,
-                        http_pending,
-                        &api_keys,
-                        &wgpu_render_state,
-                        &mut pending_disconnects,
-                        &mut ob_manager,
-                        &mut audio_manager,
-                        &self.mcp_log,
-                        self.mcp_rx.is_some(),
-                        &mut dmx_actions,
-                        &mut artnet_actions,
-                        dmx_output_open,
-                        dmx_listening,
-                        artnet_listening,
-                        project_dir_path,
-                    );
-                }
-
-                // Check if a Palette node wants to spawn new nodes
-                if matches!(node.node_type, NodeType::Palette { .. }) {
-                    for spawn_nt in nodes::palette_actions(ui) {
-                        palette_spawns.push((node.pos, spawn_nt));
-                    }
-                }
-
-                // Bottom output ports (skip for inline-port nodes)
-                if !inline {
-                    if !output_defs.is_empty() {
-                        ui.separator();
-                    }
-                    for (i, pdef) in output_defs.iter().enumerate() {
-                        let val = values
-                            .get(&(node_id, i))
-                            .cloned()
-                            .unwrap_or(PortValue::None);
-                        let label_text = format!("{}: {}", pdef.name, val);
-                        let kind = pdef.kind; // Use semantic kind from port definition
-                        let is_connected = connections
-                            .iter()
-                            .any(|c| c.from_node == node_id && c.from_port == i);
-                        let (type_fill, type_border) = port_colors_for_kind(kind, true);
-
-                        // Use columns: label left, port circle right
-                        ui.horizontal(|ui| {
-                            ui.label(&label_text);
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    let (rect, response) = ui.allocate_exact_size(
-                                        egui::vec2(port_sz, port_sz),
-                                        egui::Sense::click_and_drag(),
-                                    );
-                                    // Highlight port if click-wiring and hovering a compatible target
-                                    let click_wiring_hover = self.click_wiring
-                                        && dragging_from.is_some()
-                                        && response.hovered();
-                                    let (fill, border) = if click_wiring_hover {
-                                        (
-                                            egui::Color32::from_rgb(100, 255, 100),
-                                            egui::Color32::WHITE,
-                                        )
-                                    } else if response.hovered() || response.dragged() {
-                                        (egui::Color32::YELLOW, egui::Color32::WHITE)
-                                    } else {
-                                        (type_fill, type_border)
-                                    };
-                                    draw_shaped_port(
-                                        ui.painter(),
-                                        rect.center(),
-                                        port_r,
-                                        fill,
-                                        border,
-                                        PORT_BORDER,
-                                        kind,
-                                        is_connected,
-                                    );
-                                    port_positions.insert((node_id, i, false), rect.center());
-                                    if !self.save_as_open && response.drag_started() {
-                                        dragging_from = Some((node_id, i, true));
-                                    }
-                                    // Click-to-connect: click on output port starts or completes wiring
-                                    // Click-to-connect: click on output port starts or completes wiring
-                                    if !self.save_as_open && response.clicked() {
-                                        if let Some((src_node, src_port, is_output)) = dragging_from
-                                        {
-                                            if self.click_wiring
-                                                && !is_output
-                                                && node_id != src_node
-                                            {
-                                                // Complete: input → this output
-                                                pending_connections
-                                                    .push((node_id, i, src_node, src_port));
-                                                dragging_from = None;
-                                                self.click_wiring = false;
-                                            } else if self.click_wiring
-                                                && is_output
-                                                && node_id != src_node
-                                            {
-                                                // Complete: output → output (swap direction)
-                                                pending_connections
-                                                    .push((src_node, src_port, node_id, i));
-                                                dragging_from = None;
-                                                self.click_wiring = false;
-                                            }
-                                        } else {
-                                            // Start click-wiring from output port
-                                            dragging_from = Some((node_id, i, true));
-                                            self.click_wiring = true;
-                                        }
-                                    }
-                                },
-                            );
-                        });
-                    }
-                }
-            });
-
-            // Restore original style after pinned window's inverse-zoom
-            if is_pinned {
-                ctx.set_style(_original_style.clone());
-            }
-
-            if let Some(r) = &resp {
-                if !self.save_as_open {
-                    if is_pinned {
-                        // Pinned: drag delta is in logical (screen/zoom), store as screen pixels
-                        if r.response.dragged() {
-                            let delta = r.response.drag_delta();
-                            node.pos[0] += delta.x * zoom;
-                            node.pos[1] += delta.y * zoom;
-                        }
-                    } else {
-                        // Normal: convert logical pos back to canvas coords
-                        let offset_egui = offset / zoom;
-                        node.pos = [
-                            r.response.rect.left() - offset_egui.x,
-                            r.response.rect.top() - offset_egui.y,
-                        ];
-                    }
-                }
-                node_rects.insert(node_id, r.response.rect);
-
-                // Pin badge removed — pinned state is shown via the title bar accent color
-
-                // Selection on click (Shift = toggle, no Shift = replace)
-                // For custom_render nodes (Slider), only select on drag — click opens their popup
-                let select_trigger = if is_custom_render {
-                    r.response.drag_started()
-                } else {
-                    r.response.clicked() || r.response.drag_started()
-                };
-                // Stage 5: no selection changes while a version switch is
-                // being confirmed.
-                if !self.save_as_open
-                    && self.pending_version_switch.is_none()
-                    && select_trigger
-                    && !ctx.input(|i| i.modifiers.alt)
-                {
-                    let shift = ctx.input(|i| i.modifiers.shift);
-                    if shift {
-                        if self.selected_nodes.contains(&node_id) {
-                            self.selected_nodes.remove(&node_id);
-                        } else {
-                            self.selected_nodes.insert(node_id);
-                        }
-                    } else if !self.selected_nodes.contains(&node_id) {
-                        self.selected_nodes.clear();
-                        self.selected_nodes.insert(node_id);
-                    }
-                    self.selected_connection = None;
-                    crate::system_log::log(&format!(
-                        "select block: node {:?} alt={} selected_nodes now = {:?}",
-                        node_id,
-                        ctx.input(|i| i.modifiers.alt),
-                        self.selected_nodes
-                    ));
-                }
-
-                // P3: A double-click on any node belongs to that node, never
-                // to the empty canvas behind it.
-                let double_clicked_here = r.response.double_clicked()
-                    || (ctx.input(|i| {
-                        i.pointer
-                            .button_double_clicked(egui::PointerButton::Primary)
-                    }) && ctx
-                        .pointer_latest_pos()
-                        .map(|p| r.response.rect.contains(p))
-                        .unwrap_or(false));
-                if double_clicked_here {
-                    self.node_double_click_consumed = true;
-                }
-
-                // P3: Double-click a custom-node instance to edit its .pwnode.
-                if let Some(file) = &custom_node_file {
-                    if !self.save_as_open
-                        && self.pending_close_tab.is_none()
-                        && !self.documents.is_locked()
-                        && double_clicked_here
-                    {
-                        self.pending_edit_custom_node = Some(file.clone());
-                    }
-                }
-
-                // Right-click context menu — skip for custom_render nodes (they handle their own UI)
-                let secondary_in_rect = !is_custom_render
-                    && ctx.input(|i| i.pointer.button_clicked(egui::PointerButton::Secondary))
-                    && ctx
-                        .pointer_latest_pos()
-                        .map(|p| r.response.rect.contains(p))
-                        .unwrap_or(false);
-                if !self.save_as_open
-                    && !read_only_doc
-                    && !is_custom_render
-                    && (r.response.secondary_clicked() || secondary_in_rect)
-                {
-                    if !self.selected_nodes.contains(&node_id) {
-                        self.selected_nodes.clear();
-                        self.selected_nodes.insert(node_id);
-                    }
-                    self.context_menu_node = Some(node_id);
-                    self.show_context_menu = true;
-                    self.context_menu_pos =
-                        ctx.pointer_latest_pos().unwrap_or(r.response.rect.center());
-                    self.context_menu_opened_at = ctx.input(|i| i.time);
-                }
-
-                // Draw selection highlight — consistent for every node type.
-                // (Custom-render nodes like Slider don't draw their own ring,
-                // so they previously appeared unselected even when active.)
-                if self.selected_nodes.contains(&node_id) {
-                    // let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("selection")));
-                    let painter = ctx.layer_painter(r.response.layer_id);
-                    let sel_accent = ctx
-                        .data_mut(|d| d.get_temp::<[u8; 3]>(egui::Id::new("theme_accent")))
-                        .unwrap_or([80, 160, 255]);
-                    painter.rect_stroke(
-                        r.response.rect.expand(2.0),
-                        4.0,
-                        egui::Stroke::new(
-                            2.0,
-                            egui::Color32::from_rgb(sel_accent[0], sel_accent[1], sel_accent[2]),
-                        ),
-                        egui::StrokeKind::Outside,
-                    );
-                }
-                // Pin indicator — solid accent circle with white pin icon
-                if is_pinned {
-                    // let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("pins")));
-                    let painter = ctx.layer_painter(r.response.layer_id);
-                    let badge_center =
-                        egui::pos2(r.response.rect.left() + 12.0, r.response.rect.top() - 4.0);
-                    let theme_accent = ctx
-                        .data_mut(|d| d.get_temp::<[u8; 3]>(egui::Id::new("theme_accent")))
-                        .unwrap_or([80, 160, 255]);
-                    let accent_color =
-                        egui::Color32::from_rgb(theme_accent[0], theme_accent[1], theme_accent[2]);
-                    // Solid accent background circle (24x24 = radius 12)
-                    painter.circle_filled(badge_center, 12.0, accent_color);
-                    // White pin icon on top
-                    painter.text(
-                        badge_center,
-                        egui::Align2::CENTER_CENTER,
-                        crate::icons::PUSH_PIN,
-                        egui::FontId::proportional(13.0),
-                        egui::Color32::WHITE,
-                    );
-                }
-
-                // P4.3.2D: a package runtime refused by authorization keeps
-                // its node and wires; label it so it is not mistaken for a
-                // working node. Details are in Library → Permissions.
-                if let Some(blocked) = self.graph.custom_blocked(node_id) {
-                    let text = if blocked.needs_review() {
-                        "🔒 Needs permission"
-                    } else {
-                        "🔒 Blocked"
-                    };
-                    let painter = ctx.layer_painter(r.response.layer_id);
-                    painter.text(
-                        egui::pos2(r.response.rect.left(), r.response.rect.top() - 6.0),
-                        egui::Align2::LEFT_BOTTOM,
-                        text,
-                        egui::FontId::proportional(12.0),
-                        egui::Color32::from_rgb(255, 190, 80),
-                    );
-                }
-                // Error badge — red border + ⚠ corner icon when this node has a
-                // recorded evaluation error. Click/hover to read the message.
-                if let Some(err) = crate::node_errors::get(node_id) {
-                    // let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("node_errors")));
-                    let painter = ctx.layer_painter(r.response.layer_id);
-                    let err_red = egui::Color32::from_rgb(230, 80, 80);
-                    // Red border around the whole node
-                    painter.rect_stroke(
-                        r.response.rect.expand(2.0),
-                        4.0,
-                        egui::Stroke::new(2.0, err_red),
-                        egui::StrokeKind::Outside,
-                    );
-                    // Warning badge at the top-right corner
-                    let badge_center =
-                        egui::pos2(r.response.rect.right() - 12.0, r.response.rect.top() - 4.0);
-                    painter.circle_filled(badge_center, 10.0, err_red);
-                    painter.circle_stroke(
-                        badge_center,
-                        10.0,
-                        egui::Stroke::new(1.0, egui::Color32::WHITE),
-                    );
-                    painter.text(
-                        badge_center,
-                        egui::Align2::CENTER_CENTER,
-                        "!",
-                        egui::FontId::proportional(13.0),
-                        egui::Color32::WHITE,
-                    );
-                    // Hover tooltip with the full error message — shown when
-                    // the pointer is over the node window or its badge.
-                    let pointer_over = ctx
-                        .pointer_latest_pos()
-                        .map(|p| r.response.rect.expand(4.0).contains(p))
-                        .unwrap_or(false);
-                    if pointer_over {
-                        egui::show_tooltip_at_pointer(
-                            ctx,
-                            egui::LayerId::new(
-                                egui::Order::Tooltip,
-                                egui::Id::new("node_err_tip_layer"),
-                            ),
-                            egui::Id::new(("node_err_tip", node_id)),
-                            |ui| {
-                                ui.colored_label(err_red, "⚠ Node error");
-                                ui.label(egui::RichText::new(&err.message).monospace().size(11.0));
-                            },
-                        );
-                    }
-                }
-
-                // Collapsed node: populate fallback port positions so wires still draw
-                let is_collapsed = r.inner.is_none();
-                if is_collapsed {
-                    let rect = r.response.rect;
-                    let n_in = n_inputs;
-                    let n_out = n_outputs;
-                    let fg = ctx.layer_painter(egui::LayerId::new(
-                        egui::Order::Foreground,
-                        egui::Id::new("collapsed_ports"),
-                    ));
-                    // Input dots: dim version of theme text color (subtle hint).
-                    // Output dots: theme accent so they read as the node's
-                    // outgoing identity, matching the selected-wire highlight.
-                    let theme_text = crate::nodes::theme::current_text_arr(ctx);
-                    let in_dot = egui::Color32::from_rgba_unmultiplied(
-                        theme_text[0],
-                        theme_text[1],
-                        theme_text[2],
-                        90,
-                    );
-                    let out_dot = crate::nodes::theme::current_accent(ctx);
-                    for i in 0..n_in {
-                        let y_off = if n_in > 1 {
-                            (i as f32 - (n_in - 1) as f32 / 2.0) * 4.0
-                        } else {
-                            0.0
-                        };
-                        let pos = egui::pos2(rect.left() - PORT_RADIUS, rect.center().y + y_off);
-                        port_positions.insert((node_id, i, true), pos);
-                        fg.circle_filled(pos, 3.0, in_dot);
-                    }
-                    for i in 0..n_out {
-                        let y_off = if n_out > 1 {
-                            (i as f32 - (n_out - 1) as f32 / 2.0) * 4.0
-                        } else {
-                            0.0
-                        };
-                        let pos = egui::pos2(rect.right() + PORT_RADIUS, rect.center().y + y_off);
-                        port_positions.insert((node_id, i, false), pos);
-                        fg.circle_filled(pos, 3.0, out_dot);
-                    }
-
-                    // For WGSL nodes: run the offscreen render pass even when collapsed
-                    // so downstream multi-pass chains keep receiving image data.
-                    if let NodeType::WgslViewer {
-                        wgsl_code,
-                        uniform_names,
-                        uniform_types,
-                        uniform_values,
-                        canvas_w,
-                        canvas_h,
-                        image_a_mode,
-                        image_b_mode,
-                        feedback_reset_pending,
-                        ..
-                    } = &mut node.node_type
-                    {
-                        crate::nodes::wgsl_viewer::render_offscreen_pass(
-                            ctx,
-                            node_id,
-                            wgsl_code,
-                            uniform_names,
-                            uniform_types,
-                            uniform_values,
-                            *canvas_w,
-                            *canvas_h,
-                            *image_a_mode,
-                            *image_b_mode,
-                            feedback_reset_pending,
-                            &connections,
-                            values,
-                            &wgpu_render_state,
-                        );
-                    }
-                }
-
-                // Undo snapshot on drag start (coalesced — one per gesture)
-                if r.response.drag_started()
-                    && !ctx.input(|i| i.modifiers.alt)
-                    && !self.drag_undo_pushed
-                {
-                    self.push_undo();
-                    self.drag_undo_pushed = true;
-                }
-                if r.response.drag_stopped() {
-                    self.drag_undo_pushed = false;
-                }
-
-                // Undo snapshot for property edits (slider drags, DragValue, text fields, etc.).
-                // render_content() signals via temp data when a widget interaction starts.
-                let prop_signal_id = egui::Id::new("_patchwork_prop_edit_signal");
-                if ctx.data_mut(|d| d.get_temp::<bool>(prop_signal_id).unwrap_or(false)) {
-                    ctx.data_mut(|d| d.remove::<bool>(prop_signal_id));
-                    crate::system_log::log("PROP SIGNAL READ".to_string());
-                    if !self.property_undo_pushed {
-                        self.push_undo();
-                        self.property_undo_pushed = true;
-                    }
-                }
-
-                // Track drag delta for multi-node movement
-                if r.response.dragged()
-                    && self.selected_nodes.contains(&node_id)
-                    && self.selected_nodes.len() > 1
-                {
-                    multi_drag = Some((node_id, r.response.drag_delta()));
-                }
-
-                // Option+drag to duplicate
-                if r.response.drag_started() && ctx.input(|i| i.modifiers.alt) {
-                    self.opt_drag_source = Some(node_id);
-                }
-            }
-            // Process slider popup actions (pin/delete)
-            // Check all custom node pin actions
-            let pin_id = egui::Id::new(("slider_pin_action", node_id));
-            let display_pin_id = egui::Id::new(("display_pin_action", node_id));
-            let has_pin = ctx.data_mut(|d| d.get_temp::<bool>(pin_id).unwrap_or(false))
-                || ctx.data_mut(|d| d.get_temp::<bool>(display_pin_id).unwrap_or(false));
-            ctx.data_mut(|d| {
-                d.remove::<bool>(pin_id);
-                d.remove::<bool>(display_pin_id);
-            });
-            if has_pin {
-                self.push_undo();
-                if self.pinned_nodes.contains(&node_id) {
-                    // Unpin: current pos is screen pixels stored by pinned rendering
-                    // Convert to canvas coords: canvas = (screen - offset) / zoom
-                    let sx = node.pos[0];
-                    let sy = node.pos[1];
-                    node.pos = [(sx - offset.x) / zoom, (sy - offset.y) / zoom];
-                    self.pinned_nodes.remove(&node_id);
-                } else {
-                    // Pin: current pos is canvas coords
-                    // Convert to screen pixels: screen = canvas * zoom + offset
-                    let cx = node.pos[0];
-                    let cy = node.pos[1];
-                    node.pos = [cx * zoom + offset.x, cy * zoom + offset.y];
-                    self.pinned_nodes.insert(node_id);
-                }
-            }
-            // Handle delete actions from custom node popups (Slider, Comment, etc.)
-            for prefix in &[
-                "slider_delete_action",
-                "comment_delete_action",
-                "display_delete_action",
-                "button_delete_action",
-            ] {
-                let del_id = egui::Id::new((*prefix, node_id));
-                if ctx.data_mut(|d| d.get_temp::<bool>(del_id).unwrap_or(false)) {
-                    ctx.data_mut(|d| d.remove::<bool>(del_id));
-                    self.push_undo();
-                    nodes_to_delete.push(node_id);
-                }
-            }
-
-            self.graph.nodes.insert(node_id, node);
-        }
-        if ctx.input(|i| i.pointer.any_released()) {
-            if let Some(base) = self.pending_gesture_snapshot.take() {
-                let current = UndoSnapshot::new(self.graph.clone(), self.pinned_nodes.clone());
-                if !base.has_same_content(&current) {
-                    self.undo_history.push(base);
-                    self.is_dirty = true;
-                }
-            }
-        }
-
-        // Apply multi-node drag: move all other selected nodes by the same delta
-        if let Some((dragged_id, delta)) = multi_drag {
-            if delta.length() > 0.0 {
-                for &nid in &self.selected_nodes {
-                    if nid != dragged_id {
-                        if let Some(node) = self.graph.nodes.get_mut(&nid) {
-                            if self.pinned_nodes.contains(&nid) {
-                                node.pos[0] += delta.x * zoom;
-                                node.pos[1] += delta.y * zoom;
-                            } else {
-                                // delta is in egui logical coords; convert to canvas coords
-                                node.pos[0] += delta.x;
-                                node.pos[1] += delta.y;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        if let Some((src_node, src_port, is_output)) = dragging_from {
-            if self.click_wiring {
-                // Click-wiring mode: cancel on Escape or right-click
-                let cancel = ctx.input(|i| i.key_pressed(egui::Key::Escape))
-                    || ctx.input(|i| i.pointer.button_clicked(egui::PointerButton::Secondary));
-                if cancel {
-                    dragging_from = None;
-                    self.click_wiring = false;
-                }
-                // Connection completion is handled in the port click handlers above
-            } else {
-                // Normal drag mode: complete on release
-                if ctx.input(|i| i.pointer.any_released()) {
-                    if let Some(pointer) = ctx.pointer_latest_pos() {
-                        // Find the CLOSEST compatible port within the hit radius,
-                        // not the first arbitrary one from HashMap iteration.
-                        // Track the closest *incompatible* port too — if the user
-                        // released right on top of an incompatible port we want
-                        // to surface a toast instead of silently doing nothing.
-                        let hit_radius = PORT_INTERACT * 2.0;
-                        let mut best: Option<(f32, NodeId, usize, bool)> = None;
-                        let mut best_incompat: Option<(f32, PortKind, PortKind)> = None;
-
-                        crate::system_log::log(&format!(
-                            "drop: src=({},{}) is_output={} ptr=({:.0},{:.0}) radius={:.0} ports={}",
-                            src_node,
-                            src_port,
-                            is_output,
-                            pointer.x,
-                            pointer.y,
-                            hit_radius,
-                            port_positions.len()
-                        ));
-
-                        for (&(n, p, i), &q) in &port_positions {
-                            crate::system_log::log(&format!(
-                                "    reg nid={} pidx={} is_input={} at=({:.0},{:.0})",
-                                n, p, i, q.x, q.y
-                            ));
-                        }
-
-                        for (&(nid, pidx, is_input), &pos) in &port_positions {
-                            let dist = pos.distance(pointer);
-
-                            if dist < 120.0 {
-                                crate::system_log::log(&format!(
-                                    "  cand nid={} pidx={} is_input={} dist={:.0} same_node={}",
-                                    nid,
-                                    pidx,
-                                    is_input,
-                                    dist,
-                                    nid == src_node
-                                ));
-                            }
-                            if dist < hit_radius && nid != src_node {
-                                // Must be opposite direction (output→input or input→output)
-                                let valid_dir =
-                                    (is_output && is_input) || (!is_output && !is_input);
-                                if valid_dir {
-                                    // Check port type compatibility
-                                    let src_kind =
-                                        self.graph.port_kind(src_node, src_port, is_output);
-                                    let tgt_kind = self.graph.port_kind(nid, pidx, !is_input);
-                                    let compatible = match (src_kind, tgt_kind) {
-                                        (Some(s), Some(t)) => PortKind::compatible(s, t),
-                                        _ => true, // Unknown port kind — allow connection
-                                    };
-                                    if compatible {
-                                        if best.as_ref().map(|b| dist < b.0).unwrap_or(true) {
-                                            best = Some((dist, nid, pidx, is_input));
-                                        }
-                                    } else if let (Some(s), Some(t)) = (src_kind, tgt_kind) {
-                                        if best_incompat
-                                            .as_ref()
-                                            .map(|b| dist < b.0)
-                                            .unwrap_or(true)
-                                        {
-                                            best_incompat = Some((dist, s, t));
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        if let Some((_, nid, pidx, is_input)) = best {
-                            if is_output && is_input {
-                                pending_connections.push((src_node, src_port, nid, pidx));
-                            } else {
-                                pending_connections.push((nid, pidx, src_node, src_port));
-                            }
-                        } else if let Some((_, src_kind, tgt_kind)) = best_incompat {
-                            // User dropped on a port but the kinds don't match —
-                            // tell them why nothing happened.
-                            let (from_k, to_k) = if is_output {
-                                (src_kind, tgt_kind)
-                            } else {
-                                (tgt_kind, src_kind)
-                            };
-                            self.toast_warn(format!("Can't connect {:?} → {:?}", from_k, to_k));
-                        }
-                    }
-                    dragging_from = None;
-                }
-            }
-        }
-
-        // Sync click_wiring state with egui temp data (for inline port nodes)
-        ctx.data_mut(|d| d.insert_temp(egui::Id::new("click_wiring_active"), self.click_wiring));
-        // Pick up click-wire completions from inline ports
-        if let Some((fn_, fp, tn, tp)) = ctx.data_mut(|d| {
-            d.get_temp::<(NodeId, usize, NodeId, usize)>(egui::Id::new("click_wire_complete"))
-        }) {
-            ctx.data_mut(|d| {
-                d.remove::<(NodeId, usize, NodeId, usize)>(egui::Id::new("click_wire_complete"))
-            });
-            pending_connections.push((fn_, fp, tn, tp));
-            dragging_from = None;
-            self.click_wiring = false;
-        }
-
-        self.dragging_from = dragging_from;
-        self.port_positions = port_positions;
-        self.node_rects = node_rects;
-        self.monitor = monitor_state;
-        self.ob = ob_manager;
-        self.audio = audio_manager;
-
-        // Reset property-edit undo coalescing when no interaction is active.
-        // This lets the NEXT widget interaction push a fresh undo snapshot.
-        if !ctx.input(|i| i.pointer.any_down()) && ctx.memory(|mem| mem.focused().is_none()) {
-            self.property_undo_pushed = false;
-        }
-
-        // Audio chains are built after graph evaluation (below) so Select
-        // nodes can be resolved using the current frame's port values.
-
-        // Push undo snapshot if any graph mutations are pending
-        // (palette_spawns push their own per-node undo snapshots below)
-        if !nodes_to_delete.is_empty()
-            || !pending_disconnects.is_empty()
-            || !pending_connections.is_empty()
-        {
-            self.push_undo();
-        }
-        let any_deleted = !nodes_to_delete.is_empty();
-        for id in nodes_to_delete {
-            // Clear opt-drag state if the source or duplicated node is being deleted
-            if self.opt_drag_source == Some(id) {
-                self.opt_drag_source = None;
-            }
-            if self.opt_drag_created == Some(id) {
-                self.opt_drag_created = None;
-            }
-            self.audio.remove_processor(id); // Remove from engine before graph
-            self.midi.cleanup_node(id);
-            self.serial.cleanup_node(id);
-            self.osc.cleanup_node(id);
-            self.network.cleanup_node(id);
-            self.ob.cleanup_node(id);
-            self.audio.cleanup_node(id);
-            crate::nodes::video_player::cleanup_node(id);
-            // Drop GPU textures owned by this node immediately so VRAM
-            // doesn't balloon when users rapidly spawn/delete image nodes.
-            self.gpu_tex_cache
-                .invalidate_node(id, self.wgpu_render_state.as_ref());
-            self.graph.remove_node(id);
-            // Clean up UI state for deleted node
-            self.node_rects.remove(&id);
-            self.port_positions.retain(|&(nid, _, _), _| nid != id);
-        }
-        if any_deleted {
-            // Per-node `invalidate_node` clears the GPU cache, but the
-            // egui temp data keys (`("dyn_img_cache", id)`, etc.) are
-            // still alive. If the user then undoes the delete, the
-            // restored node would short-circuit on the stale cache and
-            // hand out a `PortValue::GpuImage` whose backing texture
-            // was already invalidated, rendering blank until they
-            // touched a parameter. Schedule a wholesale wipe.
-            self.caches_dirty = true;
-        }
-        for (nid, port) in &pending_disconnects {
-            // Skip mixer gain ports — they're graph-layer, not engine connections
-            let is_mixer_gain_port = matches!(
-                self.graph.nodes.get(nid).map(|n| &n.node_type),
-                Some(NodeType::AudioMixer { .. })
-            ) && port % 2 != 0;
-            if !is_mixer_gain_port {
-                let engine_port = self.mixer_engine_port(*nid, *port);
-                self.audio.disconnect_audio(*nid, engine_port);
-            }
-            self.graph.remove_connections_to_port(*nid, *port);
-        }
-
-        // Generic Script stale-connection sweep: prune any connection whose
-        // from_port or to_port falls outside the Script node's current valid
-        // port range. This catches output-side stale wires (which the
-        // to-port-based pending_disconnects mechanism can't handle) and any
-        // edge cases from load/rename shuffles.
-        {
-            let script_info: Vec<(NodeId, usize, usize, bool)> = self
-                .graph
-                .nodes
-                .iter()
-                .filter_map(|(id, n)| match &n.node_type {
-                    NodeType::Script {
-                        input_names,
-                        output_names,
-                        continuous,
-                        ..
-                    } => Some((*id, input_names.len(), output_names.len(), *continuous)),
-                    _ => None,
-                })
-                .collect();
-            if !script_info.is_empty() {
-                let before = self.graph.connections.len();
-                for (sid, n_in, n_out, cont) in &script_info {
-                    let input_base = if *cont { 1 } else { 2 };
-                    let max_in = input_base + n_in;
-                    self.graph.connections.retain(|c| {
-                        // Prune bad from-side (output port out of range)
-                        if c.from_node == *sid && c.from_port >= *n_out {
-                            return false;
-                        }
-                        // Prune bad to-side (input port: either control port [0..input_base]
-                        // is always valid, or input_base..max_in is valid; anything beyond is stale)
-                        if c.to_node == *sid && c.to_port >= max_in {
-                            return false;
-                        }
-                        true
-                    });
-                }
-                if self.graph.connections.len() != before {
-                    self.graph.mark_topo_dirty();
-                }
-            }
-        }
-        // Route / Switch stale-connection sweep: prune output-side connections
-        // whose from_port falls outside the node's current valid output count,
-        // and input-side connections beyond the Switch's valid input count.
-        // Mirrors the Script sweep above.
-        {
-            let route_info: Vec<(NodeId, usize, &'static str)> = self
-                .graph
-                .nodes
-                .iter()
-                .filter_map(|(id, n)| match &n.node_type {
-                    NodeType::Dynamic { inner } => {
-                        let tag = inner.node.type_tag();
-                        if tag == "route" || tag == "switch" {
-                            let n_out = inner.node.outputs().len();
-                            Some((*id, n_out, if tag == "route" { "route" } else { "switch" }))
-                        } else {
-                            None
-                        }
-                    }
-                    _ => None,
-                })
-                .collect();
-
-            // Rebuild with in-count for switch (inputs().len() includes selector port)
-            let switch_in_info: Vec<(NodeId, usize)> = self
-                .graph
-                .nodes
-                .iter()
-                .filter_map(|(id, n)| match &n.node_type {
-                    NodeType::Dynamic { inner } if inner.node.type_tag() == "switch" => {
-                        Some((*id, inner.node.inputs().len()))
-                    }
-                    _ => None,
-                })
-                .collect();
-
-            if !route_info.is_empty() {
-                let before = self.graph.connections.len();
-                for (rid, n_out, _) in &route_info {
-                    self.graph.connections.retain(|c| {
-                        if c.from_node == *rid && c.from_port >= *n_out {
-                            return false;
-                        }
-                        true
-                    });
-                }
-                for (sid, max_in) in &switch_in_info {
-                    self.graph.connections.retain(|c| {
-                        if c.to_node == *sid && c.to_port >= *max_in {
-                            return false;
-                        }
-                        true
-                    });
-                }
-                if self.graph.connections.len() != before {
-                    self.graph.mark_topo_dirty();
-                }
-            }
-        }
-
-        for &(fn_, fp, tn, tp) in &pending_connections {
-            let from_name = self
-                .graph
-                .nodes
-                .get(&fn_)
-                .map(|n| n.node_type.title())
-                .unwrap_or("?");
-            let from_port = self
-                .graph
-                .nodes
-                .get(&fn_)
-                .and_then(|n| n.node_type.outputs().get(fp).map(|p| p.name.clone()))
-                .unwrap_or_else(|| fp.to_string().into());
-            let to_name = self
-                .graph
-                .nodes
-                .get(&tn)
-                .map(|n| n.node_type.title())
-                .unwrap_or("?");
-            let to_port = self
-                .graph
-                .nodes
-                .get(&tn)
-                .and_then(|n| n.node_type.inputs().get(tp).map(|p| p.name.clone()))
-                .unwrap_or_else(|| tp.to_string().into());
-            crate::system_log::log(format!(
-                "Connected {}.{} → {}.{}",
-                from_name, from_port, to_name, to_port
-            ));
-            self.graph.add_connection(fn_, fp, tn, tp);
-            // Only send engine connect/disconnect for audio ports
-            // For mixer nodes, skip gain control ports (odd: 1, 3, 5)
-            let is_mixer_gain_port = matches!(
-                self.graph.nodes.get(&tn).map(|n| &n.node_type),
-                Some(NodeType::AudioMixer { .. })
-            ) && tp % 2 != 0;
-            if !is_mixer_gain_port && self.audio.has_processor(fn_) && self.audio.has_processor(tn)
-            {
-                let engine_port = self.mixer_engine_port(tn, tp);
-                // Disconnect old, connect new
-                self.audio.disconnect_audio(tn, engine_port);
-                self.audio.connect_audio(fn_, tn, engine_port);
-            }
-        }
-        // Spawn nodes from Palette clicks (place at center of the current viewport)
-        // Each node addition gets its own undo snapshot so Ctrl+Z undoes one at a time.
-        for (_palette_pos, nt) in palette_spawns {
-            self.push_undo();
-            let screen_center = ctx.screen_rect().center();
-            // egui logical coords → canvas: canvas_pos = egui_pos - offset/zoom
-            let off_e = self.canvas_offset / self.canvas_zoom;
-            let cx = screen_center.x - off_e.x;
-            let cy = screen_center.y - off_e.y;
-            self.graph.add_node(nt, [cx, cy]);
-        }
-        // Clear MCP trigger flags on AI Request nodes
-        for (&nid, node) in &mut self.graph.nodes {
-            if let NodeType::AiRequest { status, .. } = &mut node.node_type {
-                let trigger_id = egui::Id::new(("mcp_ai_triggered", nid));
-                if ctx.data_mut(|d| d.get_temp::<bool>(trigger_id).unwrap_or(false)) {
-                    ctx.data_mut(|d| d.remove::<bool>(trigger_id));
-                    *status = "thinking".into();
-                }
-            }
-        }
-        // Handle WGSL "+" button spawn requests
-        if let Some(req) = ctx.data_mut(|d| {
-            d.get_temp::<crate::nodes::wgsl_viewer::WgslSpawnRequest>(egui::Id::new(
-                "wgsl_spawn_request",
-            ))
-        }) {
-            ctx.data_mut(|d| {
-                d.remove::<crate::nodes::wgsl_viewer::WgslSpawnRequest>(egui::Id::new(
-                    "wgsl_spawn_request",
-                ))
-            });
-
-            // Position the new node to the left of the WGSL node
-            let wgsl_pos = self
-                .graph
-                .nodes
-                .get(&req.target_node)
-                .map(|n| n.pos)
-                .unwrap_or([0.0, 0.0]);
-            let spawn_pos = [
-                wgsl_pos[0] - 200.0,
-                wgsl_pos[1] + (req.target_port as f32 * 30.0),
-            ];
-
-            let (new_id, from_port) = match req.source_type.as_str() {
-                "time" => {
-                    let id = self.graph.add_node(
-                        NodeType::Dynamic {
-                            inner: crate::graph::DynNode {
-                                node: Box::new(crate::nodes::time_node::TimeNode::default()),
-                            },
-                        },
-                        spawn_pos,
-                    );
-                    (id, 0) // Time node output port 0 = Seconds
-                }
-                "color" => {
-                    let id = self.graph.add_node(
-                        NodeType::Dynamic {
-                            inner: crate::graph::DynNode {
-                                node: Box::new(crate::nodes::color_node::ColorNode::default()),
-                            },
-                        },
-                        spawn_pos,
-                    );
-                    (id, 0) // Color node output port 0 = R (will connect R, G, B separately)
-                }
-                _ => {
-                    // Slider with smart defaults
-                    let (min, max, step, value) =
-                        crate::nodes::wgsl_viewer::slider_defaults_for_uniform(&req.uniform_name);
-                    let mut nt = NodeType::Slider {
-                        value,
-                        min,
-                        max,
-                        step,
-                        slider_color: [80, 160, 255],
-                        label: req.uniform_name.clone(),
-                    };
-                    Self::apply_theme_defaults_to_new(ctx, &mut nt);
-                    let id = self.graph.add_node(nt, spawn_pos);
-                    (id, 0) // Slider output port 0 = Value
-                }
-            };
-            // Connect the new node to the WGSL uniform port
-            if req.source_type == "color" {
-                // Connect R, G, B outputs to 3 consecutive ports
-                self.graph
-                    .add_connection(new_id, 0, req.target_node, req.target_port); // R
-                self.graph
-                    .add_connection(new_id, 1, req.target_node, req.target_port + 1); // G
-                self.graph
-                    .add_connection(new_id, 2, req.target_node, req.target_port + 2); // B
-            } else {
-                self.graph
-                    .add_connection(new_id, from_port, req.target_node, req.target_port);
-            }
-
-            crate::system_log::log(format!(
-                "Auto-created {} for u.{}",
-                req.source_type, req.uniform_name
-            ));
-        }
-        // Handle WGSL Presets "+" button: spawn a paired WGSL Viewer
-        // to the right of the picker and auto-wire Shader -> WGSL.
-        if let Some(req) = ctx.data_mut(|d| {
-            d.get_temp::<crate::nodes::wgsl_presets::WgslPresetsSpawnRequest>(egui::Id::new(
-                "wgsl_presets_spawn_request",
-            ))
-        }) {
-            ctx.data_mut(|d| {
-                d.remove::<crate::nodes::wgsl_presets::WgslPresetsSpawnRequest>(egui::Id::new(
-                    "wgsl_presets_spawn_request",
-                ))
-            });
-            let src_pos = self
-                .graph
-                .nodes
-                .get(&req.source_node)
-                .map(|n| n.pos)
-                .unwrap_or([0.0, 0.0]);
-            let spawn_pos = [src_pos[0] + 320.0, src_pos[1]];
-            // Refinement H: if the picker's current preset relies on
-            // self-feedback (samples image_a / image_b), pre-set Input A to
-            // LastFrame so the paired viewer renders correctly with no extra clicks.
-            let is_feedback = self
-                .graph
-                .nodes
-                .get(&req.source_node)
-                .and_then(|n| match &n.node_type {
-                    NodeType::Dynamic { inner } => {
-                        let st = inner.node.save_state();
-                        st.get("preset_key")
-                            .and_then(|v| v.as_str())
-                            .map(|k| crate::nodes::wgsl_presets::is_feedback_preset(k))
-                    }
-                    _ => None,
-                })
-                .unwrap_or(false);
-            let initial_image_a_mode = if is_feedback {
-                crate::graph::ImageInputMode::LastFrame
-            } else {
-                crate::graph::ImageInputMode::Unused
-            };
-            let viewer_id = self.graph.add_node(
-                NodeType::WgslViewer {
-                    wgsl_code: String::new(),
-                    uniform_names: vec![],
-                    uniform_types: vec![],
-                    uniform_values: vec![],
-                    uniform_min: vec![],
-                    uniform_max: vec![],
-                    canvas_w: 400.0,
-                    canvas_h: 300.0,
-                    resolution: 120,
-                    expanded: false,
-                    image_a_mode: initial_image_a_mode,
-                    image_b_mode: crate::graph::ImageInputMode::Unused,
-                    feedback_reset_pending: false,
-                    last_compile_ok: false,
-                    pending_shader_hash: 0,
-                    pending_shader_since_ms: 0,
-                    image_a_hint_shown: false,
-                    image_b_hint_shown: false,
-                    last_auto_reset_ms: 0,
-                },
-                spawn_pos,
-            );
-            // Auto-connect picker port 0 (Shader) -> viewer port 0 (WGSL)
-            self.graph.add_connection(req.source_node, 0, viewer_id, 0);
-            crate::system_log::log(
-                "Spawned paired WGSL Viewer for Formula Preset Picker".to_string(),
-            );
-        }
-        // Reverse pairing: an empty Visuals (WGSL) viewer asked for a
-        // Visual Presets picker. Spawn one to the LEFT with the default
-        // (top-of-list) preset already selected and auto-wire it.
-        if let Some(req) = ctx.data_mut(|d| {
-            d.get_temp::<crate::nodes::wgsl_presets::WgslViewerLoadPresetRequest>(egui::Id::new(
-                "wgsl_viewer_load_preset_request",
-            ))
-        }) {
-            ctx.data_mut(|d| {
-                d.remove::<crate::nodes::wgsl_presets::WgslViewerLoadPresetRequest>(egui::Id::new(
-                    "wgsl_viewer_load_preset_request",
-                ))
-            });
-            let viewer_pos = self
-                .graph
-                .nodes
-                .get(&req.viewer_node)
-                .map(|n| n.pos)
-                .unwrap_or([0.0, 0.0]);
-            let spawn_pos = [viewer_pos[0] - 280.0, viewer_pos[1]];
-            // Build a fresh Visual Presets node defaulted to "gradient" —
-            // the Default impl picks whatever the first priority-ordered
-            // preset is, but we force "gradient" explicitly so that key
-            // is used regardless of future reordering.
-            let mut picker = crate::nodes::wgsl_presets::WgslPresetsNode::default();
-            picker.preset_key = "gradient".to_string();
-            let picker_id = self.graph.add_node(
-                NodeType::Dynamic {
-                    inner: crate::graph::DynNode {
-                        node: Box::new(picker),
-                    },
-                },
-                spawn_pos,
-            );
-            self.graph.add_connection(picker_id, 0, req.viewer_node, 0);
-            crate::system_log::log(
-                "Spawned Visual Presets picker for empty Visuals (WGSL) viewer".to_string(),
-            );
-        }
-        self.midi.process(midi_actions);
-        self.serial.process(serial_actions);
-        self.osc.process(osc_actions);
-        self.network.process(network_actions);
-        self.http.process(http_actions);
-        self.dmx.process(dmx_actions);
-        self.artnet.process(artnet_actions);
-    }
-}
-impl eframe::App for PatchworkApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // P4.3.2E2: everything the open document's nodes do this frame (in
-        // node evaluation, drawing, device managers and the audio engine)
-        // is checked against its rights. Entered again below once its
-        // content state is resolved.
-        let _document_rights = self.document_rights().enter();
-        if let Some(receiver) = &self.hardware_flash_receiver {
-            match receiver.try_recv() {
-                Ok(result) => {
-                    self.hardware_flash_result = Some(result);
-                    self.hardware_flash_in_progress = false;
-                    self.hardware_flash_receiver = None;
-                }
-
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    self.hardware_flash_result = Some(Err(
-                        "Firmware flashing worker disconnected unexpectedly".to_string(),
-                    ));
-                    self.hardware_flash_in_progress = false;
-                    self.hardware_flash_receiver = None;
-                }
-
-                Err(std::sync::mpsc::TryRecvError::Empty) => {
-                    // Background operation is still running.
-                }
-            }
-        }
-        // Share the active document type with the node palette.
-        let is_custom_node = !self.documents.documents.is_empty()
-            && self.documents.active().kind == crate::document::DocumentKind::CustomNode;
-
-        ctx.data_mut(|data| {
-            data.insert_temp(egui::Id::new("active_is_custom_node"), is_custom_node);
-        });
-        // Drop the previous frame's ScrollArea inner-rect registrations
-        // before any node draws this frame and re-pushes its own. The pan
-        // handler at the end of update() reads what's in the registry
-        // *after* nodes have drawn, so it sees this frame's rects.
-        crate::nodes::clear_scroll_rects();
-
-        // Drain any pending wholesale-cache wipe queued by load /
-        // restore / undo / redo / delete on the previous frame.
-        //
-        // Must run BEFORE the menu bar — otherwise a fresh File→Open
-        // click on this same frame would write `file_action_load`
-        // into temp data and the wipe (which clears all temp data)
-        // would eat it before `handle_system_node_actions` runs.
-        // It also runs before `gpu_tex_cache.begin_frame` further
-        // down, so the cache LRU doesn't see the previous project's
-        // entries.
-        self.clear_caches_if_dirty(ctx);
-        // ── Auto-open click-popups for freshly created Slider / Comment ─────
-        // (Other node types in the set are silently ignored — only those
-        // listed below get a popup-open hint. Set populated by
-        // `add_node_selected`.)
-        if !self.pending_popup_open.is_empty() {
-            let now = ctx.input(|i| i.time);
-            let ids: Vec<NodeId> = self.pending_popup_open.drain().collect();
-            for id in ids {
-                let Some(node) = self.graph.nodes.get(&id) else {
-                    continue;
-                };
-                match &node.node_type {
-                    NodeType::Slider { .. } => {
-                        ctx.data_mut(|d| {
-                            d.insert_temp(egui::Id::new(("slider_popup", id)), true);
-                            d.insert_temp(egui::Id::new(("slider_popup_time", id)), now);
-                        });
-                    }
-                    NodeType::Dynamic { inner } if inner.node.type_tag() == "comment" => {
-                        ctx.data_mut(|d| {
-                            d.insert_temp(egui::Id::new(("comment_popup_d", id)), true);
-                            d.insert_temp(egui::Id::new(("comment_popup_time_d", id)), now);
-                        });
-                    }
-                    _ => {}
-                }
-            }
-        }
-        // Keep the OS title bar in sync with project + dirty state, and
-        // intercept close requests when there are unsaved changes.
-        self.update_window_title(ctx);
-        self.handle_close_request(ctx);
-        // ── OS-level menu bar (always visible) ──
-        // Snapshot recent_projects to avoid borrowing `self` inside the
-        // menu closure (which already mutates ctx.data).
-        let recent_projects: Vec<String> = self.recent_projects.clone();
-        egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
-            egui::menu::bar(ui, |ui| {
-                ui.menu_button("File", |ui| {
-                    if ui.button("\u{2795} New Project").clicked() {
-                        ui.ctx()
-                            .data_mut(|d| d.insert_temp(egui::Id::new("file_action_new"), true));
-                        ui.close_menu();
-                    }
-                    if ui.button("\u{1f4c2} Open...").clicked() {
-                        ui.ctx()
-                            .data_mut(|d| d.insert_temp(egui::Id::new("file_action_load"), true));
-                        ui.close_menu();
-                    }
-                    if ui.button("Open Custom Node...").clicked() {
-                        ui.ctx().data_mut(|d| {
-                            d.insert_temp(egui::Id::new("file_action_open_custom_node"), true);
-                        });
-                        ui.close_menu();
-                    }
-                    if ui.button("Insert Custom Node...").clicked() {
-                        ui.ctx().data_mut(|d| {
-                            d.insert_temp(egui::Id::new("file_action_insert_custom_node"), true);
-                        });
-                        ui.close_menu();
-                    }
-                    ui.add_enabled_ui(!recent_projects.is_empty(), |ui| {
-                        ui.menu_button("Open Recent", |ui| {
-                            for path in &recent_projects {
-                                let label = std::path::Path::new(path)
-                                    .file_name()
-                                    .map(|f| f.to_string_lossy().to_string())
-                                    .unwrap_or_else(|| path.clone());
-                                if ui.button(label).on_hover_text(path).clicked() {
-                                    ui.ctx().data_mut(|d| {
-                                        d.insert_temp(
-                                            egui::Id::new("file_action_load_recent"),
-                                            path.clone(),
-                                        );
-                                    });
-                                    ui.close_menu();
-                                }
-                            }
-                            if !recent_projects.is_empty() {
-                                ui.separator();
-                                if ui.button("Clear Recent").clicked() {
-                                    ui.ctx().data_mut(|d| {
-                                        d.insert_temp(
-                                            egui::Id::new("file_action_clear_recent"),
-                                            true,
-                                        );
-                                    });
-                                    ui.close_menu();
-                                }
-                            }
-                        });
-                    });
-                    if ui.button("\u{1f4be} Save").clicked() {
-                        ui.ctx()
-                            .data_mut(|d| d.insert_temp(egui::Id::new("file_action_save"), true));
-                        ui.close_menu();
-                    }
-                    if ui.button("Save As...").clicked() {
-                        // Projects and custom nodes have separate Save As flows.
-                        self.begin_save_as();
-                        ui.close_menu();
-                    }
-                    ui.separator();
-
-                    let can_publish = self.documents.active().kind
-                        == crate::document::DocumentKind::CustomNode
-                        && self.documents.active().path.is_some()
-                        && !self.documents.active().read_only
-                        && !self.is_dirty
-                        && !self.documents.active().is_dirty;
-
-                    if ui
-                        .add_enabled(can_publish, egui::Button::new("Publish to Library"))
-                        .on_hover_text(
-                            "Save the custom node before publishing it to the shared Library",
-                        )
-                        .clicked()
-                    {
-                        ui.ctx().data_mut(|d| {
-                            d.insert_temp(egui::Id::new("file_action_publish_library"), true);
-                        });
-                        ui.close_menu();
-                    }
-                    // P4.1: editable copy of a read-only package version.
-                    let read_only_path = self
-                        .documents
-                        .active()
-                        .path
-                        .clone()
-                        .filter(|_| self.documents.active().read_only);
-                    if ui
-                        .add_enabled(
-                            read_only_path.is_some(),
-                            egui::Button::new("Duplicate for Editing…"),
-                        )
-                        .on_hover_text("Copy this published Library version to an editable file")
-                        .clicked()
-                    {
-                        if let Some(path) = read_only_path {
-                            self.duplicate_for_editing(path);
-                        }
-                        ui.close_menu();
-                    }
-                });
-                ui.menu_button("Hardware", |ui| {
-                    if ui.button("Devices...").clicked() {
-                        self.hardware_scan_requested = true;
-
-                        ui.ctx().data_mut(|d| {
-                            d.insert_temp(egui::Id::new("hardware_devices_open"), true);
-                        });
-
-                        ui.close_menu();
-                    }
-                });
-                // P4.3.1A: read-only catalogue browser.
-                ui.menu_button("Library", |ui| {
-                    if ui.button("Marketplace…").clicked() {
-                        self.open_marketplace();
-                        ui.close_menu();
-                    }
-                    if ui.button("Package Trust Review…").clicked() {
-                        self.open_trust_review();
-                        ui.close_menu();
-                    }
-                    if ui.button("Permissions…").clicked() {
-                        self.open_permissions();
-                        ui.close_menu();
-                    }
-                });
-                ui.menu_button("Edit", |ui| {
-                    let can_undo = self.undo_history.can_undo();
-                    let can_redo = self.undo_history.can_redo();
-                    if ui
-                        .add_enabled(can_undo, egui::Button::new("\u{21a9} Undo"))
-                        .clicked()
-                    {
-                        self.perform_undo();
-                        ui.close_menu();
-                    }
-                    if ui
-                        .add_enabled(can_redo, egui::Button::new("\u{21aa} Redo"))
-                        .clicked()
-                    {
-                        self.perform_redo();
-                        ui.close_menu();
-                    }
-                });
-            });
-        });
-        // P3: Document Tabs
-        egui::TopBottomPanel::top("document_tabs").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                let active_id = self.documents.active().id;
-                // P3: How often each open custom node is used in open documents.
-                let usage = self.documents.custom_node_usage(&self.graph);
-
-                let tabs: Vec<(u64, String, bool)> = self
-                    .documents
-                    .documents
-                    .iter()
-                    .map(|doc| {
-                        let dirty = if doc.id == active_id {
-                            self.is_dirty
-                        } else {
-                            doc.is_dirty
-                        };
-                        // P4.1: published package versions are read-only.
-                        let title = if doc.read_only {
-                            format!("🔒 {}", doc.title)
-                        } else {
-                            doc.title.clone()
-                        };
-
-                        (doc.id, title, dirty)
-                    })
-                    .collect();
-
-                // Tabs are locked while the quit dialog is open.
-                let tabs_locked = self.documents.is_locked();
-                for (id, title, dirty) in tabs {
-                    let title = match usage.get(&id) {
-                        Some(count) => format!("{title} (used ×{count})"),
-                        None => title,
-                    };
-                    let label = if dirty { format!("{} *", title) } else { title };
-                    ui.horizontal(|ui| {
-                        if ui
-                            .add_enabled(
-                                !tabs_locked,
-                                egui::SelectableLabel::new(id == active_id, label),
-                            )
-                            .clicked()
-                        {
-                            if self.pending_close_tab.is_none() && !self.save_as_open {
-                                self.switch_document(id);
-                            }
-                        }
-                        if ui
-                            .add_enabled(!tabs_locked, egui::Button::new("×").small())
-                            .on_hover_text("Close Tab")
-                            .clicked()
-                            && !self.save_as_open
-                        {
-                            // Do not close the last remaining tab.
-                            if self.documents.documents.len() > 1 {
-                                let is_dirty = if self.documents.active().id == id {
-                                    self.is_dirty
-                                } else {
-                                    self.documents
-                                        .documents
-                                        .iter()
-                                        .find(|doc| doc.id == id)
-                                        .map(|doc| doc.is_dirty)
-                                        .unwrap_or(false)
-                                };
-                                if is_dirty {
-                                    // Ask for confirmation before closing.
-                                    self.pending_close_tab = Some(id);
-                                } else {
-                                    // Clean tabs can close immediately.
-                                    self.close_tab(id);
-                                }
-                            }
-                        }
-                    });
-                }
-                if ui
-                    .add_enabled(!tabs_locked, egui::Button::new("+"))
-                    .on_hover_text("New Tab")
-                    .clicked()
-                {
-                    self.create_new_tab();
-                }
-            });
-        });
-        // P4.1: banner + Duplicate for Editing for read-only package tabs.
-        self.render_read_only_banner(ctx);
-
-        // P5: Hardware Devices window
-        let hardware_window_id = egui::Id::new("hardware_devices_open");
-
-        let mut hardware_open =
-            ctx.data_mut(|d| d.get_temp::<bool>(hardware_window_id).unwrap_or(false));
-
-        if hardware_open {
-            if self.hardware_scan_requested {
-                // P5: Refreshing hardware requires fresh target validation.
-                self.hardware_validation_result = None;
-                self.hardware_flash_confirmation_open = false;
-                self.hardware_flash_result = None;
-                match crate::hardware::discover_devices() {
-                    Ok(devices) => {
-                        self.hardware_devices = devices;
-                        self.hardware_discovery_error = None;
-                    }
-                    Err(error) => {
-                        self.hardware_devices.clear();
-                        self.hardware_discovery_error = Some(error);
-                    }
-                }
-                // P5: Discover Raspberry Pi Pico BOOTSEL drives.
-                #[cfg(target_os = "windows")]
-                {
-                    self.hardware_pico_devices = crate::hardware::discover_identified_pico_drives();
-                }
-                // P5: Clear USB serial selection if the device disappeared.
-                if let Some(selected_port) = &self.hardware_selected_serial_port {
-                    let still_connected = self
-                        .hardware_devices
-                        .iter()
-                        .any(|device| &device.port_name == selected_port);
-
-                    if !still_connected {
-                        self.hardware_selected_serial_port = None;
-                    }
-                }
-
-                // P5: Clear Pico BOOTSEL selection if the drive disappeared.
-                #[cfg(target_os = "windows")]
-                {
-                    if let Some(selected_drive) = &self.hardware_selected_pico_drive {
-                        let still_connected = self
-                            .hardware_pico_devices
-                            .iter()
-                            .any(|device| &device.drive_path == selected_drive);
-
-                        if !still_connected {
-                            self.hardware_selected_pico_drive = None;
-                        }
-                    }
-                }
-                self.hardware_scan_requested = false;
-            }
-            egui::Window::new("Hardware Devices")
-                .open(&mut hardware_open)
-                .default_width(440.0)
-                .resizable(true)
-                .show(ctx, |ui| {
-                    ui.label("Connected USB serial devices");
-                    ui.separator();
-
-                    if ui.button("Refresh").clicked() {
-                        self.hardware_scan_requested = true;
-                    }
-                    // P5: Firmware file selection
-                    ui.add_space(8.0);
-                    ui.separator();
-                    ui.heading("Firmware Flashing");
-                    ui.add_space(6.0);
-                    // P5: Display selected hardware target.
-                    ui.label("Selected hardware target:");
-
-                    if let Some(port) = &self.hardware_selected_serial_port {
-                        ui.label(format!("USB serial port: {port}"));
-                    } else {
-                        #[cfg(target_os = "windows")]
-                        {
-                            if let Some(drive) = &self.hardware_selected_pico_drive {
-                                ui.label(format!("Pico BOOTSEL drive: {}", drive.display()));
-                            } else {
-                                ui.label("No hardware device selected.");
-                            }
-                        }
-
-                        #[cfg(not(target_os = "windows"))]
-                        {
-                            ui.label("No hardware device selected.");
-                        }
-                    }
-                    // P5: Validate firmware against the selected hardware target.
-                    if ui.button("Validate Target").clicked() {
-                        if let Some(path) = &self.hardware_firmware_path {
-                            let target = match path
-                                .extension()
-                                .and_then(|ext| ext.to_str())
-                                .map(|ext| ext.to_ascii_lowercase())
-                                .as_deref()
-                            {
-                                Some("bin") => Some(crate::hardware::FirmwareTarget::Esp32),
-                                Some("uf2") => {
-                                    Some(crate::hardware::FirmwareTarget::RaspberryPiPico)
-                                }
-                                _ => None,
-                            };
-
-                            if let Some(target) = target {
-                                let request = crate::hardware::FlashRequest {
-                                    target,
-                                    firmware_path: path.clone(),
-                                    port_name: self.hardware_selected_serial_port.clone(),
-                                };
-
-                                #[cfg(target_os = "windows")]
-                                let pico_drive = self.hardware_selected_pico_drive.as_deref();
-
-                                #[cfg(not(target_os = "windows"))]
-                                let pico_drive: Option<
-                                    &std::path::Path,
-                                > = None;
-                                let validation_result =
-                                    crate::hardware::validate_flash_target(&request, pico_drive)
-                                        .and_then(|_| {
-                                            if matches!(
-                                                target,
-                                                crate::hardware::FirmwareTarget::Esp32
-                                            ) {
-                                                let address_text =
-                                                    self.hardware_esp32_flash_address.trim();
-
-                                                let address_hex = address_text
-                                                    .strip_prefix("0x")
-                                                    .or_else(|| address_text.strip_prefix("0X"))
-                                                    .unwrap_or(address_text);
-
-                                                let flash_address =
-                u32::from_str_radix(address_hex, 16)
-                    .map_err(|_| {
-                        "Invalid ESP32 flash address. Use hexadecimal, e.g. 0x10000."
-                            .to_string()
-                    })?;
-
-                                                let config = crate::hardware::Esp32FlashConfig {
-                layout: crate::hardware::Esp32FirmwareLayout::Application,
-                flash_address,
-                chip: self.hardware_esp32_chip.clone(),
-            };
-
-                                                crate::hardware::validate_esp32_flash_config(
-                                                    &config,
-                                                )
-                                                .and_then(|_| {
-                                                    crate::hardware::validate_esp32_image(
-                                                        &request.firmware_path,
-                                                    )
-                                                })
-                                                .and_then(|_| {
-                                                    crate::hardware::validate_esp32_firmware_chip(
-                                                        &request.firmware_path,
-                                                        &config.chip,
-                                                    )
-                                                })
-                                            } else {
-                                                Ok(())
-                                            }
-                                        });
-
-                                self.hardware_validation_result = Some(validation_result);
-                            } else {
-                                eprintln!("P5: Unsupported firmware file type.");
-                            }
-                        } else {
-                            eprintln!("P5: Select a firmware file first.");
-                        }
-                    }
-
-                    if self.hardware_flash_confirmation_open {
-                        egui::Window::new("Confirm Firmware Flash")
-                            .collapsible(false)
-                            .resizable(false)
-                            .show(ctx, |ui| {
-                                ui.heading("Flash firmware to hardware?");
-                                ui.label("This operation will overwrite the device firmware.");
-
-                                ui.add_space(8.0);
-
-                                if let Some(path) = &self.hardware_firmware_path {
-                                    ui.label(format!("Firmware: {}", path.display()));
-                                }
-
-                                ui.add_space(12.0);
-
-                                ui.horizontal(|ui| {
-                if ui.button("Cancel").clicked() {
-    self.hardware_flash_confirmation_open = false;
-    self.hardware_flash_result = None;
-}
-
-if ui.button("Confirm Flash").clicked() {
-    self.hardware_flash_confirmation_open = false;
-    let is_pico_firmware = self.hardware_firmware_path
-    .as_ref()
-    .and_then(|path| path.extension())
-    .and_then(|ext| ext.to_str())
-    .map(|ext| ext.eq_ignore_ascii_case("uf2"))
-    .unwrap_or(false);
-
-if !is_pico_firmware {
-    let is_esp32_firmware = self.hardware_firmware_path
-        .as_ref()
-        .and_then(|path| path.extension())
-        .and_then(|ext| ext.to_str())
-        .map(|ext| ext.eq_ignore_ascii_case("bin"))
-        .unwrap_or(false);
-
-    if is_esp32_firmware {
-    let firmware_path = self.hardware_firmware_path.clone();
-    let port_name = self.hardware_selected_serial_port.clone();
-
-    let flash_address = self
-        .hardware_esp32_flash_address
-        .trim()
-        .trim_start_matches("0x");
-
-    let parsed_address = u32::from_str_radix(flash_address, 16);
-
-    let preparation_result = match (
-        firmware_path,
-        port_name,
-        parsed_address,
-    ) {
-        (Some(path), Some(port), Ok(address)) => {
-            let config = crate::hardware::Esp32FlashConfig {
-                layout: crate::hardware::Esp32FirmwareLayout::Application,
-                flash_address: address,
-                chip: self.hardware_esp32_chip.clone(),
-            };
-
-            crate::hardware::validate_esp32_flash_config(&config)
-                .map(|_| (path, port, config))
-        }
-        _ => Err(
-            "ESP32 firmware, serial port, or flash address is invalid."
-                .to_string(),
-        ),
-    };
-
-    match preparation_result {
-    Ok((path, port, config)) => {
-        if self.hardware_flash_in_progress {
-            self.hardware_flash_result = Some(Err(
-                "Flashing is already in progress".to_string(),
-            ));
-        } else {
-            self.hardware_flash_result = None;
-            self.hardware_flash_in_progress = true;
-
-            self.hardware_flash_receiver = Some(
-                crate::hardware::spawn_esp32_flash_worker(
-                    path,
-                    port,
-                    config,
-                ),
-            );
-        }
+        self.graph
+            .set_package_environment(package_project_dir, package_library_root);
+        // P4.3.2D: package runtimes run only when the trust store allows
+        // them. Set on whatever graph is about to run (a loaded project, a
+        // restored session, a custom-node tab, an MCP LoadProject result).
+        self.graph
+            .set_trust_policy(permissions::editor_trust_policy());
     }
 
-    Err(error) => {
-        self.hardware_flash_result = Some(Err(error));
-    }
-}
-} else {
-        self.hardware_flash_result = Some(Err(
-            "Unsupported firmware type. Select a .uf2 or .bin file."
-                .to_string(),
-        ));
-    }
-} else {
-
-#[cfg(target_os = "windows")]
-{
-    if self.hardware_flash_in_progress {
-        self.hardware_flash_result =
-            Some(Err("Flashing is already in progress".to_string()));
-    } else if let (
-        Some(firmware_path),
-        Some(drive_path),
-    ) = (
-        self.hardware_firmware_path.clone(),
-        self.hardware_selected_pico_drive.clone(),
-    ) {
-    let request = crate::hardware::FlashRequest {
-        target: crate::hardware::FirmwareTarget::RaspberryPiPico,
-        firmware_path: firmware_path.clone(),
-        port_name: None,
-    };
-
-    let discovered_drive = crate::hardware::discover_identified_pico_drives()
-    .into_iter()
-    .any(|device| {
-        device.drive_path
-            .canonicalize()
-            .ok()
-            == drive_path.canonicalize().ok()
-            && drive_path.canonicalize().is_ok()
-    });
-
-let validation_result = if discovered_drive {
-    crate::hardware::validate_flash_target(
-        &request,
-        Some(&drive_path),
-    )
-} else {
-    Err("Selected Pico BOOTSEL drive was not found in the latest scan".to_string())
-};
-
-match validation_result {
-        Ok(()) => {
-            self.hardware_flash_result = None;
-            self.hardware_flash_in_progress = true;
-
-            self.hardware_flash_receiver =
-                Some(crate::hardware::spawn_pico_flash_worker(
-                    firmware_path,
-                    drive_path,
-                ));
-        }
-
-        Err(error) => {
-            self.hardware_flash_result = Some(Err(error));
-            self.hardware_flash_in_progress = false;
-        }
-    }
-} else {
-    self.hardware_flash_result = Some(Err(
-        "Select a Pico firmware file and BOOTSEL drive".to_string(),
-    ));
-}
-}
-}
-}
-            });
-                            });
-                        if let Some(result) = &self.hardware_flash_result {
-                            ui.add_space(8.0);
-
-                            match result {
-                                Ok(()) => {
-                                    ui.colored_label(
-                                        egui::Color32::GREEN,
-                                        "Firmware flashing completed successfully.",
-                                    );
-                                }
-                                Err(error) => {
-                                    ui.colored_label(
-                                        egui::Color32::RED,
-                                        format!("Firmware flashing failed: {error}"),
-                                    );
-                                }
-                            }
-                        }
-                    }
-
-                    ui.add_space(8.0);
-
-                    let target_validated = matches!(self.hardware_validation_result, Some(Ok(())));
-
-                    let firmware_target = self
-                        .hardware_firmware_path
-                        .as_ref()
-                        .and_then(|path| path.extension())
-                        .and_then(|ext| ext.to_str())
-                        .map(|ext| ext.to_ascii_lowercase());
-
-                    let device_ready = match firmware_target.as_deref() {
-                        Some("uf2") => {
-                            self.hardware_selected_pico_drive.is_some()
-                                && self.hardware_selected_serial_port.is_none()
-                        }
-
-                        // ESP32 remains disabled until its flash
-                        // configuration and UI are implemented.
-                        // ESP32 requires a selected serial port and no Pico drive.
-                        Some("bin") => {
-                            self.hardware_selected_serial_port.is_some()
-                                && self.hardware_selected_pico_drive.is_none()
-                        }
-
-                        _ => false,
-                    };
-
-                    let can_flash =
-                        target_validated && device_ready && !self.hardware_flash_in_progress;
-
-                    if ui
-                        .add_enabled(can_flash, egui::Button::new("Flash Firmware"))
-                        .clicked()
-                    {
-                        self.hardware_flash_confirmation_open = true;
-                    }
-
-                    if self.hardware_flash_in_progress {
-                        ui.label("Firmware flashing in progress...");
-                    }
-                    if let Some(result) = &self.hardware_validation_result {
-                        match result {
-                            Ok(()) => {
-                                ui.colored_label(egui::Color32::GREEN, "Target validation passed.");
-                            }
-                            Err(error) => {
-                                ui.colored_label(
-                                    egui::Color32::RED,
-                                    format!("Target validation failed: {error}"),
-                                );
-                            }
-                        }
-                    }
-                    if ui.button("Browse Firmware...").clicked() {
-                        if let Some(path) = rfd::FileDialog::new()
-                            .set_title("Select ESP32 or Raspberry Pi Pico Firmware")
-                            .add_filter("Supported Firmware", &["bin", "uf2"])
-                            .add_filter("ESP32 Firmware", &["bin"])
-                            .add_filter("Raspberry Pi Pico Firmware", &["uf2"])
-                            .pick_file()
-                        {
-                            self.hardware_firmware_path = Some(path);
-                            // P5: A newly selected firmware file requires fresh validation.
-                            self.hardware_validation_result = None;
-                            self.hardware_flash_confirmation_open = false;
-                            self.hardware_flash_result = None;
-                        }
-                    }
-
-                    if let Some(path) = &self.hardware_firmware_path {
-                        ui.label(format!("Selected: {}", path.display()));
-
-                        let extension = path
-                            .extension()
-                            .and_then(|ext| ext.to_str())
-                            .unwrap_or("")
-                            .to_ascii_lowercase();
-
-                        let target = match extension.as_str() {
-                            "bin" => Some(crate::hardware::FirmwareTarget::Esp32),
-                            "uf2" => Some(crate::hardware::FirmwareTarget::RaspberryPiPico),
-                            _ => None,
-                        };
-
-                        if let Some(target) = target {
-                            let target_name = match target {
-                                crate::hardware::FirmwareTarget::Esp32 => "ESP32",
-                                crate::hardware::FirmwareTarget::RaspberryPiPico => {
-                                    "Raspberry Pi Pico"
-                                }
-                            };
-
-                            ui.label(format!("Firmware type: {target_name}"));
-                            // P5: ESP32 firmware configuration controls
-                            if matches!(target, crate::hardware::FirmwareTarget::Esp32) {
-                                let previous_chip = self.hardware_esp32_chip.clone();
-                                let previous_address = self.hardware_esp32_flash_address.clone();
-                                ui.separator();
-                                ui.heading("ESP32 Flash Configuration");
-
-                                ui.horizontal(|ui| {
-                                    ui.label("Chip model:");
-
-                                    egui::ComboBox::from_id_salt("esp32_chip_selector")
-                                        .selected_text(&self.hardware_esp32_chip)
-                                        .show_ui(ui, |ui| {
-                                            for chip in [
-                                                "esp32", "esp32s2", "esp32s3", "esp32c2",
-                                                "esp32c3", "esp32c5", "esp32c6", "esp32c61",
-                                                "esp32h2", "esp32h4", "esp32p4", "esp32s31",
-                                            ] {
-                                                ui.selectable_value(
-                                                    &mut self.hardware_esp32_chip,
-                                                    chip.to_string(),
-                                                    chip,
-                                                );
-                                            }
-                                        });
-                                });
-
-                                ui.horizontal(|ui| {
-                                    ui.label("Flash address:");
-
-                                    ui.text_edit_singleline(&mut self.hardware_esp32_flash_address);
-                                });
-                                if self.hardware_esp32_chip != previous_chip
-                                    || self.hardware_esp32_flash_address != previous_address
-                                {
-                                    self.hardware_validation_result = None;
-                                    self.hardware_flash_confirmation_open = false;
-                                    self.hardware_flash_result = None;
-                                }
-
-                                ui.label("Firmware layout: Application");
-
-                                ui.colored_label(
-        egui::Color32::YELLOW,
-        "ESP32 flashing is disabled until configuration and device checks are complete.",
-    );
-
-                                ui.separator();
-                            }
-                            // P5: Warn when the firmware type does not match the selected device.
-                            #[cfg(target_os = "windows")]
-                            {
-                                let pico_selected = self.hardware_selected_pico_drive.is_some();
-                                let serial_selected = self.hardware_selected_serial_port.is_some();
-
-                                match target {
-                                    crate::hardware::FirmwareTarget::Esp32 if pico_selected => {
-                                        ui.colored_label(
-                egui::Color32::RED,
-                "Device mismatch: ESP32 firmware cannot be flashed to a Pico BOOTSEL drive.",
-            );
-                                    }
-
-                                    crate::hardware::FirmwareTarget::RaspberryPiPico
-                                        if serial_selected =>
-                                    {
-                                        ui.colored_label(
-                egui::Color32::RED,
-                "Device mismatch: Select a Pico BOOTSEL drive for UF2 firmware.",
-            );
-                                    }
-
-                                    _ => {}
-                                }
-                            }
-                            let request = crate::hardware::FlashRequest {
-                                target,
-                                firmware_path: path.clone(),
-                                port_name: None,
-                            };
-
-                            match match target {
-                                crate::hardware::FirmwareTarget::Esp32 => {
-                                    crate::hardware::validate_esp32_image(&path).and_then(|_| {
-                                        crate::hardware::validate_esp32_firmware_chip(
-                                            &path,
-                                            &self.hardware_esp32_chip,
-                                        )
-                                    })
-                                }
-                                _ => crate::hardware::validate_firmware(&request),
-                            } {
-                                Ok(()) => {
-                                    ui.colored_label(
-                                        egui::Color32::GREEN,
-                                        "Firmware file validation passed.",
-                                    );
-
-                                    // P5: Check Pico firmware against the selected BOOTSEL drive.
-                                    #[cfg(target_os = "windows")]
-                                    if matches!(
-                                        target,
-                                        crate::hardware::FirmwareTarget::RaspberryPiPico
-                                    ) {
-                                        if let Some(drive) = &self.hardware_selected_pico_drive {
-                                            let info_path = drive.join("INFO_UF2.TXT");
-
-                                            match crate::hardware::validate_pico_flash_target(
-                                                path.as_path(),
-                                                info_path.as_path(),
-                                            ) {
-                                                Ok(board) => {
-                                                    ui.colored_label(
-                                                        egui::Color32::GREEN,
-                                                        format!(
-                                                            "Firmware matches selected Pico: {:?}",
-                                                            board
-                                                        ),
-                                                    );
-                                                }
-                                                Err(error) => {
-                                                    ui.colored_label(
-                                                        egui::Color32::RED,
-                                                        format!(
-                                                            "Pico compatibility failed: {error}"
-                                                        ),
-                                                    );
-                                                }
-                                            }
-                                        } else {
-                                            ui.label(
-                    "Select a Pico BOOTSEL device to check compatibility.",
-                );
-                                        }
-                                    }
-                                }
-                                Err(error) => {
-                                    ui.colored_label(
-                                        egui::Color32::RED,
-                                        format!("Firmware validation failed: {error}"),
-                                    );
-                                }
-                            }
-                        } else {
-                            ui.colored_label(
-                                egui::Color32::RED,
-                                "Unsupported firmware format. Select a .bin or .uf2 file.",
-                            );
-                        }
-                    } else {
-                        ui.label("No firmware selected.");
-                    }
-                    ui.add_space(8.0);
-
-                    // match crate::hardware::discover_devices() {
-                    //     Ok(devices) if devices.is_empty() => {
-                    //         ui.label("No USB serial devices detected.");
-                    //     }
-                    //     Ok(devices) => {
-                    //         for device in devices {
-                    //             ui.group(|ui| {
-                    //                 ui.heading(&device.port_name);
-                    //                 ui.label(&device.board_family);
-
-                    //                 ui.label(format!(
-                    //                     "VID: {:04X} | PID: {:04X}",
-                    //                     device.vid, device.pid
-                    //                 ));
-
-                    //                 if let Some(product) = &device.product {
-                    //                     ui.label(format!("Product: {product}"));
-                    //                 }
-
-                    //                 if let Some(manufacturer) = &device.manufacturer {
-                    //                     ui.label(format!("Manufacturer: {manufacturer}"));
-                    //                 }
-                    //             });
-
-                    //             ui.add_space(5.0);
-                    //         }
-                    //     }
-                    //     Err(error) => {
-                    //         ui.colored_label(
-                    //             egui::Color32::RED,
-                    //             format!("Device discovery failed: {error}"),
-                    //         );
-                    //     }
-                    // }
-
-                    if let Some(error) = &self.hardware_discovery_error {
-                        ui.colored_label(
-                            egui::Color32::RED,
-                            format!("Device discovery failed: {error}"),
-                        );
-                    } else if self.hardware_devices.is_empty() {
-                        ui.label("No USB serial devices detected.");
-                    } else {
-                        for device in &self.hardware_devices {
-                            ui.group(|ui| {
-                                ui.heading(&device.port_name);
-                                // P5: Select USB serial device for firmware flashing.
-                                let is_selected = self.hardware_selected_serial_port.as_deref()
-                                    == Some(device.port_name.as_str());
-                                if ui.radio(is_selected, "Select for flashing").clicked() {
-                                    self.hardware_selected_serial_port =
-                                        Some(device.port_name.clone());
-
-                                    self.hardware_validation_result = None;
-                                    self.hardware_flash_confirmation_open = false;
-                                    self.hardware_flash_result = None;
-
-                                    // Only one hardware target may be selected.
-                                    #[cfg(target_os = "windows")]
-                                    {
-                                        self.hardware_selected_pico_drive = None;
-                                    }
-                                }
-                                ui.label(&device.board_family);
-
-                                ui.label(format!(
-                                    "VID: {:04X} | PID: {:04X}",
-                                    device.vid, device.pid
-                                ));
-
-                                if let Some(product) = &device.product {
-                                    ui.label(format!("Product: {product}"));
-                                }
-
-                                if let Some(manufacturer) = &device.manufacturer {
-                                    ui.label(format!("Manufacturer: {manufacturer}"));
-                                }
-                            });
-
-                            ui.add_space(5.0);
-                        }
-                    }
-                    // P5: Raspberry Pi Pico BOOTSEL devices
-                    #[cfg(target_os = "windows")]
-                    {
-                        ui.add_space(12.0);
-                        ui.separator();
-                        ui.heading("Raspberry Pi Pico BOOTSEL Devices");
-                        ui.add_space(6.0);
-
-                        if self.hardware_pico_devices.is_empty() {
-                            ui.label("No Pico BOOTSEL devices detected.");
-                        } else {
-                            for device in &self.hardware_pico_devices {
-                                ui.group(|ui| {
-                                    let selected = self.hardware_selected_pico_drive.as_ref()
-                                        == Some(&device.drive_path);
-
-                                    let drive_label =
-                                        format!("Pico BOOTSEL — {}", device.drive_path.display());
-
-                                    if ui.radio(selected, drive_label).clicked() {
-                                        if selected {
-                                            self.hardware_selected_pico_drive = None;
-                                        } else {
-                                            self.hardware_selected_pico_drive =
-                                                Some(device.drive_path.clone());
-
-                                            // Only one hardware target may be selected.
-                                            self.hardware_selected_serial_port = None;
-                                        }
-                                        self.hardware_validation_result = None;
-                                        self.hardware_flash_confirmation_open = false;
-                                        self.hardware_flash_result = None;
-                                    }
-
-                                    ui.label(format!("Drive: {}", device.drive_path.display()));
-
-                                    let board_name = match device.board {
-                                        crate::hardware::PicoBoard::Rp2040 => "RP2040",
-                                        crate::hardware::PicoBoard::Rp2350 => "RP2350",
-                                    };
-
-                                    ui.label(format!("Board: {board_name}"));
-                                    ui.label("Status: BOOTSEL mode");
-                                });
-
-                                ui.add_space(5.0);
-                            }
-                        }
-                    }
-                });
-        }
-
-        ctx.data_mut(|d| {
-            d.insert_temp(hardware_window_id, hardware_open);
-        });
-        // P3: Confirm before closing a modified document tab.
-        if let Some(document_id) = self.pending_close_tab {
-            let document_title = self
-                .documents
-                .documents
-                .iter()
-                .find(|doc| doc.id == document_id)
-                .map(|doc| doc.title.clone())
-                .unwrap_or_else(|| "Untitled".to_string());
-
-            egui::Window::new("Unsaved Changes")
-                .collapsible(false)
-                .resizable(false)
-                .frame(
-                    egui::Frame::window(&ctx.style())
-                        .fill(egui::Color32::from_rgb(30, 30, 35))
-                        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(90, 90, 100))),
-                )
-                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-                .show(ctx, |ui| {
-                    ui.label(format!(
-                        "Save changes to '{}' before closing?",
-                        document_title
-                    ));
-                    ui.add_space(12.0);
-                    ui.horizontal(|ui| {
-                        if ui.button("Save").clicked() {
-                            // Save the document being closed, not another active tab.
-                            if self.documents.active().id != document_id {
-                                self.switch_document(document_id);
-                            }
-                            if self.save_project_quick() {
-                                self.sync_active_document();
-                                self.pending_close_tab = None;
-                                self.close_tab(document_id);
-                            }
-                        }
-                        if ui.button("Discard").clicked() {
-                            // Activate the target document so its state is current.
-                            if self.documents.active().id != document_id {
-                                self.switch_document(document_id);
-                            }
-                            // Explicitly discard its unsaved state.
-                            self.is_dirty = false;
-                            self.documents.active_mut().is_dirty = false;
-                            self.pending_close_tab = None;
-                            self.close_tab(document_id);
-                        }
-                        if ui.button("Cancel").clicked() {
-                            self.pending_close_tab = None;
-                        }
-                    });
-                });
-        }
-        // P3: Save As project naming dialog
-        // P3: Save As project naming dialog
-        if self.save_as_open {
-            let mut open = self.save_as_open;
-            let mut save_requested = false;
-            // P3: Keyboard shortcuts for Save As modal
-            if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-                open = false;
-            }
-
-            if ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
-                save_requested = true;
-            }
-            egui::Modal::new(egui::Id::new("save_as_modal")).show(ctx, |ui| {
-                ui.label("Project name:");
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.save_as_name)
-                        .desired_width(280.0)
-                        .hint_text("My Project"),
-                );
-                ui.add_space(12.0);
-                ui.horizontal(|ui| {
-                    if ui.button("Save").clicked() {
-                        save_requested = true;
-                    }
-
-                    if ui.button("Cancel").clicked() {
-                        open = false;
-                    }
-                });
-            });
-            if save_requested
-                && self.documents.active().kind != crate::document::DocumentKind::Project
-            {
-                // Defensive: project Save As never converts a custom node.
-                save_requested = false;
-                open = false;
-                self.toast_warn("Project Save As is not available in a custom-node tab.");
-            }
-            if save_requested {
-                let name = self.save_as_name.trim().to_string();
-                // Reject empty names, special directory names and path separators.
-                let invalid_name = name.is_empty()
-                    || name == "."
-                    || name == ".."
-                    || name.contains(['/', '\\', ':', '*', '?', '"', '<', '>', '|'])
-                    || name.ends_with('.')
-                    || name.ends_with(' ');
-                if invalid_name {
-                    rfd::MessageDialog::new()
-                        .set_title("Invalid Project Name")
-                        .set_description("Enter a valid project name without special characters.")
-                        .set_level(rfd::MessageLevel::Error)
-                        .set_buttons(rfd::MessageButtons::Ok)
-                        .show();
-                } else if let Some(parent_dir) = rfd::FileDialog::new()
-                    .set_title("Choose Where to Save Project")
-                    .pick_folder()
-                {
-                    // If the selected folder already has the project name,
-                    // use it directly instead of creating another subfolder.
-                    let selected_name = parent_dir
-                        .file_name()
-                        .map(|n| n.to_string_lossy().to_string())
-                        .unwrap_or_default();
-                    let project_dir = if selected_name.eq_ignore_ascii_case(&name) {
-                        parent_dir
-                    } else {
-                        parent_dir.join(&name)
-                    };
-                    if self.save_to_dir(project_dir.display().to_string()) {
-                        open = false;
-                    }
-                }
-            }
-
-            self.save_as_open = open;
-        }
-        // P2: Group-into-custom-node naming dialog.
-        self.render_group_dialog(ctx);
-        // P4.1: Publish to Library dialog.
-        self.render_publish_dialog(ctx);
-        // P4.3.3: Share to Marketplace.
-        self.render_share_dialog(ctx);
-        self.render_version_switch_dialog(ctx);
-        // P4.3.1A: Marketplace browser (read-only; never edits the graph).
-        self.render_marketplace(ctx);
-        // P4.3.2C: Package Trust Review.
-        self.render_trust_review(ctx);
-        // P4.3.2D: package permission banner and review.
-        self.render_permissions(ctx);
-        // Floating modal for "save before quit?" — drawn after the menu
-        // so it visually layers on top of canvas chrome.
-        self.render_quit_dialog(ctx);
-        // Top-center toast notifications. Drawn last so they overlay the
-        // entire UI; auto-dismiss handled inside.
-        self.render_toasts(ctx);
-        // set_zoom_factor scales everything (nodes, text, chrome) via GPU — zero overhead.
-        // Pinned nodes compensate with inverse zoom style + zoom-keyed window IDs.
-        // ctx.set_zoom_factor(self.canvas_zoom);
-        self.apply_theme(ctx);
-        self.handle_file_drop(ctx);
-        // P4.3.2E1: a document whose content is not authored here or
-        // allowed by the user does not run. For the runtime part of the
-        // frame (device polling, evaluation, hardware, plugins, image and
-        // audio processing) the live graph is parked and an empty graph
-        // stands in, so every subsystem behaves as if the document had no
-        // nodes and closes what it opened. The graph is put back before MCP
-        // and drawing, so it stays visible and editable.
-        provenance::resolve_graph(&mut self.graph);
-        let _document_rights = self.document_rights().enter();
+    fn run_graph_frame(&mut self, ctx: &egui::Context) -> HashMap<(NodeId, usize), PortValue> {
         let parked_graph = (!self.graph.content.runnable())
             .then(|| std::mem::replace(&mut self.graph, Graph::new()));
         self.update_mouse_trackers(ctx);
@@ -3720,22 +1076,7 @@ match validation_result {
         self.gpu_tex_cache
             .begin_frame(self.wgpu_render_state.as_ref());
         let now_secs = self.app_start_instant.elapsed().as_secs_f64();
-        // P4.2 Stage 2: package references resolve against this project's
-        // folder (projects only) and the Library. No-op when unchanged.
-        let package_project_dir = match self.documents.active().kind {
-            crate::document::DocumentKind::Project => {
-                self.project_path.as_ref().map(std::path::PathBuf::from)
-            }
-            crate::document::DocumentKind::CustomNode => None,
-        };
-        let package_library_root = self.library_cache.root().ok();
-        self.graph
-            .set_package_environment(package_project_dir, package_library_root);
-        // P4.3.2D: package runtimes run only when the trust store allows
-        // them. Set on whatever graph is about to run (a loaded project, a
-        // restored session, a custom-node tab, an MCP LoadProject result).
-        self.graph
-            .set_trust_policy(permissions::editor_trust_policy());
+        self.set_graph_package_environment();
         let mut values = self.graph.evaluate(now_secs);
         // P3: Report interface changes picked up while reloading custom nodes
         // (e.g. a .pwnode modified outside this editor).
@@ -5439,6 +2780,2749 @@ match validation_result {
         if let Some(graph) = parked_graph {
             self.graph = graph;
         }
+        values
+    }
+
+    /// Render nodes. If `pinned_only` is true, only render pinned nodes (at zoom 1.0).
+    /// If false, only render non-pinned nodes (at canvas zoom).
+    fn render_nodes_filtered(
+        &mut self,
+        ctx: &egui::Context,
+        values: &HashMap<(NodeId, usize), PortValue>,
+        pinned_only: bool,
+    ) {
+        let node_ids: Vec<NodeId> = self.graph.nodes.keys().copied().collect();
+        // P4.3.2E1: node bodies of a graph that may not run are not drawn.
+        let inert = !self.graph.content.runnable();
+        let connections = self.graph.connections.clone();
+        let midi_out_ports = self.midi.cached_output_ports.clone();
+        let midi_in_ports = self.midi.cached_input_ports.clone();
+        let serial_ports = self.serial.cached_ports.clone();
+        let monitor_state = std::mem::take(&mut self.monitor);
+        let offset = self.canvas_offset;
+        let zoom = self.canvas_zoom;
+        // Don't create fresh — extend existing to preserve positions from other passes
+        let mut port_positions: HashMap<(NodeId, usize, bool), egui::Pos2> = if pinned_only {
+            std::mem::take(&mut self.port_positions)
+        } else {
+            HashMap::new()
+        };
+        let mut node_rects: HashMap<NodeId, egui::Rect> = if pinned_only {
+            std::mem::take(&mut self.node_rects)
+        } else {
+            HashMap::new()
+        };
+        let mut pending_connections: Vec<(NodeId, usize, NodeId, usize)> = Vec::new();
+        let mut nodes_to_delete: Vec<NodeId> = Vec::new();
+        let mut osc_actions: Vec<OscAction> = Vec::new();
+        let mut network_actions: Vec<NetworkAction> = Vec::new();
+        let mut dragging_from = self.dragging_from;
+        let mut palette_spawns: Vec<([f32; 2], NodeType)> = Vec::new();
+        let mut midi_actions: Vec<MidiAction> = Vec::new();
+        let mut serial_actions: Vec<SerialAction> = Vec::new();
+        let mut dmx_actions: Vec<crate::dmx::DmxAction> = Vec::new();
+        let mut artnet_actions: Vec<crate::artnet::ArtNetAction> = Vec::new();
+        let mut pending_disconnects: Vec<(NodeId, usize)> = Vec::new();
+        let mut ob_manager = std::mem::replace(&mut self.ob, ObManager::new());
+        let mut audio_manager = std::mem::replace(&mut self.audio, AudioManager::placeholder());
+        let mut http_actions: Vec<HttpAction> = Vec::new();
+        let mut multi_drag: Option<(NodeId, egui::Vec2)> = None; // (dragged_node, delta)
+        let api_keys = self.api_keys.clone();
+        let wgpu_render_state = self.wgpu_render_state.clone();
+
+        // With set_zoom_factor, normal nodes scale automatically via GPU.
+        // We only need the original style to restore after pinned nodes' inverse-zoom.
+        let _original_style = ctx.style();
+        // Capture a baseline when any pointer gesture begins. If the gesture
+        // changed the graph (slider drag, field edit), it's committed as one
+        // undo step on release. push()'s hash dedup drops no-op gestures.
+        if ctx.input(|i| i.pointer.any_pressed()) && self.pending_gesture_snapshot.is_none() {
+            self.pending_gesture_snapshot = Some(UndoSnapshot::new(
+                self.graph.clone(),
+                self.pinned_nodes.clone(),
+            ));
+        }
+
+        for node_id in node_ids {
+            let is_pinned = self.pinned_nodes.contains(&node_id);
+            // Skip nodes not in the current pass
+            if pinned_only != is_pinned {
+                continue;
+            }
+            let mut node = match self.graph.nodes.remove(&node_id) {
+                Some(n) => n,
+                None => continue,
+            };
+            let input_defs = node.node_type.inputs();
+            let output_defs = node.node_type.outputs();
+            let n_inputs = input_defs.len();
+            let n_outputs = output_defs.len();
+            let [cr, cg, cb] = node.node_type.color_hint();
+            let accent = egui::Color32::from_rgb(cr, cg, cb);
+            let title = node.node_type.title().to_string();
+            let midi_conn_out = self.midi.is_output_connected(node_id);
+            let midi_conn_in = self.midi.is_input_connected(node_id);
+            let serial_conn = self.serial.is_connected(node_id);
+            let osc_listening = self.osc.is_listening(node_id);
+            let dmx_output_open = self.dmx.is_output_open(node_id);
+            let dmx_listening = self.dmx.is_listening(node_id);
+            let artnet_listening = self.artnet.is_listening(node_id);
+            let http_pending = self.http.is_pending(node_id);
+
+            let _open = true;
+            let inline = node.node_type.inline_ports() && !inert;
+            // set_zoom_factor(zoom) is active for the whole frame.
+            // Normal: egui_pos = canvas_pos + offset/zoom
+            // Pinned: egui_pos = screen_pos / zoom (fixed screen position, divided to get logical)
+            let offset_egui = offset / zoom;
+            let inv = 1.0 / zoom;
+            let (egui_x, egui_y) = if is_pinned {
+                (node.pos[0] / zoom, node.pos[1] / zoom)
+            } else {
+                (node.pos[0] + offset_egui.x, node.pos[1] + offset_egui.y)
+            };
+            // Use trait method for min_width if available, else defaults
+            let node_width = if let Some(w) = node.node_type.min_width() {
+                if is_pinned { w * inv } else { w }
+            } else {
+                match &node.node_type {
+                    NodeType::Slider { .. } => 50.0,
+                    _ if node.node_type.custom_render() => 50.0,
+                    _ if is_pinned => 180.0 * inv,
+                    _ => 180.0,
+                }
+            };
+            let is_display = node.node_type.title() == "Display";
+            let is_monitor = node.node_type.title() == "Monitor";
+            let is_audio_player = matches!(
+                node.node_type,
+                NodeType::AudioPlayer { .. } | NodeType::AudioPlaylist { .. }
+            );
+            let is_speaker = matches!(node.node_type, NodeType::Speaker { .. });
+            let no_title = node.node_type.no_title()
+                || is_display
+                || is_monitor
+                || is_audio_player
+                || is_speaker;
+            let port_sz = if is_pinned {
+                PORT_INTERACT * inv
+            } else {
+                PORT_INTERACT
+            };
+            let port_r = if is_pinned {
+                PORT_RADIUS * inv
+            } else {
+                PORT_RADIUS
+            };
+            let title_size = if is_pinned { 14.0 * inv } else { 14.0 };
+            let node_icon = crate::icons::node_icon(node.node_type.title());
+            let title_with_icon = format!("{} {}", node_icon, title);
+            let title_rt = egui::RichText::new(&title_with_icon)
+                .color(accent)
+                .strong()
+                .size(title_size);
+            // Pinned windows use zoom-bucketed ID to reset egui's cached window size on zoom change
+            let zoom_bucket = if is_pinned {
+                (zoom * 10.0).round() as i32
+            } else {
+                0
+            };
+            // Apply inverse-zoom style for pinned nodes
+            // Inverse-zoom style for pinned nodes: cancel out set_zoom_factor so they
+            // appear at native screen size regardless of canvas zoom level.
+            if is_pinned {
+                let mut style = ctx.style().as_ref().clone();
+                for (_, font_id) in style.text_styles.iter_mut() {
+                    font_id.size *= inv;
+                }
+                style.spacing.item_spacing *= inv;
+                style.spacing.button_padding *= inv;
+                style.spacing.interact_size *= inv;
+                style.spacing.window_margin *= inv;
+                style.spacing.indent *= inv;
+                style.spacing.icon_width *= inv;
+                style.spacing.icon_width_inner *= inv;
+                style.spacing.icon_spacing *= inv;
+                style.spacing.slider_width *= inv;
+                style.spacing.combo_width *= inv;
+                style.spacing.scroll.bar_width *= inv;
+                style.spacing.scroll.bar_inner_margin *= inv;
+                style.spacing.scroll.bar_outer_margin *= inv;
+                let scale_cr = |r: &mut egui::CornerRadius| {
+                    r.nw = (r.nw as f32 * inv).round().max(1.0) as u8;
+                    r.ne = (r.ne as f32 * inv).round().max(1.0) as u8;
+                    r.sw = (r.sw as f32 * inv).round().max(1.0) as u8;
+                    r.se = (r.se as f32 * inv).round().max(1.0) as u8;
+                };
+                let scale_stroke = |s: &mut egui::Stroke| {
+                    s.width *= inv;
+                };
+                scale_cr(&mut style.visuals.window_corner_radius);
+                scale_stroke(&mut style.visuals.window_stroke);
+                style.visuals.window_shadow.blur =
+                    (style.visuals.window_shadow.blur as f32 * inv).round() as u8;
+                style.visuals.window_shadow.spread =
+                    (style.visuals.window_shadow.spread as f32 * inv).round() as u8;
+                for ws in [
+                    &mut style.visuals.widgets.noninteractive,
+                    &mut style.visuals.widgets.inactive,
+                    &mut style.visuals.widgets.hovered,
+                    &mut style.visuals.widgets.active,
+                ] {
+                    scale_cr(&mut ws.corner_radius);
+                    scale_stroke(&mut ws.bg_stroke);
+                    scale_stroke(&mut ws.fg_stroke);
+                }
+                style.visuals.resize_corner_size *= inv;
+                ctx.set_style(std::sync::Arc::new(style));
+            }
+            let is_custom_render = node.node_type.custom_render();
+            // Custom frame — render_background for trait nodes, legacy match for enum nodes
+            let bg_painter = ctx.layer_painter(egui::LayerId::new(
+                egui::Order::Background,
+                egui::Id::new(("node_bg", node_id)),
+            ));
+            let approx_rect = egui::Rect::from_min_size(
+                egui::pos2(egui_x, egui_y),
+                egui::vec2(node_width, 100.0),
+            );
+            let custom_frame =
+                if let Some(frame) = node.node_type.render_background(&bg_painter, approx_rect) {
+                    Some(frame)
+                } else {
+                    None
+                };
+            let is_comment = node.node_type.title() == "Comment";
+            // Read-only tab, or editing paused while quitting (R3).
+            let read_only_doc = !self.active_is_editable();
+            // P4.2 Stage 2: a packaged instance opens its resolved entry.
+            let custom_node_file = match &node.node_type {
+                NodeType::CustomNodeInstance { .. } => self.graph.custom_instance_source(node_id),
+                _ => None,
+            };
+            let mut win = egui::Window::new(title_rt)
+                .id(egui::Id::new((
+                    "node",
+                    self.documents.active().id,
+                    node_id,
+                    zoom_bucket,
+                )))
+                .current_pos(egui::pos2(egui_x, egui_y))
+                .default_width(node_width)
+                .resizable(is_display && !read_only_doc)
+                .movable(!read_only_doc)
+                .constrain(false)
+                .collapsible(
+                    // Custom-node instances use double-click to open their
+                    // .pwnode, which would otherwise also toggle collapse.
+                    !is_custom_render && !no_title && !is_pinned && custom_node_file.is_none(),
+                )
+                .title_bar(!is_custom_render && !no_title);
+            if is_pinned {
+                win = win.order(egui::Order::Foreground);
+            }
+            if is_display {
+                win = win.default_height(120.0).scroll([false, false]);
+            }
+            if let Some(frame) = custom_frame {
+                win = win.frame(frame);
+            }
+            let resp = win.show(ctx, |ui| {
+                // P4.1: nothing inside a read-only package tab is editable.
+                if read_only_doc {
+                    ui.disable();
+                }
+                // Constrain width to prevent expanding nodes — but Comment
+                // sizes itself tightly to its text (see comment_node.rs
+                // body_w computation), so the 180-floor here was leaving
+                // empty padding to the right of short notes. Skip the
+                // clamp for Comment so its window fits the visible card.
+                if !is_comment {
+                    ui.set_max_width(node_width.max(180.0));
+                }
+
+                // Top input ports (skip for inline-port nodes)
+                if !inline {
+                    for (i, pdef) in input_defs.iter().enumerate() {
+                        ui.horizontal(|ui| {
+                            let (rect, response) = ui.allocate_exact_size(
+                                egui::vec2(port_sz, port_sz),
+                                egui::Sense::click_and_drag(),
+                            );
+                            let val = Graph::static_input_value(&connections, values, node_id, i);
+                            let kind = pdef.kind; // Use semantic kind from port definition
+                            let is_connected = connections
+                                .iter()
+                                .any(|c| c.to_node == node_id && c.to_port == i);
+                            let (type_fill, type_border) = port_colors_for_kind(kind, false);
+                            let (fill, border) = if response.hovered() || response.dragged() {
+                                (egui::Color32::YELLOW, egui::Color32::WHITE)
+                            } else {
+                                (type_fill, type_border)
+                            };
+                            // Highlight port if click-wiring and hovering a compatible target
+                            let click_wiring_hover =
+                                self.click_wiring && dragging_from.is_some() && response.hovered();
+                            let (fill, border) = if click_wiring_hover {
+                                (egui::Color32::from_rgb(100, 255, 100), egui::Color32::WHITE)
+                            } else {
+                                (fill, border)
+                            };
+                            draw_shaped_port(
+                                ui.painter(),
+                                rect.center(),
+                                port_r,
+                                fill,
+                                border,
+                                PORT_BORDER,
+                                kind,
+                                is_connected,
+                            );
+                            port_positions.insert((node_id, i, true), rect.center());
+                            ui.label(format!("{}: {}", pdef.name, val));
+                            if !self.save_as_open && response.drag_started() {
+                                if let Some(existing) = connections
+                                    .iter()
+                                    .find(|c| c.to_node == node_id && c.to_port == i)
+                                {
+                                    let src_node = existing.from_node;
+                                    let src_port = existing.from_port;
+                                    dragging_from = Some((src_node, src_port, true));
+                                    pending_disconnects.push((node_id, i));
+                                } else {
+                                    dragging_from = Some((node_id, i, false));
+                                }
+                            }
+                            // Click-to-connect: click on input port starts or completes wiring
+                            // Click-to-connect: click on input port starts or completes wiring
+                            if !self.save_as_open && response.clicked() {
+                                if let Some((src_node, src_port, is_output)) = dragging_from {
+                                    if self.click_wiring && is_output && node_id != src_node {
+                                        // Complete: output → this input
+                                        pending_connections.push((src_node, src_port, node_id, i));
+                                        dragging_from = None;
+                                        self.click_wiring = false;
+                                    } else if self.click_wiring && !is_output && node_id != src_node
+                                    {
+                                        // Complete: this input ← input (reverse)
+                                        pending_connections.push((node_id, i, src_node, src_port));
+                                        dragging_from = None;
+                                        self.click_wiring = false;
+                                    }
+                                } else {
+                                    // Start click-wiring from input port
+                                    if let Some(existing) = connections
+                                        .iter()
+                                        .find(|c| c.to_node == node_id && c.to_port == i)
+                                    {
+                                        dragging_from =
+                                            Some((existing.from_node, existing.from_port, true));
+                                        pending_disconnects.push((node_id, i));
+                                    } else {
+                                        dragging_from = Some((node_id, i, false));
+                                    }
+                                    self.click_wiring = true;
+                                }
+                            }
+                        });
+                    }
+                    if !input_defs.is_empty() {
+                        ui.separator();
+                    }
+                }
+
+                let project_dir_path = self.project_path.as_deref().map(std::path::Path::new);
+                // P4.3.2E1: a graph that may not run is drawn inert: its
+                // nodes, ports and wires stay editable, but node code (and
+                // the device, network and audio actions it can request) does
+                // not run. Editor chrome (File, Zoom, Palette) stays usable.
+                if inert && !crate::graph::group::is_editor_chrome(&node.node_type) {
+                    ui.weak("Not running: this document needs permission.");
+                } else {
+                    nodes::render_content(
+                        ui,
+                        &mut node.node_type,
+                        node_id,
+                        values,
+                        &connections,
+                        &midi_out_ports,
+                        &midi_in_ports,
+                        midi_conn_out,
+                        midi_conn_in,
+                        &mut midi_actions,
+                        &serial_ports,
+                        serial_conn,
+                        &mut serial_actions,
+                        &monitor_state,
+                        osc_listening,
+                        &mut osc_actions,
+                        &mut network_actions,
+                        &mut port_positions,
+                        &mut dragging_from,
+                        &mut http_actions,
+                        http_pending,
+                        &api_keys,
+                        &wgpu_render_state,
+                        &mut pending_disconnects,
+                        &mut ob_manager,
+                        &mut audio_manager,
+                        &self.mcp_log,
+                        self.mcp_rx.is_some(),
+                        &mut dmx_actions,
+                        &mut artnet_actions,
+                        dmx_output_open,
+                        dmx_listening,
+                        artnet_listening,
+                        project_dir_path,
+                    );
+                }
+
+                // Check if a Palette node wants to spawn new nodes
+                if matches!(node.node_type, NodeType::Palette { .. }) {
+                    for spawn_nt in nodes::palette_actions(ui) {
+                        palette_spawns.push((node.pos, spawn_nt));
+                    }
+                }
+
+                // Bottom output ports (skip for inline-port nodes)
+                if !inline {
+                    if !output_defs.is_empty() {
+                        ui.separator();
+                    }
+                    for (i, pdef) in output_defs.iter().enumerate() {
+                        let val = values
+                            .get(&(node_id, i))
+                            .cloned()
+                            .unwrap_or(PortValue::None);
+                        let label_text = format!("{}: {}", pdef.name, val);
+                        let kind = pdef.kind; // Use semantic kind from port definition
+                        let is_connected = connections
+                            .iter()
+                            .any(|c| c.from_node == node_id && c.from_port == i);
+                        let (type_fill, type_border) = port_colors_for_kind(kind, true);
+
+                        // Use columns: label left, port circle right
+                        ui.horizontal(|ui| {
+                            ui.label(&label_text);
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    let (rect, response) = ui.allocate_exact_size(
+                                        egui::vec2(port_sz, port_sz),
+                                        egui::Sense::click_and_drag(),
+                                    );
+                                    // Highlight port if click-wiring and hovering a compatible target
+                                    let click_wiring_hover = self.click_wiring
+                                        && dragging_from.is_some()
+                                        && response.hovered();
+                                    let (fill, border) = if click_wiring_hover {
+                                        (
+                                            egui::Color32::from_rgb(100, 255, 100),
+                                            egui::Color32::WHITE,
+                                        )
+                                    } else if response.hovered() || response.dragged() {
+                                        (egui::Color32::YELLOW, egui::Color32::WHITE)
+                                    } else {
+                                        (type_fill, type_border)
+                                    };
+                                    draw_shaped_port(
+                                        ui.painter(),
+                                        rect.center(),
+                                        port_r,
+                                        fill,
+                                        border,
+                                        PORT_BORDER,
+                                        kind,
+                                        is_connected,
+                                    );
+                                    port_positions.insert((node_id, i, false), rect.center());
+                                    if !self.save_as_open && response.drag_started() {
+                                        dragging_from = Some((node_id, i, true));
+                                    }
+                                    // Click-to-connect: click on output port starts or completes wiring
+                                    // Click-to-connect: click on output port starts or completes wiring
+                                    if !self.save_as_open && response.clicked() {
+                                        if let Some((src_node, src_port, is_output)) = dragging_from
+                                        {
+                                            if self.click_wiring
+                                                && !is_output
+                                                && node_id != src_node
+                                            {
+                                                // Complete: input → this output
+                                                pending_connections
+                                                    .push((node_id, i, src_node, src_port));
+                                                dragging_from = None;
+                                                self.click_wiring = false;
+                                            } else if self.click_wiring
+                                                && is_output
+                                                && node_id != src_node
+                                            {
+                                                // Complete: output → output (swap direction)
+                                                pending_connections
+                                                    .push((src_node, src_port, node_id, i));
+                                                dragging_from = None;
+                                                self.click_wiring = false;
+                                            }
+                                        } else {
+                                            // Start click-wiring from output port
+                                            dragging_from = Some((node_id, i, true));
+                                            self.click_wiring = true;
+                                        }
+                                    }
+                                },
+                            );
+                        });
+                    }
+                }
+            });
+
+            // Restore original style after pinned window's inverse-zoom
+            if is_pinned {
+                ctx.set_style(_original_style.clone());
+            }
+
+            if let Some(r) = &resp {
+                if !self.save_as_open {
+                    if is_pinned {
+                        // Pinned: drag delta is in logical (screen/zoom), store as screen pixels
+                        if r.response.dragged() {
+                            let delta = r.response.drag_delta();
+                            node.pos[0] += delta.x * zoom;
+                            node.pos[1] += delta.y * zoom;
+                        }
+                    } else {
+                        // Normal: convert logical pos back to canvas coords
+                        let offset_egui = offset / zoom;
+                        node.pos = [
+                            r.response.rect.left() - offset_egui.x,
+                            r.response.rect.top() - offset_egui.y,
+                        ];
+                    }
+                }
+                node_rects.insert(node_id, r.response.rect);
+
+                // Pin badge removed — pinned state is shown via the title bar accent color
+
+                // Selection on click (Shift = toggle, no Shift = replace)
+                // For custom_render nodes (Slider), only select on drag — click opens their popup
+                let select_trigger = if is_custom_render {
+                    r.response.drag_started()
+                } else {
+                    r.response.clicked() || r.response.drag_started()
+                };
+                // Stage 5: no selection changes while a version switch is
+                // being confirmed.
+                if !self.save_as_open
+                    && self.pending_version_switch.is_none()
+                    && select_trigger
+                    && !ctx.input(|i| i.modifiers.alt)
+                {
+                    let shift = ctx.input(|i| i.modifiers.shift);
+                    if shift {
+                        if self.selected_nodes.contains(&node_id) {
+                            self.selected_nodes.remove(&node_id);
+                        } else {
+                            self.selected_nodes.insert(node_id);
+                        }
+                    } else if !self.selected_nodes.contains(&node_id) {
+                        self.selected_nodes.clear();
+                        self.selected_nodes.insert(node_id);
+                    }
+                    self.selected_connection = None;
+                    crate::system_log::log(&format!(
+                        "select block: node {:?} alt={} selected_nodes now = {:?}",
+                        node_id,
+                        ctx.input(|i| i.modifiers.alt),
+                        self.selected_nodes
+                    ));
+                }
+
+                // P3: A double-click on any node belongs to that node, never
+                // to the empty canvas behind it.
+                let double_clicked_here = r.response.double_clicked()
+                    || (ctx.input(|i| {
+                        i.pointer
+                            .button_double_clicked(egui::PointerButton::Primary)
+                    }) && ctx
+                        .pointer_latest_pos()
+                        .map(|p| r.response.rect.contains(p))
+                        .unwrap_or(false));
+                if double_clicked_here {
+                    self.node_double_click_consumed = true;
+                }
+
+                // P3: Double-click a custom-node instance to edit its .pwnode.
+                if let Some(file) = &custom_node_file {
+                    if !self.save_as_open
+                        && self.pending_close_tab.is_none()
+                        && !self.documents.is_locked()
+                        && double_clicked_here
+                    {
+                        self.pending_edit_custom_node = Some(file.clone());
+                    }
+                }
+
+                // Right-click context menu — skip for custom_render nodes (they handle their own UI)
+                let secondary_in_rect = !is_custom_render
+                    && ctx.input(|i| i.pointer.button_clicked(egui::PointerButton::Secondary))
+                    && ctx
+                        .pointer_latest_pos()
+                        .map(|p| r.response.rect.contains(p))
+                        .unwrap_or(false);
+                if !self.save_as_open
+                    && !read_only_doc
+                    && !is_custom_render
+                    && (r.response.secondary_clicked() || secondary_in_rect)
+                {
+                    if !self.selected_nodes.contains(&node_id) {
+                        self.selected_nodes.clear();
+                        self.selected_nodes.insert(node_id);
+                    }
+                    self.context_menu_node = Some(node_id);
+                    self.show_context_menu = true;
+                    self.context_menu_pos =
+                        ctx.pointer_latest_pos().unwrap_or(r.response.rect.center());
+                    self.context_menu_opened_at = ctx.input(|i| i.time);
+                }
+
+                // Draw selection highlight — consistent for every node type.
+                // (Custom-render nodes like Slider don't draw their own ring,
+                // so they previously appeared unselected even when active.)
+                if self.selected_nodes.contains(&node_id) {
+                    // let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("selection")));
+                    let painter = ctx.layer_painter(r.response.layer_id);
+                    let sel_accent = ctx
+                        .data_mut(|d| d.get_temp::<[u8; 3]>(egui::Id::new("theme_accent")))
+                        .unwrap_or([80, 160, 255]);
+                    painter.rect_stroke(
+                        r.response.rect.expand(2.0),
+                        4.0,
+                        egui::Stroke::new(
+                            2.0,
+                            egui::Color32::from_rgb(sel_accent[0], sel_accent[1], sel_accent[2]),
+                        ),
+                        egui::StrokeKind::Outside,
+                    );
+                }
+                // Pin indicator — solid accent circle with white pin icon
+                if is_pinned {
+                    // let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("pins")));
+                    let painter = ctx.layer_painter(r.response.layer_id);
+                    let badge_center =
+                        egui::pos2(r.response.rect.left() + 12.0, r.response.rect.top() - 4.0);
+                    let theme_accent = ctx
+                        .data_mut(|d| d.get_temp::<[u8; 3]>(egui::Id::new("theme_accent")))
+                        .unwrap_or([80, 160, 255]);
+                    let accent_color =
+                        egui::Color32::from_rgb(theme_accent[0], theme_accent[1], theme_accent[2]);
+                    // Solid accent background circle (24x24 = radius 12)
+                    painter.circle_filled(badge_center, 12.0, accent_color);
+                    // White pin icon on top
+                    painter.text(
+                        badge_center,
+                        egui::Align2::CENTER_CENTER,
+                        crate::icons::PUSH_PIN,
+                        egui::FontId::proportional(13.0),
+                        egui::Color32::WHITE,
+                    );
+                }
+
+                // P4.3.2D: a package runtime refused by authorization keeps
+                // its node and wires; label it so it is not mistaken for a
+                // working node. Details are in Library → Permissions.
+                if let Some(blocked) = self.graph.custom_blocked(node_id) {
+                    let text = if blocked.needs_review() {
+                        "🔒 Needs permission"
+                    } else {
+                        "🔒 Blocked"
+                    };
+                    let painter = ctx.layer_painter(r.response.layer_id);
+                    painter.text(
+                        egui::pos2(r.response.rect.left(), r.response.rect.top() - 6.0),
+                        egui::Align2::LEFT_BOTTOM,
+                        text,
+                        egui::FontId::proportional(12.0),
+                        egui::Color32::from_rgb(255, 190, 80),
+                    );
+                }
+                // Error badge — red border + ⚠ corner icon when this node has a
+                // recorded evaluation error. Click/hover to read the message.
+                if let Some(err) = crate::node_errors::get(node_id) {
+                    // let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("node_errors")));
+                    let painter = ctx.layer_painter(r.response.layer_id);
+                    let err_red = egui::Color32::from_rgb(230, 80, 80);
+                    // Red border around the whole node
+                    painter.rect_stroke(
+                        r.response.rect.expand(2.0),
+                        4.0,
+                        egui::Stroke::new(2.0, err_red),
+                        egui::StrokeKind::Outside,
+                    );
+                    // Warning badge at the top-right corner
+                    let badge_center =
+                        egui::pos2(r.response.rect.right() - 12.0, r.response.rect.top() - 4.0);
+                    painter.circle_filled(badge_center, 10.0, err_red);
+                    painter.circle_stroke(
+                        badge_center,
+                        10.0,
+                        egui::Stroke::new(1.0, egui::Color32::WHITE),
+                    );
+                    painter.text(
+                        badge_center,
+                        egui::Align2::CENTER_CENTER,
+                        "!",
+                        egui::FontId::proportional(13.0),
+                        egui::Color32::WHITE,
+                    );
+                    // Hover tooltip with the full error message — shown when
+                    // the pointer is over the node window or its badge.
+                    let pointer_over = ctx
+                        .pointer_latest_pos()
+                        .map(|p| r.response.rect.expand(4.0).contains(p))
+                        .unwrap_or(false);
+                    if pointer_over {
+                        egui::show_tooltip_at_pointer(
+                            ctx,
+                            egui::LayerId::new(
+                                egui::Order::Tooltip,
+                                egui::Id::new("node_err_tip_layer"),
+                            ),
+                            egui::Id::new(("node_err_tip", node_id)),
+                            |ui| {
+                                ui.colored_label(err_red, "⚠ Node error");
+                                ui.label(egui::RichText::new(&err.message).monospace().size(11.0));
+                            },
+                        );
+                    }
+                }
+
+                // Collapsed node: populate fallback port positions so wires still draw
+                let is_collapsed = r.inner.is_none();
+                if is_collapsed {
+                    let rect = r.response.rect;
+                    let n_in = n_inputs;
+                    let n_out = n_outputs;
+                    let fg = ctx.layer_painter(egui::LayerId::new(
+                        egui::Order::Foreground,
+                        egui::Id::new("collapsed_ports"),
+                    ));
+                    // Input dots: dim version of theme text color (subtle hint).
+                    // Output dots: theme accent so they read as the node's
+                    // outgoing identity, matching the selected-wire highlight.
+                    let theme_text = crate::nodes::theme::current_text_arr(ctx);
+                    let in_dot = egui::Color32::from_rgba_unmultiplied(
+                        theme_text[0],
+                        theme_text[1],
+                        theme_text[2],
+                        90,
+                    );
+                    let out_dot = crate::nodes::theme::current_accent(ctx);
+                    for i in 0..n_in {
+                        let y_off = if n_in > 1 {
+                            (i as f32 - (n_in - 1) as f32 / 2.0) * 4.0
+                        } else {
+                            0.0
+                        };
+                        let pos = egui::pos2(rect.left() - PORT_RADIUS, rect.center().y + y_off);
+                        port_positions.insert((node_id, i, true), pos);
+                        fg.circle_filled(pos, 3.0, in_dot);
+                    }
+                    for i in 0..n_out {
+                        let y_off = if n_out > 1 {
+                            (i as f32 - (n_out - 1) as f32 / 2.0) * 4.0
+                        } else {
+                            0.0
+                        };
+                        let pos = egui::pos2(rect.right() + PORT_RADIUS, rect.center().y + y_off);
+                        port_positions.insert((node_id, i, false), pos);
+                        fg.circle_filled(pos, 3.0, out_dot);
+                    }
+
+                    // For WGSL nodes: run the offscreen render pass even when collapsed
+                    // so downstream multi-pass chains keep receiving image data.
+                    if let NodeType::WgslViewer {
+                        wgsl_code,
+                        uniform_names,
+                        uniform_types,
+                        uniform_values,
+                        canvas_w,
+                        canvas_h,
+                        image_a_mode,
+                        image_b_mode,
+                        feedback_reset_pending,
+                        ..
+                    } = &mut node.node_type
+                    {
+                        crate::nodes::wgsl_viewer::render_offscreen_pass(
+                            ctx,
+                            node_id,
+                            wgsl_code,
+                            uniform_names,
+                            uniform_types,
+                            uniform_values,
+                            *canvas_w,
+                            *canvas_h,
+                            *image_a_mode,
+                            *image_b_mode,
+                            feedback_reset_pending,
+                            &connections,
+                            values,
+                            &wgpu_render_state,
+                        );
+                    }
+                }
+
+                // Undo snapshot on drag start (coalesced — one per gesture)
+                if r.response.drag_started()
+                    && !ctx.input(|i| i.modifiers.alt)
+                    && !self.drag_undo_pushed
+                {
+                    self.push_undo();
+                    self.drag_undo_pushed = true;
+                }
+                if r.response.drag_stopped() {
+                    self.drag_undo_pushed = false;
+                }
+
+                // Undo snapshot for property edits (slider drags, DragValue, text fields, etc.).
+                // render_content() signals via temp data when a widget interaction starts.
+                let prop_signal_id = egui::Id::new("_patchwork_prop_edit_signal");
+                if ctx.data_mut(|d| d.get_temp::<bool>(prop_signal_id).unwrap_or(false)) {
+                    ctx.data_mut(|d| d.remove::<bool>(prop_signal_id));
+                    crate::system_log::log("PROP SIGNAL READ".to_string());
+                    if !self.property_undo_pushed {
+                        self.push_undo();
+                        self.property_undo_pushed = true;
+                    }
+                }
+
+                // Track drag delta for multi-node movement
+                if r.response.dragged()
+                    && self.selected_nodes.contains(&node_id)
+                    && self.selected_nodes.len() > 1
+                {
+                    multi_drag = Some((node_id, r.response.drag_delta()));
+                }
+
+                // Option+drag to duplicate
+                if r.response.drag_started() && ctx.input(|i| i.modifiers.alt) {
+                    self.opt_drag_source = Some(node_id);
+                }
+            }
+            // Process slider popup actions (pin/delete)
+            // Check all custom node pin actions
+            let pin_id = egui::Id::new(("slider_pin_action", node_id));
+            let display_pin_id = egui::Id::new(("display_pin_action", node_id));
+            let has_pin = ctx.data_mut(|d| d.get_temp::<bool>(pin_id).unwrap_or(false))
+                || ctx.data_mut(|d| d.get_temp::<bool>(display_pin_id).unwrap_or(false));
+            ctx.data_mut(|d| {
+                d.remove::<bool>(pin_id);
+                d.remove::<bool>(display_pin_id);
+            });
+            if has_pin {
+                self.push_undo();
+                if self.pinned_nodes.contains(&node_id) {
+                    // Unpin: current pos is screen pixels stored by pinned rendering
+                    // Convert to canvas coords: canvas = (screen - offset) / zoom
+                    let sx = node.pos[0];
+                    let sy = node.pos[1];
+                    node.pos = [(sx - offset.x) / zoom, (sy - offset.y) / zoom];
+                    self.pinned_nodes.remove(&node_id);
+                } else {
+                    // Pin: current pos is canvas coords
+                    // Convert to screen pixels: screen = canvas * zoom + offset
+                    let cx = node.pos[0];
+                    let cy = node.pos[1];
+                    node.pos = [cx * zoom + offset.x, cy * zoom + offset.y];
+                    self.pinned_nodes.insert(node_id);
+                }
+            }
+            // Handle delete actions from custom node popups (Slider, Comment, etc.)
+            for prefix in &[
+                "slider_delete_action",
+                "comment_delete_action",
+                "display_delete_action",
+                "button_delete_action",
+            ] {
+                let del_id = egui::Id::new((*prefix, node_id));
+                if ctx.data_mut(|d| d.get_temp::<bool>(del_id).unwrap_or(false)) {
+                    ctx.data_mut(|d| d.remove::<bool>(del_id));
+                    self.push_undo();
+                    nodes_to_delete.push(node_id);
+                }
+            }
+
+            self.graph.nodes.insert(node_id, node);
+        }
+        if ctx.input(|i| i.pointer.any_released()) {
+            if let Some(base) = self.pending_gesture_snapshot.take() {
+                let current = UndoSnapshot::new(self.graph.clone(), self.pinned_nodes.clone());
+                if !base.has_same_content(&current) {
+                    self.undo_history.push(base);
+                    self.is_dirty = true;
+                }
+            }
+        }
+
+        // Apply multi-node drag: move all other selected nodes by the same delta
+        if let Some((dragged_id, delta)) = multi_drag {
+            if delta.length() > 0.0 {
+                for &nid in &self.selected_nodes {
+                    if nid != dragged_id {
+                        if let Some(node) = self.graph.nodes.get_mut(&nid) {
+                            if self.pinned_nodes.contains(&nid) {
+                                node.pos[0] += delta.x * zoom;
+                                node.pos[1] += delta.y * zoom;
+                            } else {
+                                // delta is in egui logical coords; convert to canvas coords
+                                node.pos[0] += delta.x;
+                                node.pos[1] += delta.y;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Some((src_node, src_port, is_output)) = dragging_from {
+            if self.click_wiring {
+                // Click-wiring mode: cancel on Escape or right-click
+                let cancel = ctx.input(|i| i.key_pressed(egui::Key::Escape))
+                    || ctx.input(|i| i.pointer.button_clicked(egui::PointerButton::Secondary));
+                if cancel {
+                    dragging_from = None;
+                    self.click_wiring = false;
+                }
+                // Connection completion is handled in the port click handlers above
+            } else {
+                // Normal drag mode: complete on release
+                if ctx.input(|i| i.pointer.any_released()) {
+                    if let Some(pointer) = ctx.pointer_latest_pos() {
+                        // Find the CLOSEST compatible port within the hit radius,
+                        // not the first arbitrary one from HashMap iteration.
+                        // Track the closest *incompatible* port too — if the user
+                        // released right on top of an incompatible port we want
+                        // to surface a toast instead of silently doing nothing.
+                        let hit_radius = PORT_INTERACT * 2.0;
+                        let mut best: Option<(f32, NodeId, usize, bool)> = None;
+                        let mut best_incompat: Option<(f32, PortKind, PortKind)> = None;
+
+                        crate::system_log::log(&format!(
+                            "drop: src=({},{}) is_output={} ptr=({:.0},{:.0}) radius={:.0} ports={}",
+                            src_node,
+                            src_port,
+                            is_output,
+                            pointer.x,
+                            pointer.y,
+                            hit_radius,
+                            port_positions.len()
+                        ));
+
+                        for (&(n, p, i), &q) in &port_positions {
+                            crate::system_log::log(&format!(
+                                "    reg nid={} pidx={} is_input={} at=({:.0},{:.0})",
+                                n, p, i, q.x, q.y
+                            ));
+                        }
+
+                        for (&(nid, pidx, is_input), &pos) in &port_positions {
+                            let dist = pos.distance(pointer);
+
+                            if dist < 120.0 {
+                                crate::system_log::log(&format!(
+                                    "  cand nid={} pidx={} is_input={} dist={:.0} same_node={}",
+                                    nid,
+                                    pidx,
+                                    is_input,
+                                    dist,
+                                    nid == src_node
+                                ));
+                            }
+                            if dist < hit_radius && nid != src_node {
+                                // Must be opposite direction (output→input or input→output)
+                                let valid_dir =
+                                    (is_output && is_input) || (!is_output && !is_input);
+                                if valid_dir {
+                                    // Check port type compatibility
+                                    let src_kind =
+                                        self.graph.port_kind(src_node, src_port, is_output);
+                                    let tgt_kind = self.graph.port_kind(nid, pidx, !is_input);
+                                    let compatible = match (src_kind, tgt_kind) {
+                                        (Some(s), Some(t)) => PortKind::compatible(s, t),
+                                        _ => true, // Unknown port kind — allow connection
+                                    };
+                                    if compatible {
+                                        if best.as_ref().map(|b| dist < b.0).unwrap_or(true) {
+                                            best = Some((dist, nid, pidx, is_input));
+                                        }
+                                    } else if let (Some(s), Some(t)) = (src_kind, tgt_kind) {
+                                        if best_incompat
+                                            .as_ref()
+                                            .map(|b| dist < b.0)
+                                            .unwrap_or(true)
+                                        {
+                                            best_incompat = Some((dist, s, t));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if let Some((_, nid, pidx, is_input)) = best {
+                            if is_output && is_input {
+                                pending_connections.push((src_node, src_port, nid, pidx));
+                            } else {
+                                pending_connections.push((nid, pidx, src_node, src_port));
+                            }
+                        } else if let Some((_, src_kind, tgt_kind)) = best_incompat {
+                            // User dropped on a port but the kinds don't match —
+                            // tell them why nothing happened.
+                            let (from_k, to_k) = if is_output {
+                                (src_kind, tgt_kind)
+                            } else {
+                                (tgt_kind, src_kind)
+                            };
+                            self.toast_warn(format!("Can't connect {:?} → {:?}", from_k, to_k));
+                        }
+                    }
+                    dragging_from = None;
+                }
+            }
+        }
+
+        // Sync click_wiring state with egui temp data (for inline port nodes)
+        ctx.data_mut(|d| d.insert_temp(egui::Id::new("click_wiring_active"), self.click_wiring));
+        // Pick up click-wire completions from inline ports
+        if let Some((fn_, fp, tn, tp)) = ctx.data_mut(|d| {
+            d.get_temp::<(NodeId, usize, NodeId, usize)>(egui::Id::new("click_wire_complete"))
+        }) {
+            ctx.data_mut(|d| {
+                d.remove::<(NodeId, usize, NodeId, usize)>(egui::Id::new("click_wire_complete"))
+            });
+            pending_connections.push((fn_, fp, tn, tp));
+            dragging_from = None;
+            self.click_wiring = false;
+        }
+
+        self.dragging_from = dragging_from;
+        self.port_positions = port_positions;
+        self.node_rects = node_rects;
+        self.monitor = monitor_state;
+        self.ob = ob_manager;
+        self.audio = audio_manager;
+
+        // Reset property-edit undo coalescing when no interaction is active.
+        // This lets the NEXT widget interaction push a fresh undo snapshot.
+        if !ctx.input(|i| i.pointer.any_down()) && ctx.memory(|mem| mem.focused().is_none()) {
+            self.property_undo_pushed = false;
+        }
+
+        // Audio chains are built after graph evaluation (below) so Select
+        // nodes can be resolved using the current frame's port values.
+
+        // Push undo snapshot if any graph mutations are pending
+        // (palette_spawns push their own per-node undo snapshots below)
+        if !nodes_to_delete.is_empty()
+            || !pending_disconnects.is_empty()
+            || !pending_connections.is_empty()
+        {
+            self.push_undo();
+        }
+        let any_deleted = !nodes_to_delete.is_empty();
+        for id in nodes_to_delete {
+            // Clear opt-drag state if the source or duplicated node is being deleted
+            if self.opt_drag_source == Some(id) {
+                self.opt_drag_source = None;
+            }
+            if self.opt_drag_created == Some(id) {
+                self.opt_drag_created = None;
+            }
+            self.audio.remove_processor(id); // Remove from engine before graph
+            self.midi.cleanup_node(id);
+            self.serial.cleanup_node(id);
+            self.osc.cleanup_node(id);
+            self.network.cleanup_node(id);
+            self.ob.cleanup_node(id);
+            self.audio.cleanup_node(id);
+            crate::nodes::video_player::cleanup_node(id);
+            // Drop GPU textures owned by this node immediately so VRAM
+            // doesn't balloon when users rapidly spawn/delete image nodes.
+            self.gpu_tex_cache
+                .invalidate_node(id, self.wgpu_render_state.as_ref());
+            self.graph.remove_node(id);
+            // Clean up UI state for deleted node
+            self.node_rects.remove(&id);
+            self.port_positions.retain(|&(nid, _, _), _| nid != id);
+        }
+        if any_deleted {
+            // Per-node `invalidate_node` clears the GPU cache, but the
+            // egui temp data keys (`("dyn_img_cache", id)`, etc.) are
+            // still alive. If the user then undoes the delete, the
+            // restored node would short-circuit on the stale cache and
+            // hand out a `PortValue::GpuImage` whose backing texture
+            // was already invalidated, rendering blank until they
+            // touched a parameter. Schedule a wholesale wipe.
+            self.caches_dirty = true;
+        }
+        for (nid, port) in &pending_disconnects {
+            // Skip mixer gain ports — they're graph-layer, not engine connections
+            let is_mixer_gain_port = matches!(
+                self.graph.nodes.get(nid).map(|n| &n.node_type),
+                Some(NodeType::AudioMixer { .. })
+            ) && port % 2 != 0;
+            if !is_mixer_gain_port {
+                let engine_port = self.mixer_engine_port(*nid, *port);
+                self.audio.disconnect_audio(*nid, engine_port);
+            }
+            self.graph.remove_connections_to_port(*nid, *port);
+        }
+
+        // Generic Script stale-connection sweep: prune any connection whose
+        // from_port or to_port falls outside the Script node's current valid
+        // port range. This catches output-side stale wires (which the
+        // to-port-based pending_disconnects mechanism can't handle) and any
+        // edge cases from load/rename shuffles.
+        {
+            let script_info: Vec<(NodeId, usize, usize, bool)> = self
+                .graph
+                .nodes
+                .iter()
+                .filter_map(|(id, n)| match &n.node_type {
+                    NodeType::Script {
+                        input_names,
+                        output_names,
+                        continuous,
+                        ..
+                    } => Some((*id, input_names.len(), output_names.len(), *continuous)),
+                    _ => None,
+                })
+                .collect();
+            if !script_info.is_empty() {
+                let before = self.graph.connections.len();
+                for (sid, n_in, n_out, cont) in &script_info {
+                    let input_base = if *cont { 1 } else { 2 };
+                    let max_in = input_base + n_in;
+                    self.graph.connections.retain(|c| {
+                        // Prune bad from-side (output port out of range)
+                        if c.from_node == *sid && c.from_port >= *n_out {
+                            return false;
+                        }
+                        // Prune bad to-side (input port: either control port [0..input_base]
+                        // is always valid, or input_base..max_in is valid; anything beyond is stale)
+                        if c.to_node == *sid && c.to_port >= max_in {
+                            return false;
+                        }
+                        true
+                    });
+                }
+                if self.graph.connections.len() != before {
+                    self.graph.mark_topo_dirty();
+                }
+            }
+        }
+        // Route / Switch stale-connection sweep: prune output-side connections
+        // whose from_port falls outside the node's current valid output count,
+        // and input-side connections beyond the Switch's valid input count.
+        // Mirrors the Script sweep above.
+        {
+            let route_info: Vec<(NodeId, usize, &'static str)> = self
+                .graph
+                .nodes
+                .iter()
+                .filter_map(|(id, n)| match &n.node_type {
+                    NodeType::Dynamic { inner } => {
+                        let tag = inner.node.type_tag();
+                        if tag == "route" || tag == "switch" {
+                            let n_out = inner.node.outputs().len();
+                            Some((*id, n_out, if tag == "route" { "route" } else { "switch" }))
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                })
+                .collect();
+
+            // Rebuild with in-count for switch (inputs().len() includes selector port)
+            let switch_in_info: Vec<(NodeId, usize)> = self
+                .graph
+                .nodes
+                .iter()
+                .filter_map(|(id, n)| match &n.node_type {
+                    NodeType::Dynamic { inner } if inner.node.type_tag() == "switch" => {
+                        Some((*id, inner.node.inputs().len()))
+                    }
+                    _ => None,
+                })
+                .collect();
+
+            if !route_info.is_empty() {
+                let before = self.graph.connections.len();
+                for (rid, n_out, _) in &route_info {
+                    self.graph.connections.retain(|c| {
+                        if c.from_node == *rid && c.from_port >= *n_out {
+                            return false;
+                        }
+                        true
+                    });
+                }
+                for (sid, max_in) in &switch_in_info {
+                    self.graph.connections.retain(|c| {
+                        if c.to_node == *sid && c.to_port >= *max_in {
+                            return false;
+                        }
+                        true
+                    });
+                }
+                if self.graph.connections.len() != before {
+                    self.graph.mark_topo_dirty();
+                }
+            }
+        }
+
+        for &(fn_, fp, tn, tp) in &pending_connections {
+            let from_name = self
+                .graph
+                .nodes
+                .get(&fn_)
+                .map(|n| n.node_type.title())
+                .unwrap_or("?");
+            let from_port = self
+                .graph
+                .nodes
+                .get(&fn_)
+                .and_then(|n| n.node_type.outputs().get(fp).map(|p| p.name.clone()))
+                .unwrap_or_else(|| fp.to_string().into());
+            let to_name = self
+                .graph
+                .nodes
+                .get(&tn)
+                .map(|n| n.node_type.title())
+                .unwrap_or("?");
+            let to_port = self
+                .graph
+                .nodes
+                .get(&tn)
+                .and_then(|n| n.node_type.inputs().get(tp).map(|p| p.name.clone()))
+                .unwrap_or_else(|| tp.to_string().into());
+            crate::system_log::log(format!(
+                "Connected {}.{} → {}.{}",
+                from_name, from_port, to_name, to_port
+            ));
+            self.graph.add_connection(fn_, fp, tn, tp);
+            // Only send engine connect/disconnect for audio ports
+            // For mixer nodes, skip gain control ports (odd: 1, 3, 5)
+            let is_mixer_gain_port = matches!(
+                self.graph.nodes.get(&tn).map(|n| &n.node_type),
+                Some(NodeType::AudioMixer { .. })
+            ) && tp % 2 != 0;
+            if !is_mixer_gain_port && self.audio.has_processor(fn_) && self.audio.has_processor(tn)
+            {
+                let engine_port = self.mixer_engine_port(tn, tp);
+                // Disconnect old, connect new
+                self.audio.disconnect_audio(tn, engine_port);
+                self.audio.connect_audio(fn_, tn, engine_port);
+            }
+        }
+        // Spawn nodes from Palette clicks (place at center of the current viewport)
+        // Each node addition gets its own undo snapshot so Ctrl+Z undoes one at a time.
+        for (_palette_pos, nt) in palette_spawns {
+            self.push_undo();
+            let screen_center = ctx.screen_rect().center();
+            // egui logical coords → canvas: canvas_pos = egui_pos - offset/zoom
+            let off_e = self.canvas_offset / self.canvas_zoom;
+            let cx = screen_center.x - off_e.x;
+            let cy = screen_center.y - off_e.y;
+            self.graph.add_node(nt, [cx, cy]);
+        }
+        // Clear MCP trigger flags on AI Request nodes
+        for (&nid, node) in &mut self.graph.nodes {
+            if let NodeType::AiRequest { status, .. } = &mut node.node_type {
+                let trigger_id = egui::Id::new(("mcp_ai_triggered", nid));
+                if ctx.data_mut(|d| d.get_temp::<bool>(trigger_id).unwrap_or(false)) {
+                    ctx.data_mut(|d| d.remove::<bool>(trigger_id));
+                    *status = "thinking".into();
+                }
+            }
+        }
+        // Handle WGSL "+" button spawn requests
+        if let Some(req) = ctx.data_mut(|d| {
+            d.get_temp::<crate::nodes::wgsl_viewer::WgslSpawnRequest>(egui::Id::new(
+                "wgsl_spawn_request",
+            ))
+        }) {
+            ctx.data_mut(|d| {
+                d.remove::<crate::nodes::wgsl_viewer::WgslSpawnRequest>(egui::Id::new(
+                    "wgsl_spawn_request",
+                ))
+            });
+
+            // Position the new node to the left of the WGSL node
+            let wgsl_pos = self
+                .graph
+                .nodes
+                .get(&req.target_node)
+                .map(|n| n.pos)
+                .unwrap_or([0.0, 0.0]);
+            let spawn_pos = [
+                wgsl_pos[0] - 200.0,
+                wgsl_pos[1] + (req.target_port as f32 * 30.0),
+            ];
+
+            let (new_id, from_port) = match req.source_type.as_str() {
+                "time" => {
+                    let id = self.graph.add_node(
+                        NodeType::Dynamic {
+                            inner: crate::graph::DynNode {
+                                node: Box::new(crate::nodes::time_node::TimeNode::default()),
+                            },
+                        },
+                        spawn_pos,
+                    );
+                    (id, 0) // Time node output port 0 = Seconds
+                }
+                "color" => {
+                    let id = self.graph.add_node(
+                        NodeType::Dynamic {
+                            inner: crate::graph::DynNode {
+                                node: Box::new(crate::nodes::color_node::ColorNode::default()),
+                            },
+                        },
+                        spawn_pos,
+                    );
+                    (id, 0) // Color node output port 0 = R (will connect R, G, B separately)
+                }
+                _ => {
+                    // Slider with smart defaults
+                    let (min, max, step, value) =
+                        crate::nodes::wgsl_viewer::slider_defaults_for_uniform(&req.uniform_name);
+                    let mut nt = NodeType::Slider {
+                        value,
+                        min,
+                        max,
+                        step,
+                        slider_color: [80, 160, 255],
+                        label: req.uniform_name.clone(),
+                    };
+                    Self::apply_theme_defaults_to_new(ctx, &mut nt);
+                    let id = self.graph.add_node(nt, spawn_pos);
+                    (id, 0) // Slider output port 0 = Value
+                }
+            };
+            // Connect the new node to the WGSL uniform port
+            if req.source_type == "color" {
+                // Connect R, G, B outputs to 3 consecutive ports
+                self.graph
+                    .add_connection(new_id, 0, req.target_node, req.target_port); // R
+                self.graph
+                    .add_connection(new_id, 1, req.target_node, req.target_port + 1); // G
+                self.graph
+                    .add_connection(new_id, 2, req.target_node, req.target_port + 2); // B
+            } else {
+                self.graph
+                    .add_connection(new_id, from_port, req.target_node, req.target_port);
+            }
+
+            crate::system_log::log(format!(
+                "Auto-created {} for u.{}",
+                req.source_type, req.uniform_name
+            ));
+        }
+        // Handle WGSL Presets "+" button: spawn a paired WGSL Viewer
+        // to the right of the picker and auto-wire Shader -> WGSL.
+        if let Some(req) = ctx.data_mut(|d| {
+            d.get_temp::<crate::nodes::wgsl_presets::WgslPresetsSpawnRequest>(egui::Id::new(
+                "wgsl_presets_spawn_request",
+            ))
+        }) {
+            ctx.data_mut(|d| {
+                d.remove::<crate::nodes::wgsl_presets::WgslPresetsSpawnRequest>(egui::Id::new(
+                    "wgsl_presets_spawn_request",
+                ))
+            });
+            let src_pos = self
+                .graph
+                .nodes
+                .get(&req.source_node)
+                .map(|n| n.pos)
+                .unwrap_or([0.0, 0.0]);
+            let spawn_pos = [src_pos[0] + 320.0, src_pos[1]];
+            // Refinement H: if the picker's current preset relies on
+            // self-feedback (samples image_a / image_b), pre-set Input A to
+            // LastFrame so the paired viewer renders correctly with no extra clicks.
+            let is_feedback = self
+                .graph
+                .nodes
+                .get(&req.source_node)
+                .and_then(|n| match &n.node_type {
+                    NodeType::Dynamic { inner } => {
+                        let st = inner.node.save_state();
+                        st.get("preset_key")
+                            .and_then(|v| v.as_str())
+                            .map(|k| crate::nodes::wgsl_presets::is_feedback_preset(k))
+                    }
+                    _ => None,
+                })
+                .unwrap_or(false);
+            let initial_image_a_mode = if is_feedback {
+                crate::graph::ImageInputMode::LastFrame
+            } else {
+                crate::graph::ImageInputMode::Unused
+            };
+            let viewer_id = self.graph.add_node(
+                NodeType::WgslViewer {
+                    wgsl_code: String::new(),
+                    uniform_names: vec![],
+                    uniform_types: vec![],
+                    uniform_values: vec![],
+                    uniform_min: vec![],
+                    uniform_max: vec![],
+                    canvas_w: 400.0,
+                    canvas_h: 300.0,
+                    resolution: 120,
+                    expanded: false,
+                    image_a_mode: initial_image_a_mode,
+                    image_b_mode: crate::graph::ImageInputMode::Unused,
+                    feedback_reset_pending: false,
+                    last_compile_ok: false,
+                    pending_shader_hash: 0,
+                    pending_shader_since_ms: 0,
+                    image_a_hint_shown: false,
+                    image_b_hint_shown: false,
+                    last_auto_reset_ms: 0,
+                },
+                spawn_pos,
+            );
+            // Auto-connect picker port 0 (Shader) -> viewer port 0 (WGSL)
+            self.graph.add_connection(req.source_node, 0, viewer_id, 0);
+            crate::system_log::log(
+                "Spawned paired WGSL Viewer for Formula Preset Picker".to_string(),
+            );
+        }
+        // Reverse pairing: an empty Visuals (WGSL) viewer asked for a
+        // Visual Presets picker. Spawn one to the LEFT with the default
+        // (top-of-list) preset already selected and auto-wire it.
+        if let Some(req) = ctx.data_mut(|d| {
+            d.get_temp::<crate::nodes::wgsl_presets::WgslViewerLoadPresetRequest>(egui::Id::new(
+                "wgsl_viewer_load_preset_request",
+            ))
+        }) {
+            ctx.data_mut(|d| {
+                d.remove::<crate::nodes::wgsl_presets::WgslViewerLoadPresetRequest>(egui::Id::new(
+                    "wgsl_viewer_load_preset_request",
+                ))
+            });
+            let viewer_pos = self
+                .graph
+                .nodes
+                .get(&req.viewer_node)
+                .map(|n| n.pos)
+                .unwrap_or([0.0, 0.0]);
+            let spawn_pos = [viewer_pos[0] - 280.0, viewer_pos[1]];
+            // Build a fresh Visual Presets node defaulted to "gradient" —
+            // the Default impl picks whatever the first priority-ordered
+            // preset is, but we force "gradient" explicitly so that key
+            // is used regardless of future reordering.
+            let mut picker = crate::nodes::wgsl_presets::WgslPresetsNode::default();
+            picker.preset_key = "gradient".to_string();
+            let picker_id = self.graph.add_node(
+                NodeType::Dynamic {
+                    inner: crate::graph::DynNode {
+                        node: Box::new(picker),
+                    },
+                },
+                spawn_pos,
+            );
+            self.graph.add_connection(picker_id, 0, req.viewer_node, 0);
+            crate::system_log::log(
+                "Spawned Visual Presets picker for empty Visuals (WGSL) viewer".to_string(),
+            );
+        }
+        self.midi.process(midi_actions);
+        self.serial.process(serial_actions);
+        self.osc.process(osc_actions);
+        self.network.process(network_actions);
+        self.http.process(http_actions);
+        self.dmx.process(dmx_actions);
+        self.artnet.process(artnet_actions);
+    }
+}
+impl eframe::App for PatchworkApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // P4.3.2E2: everything the open document's nodes do this frame (in
+        // node evaluation, drawing, device managers and the audio engine)
+        // is checked against its rights. Entered again below once its
+        // content state is resolved.
+        let _document_rights = self.document_rights().enter();
+        if let Some(receiver) = &self.hardware_flash_receiver {
+            match receiver.try_recv() {
+                Ok(result) => {
+                    self.hardware_flash_result = Some(result);
+                    self.hardware_flash_in_progress = false;
+                    self.hardware_flash_receiver = None;
+                }
+
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.hardware_flash_result = Some(Err(
+                        "Firmware flashing worker disconnected unexpectedly".to_string(),
+                    ));
+                    self.hardware_flash_in_progress = false;
+                    self.hardware_flash_receiver = None;
+                }
+
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    // Background operation is still running.
+                }
+            }
+        }
+        // Share the active document type with the node palette.
+        let is_custom_node = !self.documents.documents.is_empty()
+            && self.documents.active().kind == crate::document::DocumentKind::CustomNode;
+
+        ctx.data_mut(|data| {
+            data.insert_temp(egui::Id::new("active_is_custom_node"), is_custom_node);
+        });
+        // Drop the previous frame's ScrollArea inner-rect registrations
+        // before any node draws this frame and re-pushes its own. The pan
+        // handler at the end of update() reads what's in the registry
+        // *after* nodes have drawn, so it sees this frame's rects.
+        crate::nodes::clear_scroll_rects();
+
+        // Drain any pending wholesale-cache wipe queued by load /
+        // restore / undo / redo / delete on the previous frame.
+        //
+        // Must run BEFORE the menu bar — otherwise a fresh File→Open
+        // click on this same frame would write `file_action_load`
+        // into temp data and the wipe (which clears all temp data)
+        // would eat it before `handle_system_node_actions` runs.
+        // It also runs before `gpu_tex_cache.begin_frame` further
+        // down, so the cache LRU doesn't see the previous project's
+        // entries.
+        self.clear_caches_if_dirty(ctx);
+        // P6: the Player has its own frame (no editor chrome, canvas input,
+        // shortcuts, dialogs or MCP) around the same runtime.
+        if self.player.is_some() {
+            self.player_frame(ctx);
+            return;
+        }
+        // ── Auto-open click-popups for freshly created Slider / Comment ─────
+        // (Other node types in the set are silently ignored — only those
+        // listed below get a popup-open hint. Set populated by
+        // `add_node_selected`.)
+        if !self.pending_popup_open.is_empty() {
+            let now = ctx.input(|i| i.time);
+            let ids: Vec<NodeId> = self.pending_popup_open.drain().collect();
+            for id in ids {
+                let Some(node) = self.graph.nodes.get(&id) else {
+                    continue;
+                };
+                match &node.node_type {
+                    NodeType::Slider { .. } => {
+                        ctx.data_mut(|d| {
+                            d.insert_temp(egui::Id::new(("slider_popup", id)), true);
+                            d.insert_temp(egui::Id::new(("slider_popup_time", id)), now);
+                        });
+                    }
+                    NodeType::Dynamic { inner } if inner.node.type_tag() == "comment" => {
+                        ctx.data_mut(|d| {
+                            d.insert_temp(egui::Id::new(("comment_popup_d", id)), true);
+                            d.insert_temp(egui::Id::new(("comment_popup_time_d", id)), now);
+                        });
+                    }
+                    _ => {}
+                }
+            }
+        }
+        // Keep the OS title bar in sync with project + dirty state, and
+        // intercept close requests when there are unsaved changes.
+        self.update_window_title(ctx);
+        self.handle_close_request(ctx);
+        // ── OS-level menu bar (always visible) ──
+        // Snapshot recent_projects to avoid borrowing `self` inside the
+        // menu closure (which already mutates ctx.data).
+        let recent_projects: Vec<String> = self.recent_projects.clone();
+        egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
+            egui::menu::bar(ui, |ui| {
+                ui.menu_button("File", |ui| {
+                    if ui.button("\u{2795} New Project").clicked() {
+                        ui.ctx()
+                            .data_mut(|d| d.insert_temp(egui::Id::new("file_action_new"), true));
+                        ui.close_menu();
+                    }
+                    if ui.button("\u{1f4c2} Open...").clicked() {
+                        ui.ctx()
+                            .data_mut(|d| d.insert_temp(egui::Id::new("file_action_load"), true));
+                        ui.close_menu();
+                    }
+                    if ui.button("Open Custom Node...").clicked() {
+                        ui.ctx().data_mut(|d| {
+                            d.insert_temp(egui::Id::new("file_action_open_custom_node"), true);
+                        });
+                        ui.close_menu();
+                    }
+                    if ui.button("Insert Custom Node...").clicked() {
+                        ui.ctx().data_mut(|d| {
+                            d.insert_temp(egui::Id::new("file_action_insert_custom_node"), true);
+                        });
+                        ui.close_menu();
+                    }
+                    ui.add_enabled_ui(!recent_projects.is_empty(), |ui| {
+                        ui.menu_button("Open Recent", |ui| {
+                            for path in &recent_projects {
+                                let label = std::path::Path::new(path)
+                                    .file_name()
+                                    .map(|f| f.to_string_lossy().to_string())
+                                    .unwrap_or_else(|| path.clone());
+                                if ui.button(label).on_hover_text(path).clicked() {
+                                    ui.ctx().data_mut(|d| {
+                                        d.insert_temp(
+                                            egui::Id::new("file_action_load_recent"),
+                                            path.clone(),
+                                        );
+                                    });
+                                    ui.close_menu();
+                                }
+                            }
+                            if !recent_projects.is_empty() {
+                                ui.separator();
+                                if ui.button("Clear Recent").clicked() {
+                                    ui.ctx().data_mut(|d| {
+                                        d.insert_temp(
+                                            egui::Id::new("file_action_clear_recent"),
+                                            true,
+                                        );
+                                    });
+                                    ui.close_menu();
+                                }
+                            }
+                        });
+                    });
+                    if ui.button("\u{1f4be} Save").clicked() {
+                        ui.ctx()
+                            .data_mut(|d| d.insert_temp(egui::Id::new("file_action_save"), true));
+                        ui.close_menu();
+                    }
+                    if ui.button("Save As...").clicked() {
+                        // Projects and custom nodes have separate Save As flows.
+                        self.begin_save_as();
+                        ui.close_menu();
+                    }
+                    // P6 Stage 2.3: export the saved project as an app.
+                    let export_source = self.export_source();
+                    ui.add_enabled_ui(export_source.is_some(), |ui| {
+                        ui.menu_button("Export as App", |ui| {
+                            if ui.button("Windows Portable\u{2026}").clicked() {
+                                if let Some(source) = &export_source {
+                                    self.open_export_dialog(source);
+                                }
+                                ui.close_menu();
+                            }
+                        });
+                    })
+                    .response
+                    .on_disabled_hover_text(if cfg!(windows) {
+                        "Save the project to export it as an app"
+                    } else {
+                        "Exporting apps is available on Windows"
+                    });
+                    ui.separator();
+
+                    let can_publish = self.documents.active().kind
+                        == crate::document::DocumentKind::CustomNode
+                        && self.documents.active().path.is_some()
+                        && !self.documents.active().read_only
+                        && !self.is_dirty
+                        && !self.documents.active().is_dirty;
+
+                    if ui
+                        .add_enabled(can_publish, egui::Button::new("Publish to Library"))
+                        .on_hover_text(
+                            "Save the custom node before publishing it to the shared Library",
+                        )
+                        .clicked()
+                    {
+                        ui.ctx().data_mut(|d| {
+                            d.insert_temp(egui::Id::new("file_action_publish_library"), true);
+                        });
+                        ui.close_menu();
+                    }
+                    // P4.1: editable copy of a read-only package version.
+                    let read_only_path = self
+                        .documents
+                        .active()
+                        .path
+                        .clone()
+                        .filter(|_| self.documents.active().read_only);
+                    if ui
+                        .add_enabled(
+                            read_only_path.is_some(),
+                            egui::Button::new("Duplicate for Editing…"),
+                        )
+                        .on_hover_text("Copy this published Library version to an editable file")
+                        .clicked()
+                    {
+                        if let Some(path) = read_only_path {
+                            self.duplicate_for_editing(path);
+                        }
+                        ui.close_menu();
+                    }
+                });
+                ui.menu_button("Hardware", |ui| {
+                    if ui.button("Devices...").clicked() {
+                        self.hardware_scan_requested = true;
+
+                        ui.ctx().data_mut(|d| {
+                            d.insert_temp(egui::Id::new("hardware_devices_open"), true);
+                        });
+
+                        ui.close_menu();
+                    }
+                });
+                // P4.3.1A: read-only catalogue browser.
+                ui.menu_button("Library", |ui| {
+                    if ui.button("Marketplace…").clicked() {
+                        self.open_marketplace();
+                        ui.close_menu();
+                    }
+                    if ui.button("Package Trust Review…").clicked() {
+                        self.open_trust_review();
+                        ui.close_menu();
+                    }
+                    if ui.button("Permissions…").clicked() {
+                        self.open_permissions();
+                        ui.close_menu();
+                    }
+                });
+                ui.menu_button("Edit", |ui| {
+                    let can_undo = self.undo_history.can_undo();
+                    let can_redo = self.undo_history.can_redo();
+                    if ui
+                        .add_enabled(can_undo, egui::Button::new("\u{21a9} Undo"))
+                        .clicked()
+                    {
+                        self.perform_undo();
+                        ui.close_menu();
+                    }
+                    if ui
+                        .add_enabled(can_redo, egui::Button::new("\u{21aa} Redo"))
+                        .clicked()
+                    {
+                        self.perform_redo();
+                        ui.close_menu();
+                    }
+                });
+            });
+        });
+        // P3: Document Tabs
+        egui::TopBottomPanel::top("document_tabs").show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                let active_id = self.documents.active().id;
+                // P3: How often each open custom node is used in open documents.
+                let usage = self.documents.custom_node_usage(&self.graph);
+
+                let tabs: Vec<(u64, String, bool)> = self
+                    .documents
+                    .documents
+                    .iter()
+                    .map(|doc| {
+                        let dirty = if doc.id == active_id {
+                            self.is_dirty
+                        } else {
+                            doc.is_dirty
+                        };
+                        // P4.1: published package versions are read-only.
+                        let title = if doc.read_only {
+                            format!("🔒 {}", doc.title)
+                        } else {
+                            doc.title.clone()
+                        };
+
+                        (doc.id, title, dirty)
+                    })
+                    .collect();
+
+                // Tabs are locked while the quit dialog is open.
+                let tabs_locked = self.documents.is_locked();
+                for (id, title, dirty) in tabs {
+                    let title = match usage.get(&id) {
+                        Some(count) => format!("{title} (used ×{count})"),
+                        None => title,
+                    };
+                    let label = if dirty { format!("{} *", title) } else { title };
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add_enabled(
+                                !tabs_locked,
+                                egui::SelectableLabel::new(id == active_id, label),
+                            )
+                            .clicked()
+                        {
+                            if self.pending_close_tab.is_none() && !self.save_as_open {
+                                self.switch_document(id);
+                            }
+                        }
+                        if ui
+                            .add_enabled(!tabs_locked, egui::Button::new("×").small())
+                            .on_hover_text("Close Tab")
+                            .clicked()
+                            && !self.save_as_open
+                        {
+                            // Do not close the last remaining tab.
+                            if self.documents.documents.len() > 1 {
+                                let is_dirty = if self.documents.active().id == id {
+                                    self.is_dirty
+                                } else {
+                                    self.documents
+                                        .documents
+                                        .iter()
+                                        .find(|doc| doc.id == id)
+                                        .map(|doc| doc.is_dirty)
+                                        .unwrap_or(false)
+                                };
+                                if is_dirty {
+                                    // Ask for confirmation before closing.
+                                    self.pending_close_tab = Some(id);
+                                } else {
+                                    // Clean tabs can close immediately.
+                                    self.close_tab(id);
+                                }
+                            }
+                        }
+                    });
+                }
+                if ui
+                    .add_enabled(!tabs_locked, egui::Button::new("+"))
+                    .on_hover_text("New Tab")
+                    .clicked()
+                {
+                    self.create_new_tab();
+                }
+            });
+        });
+        // P4.1: banner + Duplicate for Editing for read-only package tabs.
+        self.render_read_only_banner(ctx);
+
+        // P5: Hardware Devices window
+        let hardware_window_id = egui::Id::new("hardware_devices_open");
+
+        let mut hardware_open =
+            ctx.data_mut(|d| d.get_temp::<bool>(hardware_window_id).unwrap_or(false));
+
+        if hardware_open {
+            if self.hardware_scan_requested {
+                // P5: Refreshing hardware requires fresh target validation.
+                self.hardware_validation_result = None;
+                self.hardware_flash_confirmation_open = false;
+                self.hardware_flash_result = None;
+                match crate::hardware::discover_devices() {
+                    Ok(devices) => {
+                        self.hardware_devices = devices;
+                        self.hardware_discovery_error = None;
+                    }
+                    Err(error) => {
+                        self.hardware_devices.clear();
+                        self.hardware_discovery_error = Some(error);
+                    }
+                }
+                // P5: Discover Raspberry Pi Pico BOOTSEL drives.
+                #[cfg(target_os = "windows")]
+                {
+                    self.hardware_pico_devices = crate::hardware::discover_identified_pico_drives();
+                }
+                // P5: Clear USB serial selection if the device disappeared.
+                if let Some(selected_port) = &self.hardware_selected_serial_port {
+                    let still_connected = self
+                        .hardware_devices
+                        .iter()
+                        .any(|device| &device.port_name == selected_port);
+
+                    if !still_connected {
+                        self.hardware_selected_serial_port = None;
+                    }
+                }
+
+                // P5: Clear Pico BOOTSEL selection if the drive disappeared.
+                #[cfg(target_os = "windows")]
+                {
+                    if let Some(selected_drive) = &self.hardware_selected_pico_drive {
+                        let still_connected = self
+                            .hardware_pico_devices
+                            .iter()
+                            .any(|device| &device.drive_path == selected_drive);
+
+                        if !still_connected {
+                            self.hardware_selected_pico_drive = None;
+                        }
+                    }
+                }
+                self.hardware_scan_requested = false;
+            }
+            egui::Window::new("Hardware Devices")
+                .open(&mut hardware_open)
+                .default_width(440.0)
+                .resizable(true)
+                .show(ctx, |ui| {
+                    ui.label("Connected USB serial devices");
+                    ui.separator();
+
+                    if ui.button("Refresh").clicked() {
+                        self.hardware_scan_requested = true;
+                    }
+                    // P5: Firmware file selection
+                    ui.add_space(8.0);
+                    ui.separator();
+                    ui.heading("Firmware Flashing");
+                    ui.add_space(6.0);
+                    // P5: Display selected hardware target.
+                    ui.label("Selected hardware target:");
+
+                    if let Some(port) = &self.hardware_selected_serial_port {
+                        ui.label(format!("USB serial port: {port}"));
+                    } else {
+                        #[cfg(target_os = "windows")]
+                        {
+                            if let Some(drive) = &self.hardware_selected_pico_drive {
+                                ui.label(format!("Pico BOOTSEL drive: {}", drive.display()));
+                            } else {
+                                ui.label("No hardware device selected.");
+                            }
+                        }
+
+                        #[cfg(not(target_os = "windows"))]
+                        {
+                            ui.label("No hardware device selected.");
+                        }
+                    }
+                    // P5: Validate firmware against the selected hardware target.
+                    if ui.button("Validate Target").clicked() {
+                        if let Some(path) = &self.hardware_firmware_path {
+                            let target = match path
+                                .extension()
+                                .and_then(|ext| ext.to_str())
+                                .map(|ext| ext.to_ascii_lowercase())
+                                .as_deref()
+                            {
+                                Some("bin") => Some(crate::hardware::FirmwareTarget::Esp32),
+                                Some("uf2") => {
+                                    Some(crate::hardware::FirmwareTarget::RaspberryPiPico)
+                                }
+                                _ => None,
+                            };
+
+                            if let Some(target) = target {
+                                let request = crate::hardware::FlashRequest {
+                                    target,
+                                    firmware_path: path.clone(),
+                                    port_name: self.hardware_selected_serial_port.clone(),
+                                };
+
+                                #[cfg(target_os = "windows")]
+                                let pico_drive = self.hardware_selected_pico_drive.as_deref();
+
+                                #[cfg(not(target_os = "windows"))]
+                                let pico_drive: Option<
+                                    &std::path::Path,
+                                > = None;
+                                let validation_result =
+                                    crate::hardware::validate_flash_target(&request, pico_drive)
+                                        .and_then(|_| {
+                                            if matches!(
+                                                target,
+                                                crate::hardware::FirmwareTarget::Esp32
+                                            ) {
+                                                let address_text =
+                                                    self.hardware_esp32_flash_address.trim();
+
+                                                let address_hex = address_text
+                                                    .strip_prefix("0x")
+                                                    .or_else(|| address_text.strip_prefix("0X"))
+                                                    .unwrap_or(address_text);
+
+                                                let flash_address =
+                u32::from_str_radix(address_hex, 16)
+                    .map_err(|_| {
+                        "Invalid ESP32 flash address. Use hexadecimal, e.g. 0x10000."
+                            .to_string()
+                    })?;
+
+                                                let config = crate::hardware::Esp32FlashConfig {
+                layout: crate::hardware::Esp32FirmwareLayout::Application,
+                flash_address,
+                chip: self.hardware_esp32_chip.clone(),
+            };
+
+                                                crate::hardware::validate_esp32_flash_config(
+                                                    &config,
+                                                )
+                                                .and_then(|_| {
+                                                    crate::hardware::validate_esp32_image(
+                                                        &request.firmware_path,
+                                                    )
+                                                })
+                                                .and_then(|_| {
+                                                    crate::hardware::validate_esp32_firmware_chip(
+                                                        &request.firmware_path,
+                                                        &config.chip,
+                                                    )
+                                                })
+                                            } else {
+                                                Ok(())
+                                            }
+                                        });
+
+                                self.hardware_validation_result = Some(validation_result);
+                            } else {
+                                eprintln!("P5: Unsupported firmware file type.");
+                            }
+                        } else {
+                            eprintln!("P5: Select a firmware file first.");
+                        }
+                    }
+
+                    if self.hardware_flash_confirmation_open {
+                        egui::Window::new("Confirm Firmware Flash")
+                            .collapsible(false)
+                            .resizable(false)
+                            .show(ctx, |ui| {
+                                ui.heading("Flash firmware to hardware?");
+                                ui.label("This operation will overwrite the device firmware.");
+
+                                ui.add_space(8.0);
+
+                                if let Some(path) = &self.hardware_firmware_path {
+                                    ui.label(format!("Firmware: {}", path.display()));
+                                }
+
+                                ui.add_space(12.0);
+
+                                ui.horizontal(|ui| {
+                if ui.button("Cancel").clicked() {
+    self.hardware_flash_confirmation_open = false;
+    self.hardware_flash_result = None;
+}
+
+if ui.button("Confirm Flash").clicked() {
+    self.hardware_flash_confirmation_open = false;
+    let is_pico_firmware = self.hardware_firmware_path
+    .as_ref()
+    .and_then(|path| path.extension())
+    .and_then(|ext| ext.to_str())
+    .map(|ext| ext.eq_ignore_ascii_case("uf2"))
+    .unwrap_or(false);
+
+if !is_pico_firmware {
+    let is_esp32_firmware = self.hardware_firmware_path
+        .as_ref()
+        .and_then(|path| path.extension())
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.eq_ignore_ascii_case("bin"))
+        .unwrap_or(false);
+
+    if is_esp32_firmware {
+    let firmware_path = self.hardware_firmware_path.clone();
+    let port_name = self.hardware_selected_serial_port.clone();
+
+    let flash_address = self
+        .hardware_esp32_flash_address
+        .trim()
+        .trim_start_matches("0x");
+
+    let parsed_address = u32::from_str_radix(flash_address, 16);
+
+    let preparation_result = match (
+        firmware_path,
+        port_name,
+        parsed_address,
+    ) {
+        (Some(path), Some(port), Ok(address)) => {
+            let config = crate::hardware::Esp32FlashConfig {
+                layout: crate::hardware::Esp32FirmwareLayout::Application,
+                flash_address: address,
+                chip: self.hardware_esp32_chip.clone(),
+            };
+
+            crate::hardware::validate_esp32_flash_config(&config)
+                .map(|_| (path, port, config))
+        }
+        _ => Err(
+            "ESP32 firmware, serial port, or flash address is invalid."
+                .to_string(),
+        ),
+    };
+
+    match preparation_result {
+    Ok((path, port, config)) => {
+        if self.hardware_flash_in_progress {
+            self.hardware_flash_result = Some(Err(
+                "Flashing is already in progress".to_string(),
+            ));
+        } else {
+            self.hardware_flash_result = None;
+            self.hardware_flash_in_progress = true;
+
+            self.hardware_flash_receiver = Some(
+                crate::hardware::spawn_esp32_flash_worker(
+                    path,
+                    port,
+                    config,
+                ),
+            );
+        }
+    }
+
+    Err(error) => {
+        self.hardware_flash_result = Some(Err(error));
+    }
+}
+} else {
+        self.hardware_flash_result = Some(Err(
+            "Unsupported firmware type. Select a .uf2 or .bin file."
+                .to_string(),
+        ));
+    }
+} else {
+
+#[cfg(target_os = "windows")]
+{
+    if self.hardware_flash_in_progress {
+        self.hardware_flash_result =
+            Some(Err("Flashing is already in progress".to_string()));
+    } else if let (
+        Some(firmware_path),
+        Some(drive_path),
+    ) = (
+        self.hardware_firmware_path.clone(),
+        self.hardware_selected_pico_drive.clone(),
+    ) {
+    let request = crate::hardware::FlashRequest {
+        target: crate::hardware::FirmwareTarget::RaspberryPiPico,
+        firmware_path: firmware_path.clone(),
+        port_name: None,
+    };
+
+    let discovered_drive = crate::hardware::discover_identified_pico_drives()
+    .into_iter()
+    .any(|device| {
+        device.drive_path
+            .canonicalize()
+            .ok()
+            == drive_path.canonicalize().ok()
+            && drive_path.canonicalize().is_ok()
+    });
+
+let validation_result = if discovered_drive {
+    crate::hardware::validate_flash_target(
+        &request,
+        Some(&drive_path),
+    )
+} else {
+    Err("Selected Pico BOOTSEL drive was not found in the latest scan".to_string())
+};
+
+match validation_result {
+        Ok(()) => {
+            self.hardware_flash_result = None;
+            self.hardware_flash_in_progress = true;
+
+            self.hardware_flash_receiver =
+                Some(crate::hardware::spawn_pico_flash_worker(
+                    firmware_path,
+                    drive_path,
+                ));
+        }
+
+        Err(error) => {
+            self.hardware_flash_result = Some(Err(error));
+            self.hardware_flash_in_progress = false;
+        }
+    }
+} else {
+    self.hardware_flash_result = Some(Err(
+        "Select a Pico firmware file and BOOTSEL drive".to_string(),
+    ));
+}
+}
+}
+}
+            });
+                            });
+                        if let Some(result) = &self.hardware_flash_result {
+                            ui.add_space(8.0);
+
+                            match result {
+                                Ok(()) => {
+                                    ui.colored_label(
+                                        egui::Color32::GREEN,
+                                        "Firmware flashing completed successfully.",
+                                    );
+                                }
+                                Err(error) => {
+                                    ui.colored_label(
+                                        egui::Color32::RED,
+                                        format!("Firmware flashing failed: {error}"),
+                                    );
+                                }
+                            }
+                        }
+                    }
+
+                    ui.add_space(8.0);
+
+                    let target_validated = matches!(self.hardware_validation_result, Some(Ok(())));
+
+                    let firmware_target = self
+                        .hardware_firmware_path
+                        .as_ref()
+                        .and_then(|path| path.extension())
+                        .and_then(|ext| ext.to_str())
+                        .map(|ext| ext.to_ascii_lowercase());
+
+                    let device_ready = match firmware_target.as_deref() {
+                        Some("uf2") => {
+                            self.hardware_selected_pico_drive.is_some()
+                                && self.hardware_selected_serial_port.is_none()
+                        }
+
+                        // ESP32 remains disabled until its flash
+                        // configuration and UI are implemented.
+                        // ESP32 requires a selected serial port and no Pico drive.
+                        Some("bin") => {
+                            self.hardware_selected_serial_port.is_some()
+                                && self.hardware_selected_pico_drive.is_none()
+                        }
+
+                        _ => false,
+                    };
+
+                    let can_flash =
+                        target_validated && device_ready && !self.hardware_flash_in_progress;
+
+                    if ui
+                        .add_enabled(can_flash, egui::Button::new("Flash Firmware"))
+                        .clicked()
+                    {
+                        self.hardware_flash_confirmation_open = true;
+                    }
+
+                    if self.hardware_flash_in_progress {
+                        ui.label("Firmware flashing in progress...");
+                    }
+                    if let Some(result) = &self.hardware_validation_result {
+                        match result {
+                            Ok(()) => {
+                                ui.colored_label(egui::Color32::GREEN, "Target validation passed.");
+                            }
+                            Err(error) => {
+                                ui.colored_label(
+                                    egui::Color32::RED,
+                                    format!("Target validation failed: {error}"),
+                                );
+                            }
+                        }
+                    }
+                    if ui.button("Browse Firmware...").clicked() {
+                        if let Some(path) = rfd::FileDialog::new()
+                            .set_title("Select ESP32 or Raspberry Pi Pico Firmware")
+                            .add_filter("Supported Firmware", &["bin", "uf2"])
+                            .add_filter("ESP32 Firmware", &["bin"])
+                            .add_filter("Raspberry Pi Pico Firmware", &["uf2"])
+                            .pick_file()
+                        {
+                            self.hardware_firmware_path = Some(path);
+                            // P5: A newly selected firmware file requires fresh validation.
+                            self.hardware_validation_result = None;
+                            self.hardware_flash_confirmation_open = false;
+                            self.hardware_flash_result = None;
+                        }
+                    }
+
+                    if let Some(path) = &self.hardware_firmware_path {
+                        ui.label(format!("Selected: {}", path.display()));
+
+                        let extension = path
+                            .extension()
+                            .and_then(|ext| ext.to_str())
+                            .unwrap_or("")
+                            .to_ascii_lowercase();
+
+                        let target = match extension.as_str() {
+                            "bin" => Some(crate::hardware::FirmwareTarget::Esp32),
+                            "uf2" => Some(crate::hardware::FirmwareTarget::RaspberryPiPico),
+                            _ => None,
+                        };
+
+                        if let Some(target) = target {
+                            let target_name = match target {
+                                crate::hardware::FirmwareTarget::Esp32 => "ESP32",
+                                crate::hardware::FirmwareTarget::RaspberryPiPico => {
+                                    "Raspberry Pi Pico"
+                                }
+                            };
+
+                            ui.label(format!("Firmware type: {target_name}"));
+                            // P5: ESP32 firmware configuration controls
+                            if matches!(target, crate::hardware::FirmwareTarget::Esp32) {
+                                let previous_chip = self.hardware_esp32_chip.clone();
+                                let previous_address = self.hardware_esp32_flash_address.clone();
+                                ui.separator();
+                                ui.heading("ESP32 Flash Configuration");
+
+                                ui.horizontal(|ui| {
+                                    ui.label("Chip model:");
+
+                                    egui::ComboBox::from_id_salt("esp32_chip_selector")
+                                        .selected_text(&self.hardware_esp32_chip)
+                                        .show_ui(ui, |ui| {
+                                            for chip in [
+                                                "esp32", "esp32s2", "esp32s3", "esp32c2",
+                                                "esp32c3", "esp32c5", "esp32c6", "esp32c61",
+                                                "esp32h2", "esp32h4", "esp32p4", "esp32s31",
+                                            ] {
+                                                ui.selectable_value(
+                                                    &mut self.hardware_esp32_chip,
+                                                    chip.to_string(),
+                                                    chip,
+                                                );
+                                            }
+                                        });
+                                });
+
+                                ui.horizontal(|ui| {
+                                    ui.label("Flash address:");
+
+                                    ui.text_edit_singleline(&mut self.hardware_esp32_flash_address);
+                                });
+                                if self.hardware_esp32_chip != previous_chip
+                                    || self.hardware_esp32_flash_address != previous_address
+                                {
+                                    self.hardware_validation_result = None;
+                                    self.hardware_flash_confirmation_open = false;
+                                    self.hardware_flash_result = None;
+                                }
+
+                                ui.label("Firmware layout: Application");
+
+                                ui.colored_label(
+        egui::Color32::YELLOW,
+        "ESP32 flashing is disabled until configuration and device checks are complete.",
+    );
+
+                                ui.separator();
+                            }
+                            // P5: Warn when the firmware type does not match the selected device.
+                            #[cfg(target_os = "windows")]
+                            {
+                                let pico_selected = self.hardware_selected_pico_drive.is_some();
+                                let serial_selected = self.hardware_selected_serial_port.is_some();
+
+                                match target {
+                                    crate::hardware::FirmwareTarget::Esp32 if pico_selected => {
+                                        ui.colored_label(
+                egui::Color32::RED,
+                "Device mismatch: ESP32 firmware cannot be flashed to a Pico BOOTSEL drive.",
+            );
+                                    }
+
+                                    crate::hardware::FirmwareTarget::RaspberryPiPico
+                                        if serial_selected =>
+                                    {
+                                        ui.colored_label(
+                egui::Color32::RED,
+                "Device mismatch: Select a Pico BOOTSEL drive for UF2 firmware.",
+            );
+                                    }
+
+                                    _ => {}
+                                }
+                            }
+                            let request = crate::hardware::FlashRequest {
+                                target,
+                                firmware_path: path.clone(),
+                                port_name: None,
+                            };
+
+                            match match target {
+                                crate::hardware::FirmwareTarget::Esp32 => {
+                                    crate::hardware::validate_esp32_image(&path).and_then(|_| {
+                                        crate::hardware::validate_esp32_firmware_chip(
+                                            &path,
+                                            &self.hardware_esp32_chip,
+                                        )
+                                    })
+                                }
+                                _ => crate::hardware::validate_firmware(&request),
+                            } {
+                                Ok(()) => {
+                                    ui.colored_label(
+                                        egui::Color32::GREEN,
+                                        "Firmware file validation passed.",
+                                    );
+
+                                    // P5: Check Pico firmware against the selected BOOTSEL drive.
+                                    #[cfg(target_os = "windows")]
+                                    if matches!(
+                                        target,
+                                        crate::hardware::FirmwareTarget::RaspberryPiPico
+                                    ) {
+                                        if let Some(drive) = &self.hardware_selected_pico_drive {
+                                            let info_path = drive.join("INFO_UF2.TXT");
+
+                                            match crate::hardware::validate_pico_flash_target(
+                                                path.as_path(),
+                                                info_path.as_path(),
+                                            ) {
+                                                Ok(board) => {
+                                                    ui.colored_label(
+                                                        egui::Color32::GREEN,
+                                                        format!(
+                                                            "Firmware matches selected Pico: {:?}",
+                                                            board
+                                                        ),
+                                                    );
+                                                }
+                                                Err(error) => {
+                                                    ui.colored_label(
+                                                        egui::Color32::RED,
+                                                        format!(
+                                                            "Pico compatibility failed: {error}"
+                                                        ),
+                                                    );
+                                                }
+                                            }
+                                        } else {
+                                            ui.label(
+                    "Select a Pico BOOTSEL device to check compatibility.",
+                );
+                                        }
+                                    }
+                                }
+                                Err(error) => {
+                                    ui.colored_label(
+                                        egui::Color32::RED,
+                                        format!("Firmware validation failed: {error}"),
+                                    );
+                                }
+                            }
+                        } else {
+                            ui.colored_label(
+                                egui::Color32::RED,
+                                "Unsupported firmware format. Select a .bin or .uf2 file.",
+                            );
+                        }
+                    } else {
+                        ui.label("No firmware selected.");
+                    }
+                    ui.add_space(8.0);
+
+                    // match crate::hardware::discover_devices() {
+                    //     Ok(devices) if devices.is_empty() => {
+                    //         ui.label("No USB serial devices detected.");
+                    //     }
+                    //     Ok(devices) => {
+                    //         for device in devices {
+                    //             ui.group(|ui| {
+                    //                 ui.heading(&device.port_name);
+                    //                 ui.label(&device.board_family);
+
+                    //                 ui.label(format!(
+                    //                     "VID: {:04X} | PID: {:04X}",
+                    //                     device.vid, device.pid
+                    //                 ));
+
+                    //                 if let Some(product) = &device.product {
+                    //                     ui.label(format!("Product: {product}"));
+                    //                 }
+
+                    //                 if let Some(manufacturer) = &device.manufacturer {
+                    //                     ui.label(format!("Manufacturer: {manufacturer}"));
+                    //                 }
+                    //             });
+
+                    //             ui.add_space(5.0);
+                    //         }
+                    //     }
+                    //     Err(error) => {
+                    //         ui.colored_label(
+                    //             egui::Color32::RED,
+                    //             format!("Device discovery failed: {error}"),
+                    //         );
+                    //     }
+                    // }
+
+                    if let Some(error) = &self.hardware_discovery_error {
+                        ui.colored_label(
+                            egui::Color32::RED,
+                            format!("Device discovery failed: {error}"),
+                        );
+                    } else if self.hardware_devices.is_empty() {
+                        ui.label("No USB serial devices detected.");
+                    } else {
+                        for device in &self.hardware_devices {
+                            ui.group(|ui| {
+                                ui.heading(&device.port_name);
+                                // P5: Select USB serial device for firmware flashing.
+                                let is_selected = self.hardware_selected_serial_port.as_deref()
+                                    == Some(device.port_name.as_str());
+                                if ui.radio(is_selected, "Select for flashing").clicked() {
+                                    self.hardware_selected_serial_port =
+                                        Some(device.port_name.clone());
+
+                                    self.hardware_validation_result = None;
+                                    self.hardware_flash_confirmation_open = false;
+                                    self.hardware_flash_result = None;
+
+                                    // Only one hardware target may be selected.
+                                    #[cfg(target_os = "windows")]
+                                    {
+                                        self.hardware_selected_pico_drive = None;
+                                    }
+                                }
+                                ui.label(&device.board_family);
+
+                                ui.label(format!(
+                                    "VID: {:04X} | PID: {:04X}",
+                                    device.vid, device.pid
+                                ));
+
+                                if let Some(product) = &device.product {
+                                    ui.label(format!("Product: {product}"));
+                                }
+
+                                if let Some(manufacturer) = &device.manufacturer {
+                                    ui.label(format!("Manufacturer: {manufacturer}"));
+                                }
+                            });
+
+                            ui.add_space(5.0);
+                        }
+                    }
+                    // P5: Raspberry Pi Pico BOOTSEL devices
+                    #[cfg(target_os = "windows")]
+                    {
+                        ui.add_space(12.0);
+                        ui.separator();
+                        ui.heading("Raspberry Pi Pico BOOTSEL Devices");
+                        ui.add_space(6.0);
+
+                        if self.hardware_pico_devices.is_empty() {
+                            ui.label("No Pico BOOTSEL devices detected.");
+                        } else {
+                            for device in &self.hardware_pico_devices {
+                                ui.group(|ui| {
+                                    let selected = self.hardware_selected_pico_drive.as_ref()
+                                        == Some(&device.drive_path);
+
+                                    let drive_label =
+                                        format!("Pico BOOTSEL — {}", device.drive_path.display());
+
+                                    if ui.radio(selected, drive_label).clicked() {
+                                        if selected {
+                                            self.hardware_selected_pico_drive = None;
+                                        } else {
+                                            self.hardware_selected_pico_drive =
+                                                Some(device.drive_path.clone());
+
+                                            // Only one hardware target may be selected.
+                                            self.hardware_selected_serial_port = None;
+                                        }
+                                        self.hardware_validation_result = None;
+                                        self.hardware_flash_confirmation_open = false;
+                                        self.hardware_flash_result = None;
+                                    }
+
+                                    ui.label(format!("Drive: {}", device.drive_path.display()));
+
+                                    let board_name = match device.board {
+                                        crate::hardware::PicoBoard::Rp2040 => "RP2040",
+                                        crate::hardware::PicoBoard::Rp2350 => "RP2350",
+                                    };
+
+                                    ui.label(format!("Board: {board_name}"));
+                                    ui.label("Status: BOOTSEL mode");
+                                });
+
+                                ui.add_space(5.0);
+                            }
+                        }
+                    }
+                });
+        }
+
+        ctx.data_mut(|d| {
+            d.insert_temp(hardware_window_id, hardware_open);
+        });
+        // P3: Confirm before closing a modified document tab.
+        if let Some(document_id) = self.pending_close_tab {
+            let document_title = self
+                .documents
+                .documents
+                .iter()
+                .find(|doc| doc.id == document_id)
+                .map(|doc| doc.title.clone())
+                .unwrap_or_else(|| "Untitled".to_string());
+
+            egui::Window::new("Unsaved Changes")
+                .collapsible(false)
+                .resizable(false)
+                .frame(
+                    egui::Frame::window(&ctx.style())
+                        .fill(egui::Color32::from_rgb(30, 30, 35))
+                        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(90, 90, 100))),
+                )
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .show(ctx, |ui| {
+                    ui.label(format!(
+                        "Save changes to '{}' before closing?",
+                        document_title
+                    ));
+                    ui.add_space(12.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Save").clicked() {
+                            // Save the document being closed, not another active tab.
+                            if self.documents.active().id != document_id {
+                                self.switch_document(document_id);
+                            }
+                            if self.save_project_quick() {
+                                self.sync_active_document();
+                                self.pending_close_tab = None;
+                                self.close_tab(document_id);
+                            }
+                        }
+                        if ui.button("Discard").clicked() {
+                            // Activate the target document so its state is current.
+                            if self.documents.active().id != document_id {
+                                self.switch_document(document_id);
+                            }
+                            // Explicitly discard its unsaved state.
+                            self.is_dirty = false;
+                            self.documents.active_mut().is_dirty = false;
+                            self.pending_close_tab = None;
+                            self.close_tab(document_id);
+                        }
+                        if ui.button("Cancel").clicked() {
+                            self.pending_close_tab = None;
+                        }
+                    });
+                });
+        }
+        // P6 Stage 2.3: the Export as App dialog.
+        if let Some(mut dialog) = self.export_dialog.take() {
+            let unsaved = self.is_dirty || self.documents.active().is_dirty;
+            if dialog.show(ctx, unsaved) {
+                self.export_dialog = Some(dialog);
+            }
+        }
+        // P3: Save As project naming dialog
+        // P3: Save As project naming dialog
+        if self.save_as_open {
+            let mut open = self.save_as_open;
+            let mut save_requested = false;
+            // P3: Keyboard shortcuts for Save As modal
+            if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+                open = false;
+            }
+
+            if ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
+                save_requested = true;
+            }
+            egui::Modal::new(egui::Id::new("save_as_modal")).show(ctx, |ui| {
+                ui.label("Project name:");
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.save_as_name)
+                        .desired_width(280.0)
+                        .hint_text("My Project"),
+                );
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Save").clicked() {
+                        save_requested = true;
+                    }
+
+                    if ui.button("Cancel").clicked() {
+                        open = false;
+                    }
+                });
+            });
+            if save_requested
+                && self.documents.active().kind != crate::document::DocumentKind::Project
+            {
+                // Defensive: project Save As never converts a custom node.
+                save_requested = false;
+                open = false;
+                self.toast_warn("Project Save As is not available in a custom-node tab.");
+            }
+            if save_requested {
+                let name = self.save_as_name.trim().to_string();
+                // Reject empty names, special directory names and path separators.
+                let invalid_name = name.is_empty()
+                    || name == "."
+                    || name == ".."
+                    || name.contains(['/', '\\', ':', '*', '?', '"', '<', '>', '|'])
+                    || name.ends_with('.')
+                    || name.ends_with(' ');
+                if invalid_name {
+                    rfd::MessageDialog::new()
+                        .set_title("Invalid Project Name")
+                        .set_description("Enter a valid project name without special characters.")
+                        .set_level(rfd::MessageLevel::Error)
+                        .set_buttons(rfd::MessageButtons::Ok)
+                        .show();
+                } else if let Some(parent_dir) = rfd::FileDialog::new()
+                    .set_title("Choose Where to Save Project")
+                    .pick_folder()
+                {
+                    // If the selected folder already has the project name,
+                    // use it directly instead of creating another subfolder.
+                    let selected_name = parent_dir
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    let project_dir = if selected_name.eq_ignore_ascii_case(&name) {
+                        parent_dir
+                    } else {
+                        parent_dir.join(&name)
+                    };
+                    if self.save_to_dir(project_dir.display().to_string()) {
+                        open = false;
+                    }
+                }
+            }
+
+            self.save_as_open = open;
+        }
+        // P2: Group-into-custom-node naming dialog.
+        self.render_group_dialog(ctx);
+        // P4.1: Publish to Library dialog.
+        self.render_publish_dialog(ctx);
+        // P4.3.3: Share to Marketplace.
+        self.render_share_dialog(ctx);
+        self.render_version_switch_dialog(ctx);
+        // P4.3.1A: Marketplace browser (read-only; never edits the graph).
+        self.render_marketplace(ctx);
+        // P4.3.2C: Package Trust Review.
+        self.render_trust_review(ctx);
+        // P4.3.2D: package permission banner and review.
+        self.render_permissions(ctx);
+        // Floating modal for "save before quit?" — drawn after the menu
+        // so it visually layers on top of canvas chrome.
+        self.render_quit_dialog(ctx);
+        // Top-center toast notifications. Drawn last so they overlay the
+        // entire UI; auto-dismiss handled inside.
+        self.render_toasts(ctx);
+        // set_zoom_factor scales everything (nodes, text, chrome) via GPU — zero overhead.
+        // Pinned nodes compensate with inverse zoom style + zoom-keyed window IDs.
+        // ctx.set_zoom_factor(self.canvas_zoom);
+        self.apply_theme(ctx);
+        self.handle_file_drop(ctx);
+        // P4.3.2E1: a document whose content is not authored here or
+        // allowed by the user does not run. For the runtime part of the
+        // frame (device polling, evaluation, hardware, plugins, image and
+        // audio processing) the live graph is parked and an empty graph
+        // stands in, so every subsystem behaves as if the document had no
+        // nodes and closes what it opened. The graph is put back before MCP
+        // and drawing, so it stays visible and editable.
+        provenance::resolve_graph(&mut self.graph);
+        let _document_rights = self.document_rights().enter();
+        let values = self.run_graph_frame(ctx);
         // Process MCP commands (if MCP server is active)
         self.process_mcp_commands(&values);
         // Store BG image/shader for canvas drawing (from Theme node's BG Image port 21)
@@ -5706,7 +5790,13 @@ match validation_result {
         ctx.request_repaint();
     }
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        self.save_session();
+        // P6: the Player never replaces the editor's session.
+        if self.player.is_none() {
+            self.save_session();
+        }
+        // P6 Stage 2.9: GPU objects in thread-locals go now, with the
+        // device, not during process exit (see the function).
+        crate::gpu_image::release_thread_gpu_objects();
     }
 }
 impl PatchworkApp {
@@ -5864,6 +5954,24 @@ impl PatchworkApp {
     /// * project: name + folder dialog (writes a project folder);
     /// * custom node: "Save Custom Node As" (writes a new .pwnode);
     /// * read-only package version: Duplicate for Editing.
+    /// P6 Stage 2.3: the saved project an export would use (the active
+    /// project document's folder), on Windows.
+    fn export_source(&self) -> Option<std::path::PathBuf> {
+        if !cfg!(windows) || self.documents.active().kind != crate::document::DocumentKind::Project
+        {
+            return None;
+        }
+        let dir = std::path::PathBuf::from(self.project_path.as_ref()?);
+        dir.join("project.json").is_file().then_some(dir)
+    }
+
+    fn open_export_dialog(&mut self, source: &std::path::Path) {
+        if self.export_dialog.as_ref().is_some_and(|d| d.running()) {
+            return;
+        }
+        self.export_dialog = Some(export_dialog::ExportDialog::open(source, &self.graph));
+    }
+
     pub(super) fn begin_save_as(&mut self) {
         if self.documents.is_locked() {
             return;

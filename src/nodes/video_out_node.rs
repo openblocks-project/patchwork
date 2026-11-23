@@ -1043,11 +1043,8 @@ impl VideoOutNode {
 
         // Resolve the currently-selected display (by id), defaulting to
         // the primary if the id is empty or stale.
-        let chosen = displays
-            .iter()
-            .find(|d| d.id == self.destination)
-            .or_else(|| displays.iter().find(|d| d.is_primary))
-            .or_else(|| displays.first());
+        // P6.2: the rule shared with the Player.
+        let chosen = crate::display::choose(&displays, &self.destination);
 
         // ── Display picker ─────────────────────────────────────────
         ui.horizontal(|ui| {

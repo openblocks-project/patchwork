@@ -108,7 +108,7 @@ fn looks_sensitive_abs(p: &str) -> bool {
 }
 
 /// Convert all asset paths in a graph to relative (for saving).
-fn relativize_paths(graph: &mut Graph, project_dir: &str) {
+pub(super) fn relativize_paths(graph: &mut Graph, project_dir: &str) {
     for node in graph.nodes.values_mut() {
         match &mut node.node_type {
             NodeType::ImageNode {
@@ -286,7 +286,7 @@ fn count_external_assets(graph: &Graph, dir: &Path) -> usize {
 /// P4.2 Stage 4: point packaged instances at their bundled project copy
 /// (relative `packages/<id>/<version>/<entry>`). The package reference
 /// stays authoritative; path-only instances are left as they are.
-fn apply_project_package_paths(
+pub(super) fn apply_project_package_paths(
     graph: &mut Graph,
     plan: &crate::library::project::ProjectPackagePlan,
 ) {
@@ -350,6 +350,19 @@ pub(super) struct ProjectFile {
     canvas_offset: [f32; 2],
     #[serde(default = "default_one_f32")]
     canvas_zoom: f32,
+}
+
+impl ProjectFile {
+    /// P6 Stage 2.2: an exported project: the graph only (no pinned nodes,
+    /// default view: a Player has no canvas).
+    pub(super) fn exported(graph: Graph) -> Self {
+        Self {
+            graph,
+            pinned_nodes: Vec::new(),
+            canvas_offset: [0.0, 0.0],
+            canvas_zoom: 1.0,
+        }
+    }
 }
 
 fn default_one_f32() -> f32 {

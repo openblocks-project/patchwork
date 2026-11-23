@@ -49,6 +49,19 @@ thread_local! {
         = RefCell::new(HashMap::new());
 }
 
+/// P6 Stage 2.9: drop every GPU object these thread-locals hold. Called when
+/// the app exits, while the GPU device is still alive. Otherwise they are
+/// dropped only as the process ends (thread-local destructors run inside
+/// `ExitProcess`), and the last of them destroys the wgpu instance after
+/// the graphics drivers began shutting down: the Intel Vulkan driver then
+/// raises exception 0x87A, so every close of a project that had GPU frames
+/// crashed, and stalled 10–15 s while Windows reported it.
+pub fn release_thread_gpu_objects() {
+    FRAME_TEX_SNAPSHOT.with(|m| m.borrow_mut().clear());
+    FRAME_TEX_SNAPSHOT_TEXTURE.with(|m| m.borrow_mut().clear());
+    PENDING_CACHE_PUBLISHES.with(|q| q.borrow_mut().clear());
+}
+
 /// Read a per-frame snapshot of an upstream GPU output texture by
 /// `(node_id, port)`. Returns `None` if the source did not produce a
 /// cached entry by snapshot time.

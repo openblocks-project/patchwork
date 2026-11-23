@@ -216,7 +216,7 @@ fn lookup(table: &[(&str, NodeClass)], name: &str) -> Option<NodeClass> {
 }
 
 /// Classify one serialized `node_type` value.
-fn classify(node_type: &Value) -> Result<(String, NodeClass), String> {
+pub(crate) fn classify(node_type: &Value) -> Result<(String, NodeClass), String> {
     let (variant, body) = match node_type {
         Value::String(name) => (name.as_str(), None),
         Value::Object(map) if map.len() == 1 => {

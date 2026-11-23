@@ -196,6 +196,11 @@ fn closing_a_document_revokes_its_rights_by_identity() {
 /// after review.
 const PLAIN_THREADS: &[(&str, usize, &str)] = &[
     (
+        "app/export.rs",
+        1,
+        "P6 Stage 2.3: the editor's own export job (file copies; runs no graph content)",
+    ),
+    (
         "app/marketplace.rs",
         2,
         "editor's own Marketplace jobs (not graph content)",

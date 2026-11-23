@@ -126,6 +126,36 @@ enum Action {
     Deny(Blocked),
 }
 
+/// The user's decision about one package (by its tree digest) or loose
+/// custom-node file (by its content digest), recorded in `policy`'s store.
+/// Shared by the editor's Permissions window and the Player's consent
+/// (P6 Stage 2.1). Returns what was decided, for the log.
+pub(super) fn decide_package(
+    policy: &TrustPolicy,
+    package: &crate::library::trust::authorize::PackageSummary,
+    allow: bool,
+) -> Result<String, String> {
+    match (policy, &package.identity, &package.loose_digest) {
+        (TrustPolicy::Store(store), Some(identity), _) => if allow {
+            store.grant(&package.dir, identity)
+        } else {
+            store.deny(&package.dir, identity)
+        }
+        .map(|record| {
+            format!(
+                "{} (digest {})",
+                record.identity.label(),
+                identity.tree_sha256
+            )
+        }),
+        (TrustPolicy::Store(store), None, Some(digest)) => store
+            .content_ledger()
+            .decide_file(ContentKind::CustomNode, &package.dir, digest, allow)
+            .map(|()| format!("{} (digest {digest})", package.dir.display())),
+        _ => Err("Permissions are unavailable.".to_string()),
+    }
+}
+
 /// The digest a decision is bound to: a package's tree digest or a loose
 /// custom node's content digest.
 fn decision_digest(package: &crate::library::trust::authorize::PackageSummary) -> Option<String> {
@@ -544,29 +574,7 @@ impl super::PatchworkApp {
                 Action::Deny(blocked) => (blocked, false),
             };
             let package = blocked.package;
-            let result = match (
-                editor_trust_policy(),
-                &package.identity,
-                &package.loose_digest,
-            ) {
-                (TrustPolicy::Store(store), Some(identity), _) => if allow {
-                    store.grant(&package.dir, identity)
-                } else {
-                    store.deny(&package.dir, identity)
-                }
-                .map(|record| {
-                    format!(
-                        "{} (digest {})",
-                        record.identity.label(),
-                        identity.tree_sha256
-                    )
-                }),
-                (TrustPolicy::Store(store), None, Some(digest)) => store
-                    .content_ledger()
-                    .decide_file(ContentKind::CustomNode, &package.dir, digest, allow)
-                    .map(|()| format!("{} (digest {digest})", package.dir.display())),
-                _ => Err("Permissions are unavailable.".to_string()),
-            };
+            let result = decide_package(&editor_trust_policy(), &package, allow);
             match result {
                 Ok(what) => {
                     let verb = if allow { "allowed" } else { "denied" };

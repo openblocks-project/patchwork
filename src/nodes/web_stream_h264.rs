@@ -17,7 +17,7 @@
 //! it ffmpeg buffers a couple frames before emitting anything.
 
 use std::io::{BufRead, Read, Write};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, ChildStdin, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -69,7 +69,8 @@ impl H264Encoder {
         let fps_str = format!("{ENCODER_FPS}");
         let gop_str = format!("{KEYFRAME_EVERY_N_FRAMES}");
 
-        let mut cmd = Command::new("ffmpeg");
+        // P6 Stage 2.9: no console window (stdin is still piped below).
+        let mut cmd = crate::nodes::video_player::ffmpeg_command();
         cmd.args([
             "-hide_banner",
             "-loglevel",

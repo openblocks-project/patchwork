@@ -16,10 +16,12 @@ use std::sync::{Arc, LazyLock};
 //   In  2: Height (optional; only used when Auto-size is off)
 //   Out 0: Image  (rasterized RGBA)
 
-static SATOSHI_REGULAR: &[u8] = include_bytes!("../../assets/fonts/Satoshi-Regular.ttf");
+// P6 Stage 2.5: Outfit (SIL OFL 1.1) replaces Satoshi, whose licence does not
+// allow rendering user content with it inside a design tool.
+static TEXT_FONT: &[u8] = include_bytes!("../../assets/fonts/Outfit-Regular.ttf");
 
 static FONT: LazyLock<FontRef<'static>> = LazyLock::new(|| {
-    FontRef::try_from_slice(SATOSHI_REGULAR).expect("Bundled Satoshi-Regular.ttf failed to parse")
+    FontRef::try_from_slice(TEXT_FONT).expect("Bundled Outfit-Regular.ttf failed to parse")
 });
 
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]

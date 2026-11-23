@@ -4405,6 +4405,137 @@ impl Graph {
         out
     }
 
+    /// P6 Stage 2.1: how every custom-node instance would be authorized,
+    /// without loading, building or running anything: packaged instances
+    /// through [`crate::library::trust::authorize::authorize_entry`] (with
+    /// their dependencies), path-only files through `authorize_loose`, the
+    /// same calls the runtime loader makes. Returns the refusals, so a
+    /// Player can ask for consent before anything starts. Instances that
+    /// cannot be resolved are skipped (they cannot load either).
+    pub fn preflight_custom_nodes(&mut self) -> Vec<crate::library::trust::authorize::Blocked> {
+        use crate::library::trust::authorize::{LooseRefusal, authorize_entry, authorize_loose};
+        let instances: Vec<(
+            NodeId,
+            String,
+            Option<crate::library::resolve::InstancePackageRef>,
+        )> = self
+            .nodes
+            .iter()
+            .filter_map(|(id, node)| match &node.node_type {
+                NodeType::CustomNodeInstance { file, package, .. } => {
+                    Some((*id, file.clone(), package.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        let mut refused = Vec::new();
+        for (id, file, package) in instances {
+            if file.is_empty() && package.is_none() {
+                continue;
+            }
+            let packaged = package.is_some() || self.file_in_package(id, &file);
+            let Ok(source) = self.custom_source_path(id, &file, package.as_ref()) else {
+                continue;
+            };
+            if packaged {
+                if let Err(blocked) = authorize_entry(
+                    self.package_resolver.trust(),
+                    &source,
+                    &self.package_resolver,
+                ) {
+                    refused.push(blocked);
+                }
+            } else {
+                if let Err(LooseRefusal::Blocked(blocked)) =
+                    authorize_loose(self.package_resolver.trust(), &source)
+                {
+                    refused.push(blocked);
+                }
+                // P6 Stage 2.2: what a path-only custom node uses in turn
+                // (read as text only; nothing is built or run).
+                self.preflight_nested(&source, &mut refused);
+            }
+        }
+        refused
+    }
+
+    /// The custom nodes a path-only `.pwnode` uses, recursively (bounded),
+    /// authorized as the runtime would authorize them when they load.
+    fn preflight_nested(
+        &mut self,
+        root: &std::path::Path,
+        refused: &mut Vec<crate::library::trust::authorize::Blocked>,
+    ) {
+        use crate::library::trust::authorize::{LooseRefusal, authorize_entry, authorize_loose};
+        let mut visited = std::collections::HashSet::new();
+        let mut pending = vec![(root.to_path_buf(), 0usize)];
+        while let Some((file, depth)) = pending.pop() {
+            if depth > crate::library::bundle::MAX_DEPENDENCY_DEPTH
+                || !visited.insert(std::fs::canonicalize(&file).unwrap_or(file.clone()))
+            {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&file) else {
+                continue;
+            };
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+                continue;
+            };
+            let Some(nodes) = value.pointer("/graph/nodes").and_then(|n| n.as_object()) else {
+                continue;
+            };
+            let parent = file
+                .parent()
+                .map(std::path::Path::to_path_buf)
+                .unwrap_or_default();
+            for instance in nodes
+                .values()
+                .filter_map(|node| node.pointer("/node_type/CustomNodeInstance"))
+            {
+                let nested = instance
+                    .get("file")
+                    .and_then(|f| f.as_str())
+                    .unwrap_or_default();
+                let package = instance.get("package").cloned().and_then(|p| {
+                    serde_json::from_value::<crate::library::resolve::InstancePackageRef>(p).ok()
+                });
+                if let Some(package) = package {
+                    if let Ok(entry) = self
+                        .package_resolver
+                        .resolve_instance(nested, Some(&package))
+                    {
+                        if let Err(blocked) = authorize_entry(
+                            self.package_resolver.trust(),
+                            &entry,
+                            &self.package_resolver,
+                        ) {
+                            refused.push(blocked);
+                        }
+                    }
+                    continue;
+                }
+                if nested.is_empty() {
+                    continue;
+                }
+                let path = std::path::Path::new(nested);
+                let path = if path.is_absolute() {
+                    path.to_path_buf()
+                } else {
+                    parent.join(path)
+                };
+                if crate::library::package::is_inside_published_package(&path) {
+                    continue;
+                }
+                if let Err(LooseRefusal::Blocked(blocked)) =
+                    authorize_loose(self.package_resolver.trust(), &path)
+                {
+                    refused.push(blocked);
+                }
+                pending.push((path, depth + 1));
+            }
+        }
+    }
+
     /// The `.pwnode` a custom-node instance currently loads: the resolved
     /// package entry for a resolved packaged instance, otherwise `file`.
     /// Used to open the node for viewing or editing.

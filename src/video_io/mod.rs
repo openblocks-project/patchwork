@@ -41,3 +41,7 @@ pub mod pixel_swizzle;
 /// sink for `VideoOutNode`. See module doc for codec / container rules
 /// and graceful-vs-hard stop semantics.
 pub mod file_recorder;
+
+/// P6 Stage 2.8: capture/decode subprocesses end with Patchwork, even when
+/// it crashes or is ended forcibly (Windows Job Object).
+pub mod child_job;

@@ -84,18 +84,21 @@ pub const CIRCLE_HALF: &str = "\u{e18e}"; // Half-circle / gate indicator
 /// Font family name for Phosphor icons
 pub const FONT_FAMILY: &str = "phosphor";
 
-/// Font family name for Satoshi
-pub const SATOSHI_FAMILY: &str = "satoshi";
+/// Font family name for the primary UI font (Outfit, SIL OFL 1.1).
+///
+/// P6 Stage 2.5: replaces Satoshi, whose ITF Free Font License does not
+/// allow redistributing it inside applications made with Patchwork.
+pub const TEXT_FAMILY: &str = "outfit";
 
-/// Register Satoshi as primary font + Phosphor icon font. Call once during app setup.
+/// Register Outfit as primary font + Phosphor icon font. Call once during app setup.
 pub fn setup(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
 
-    // Load Satoshi Regular as the primary UI font
+    // Load Outfit Regular as the primary UI font
     fonts.font_data.insert(
-        SATOSHI_FAMILY.to_string(),
+        TEXT_FAMILY.to_string(),
         std::sync::Arc::new(egui::FontData::from_static(include_bytes!(
-            "../assets/fonts/Satoshi-Regular.ttf"
+            "../assets/fonts/Outfit-Regular.ttf"
         ))),
     );
 
@@ -107,20 +110,20 @@ pub fn setup(ctx: &egui::Context) {
         ))),
     );
 
-    // Proportional: Satoshi first (primary text), then Phosphor (icon fallback), then system defaults
+    // Proportional: Outfit first (primary text), then Phosphor (icon fallback), then system defaults
     let proportional = fonts
         .families
         .entry(egui::FontFamily::Proportional)
         .or_default();
-    proportional.insert(0, SATOSHI_FAMILY.to_string());
+    proportional.insert(0, TEXT_FAMILY.to_string());
     proportional.push(FONT_FAMILY.to_string());
 
-    // Monospace: keep system default but add Satoshi as fallback for missing glyphs
+    // Monospace: keep system default but add Outfit as fallback for missing glyphs
     let monospace = fonts
         .families
         .entry(egui::FontFamily::Monospace)
         .or_default();
-    monospace.push(SATOSHI_FAMILY.to_string());
+    monospace.push(TEXT_FAMILY.to_string());
     monospace.push(FONT_FAMILY.to_string());
 
     // Register Phosphor as its own family for explicit use
@@ -129,10 +132,10 @@ pub fn setup(ctx: &egui::Context) {
         vec![FONT_FAMILY.to_string()],
     );
 
-    // Register Satoshi as its own family for explicit use
+    // Register Outfit as its own family for explicit use
     fonts.families.insert(
-        egui::FontFamily::Name(SATOSHI_FAMILY.into()),
-        vec![SATOSHI_FAMILY.to_string()],
+        egui::FontFamily::Name(TEXT_FAMILY.into()),
+        vec![TEXT_FAMILY.to_string()],
     );
 
     ctx.set_fonts(fonts);

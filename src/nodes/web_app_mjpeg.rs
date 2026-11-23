@@ -22,7 +22,7 @@
 //! joined (matches `FileRecorder` and `VideoDecoder` patterns).
 
 use std::io::{BufRead, Read, Write};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, ChildStdin, Stdio};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -160,7 +160,8 @@ impl MjpegEncoder {
         let fps_str = format!("{ENCODER_FPS}");
         let quality_str = format!("{ENCODER_QUALITY}");
 
-        let mut cmd = Command::new("ffmpeg");
+        // P6 Stage 2.9: no console window (stdin is still piped below).
+        let mut cmd = crate::nodes::video_player::ffmpeg_command();
         cmd.args([
             "-hide_banner",
             "-loglevel",

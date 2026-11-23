@@ -128,6 +128,26 @@ pub struct VideoInNode {
     #[serde(skip)]
     pub active: bool,
 
+    /// P6.1: start this camera when the project is played in the Patchwork
+    /// Player (which has no Start button). Explicit, per node, off by
+    /// default; the editor still starts it only on Start. Persisted.
+    #[serde(default)]
+    pub start_on_play: bool,
+
+    /// P6.1 / Stage 2.8: Player start attempts since the camera last
+    /// delivered a frame, and when the next one may be made. A camera that
+    /// fails to start or drops out is retried a few times with growing
+    /// pauses, never every frame.
+    #[serde(skip)]
+    player_start_attempts: u8,
+    #[serde(skip)]
+    player_retry_at: Option<std::time::Instant>,
+
+    /// P6 Stage 2.9: the camera's microphone capture is running (or was
+    /// attempted) because the Audio output is wired.
+    #[serde(skip)]
+    camera_mic: bool,
+
     #[serde(skip)]
     pub status: String,
 
@@ -341,6 +361,10 @@ impl Clone for VideoInNode {
             mirror_h: self.mirror_h,
             mirror_v: self.mirror_v,
             active: false,
+            start_on_play: self.start_on_play,
+            player_start_attempts: 0,
+            player_retry_at: None,
+            camera_mic: false,
             status: String::new(),
             current_frame: None,
             decoder: Arc::new(Mutex::new(None)),
@@ -387,6 +411,10 @@ impl Default for VideoInNode {
             mirror_h: false,
             mirror_v: false,
             active: false,
+            start_on_play: false,
+            player_start_attempts: 0,
+            player_retry_at: None,
+            camera_mic: false,
             status: String::new(),
             current_frame: None,
             decoder: Arc::new(Mutex::new(None)),
@@ -446,6 +474,119 @@ static CAMERA_OWNERS: std::sync::LazyLock<
 > = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
 impl VideoInNode {
+    /// P6 Stage 2.8: Player start attempts before giving up, and the pause
+    /// before attempt n+1 (`n` × this).
+    pub(crate) const PLAYER_START_ATTEMPTS: u8 = 5;
+    pub(crate) const PLAYER_RETRY_STEP: std::time::Duration = std::time::Duration::from_secs(2);
+
+    /// P6.1: whether the Player should start this camera now: only a
+    /// Camera source set to "Start when played" and not running. Outside
+    /// the Player (`player` false) never. P6 Stage 2.8: a camera that did
+    /// not start, or stopped, is retried after 2, 4, 6 and 8 s (five
+    /// attempts in all, counted since its last frame), never every frame.
+    pub(crate) fn take_player_start(&mut self, player: bool) -> bool {
+        self.take_player_start_at(player, std::time::Instant::now())
+    }
+
+    pub(crate) fn take_player_start_at(&mut self, player: bool, now: std::time::Instant) -> bool {
+        if !player
+            || !self.start_on_play
+            || self.active
+            || self.source != VideoSource::Camera
+            || self.player_start_attempts >= Self::PLAYER_START_ATTEMPTS
+            || self.player_retry_at.is_some_and(|at| now < at)
+        {
+            return false;
+        }
+        self.player_start_attempts += 1;
+        self.player_retry_at =
+            Some(now + Self::PLAYER_RETRY_STEP * u32::from(self.player_start_attempts));
+        true
+    }
+
+    /// P6 Stage 2.9: what the camera's microphone capture must do now. A
+    /// camera opens the microphone only while its Audio output is wired
+    /// (and the camera runs); video-only use never captures audio.
+    pub(crate) fn camera_mic_change(
+        camera_running: bool,
+        audio_wired: bool,
+        capturing: bool,
+    ) -> Option<MicChange> {
+        match (camera_running && audio_wired, capturing) {
+            (true, false) => Some(MicChange::Start),
+            (false, true) => Some(MicChange::Stop),
+            _ => None,
+        }
+    }
+
+    /// Start or stop the camera's microphone capture as
+    /// [`Self::camera_mic_change`] says.
+    fn sync_camera_mic(&mut self, ctx: &mut RenderContext) {
+        let audio_wired = ctx
+            .connections
+            .iter()
+            .any(|c| c.from_node == ctx.node_id && c.from_port == AUDIO_PORT);
+        match Self::camera_mic_change(self.active, audio_wired, self.camera_mic) {
+            Some(MicChange::Start) => {
+                // Marked even if it fails, so a missing microphone is not
+                // retried every frame (retried when the camera restarts or
+                // the Audio output is wired again).
+                self.camera_mic = true;
+                self.start_camera_mic(ctx);
+            }
+            Some(MicChange::Stop) => {
+                ctx.audio.stop_file(ctx.node_id);
+                self.camera_mic = false;
+            }
+            None => {}
+        }
+    }
+
+    /// The system's default microphone into this node's Audio output.
+    fn start_camera_mic(&mut self, ctx: &mut RenderContext) {
+        // Picks the platform-appropriate ffmpeg capture format + input
+        // string. The Windows arm enumerates dshow audio devices via the
+        // cached list (filled by the same ffmpeg -list_devices call as
+        // cameras; listing opens no device) and picks the first one —
+        // there's no UI for choosing yet, "first mic found" matches the
+        // macOS `:0` / Linux `default` defaults. macOS prompts for mic
+        // permission on first open; if the user denies, ffmpeg exits and
+        // the pump thread sees disconnected → silence.
+        #[cfg(target_os = "macos")]
+        let capture: Option<(&str, String)> = Some(("avfoundation", ":0".into()));
+        #[cfg(target_os = "linux")]
+        let capture: Option<(&str, String)> = Some(("alsa", "default".into()));
+        #[cfg(target_os = "windows")]
+        let capture: Option<(&str, String)> = {
+            let inputs = crate::nodes::video_player::cached_audio_input_list_dshow();
+            inputs
+                .first()
+                .map(|(_, name)| ("dshow", format!("audio={}", name)))
+        };
+        #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+        let capture: Option<(&str, String)> = None;
+        if let Some((fmt, input)) = capture {
+            if let Err(e) = ctx.audio.play_capture_audio(ctx.node_id, fmt, &input) {
+                crate::system_log::warn(format!("Camera audio: {}", e));
+            }
+            ctx.audio.engine_write_param(ctx.node_id, 0, self.volume);
+        } else {
+            // Windows with no enumerated audio device — surface a hint
+            // instead of silently giving up. The diagnostics panel below
+            // shows ffmpeg's stderr for debugging.
+            #[cfg(target_os = "windows")]
+            {
+                self.status = "No audio input found — see diagnostics".into();
+            }
+        }
+    }
+
+    /// P6 Stage 2.8: where a camera node publishes (running, status) each
+    /// frame, for the Player's diagnostics.
+    pub(crate) fn camera_status_id(node_id: NodeId) -> egui::Id {
+        egui::Id::new(("video_in_camera_status", node_id))
+    }
+
     fn device_index(&self) -> u32 {
         self.device_id.parse::<u32>().unwrap_or(0)
     }
@@ -636,6 +777,9 @@ impl VideoInNode {
             // disconnect logs once again instead of being silently
             // suppressed by a stale throttle window.
             self.last_disconnect_log_at = None;
+            // P6 Stage 2.8: a working camera gets a fresh retry budget.
+            self.player_start_attempts = 0;
+            self.player_retry_at = None;
         } else if self.current_frame.is_none() {
             // No frames yet. ffmpeg often prints a transient format-
             // negotiation warning during the first second (e.g.
@@ -662,6 +806,14 @@ impl VideoInNode {
             // restart below the unlock.
             let want_restart =
                 self.loop_playback && matches!(self.source, VideoSource::Url | VideoSource::File);
+            // P6 Stage 2.8: why it stopped (ffmpeg's last line), if it said.
+            decoder.pump_stderr();
+            let reason = decoder
+                .stderr_log
+                .lines()
+                .rev()
+                .find(|l| !l.trim().is_empty())
+                .map(|l| l.trim().to_string());
             self.current_frame = None;
             self.active = false;
             decoder.disconnected = false;
@@ -685,7 +837,10 @@ impl VideoInNode {
                 }
                 self.anchor_position(0.0);
             } else {
-                self.status = "Disconnected".into();
+                self.status = match &reason {
+                    Some(reason) => format!("Disconnected: {reason}"),
+                    None => "Disconnected".into(),
+                };
                 // Throttle the warning: if the user keeps clicking Start on a
                 // camera the OS hasn't released yet, each new ffmpeg dies
                 // immediately and we'd spam the log. Log at most once every
@@ -698,14 +853,28 @@ impl VideoInNode {
                     .unwrap_or(true);
                 if should_log {
                     crate::system_log::warn(format!(
-                        "Video In disconnected (id:{}) — if you just clicked Start, the camera may still be in use by the previous ffmpeg; wait a moment before retrying",
-                        node_id
+                        "Video In disconnected (id:{}){} — if you just clicked Start, the camera may still be in use by the previous ffmpeg; wait a moment before retrying",
+                        node_id,
+                        reason
+                            .as_deref()
+                            .map(|r| format!(": {r}"))
+                            .unwrap_or_default()
                     ));
                     self.last_disconnect_log_at = Some(now);
                 }
             }
         }
     }
+}
+
+/// The Video In output carrying audio.
+const AUDIO_PORT: usize = 1;
+
+/// P6 Stage 2.9: a change to the camera's microphone capture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MicChange {
+    Start,
+    Stop,
 }
 
 impl NodeBehavior for VideoInNode {
@@ -762,6 +931,7 @@ impl NodeBehavior for VideoInNode {
             self.duration_secs = l.duration_secs;
             self.mirror_h = l.mirror_h;
             self.mirror_v = l.mirror_v;
+            self.start_on_play = l.start_on_play;
             // `active` / `status` intentionally not restored — user clicks Start.
             // `cached_abs` resolves on first render once we have the project dir.
         }
@@ -827,6 +997,11 @@ impl NodeBehavior for VideoInNode {
             }
         });
         if source_changed {
+            // P6 Stage 2.9: a camera's microphone capture ends with it.
+            if self.camera_mic {
+                ctx.audio.stop_file(ctx.node_id);
+                self.camera_mic = false;
+            }
             self.close_decoder(ctx.node_id);
             // Reset identity because device_id format differs per source.
             self.device_id = match self.source {
@@ -1049,9 +1224,24 @@ impl VideoInNode {
             ui.checkbox(&mut self.mirror_v, "V");
         });
 
+        // P6.1: opt-in start in the Patchwork Player.
+        ui.checkbox(&mut self.start_on_play, "Start when played")
+            .on_hover_text(
+                "Start this camera automatically when the project runs in the \
+                 Patchwork Player. In the editor, use Start.",
+            );
+
         // Start / Stop
         let mut toggle_start = false;
         let mut toggle_stop = false;
+        let player_start = self.take_player_start(crate::app::player::player_autostart(ui.ctx()));
+        // P6 Stage 2.8: the camera's state, for the Player's diagnostics.
+        ui.ctx().data_mut(|d| {
+            d.insert_temp(
+                Self::camera_status_id(ctx.node_id),
+                (self.active, self.status.clone()),
+            )
+        });
         ui.horizontal(|ui| {
             if self.active {
                 if ui.button("⏹ Stop").clicked() {
@@ -1062,61 +1252,34 @@ impl VideoInNode {
                 toggle_start = true;
             }
         });
+        if player_start {
+            toggle_start = true;
+        }
         if toggle_start {
+            // The same start as the button: device ownership, the camera
+            // permissions (checked when ffmpeg opens the camera) and
+            // failures (shown in the status line) all apply.
             self.open_decoder(ctx.node_id, 0.0);
-            // Camera mode previously skipped audio entirely (open_camera
-            // uses `:none` for the audio device). Spawn a sibling ffmpeg
-            // pulling the system default mic so wiring the Audio port
-            // produces sound. Same buffer + processor pipeline as URL /
-            // File audio — wiring the port AFTER Start still works
-            // because `pending_connection_sync` picks up the new edge.
-            //
-            // macOS will prompt for mic permission on first open; that's
-            // the OS-level safeguard. If the user denies, ffmpeg exits
-            // and the pump thread sees disconnected → silence.
-            // Picks the platform-appropriate ffmpeg capture format +
-            // input string. The Windows arm enumerates dshow audio
-            // devices via the cached list (filled by the same
-            // ffmpeg -list_devices call as cameras) and picks the
-            // first one — there's no UI for choosing yet, "first mic
-            // found" matches the macOS `:0` / Linux `default` defaults.
-            #[cfg(target_os = "macos")]
-            let capture: Option<(&str, String)> = Some(("avfoundation", ":0".into()));
-            #[cfg(target_os = "linux")]
-            let capture: Option<(&str, String)> = Some(("alsa", "default".into()));
-            #[cfg(target_os = "windows")]
-            let capture: Option<(&str, String)> = {
-                let inputs = crate::nodes::video_player::cached_audio_input_list_dshow();
-                inputs
-                    .first()
-                    .map(|(_, name)| ("dshow", format!("audio={}", name)))
-            };
-            #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-            let capture: Option<(&str, String)> = None;
-            if let Some((fmt, input)) = capture {
-                if self.active {
-                    if let Err(e) = ctx.audio.play_capture_audio(ctx.node_id, fmt, &input) {
-                        crate::system_log::warn(format!("Camera audio: {}", e));
-                    }
-                    ctx.audio.engine_write_param(ctx.node_id, 0, self.volume);
-                }
-            } else if self.active {
-                // Windows with no enumerated audio device — surface a
-                // hint instead of silently giving up. The diagnostics
-                // panel below shows ffmpeg's stderr for debugging.
-                #[cfg(target_os = "windows")]
-                {
-                    self.status = "No audio input found — see diagnostics".into();
-                }
+            if player_start && !self.active {
+                crate::system_log::warn(format!(
+                    "Player: Video In #{} could not start its camera: {}",
+                    ctx.node_id, self.status
+                ));
             }
+            // P6 Stage 2.9: the microphone is not opened here; it runs only
+            // while the Audio output is wired (`sync_camera_mic`, below).
         }
         if toggle_stop {
             // Tear down audio first — close_decoder drops the camera
             // claim but doesn't touch the audio pipeline. Symmetric
             // with the URL/File close paths.
             ctx.audio.stop_file(ctx.node_id);
+            self.camera_mic = false;
             self.close_decoder(ctx.node_id);
         }
+        // P6 Stage 2.9: microphone capture follows the Audio output's wiring
+        // (started when wired while the camera runs, stopped otherwise).
+        self.sync_camera_mic(ctx);
 
         // Status line
         if !self.status.is_empty() {
@@ -1240,7 +1403,7 @@ fn download_to_disk(url: &str, dest: &std::path::Path) -> Result<(), String> {
                 } else { format!("yt-dlp launch failed: {}", e) }
             })?
     } else {
-        std::process::Command::new("ffmpeg")
+        crate::nodes::video_player::ffmpeg_command()
             .args([
                 "-hide_banner",
                 "-loglevel",

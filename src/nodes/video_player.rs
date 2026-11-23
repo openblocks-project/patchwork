@@ -86,7 +86,7 @@ impl VideoDecoder {
             "pipe:1".into(),
         ]);
 
-        let process = Command::new(crate::nodes::video_player::ffmpeg_bin())
+        let process = crate::nodes::video_player::ffmpeg_command()
             .args(&args)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -156,7 +156,7 @@ impl VideoDecoder {
             "pipe:1".into(),
         ]);
 
-        let process = Command::new(crate::nodes::video_player::ffmpeg_bin())
+        let process = crate::nodes::video_player::ffmpeg_command()
             .args(&args)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -212,7 +212,7 @@ impl VideoDecoder {
         #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
         return Err("Camera capture not supported on this platform".into());
 
-        let process = Command::new(crate::nodes::video_player::ffmpeg_bin())
+        let process = crate::nodes::video_player::ffmpeg_command()
             .args([
                 "-hide_banner",
                 "-loglevel",
@@ -294,7 +294,7 @@ impl VideoDecoder {
             let _ = device_index;
             let display_env = std::env::var("DISPLAY").unwrap_or_else(|_| ":0.0".into());
             let input = format!("{}+{},{}", display_env, origin_x, origin_y);
-            let process = Command::new(crate::nodes::video_player::ffmpeg_bin())
+            let process = crate::nodes::video_player::ffmpeg_command()
                 .args([
                     "-hide_banner",
                     "-loglevel",
@@ -338,7 +338,7 @@ impl VideoDecoder {
         #[cfg(target_os = "windows")]
         {
             let _ = (device_index, origin_x, origin_y);
-            let process = Command::new(crate::nodes::video_player::ffmpeg_bin())
+            let process = crate::nodes::video_player::ffmpeg_command()
                 .args([
                     "-hide_banner",
                     "-loglevel",
@@ -387,6 +387,8 @@ impl VideoDecoder {
     }
 
     fn start_reader(mut process: Child, width: u32, height: u32) -> Result<Self, String> {
+        // P6 Stage 2.8: a camera or decoder never outlives Patchwork.
+        crate::video_io::child_job::adopt(&process);
         let stdout = process.stdout.take().ok_or("No stdout")?;
         let stderr = process.stderr.take().ok_or("No stderr")?;
         // Bounded channel (capacity 1): minimal latency — at most 1 frame queued.
@@ -565,7 +567,7 @@ impl AudioPipeDecoder {
             "f32le".into(), // raw little-endian f32
             "pipe:1".into(),
         ]);
-        let process = Command::new(crate::nodes::video_player::ffmpeg_bin())
+        let process = crate::nodes::video_player::ffmpeg_command()
             .args(&args)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -621,7 +623,7 @@ impl AudioPipeDecoder {
             "f32le".into(),
             "pipe:1".into(),
         ];
-        let process = Command::new(crate::nodes::video_player::ffmpeg_bin())
+        let process = crate::nodes::video_player::ffmpeg_command()
             .args(&args)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -637,6 +639,8 @@ impl AudioPipeDecoder {
     }
 
     fn start_reader(mut process: Child) -> Result<Self, String> {
+        // P6 Stage 2.8: an audio capture or decoder never outlives Patchwork.
+        crate::video_io::child_job::adopt(&process);
         let stdout = process.stdout.take().ok_or("No stdout")?;
         let stderr = process.stderr.take().ok_or("No stderr")?;
 
@@ -762,6 +766,22 @@ pub fn ffmpeg_install_hint() -> String {
 /// "ffmpeg" so PATH still works for dev builds and package-manager
 /// installs. Cached — `current_exe()` + `exists()` on every camera
 /// tick would be wasteful.
+/// P6 Stage 2.8: an ffmpeg command for capture, device listing and
+/// decoding. On Windows it gets no console window (a GUI Player would
+/// otherwise flash one per ffmpeg it starts) and no stdin (nothing to read,
+/// and no console to inherit). Callers may still set stdin explicitly.
+pub fn ffmpeg_command() -> Command {
+    let mut command = Command::new(ffmpeg_bin());
+    command.stdin(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    command
+}
+
 pub fn ffmpeg_bin() -> &'static std::path::Path {
     use std::sync::OnceLock;
     static BIN: OnceLock<std::path::PathBuf> = OnceLock::new();
@@ -793,7 +813,7 @@ pub fn list_cameras() -> Vec<(u32, String)> {
 
 #[cfg(target_os = "macos")]
 fn list_cameras_avfoundation() -> Vec<(u32, String)> {
-    let output = Command::new(crate::nodes::video_player::ffmpeg_bin())
+    let output = crate::nodes::video_player::ffmpeg_command()
         .args(["-f", "avfoundation", "-list_devices", "true", "-i", ""])
         .stderr(Stdio::piped())
         .stdout(Stdio::null())
@@ -861,7 +881,7 @@ fn list_cameras_v4l2() -> Vec<(u32, String)> {
 #[cfg(target_os = "windows")]
 fn enumerate_dshow_devices() -> (Vec<(u32, String)>, Vec<(u32, String)>, String) {
     eprintln!("[DEBUG] enumerate_dshow_devices() starting ffmpeg...");
-    let output = Command::new(crate::nodes::video_player::ffmpeg_bin())
+    let output = crate::nodes::video_player::ffmpeg_command()
         // .args(["-f", "dshow", "-list_devices", "true", "-i", "dummy"])
         .args([
             "-hide_banner",

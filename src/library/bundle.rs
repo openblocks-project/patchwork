@@ -420,14 +420,14 @@ fn walk_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), BundleProblem> {
 }
 
 #[cfg(windows)]
-fn is_reparse_point(meta: &std::fs::Metadata) -> bool {
+pub(crate) fn is_reparse_point(meta: &std::fs::Metadata) -> bool {
     use std::os::windows::fs::MetadataExt;
     const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
     meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
 }
 
 #[cfg(not(windows))]
-fn is_reparse_point(_meta: &std::fs::Metadata) -> bool {
+pub(crate) fn is_reparse_point(_meta: &std::fs::Metadata) -> bool {
     false
 }
 

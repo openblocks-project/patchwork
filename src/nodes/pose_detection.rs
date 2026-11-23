@@ -536,8 +536,8 @@ pub struct PoseDetectionNode {
     pub annotated_frame: Option<Arc<ImageData>>,
     pub detected: f32,
 
-    last_inference_secs: f64,
-    last_input_hash: u64,
+    /// P6 Stage 2.8: when to run (see `InferenceThrottle`).
+    throttle: crate::nodes::ml_model::InferenceThrottle,
 
     /// Temporal smoothing on/off (One Euro filter per landmark).
     pub smoothing: bool,
@@ -560,8 +560,7 @@ impl Default for PoseDetectionNode {
             body0_json: empty,
             annotated_frame: None,
             detected: 0.0,
-            last_inference_secs: -999.0,
-            last_input_hash: 0,
+            throttle: Default::default(),
             smoothing: true,
             min_visibility: 0.5,
             smoother: PoseSmoother::default(),
@@ -734,6 +733,8 @@ impl NodeBehavior for PoseDetectionNode {
         {
             ui.ctx()
                 .data_mut(|d| d.remove::<crate::nodes::ml_model::MlInferenceResult>(result_id));
+            self.throttle
+                .finished(crate::nodes::ml_model::result_failed(&result.status));
             self.status = result.status.clone();
             self.annotated_frame = result.annotated_frame.clone();
 
@@ -913,20 +914,11 @@ impl NodeBehavior for PoseDetectionNode {
         let input_val =
             crate::graph::Graph::static_input_value(ctx.connections, ctx.values, node_id, 0);
         if let PortValue::Image(img) = &input_val {
-            use std::collections::hash_map::DefaultHasher;
-            use std::hash::{Hash, Hasher};
-            let mut h = DefaultHasher::new();
-            img.width.hash(&mut h);
-            img.height.hash(&mut h);
-            if img.pixels.len() >= 32 {
-                img.pixels[..16].hash(&mut h);
-                img.pixels[img.pixels.len() - 16..].hash(&mut h);
-            }
-            let hash = h.finish();
             let now = ui.ctx().input(|i| i.time);
-            if now - self.last_inference_secs >= self.interval_ms as f64 / 1000.0 {
-                self.last_input_hash = hash;
-                self.last_inference_secs = now;
+            if self
+                .throttle
+                .ready(now, self.interval_ms, img, self.confidence)
+            {
                 self.status = "Running…".into();
                 let inference_id = egui::Id::new(("ml_inference", node_id));
                 ui.ctx().data_mut(|d| {

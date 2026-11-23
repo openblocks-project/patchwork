@@ -35,41 +35,19 @@ pub mod system_log;
 pub mod transport;
 mod video_io;
 
+// Modules refer to `crate::egui`.
 use eframe::egui;
-use std::sync::Arc;
+
+// P6 Stage 2.3: start-up lives in `app::launch`, shared with the exported
+// apps' runtime (`src/player_main.rs`, a GUI-subsystem build of the same
+// modules).
+/// Which executable this is (also recorded in its build information).
+const BINARY: app::launch::Binary = app::launch::Binary::Editor;
 
 fn main() -> eframe::Result {
-    // P4.3.4: `patchwork catalogue …` is the headless tool the marketplace
-    // catalogue repository's CI runs (same validation and artifact code as
-    // the app). It exits before anything else starts.
-    if std::env::args().nth(1).as_deref() == Some("catalogue") {
-        std::process::exit(library::marketplace::repository::cli::run(
-            std::env::args().skip(2).collect(),
-        ));
-    }
-    audio::clap_host::init_main_thread();
-    let icon = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icons/icon.png"))
-        .expect("Failed to decode embedded icon PNG");
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_icon(Arc::new(icon))
-            .with_inner_size([1280.0, 800.0])
-            .with_title("PatchWork"),
-        renderer: eframe::Renderer::Wgpu,
-        vsync: false,
-        ..Default::default()
-    };
-
-    eframe::run_native(
-        "PatchWork",
-        options,
-        // Box::new(|cc| Ok(Box::new(app::PatchworkApp::new(cc)))),
-        Box::new(|cc| {
-            cc.egui_ctx.options_mut(|options| {
-                options.screen_reader = false;
-            });
-
-            Ok(Box::new(app::PatchworkApp::new(cc)))
-        }),
-    )
+    // `patchwork catalogue …` is the headless tool the marketplace catalogue
+    // repository's CI runs (P4.3.4); `patchwork --player <project>` runs a
+    // project without the editor (P6); a `player.json` beside the
+    // executable makes it an exported app (P6 Stage 2.1).
+    app::launch::run(BINARY)
 }

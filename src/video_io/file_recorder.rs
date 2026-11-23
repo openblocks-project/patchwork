@@ -1,6 +1,6 @@
 //! File Recorder — pipe RGBA frames to an ffmpeg subprocess.
 //!
-//! Phase 6 sink for `VideoOutNode`. Wraps a `Command::new("ffmpeg")`
+//! Phase 6 sink for `VideoOutNode`. Wraps an ffmpeg process (`ffmpeg_bin()`: next to the executable, else PATH)
 //! child whose stdin accepts raw RGBA8 pixels at the locked first-frame
 //! resolution and whose output goes to the user-picked file. Codec +
 //! container are picked from the `Codec` enum at record start and
@@ -29,7 +29,7 @@
 
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, ChildStdin, Stdio};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -182,7 +182,8 @@ impl FileRecorder {
             ));
         }
 
-        let mut cmd = Command::new("ffmpeg");
+        // P6 Stage 2.9: no console window (stdin is still piped below).
+        let mut cmd = crate::nodes::video_player::ffmpeg_command();
         let fps_str = format!("{}", RECORDING_FPS as i32);
         cmd.args([
             "-y",

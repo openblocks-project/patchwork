@@ -7507,17 +7507,135 @@ pub struct MlInferenceResult {
     pub status: String,
 }
 
+/// P6 Stage 2.8: when a tracking node runs inference. At most once per
+/// interval (the node's existing setting), only on an input frame (or
+/// confidence) it has not already processed, and never while its previous
+/// inference is still out. Downstream stages therefore run on each new
+/// upstream result as soon as it arrives, instead of re-running the same
+/// frame on a timer and missing fresh ones while busy.
+#[derive(Debug, Clone, Default)]
+pub struct InferenceThrottle {
+    last_start: Option<f64>,
+    /// The frame last sent (identity: the same `Arc`, not equal pixels).
+    last_input: Option<std::sync::Weak<ImageData>>,
+    last_confidence: f32,
+    /// When the inference still out was sent.
+    in_flight_since: Option<f64>,
+}
+
+impl InferenceThrottle {
+    /// A result that never came (e.g. the request was dropped) stops
+    /// blocking after this long. Long enough for a cold model build.
+    pub const IN_FLIGHT_TIMEOUT_SECS: f64 = 120.0;
+
+    /// Whether to send `input` now; if so, it is recorded as sent.
+    pub fn ready(
+        &mut self,
+        now: f64,
+        interval_ms: u32,
+        input: &Arc<ImageData>,
+        confidence: f32,
+    ) -> bool {
+        if let Some(since) = self.in_flight_since {
+            if now - since < Self::IN_FLIGHT_TIMEOUT_SECS {
+                return false;
+            }
+        }
+        let same_input = self
+            .last_input
+            .as_ref()
+            .is_some_and(|last| std::ptr::eq(last.as_ptr(), Arc::as_ptr(input)))
+            && self.last_confidence == confidence;
+        if same_input {
+            return false;
+        }
+        if let Some(last) = self.last_start {
+            if now - last < f64::from(interval_ms) / 1000.0 {
+                return false;
+            }
+        }
+        self.last_start = Some(now);
+        self.last_input = Some(Arc::downgrade(input));
+        self.last_confidence = confidence;
+        self.in_flight_since = Some(now);
+        true
+    }
+
+    /// The result arrived. A failed run may be retried on the same input.
+    pub fn finished(&mut self, failed: bool) {
+        self.in_flight_since = None;
+        if failed {
+            self.last_input = None;
+        }
+    }
+}
+
+/// Whether an inference result reports a failure.
+pub fn result_failed(status: &str) -> bool {
+    status.starts_with("Error") || status.starts_with("error")
+}
+
+/// P6 Stage 2.8: timings of the tracking pipelines (for diagnostics).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct InferenceStat {
+    pub runs: u64,
+    pub last_ms: f64,
+    /// Smoothed (exponential moving average).
+    pub average_ms: f64,
+}
+
+fn inference_stats_store() -> &'static std::sync::Mutex<Vec<(&'static str, InferenceStat)>> {
+    static STATS: std::sync::OnceLock<std::sync::Mutex<Vec<(&'static str, InferenceStat)>>> =
+        std::sync::OnceLock::new();
+    STATS.get_or_init(Default::default)
+}
+
+fn record_inference(pipeline: &'static str, ms: f64) {
+    if let Ok(mut stats) = inference_stats_store().lock() {
+        let index = match stats.iter().position(|(name, _)| *name == pipeline) {
+            Some(i) => i,
+            None => {
+                stats.push((pipeline, InferenceStat::default()));
+                stats.len() - 1
+            }
+        };
+        let stat = &mut stats[index].1;
+        stat.average_ms = if stat.runs == 0 {
+            ms
+        } else {
+            stat.average_ms * 0.8 + ms * 0.2
+        };
+        stat.runs += 1;
+        stat.last_ms = ms;
+    }
+}
+
+/// Per tracking pipeline ("hand", "face", "pose"): runs and timings.
+pub fn inference_stats() -> Vec<(&'static str, InferenceStat)> {
+    inference_stats_store()
+        .lock()
+        .map(|s| s.clone())
+        .unwrap_or_default()
+}
+
 /// Run ONNX inference on an image (called from background thread)
 pub fn run_inference(req: &MlInferenceRequest) -> MlInferenceResult {
     // The bundled sentinels trigger the full 2-stage tracking pipelines.
-    if req.model_path == BUNDLED_HAND_SENTINEL {
-        return run_hand_tracking(req);
-    }
-    if req.model_path == BUNDLED_FACE_SENTINEL {
-        return run_face_tracking(req);
-    }
-    if req.model_path == BUNDLED_POSE_SENTINEL {
-        return run_pose_tracking(req);
+    let pipeline: Option<(&'static str, fn(&MlInferenceRequest) -> MlInferenceResult)> =
+        if req.model_path == BUNDLED_HAND_SENTINEL {
+            Some(("hand", run_hand_tracking))
+        } else if req.model_path == BUNDLED_FACE_SENTINEL {
+            Some(("face", run_face_tracking))
+        } else if req.model_path == BUNDLED_POSE_SENTINEL {
+            Some(("pose", run_pose_tracking))
+        } else {
+            None
+        };
+    if let Some((name, run)) = pipeline {
+        let started = std::time::Instant::now();
+        let result = run(req);
+        record_inference(name, started.elapsed().as_secs_f64() * 1000.0);
+        return result;
     }
     match run_inference_inner(req) {
         Ok(result) => result,
@@ -8459,8 +8577,10 @@ fn run_hand_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult
     let palm_sz_f = palm_sz as f32;
 
     // Cached session: built once on first inference, reused thereafter.
-    let palm_sess =
-        crate::ml::session_cache::get_bundled_session("hand_palm_detect", BUNDLED_HAND_MODEL)?;
+    let palm_sess = crate::ml::session_cache::get_bundled_session(
+        crate::ml::bundled::HAND_DETECT_KEY,
+        BUNDLED_HAND_MODEL,
+    )?;
 
     let palm_resized = resize_image(&req.image, palm_sz, palm_sz);
     let ts = palm_sz as usize;
@@ -8598,7 +8718,7 @@ fn run_hand_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult
 
     // Cached landmark session: built once on first inference, reused thereafter.
     let lm_sess = crate::ml::session_cache::get_bundled_session(
-        "hand_landmark",
+        crate::ml::bundled::HAND_LANDMARK_KEY,
         BUNDLED_HAND_LANDMARK_MODEL,
     )?;
     let lm_input_name = crate::ml::session_cache::input_name_of(&lm_sess)?;
@@ -9483,8 +9603,10 @@ fn run_face_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult
     let ts = face_sz as usize;
     let face_sz_f = face_sz as f32;
 
-    let face_sess =
-        crate::ml::session_cache::get_bundled_session("face_detect", BUNDLED_FACE_MODEL)?;
+    let face_sess = crate::ml::session_cache::get_bundled_session(
+        crate::ml::bundled::FACE_DETECT_KEY,
+        BUNDLED_FACE_MODEL,
+    )?;
 
     // Resize input image to 128×128
     let face_resized = resize_image(&req.image, face_sz, face_sz);
@@ -9615,7 +9737,7 @@ fn run_face_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult
     let lm_sz_f = lm_sz as f32;
 
     let lm_sess = crate::ml::session_cache::get_bundled_session(
-        "face_landmark",
+        crate::ml::bundled::FACE_LANDMARK_KEY,
         BUNDLED_FACE_LANDMARK_MODEL,
     )?;
     let lm_input_name = crate::ml::session_cache::input_name_of(&lm_sess)?;
@@ -10049,8 +10171,10 @@ fn run_pose_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult
     let ts = pose_sz as usize;
     let pose_sz_f = pose_sz as f32;
 
-    let pose_sess =
-        crate::ml::session_cache::get_bundled_session("pose_detect", BUNDLED_POSE_MODEL)?;
+    let pose_sess = crate::ml::session_cache::get_bundled_session(
+        crate::ml::bundled::POSE_DETECT_KEY,
+        BUNDLED_POSE_MODEL,
+    )?;
 
     let pose_resized = resize_image(&req.image, pose_sz, pose_sz);
 
@@ -10197,7 +10321,7 @@ fn run_pose_tracking_inner(req: &MlInferenceRequest) -> Result<MlInferenceResult
     let lm_sz_f = lm_sz as f32;
 
     let lm_sess = crate::ml::session_cache::get_bundled_session(
-        "pose_landmark",
+        crate::ml::bundled::POSE_LANDMARK_KEY,
         BUNDLED_POSE_LANDMARK_MODEL,
     )?;
     let lm_input_name = crate::ml::session_cache::input_name_of(&lm_sess)?;
