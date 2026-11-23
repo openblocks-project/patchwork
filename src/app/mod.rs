@@ -4976,18 +4976,24 @@ match validation_result {
                         .and_then(|ext| ext.to_str())
                         .map(|ext| ext.to_ascii_lowercase());
 
+                    // Pico BOOTSEL drives are only discovered on Windows; the
+                    // field does not exist elsewhere (Stage 4.0: this check
+                    // read it unconditionally, which broke non-Windows builds).
+                    #[cfg(target_os = "windows")]
+                    let pico_drive_selected = self.hardware_selected_pico_drive.is_some();
+                    #[cfg(not(target_os = "windows"))]
+                    let pico_drive_selected = false;
+
                     let device_ready = match firmware_target.as_deref() {
                         Some("uf2") => {
-                            self.hardware_selected_pico_drive.is_some()
-                                && self.hardware_selected_serial_port.is_none()
+                            pico_drive_selected && self.hardware_selected_serial_port.is_none()
                         }
 
                         // ESP32 remains disabled until its flash
                         // configuration and UI are implemented.
                         // ESP32 requires a selected serial port and no Pico drive.
                         Some("bin") => {
-                            self.hardware_selected_serial_port.is_some()
-                                && self.hardware_selected_pico_drive.is_none()
+                            self.hardware_selected_serial_port.is_some() && !pico_drive_selected
                         }
 
                         _ => false,
