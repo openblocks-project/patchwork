@@ -1075,13 +1075,18 @@ fn subsystem_and_build_information_are_read_from_executables() {
     assert!(build_info(&twice).is_err());
     assert!(subsystem(b"nonsense").is_err());
 
-    // This test binary is the editor build: a console program recording the
-    // source it was built from.
+    // This test binary is built from the editor (`main.rs`, a console
+    // program) or the Player (`player_main.rs`, a GUI program): either way it
+    // records its own kind and the source it was built from.
     super::pe::touch_profile_marker();
     let real = std::fs::read(std::env::current_exe().unwrap()).unwrap();
-    assert_eq!(subsystem(&real), Ok(SUBSYSTEM_CONSOLE));
+    let (expected_subsystem, expected_flavor) = match crate::BINARY {
+        crate::app::launch::Binary::Editor => (SUBSYSTEM_CONSOLE, "editor"),
+        crate::app::launch::Binary::Player => (SUBSYSTEM_GUI, "player"),
+    };
+    assert_eq!(subsystem(&real), Ok(expected_subsystem));
     let info = build_info(&real).unwrap();
-    assert_eq!(info.flavor, "editor");
+    assert_eq!(info.flavor, expected_flavor);
     assert_eq!(info.commit, super::pe::SOURCE_COMMIT);
     if info.commit != "unknown" {
         assert_eq!(info.commit.len(), 40);

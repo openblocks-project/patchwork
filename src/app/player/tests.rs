@@ -544,8 +544,8 @@ fn video_in_starts_in_the_player_only_when_set_to() {
     assert!(loaded.take_player_start(true));
     assert!(!loaded.take_player_start(true));
 
-    // P6 Stage 2.8: ...but retried after growing pauses, a bounded number
-    // of times (a camera that did not start, or stopped).
+    // P6 Stage 2.8: ...but retried after growing pauses (a camera that did
+    // not start, or stopped).
     let mut retried = VideoInNode::default();
     retried.start_on_play = true;
     let t0 = std::time::Instant::now();
@@ -563,10 +563,16 @@ fn video_in_starts_in_the_player_only_when_set_to() {
         at = next;
     }
     assert_eq!(starts, VideoInNode::PLAYER_START_ATTEMPTS);
-    assert!(
-        !retried.take_player_start_at(true, at + std::time::Duration::from_secs(600)),
-        "then it gives up"
-    );
+    // P6 Stage 3.4: then, instead of giving up, every 10 s for as long as
+    // the camera is required.
+    let every = VideoInNode::PLAYER_RECOVERY_INTERVAL;
+    for _ in 0..30 {
+        assert!(retried.take_player_start_at(true, at));
+        assert!(
+            !retried.take_player_start_at(true, at + every - std::time::Duration::from_millis(1))
+        );
+        at += every;
+    }
 
     // Only camera sources.
     let mut file = VideoInNode::default();

@@ -16,7 +16,8 @@ use std::time::Instant;
 /// (`render_camera` below) still uses this via the module‑private
 /// `VIDEO_DECODERS` thread‑local map.
 pub struct VideoDecoder {
-    process: Child,
+    /// The ffmpeg child. `None` only for a test camera (no process).
+    process: Option<Child>,
     frame_rx: mpsc::Receiver<Arc<ImageData>>,
     /// ffmpeg's stderr, one line per recv. Used for diagnostics when
     /// frames never arrive (typical case: macOS camera TCC denied, or
@@ -38,13 +39,128 @@ pub struct VideoDecoder {
     /// when ffmpeg has something to complain about; empty in the happy
     /// path. The node layer surfaces this into the user-visible status.
     pub stderr_log: String,
+    /// Test camera only: held while this decoder lives, so tests can count
+    /// the captures that are open at once.
+    #[cfg(test)]
+    test_alive: Option<Arc<()>>,
 }
 
 impl Drop for VideoDecoder {
     fn drop(&mut self) {
         // Kill the ffmpeg process and wait for it to exit so we don't leak zombie processes.
-        let _ = self.process.kill();
-        let _ = self.process.wait();
+        if let Some(process) = self.process.as_mut() {
+            let _ = process.kill();
+            let _ = process.wait();
+        }
+    }
+}
+
+/// P6 Stage 3.4: a camera for tests, opened through the same
+/// [`VideoDecoder::open_camera`] (and its permission check) as a real one,
+/// but fed by the test instead of ffmpeg. Per test thread.
+#[cfg(test)]
+pub(crate) mod test_camera {
+    use super::*;
+    use std::cell::RefCell;
+
+    /// What the next camera open does.
+    pub(crate) enum Open {
+        /// Opens; the test feeds frames through the new [`Feed`].
+        Ok,
+        /// Fails as an unavailable device does.
+        Fail(String),
+    }
+
+    /// The test's end of an open test camera. Dropping it ends the capture
+    /// (as ffmpeg exiting does).
+    pub(crate) struct Feed {
+        frames: mpsc::SyncSender<Arc<ImageData>>,
+        errors: mpsc::Sender<String>,
+    }
+
+    impl Feed {
+        /// Offer one frame (dropped if the previous one was not taken yet).
+        pub(crate) fn frame(&self) {
+            let _ = self.frames.try_send(Arc::new(ImageData {
+                width: 2,
+                height: 2,
+                pixels: vec![255; 16],
+            }));
+        }
+
+        /// One line of "ffmpeg" stderr.
+        pub(crate) fn stderr(&self, line: &str) {
+            let _ = self.errors.send(line.to_string());
+        }
+    }
+
+    #[derive(Default)]
+    pub(crate) struct State {
+        /// How opens behave, in order; when empty, opens fail.
+        pub(crate) plan: Vec<Open>,
+        /// The feeds of the cameras opened so far (latest last).
+        pub(crate) feeds: Vec<Feed>,
+        /// Opens that reached the camera (passed the permission check).
+        pub(crate) opens: usize,
+        alive: Arc<()>,
+    }
+
+    impl State {
+        /// Test cameras open right now (decoders not yet dropped).
+        pub(crate) fn open_now(&self) -> usize {
+            Arc::strong_count(&self.alive) - 1
+        }
+    }
+
+    thread_local! {
+        static CAMERA: RefCell<Option<State>> = const { RefCell::new(None) };
+    }
+
+    /// Use test cameras on this thread (until [`uninstall`]).
+    pub(crate) fn install() {
+        CAMERA.with(|c| *c.borrow_mut() = Some(State::default()));
+    }
+
+    pub(crate) fn uninstall() {
+        CAMERA.with(|c| *c.borrow_mut() = None);
+    }
+
+    pub(crate) fn with<T>(f: impl FnOnce(&mut State) -> T) -> T {
+        CAMERA.with(|c| f(c.borrow_mut().as_mut().expect("test camera installed")))
+    }
+
+    /// The open, when this thread uses test cameras.
+    pub(super) fn open() -> Option<Result<VideoDecoder, String>> {
+        CAMERA.with(|c| {
+            let mut c = c.borrow_mut();
+            let state = c.as_mut()?;
+            state.opens += 1;
+            let next = if state.plan.is_empty() {
+                Open::Fail("Could not find video device".to_string())
+            } else {
+                state.plan.remove(0)
+            };
+            Some(match next {
+                Open::Fail(e) => Err(e),
+                Open::Ok => {
+                    let (frames, frame_rx) = mpsc::sync_channel(1);
+                    let (errors, stderr_rx) = mpsc::channel();
+                    state.feeds.push(Feed { frames, errors });
+                    Ok(VideoDecoder {
+                        process: None,
+                        frame_rx,
+                        stderr_rx,
+                        _width: 2,
+                        _height: 2,
+                        frame_changed: false,
+                        disconnected: false,
+                        started_at: Instant::now(),
+                        stderr_log: String::new(),
+                        test_alive: Some(state.alive.clone()),
+                    })
+                }
+            })
+        })
     }
 }
 
@@ -178,6 +294,11 @@ impl VideoDecoder {
             crate::capability::Capability::Process,
             crate::capability::Capability::MediaCapture,
         ])?;
+        // P6 Stage 3.4: tests open a test camera here, after the same check.
+        #[cfg(test)]
+        if let Some(open) = test_camera::open() {
+            return open;
+        }
         // Platform-specific capture format and device input string.
         //
         // macOS (avfoundation) and Linux (v4l2) both accept numeric device
@@ -195,7 +316,9 @@ impl VideoDecoder {
         let (capture_fmt, device_input) = ("v4l2", format!("/dev/video{}", device_index));
         #[cfg(target_os = "windows")]
         let (capture_fmt, device_input) = {
-            let cams = list_cameras_dshow();
+            // P6 Stage 3.4: through the cached list, so a listing already
+            // running is not started a second time.
+            let cams = camera_list_for_open();
             let name = cams.iter()
                 .find(|(idx, _)| *idx == device_index)
                 .map(|(_, n)| n.clone())
@@ -445,7 +568,7 @@ impl VideoDecoder {
         });
 
         Ok(Self {
-            process,
+            process: Some(process),
             frame_rx: rx,
             stderr_rx: err_rx,
             _width: width,
@@ -454,6 +577,8 @@ impl VideoDecoder {
             disconnected: false,
             started_at: Instant::now(),
             stderr_log: String::new(),
+            #[cfg(test)]
+            test_alive: None,
         })
     }
 
@@ -1297,6 +1422,58 @@ pub fn cached_camera_list() -> Vec<(u32, String)> {
     guard.cameras.clone()
 }
 
+/// P6 Stage 3.4: the cached camera list as it is, without starting a
+/// refresh. For callers that need no fresh list now: a camera that is
+/// delivering frames, or the Player (its camera opens list the devices).
+pub fn camera_list_snapshot() -> Vec<(u32, String)> {
+    match camera_list_cache_handle().lock() {
+        Ok(g) => g.cameras.clone(),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// P6 Stage 3.4: a fresh camera list for opening a camera (the device may
+/// have been plugged in, out or renumbered since the last listing). A
+/// listing already running (the periodic refresh) is waited for and its
+/// result used, instead of starting a second ffmpeg; otherwise one runs
+/// now. Either way the cache is updated, so the periodic refresh does not
+/// list again straight after.
+#[cfg(target_os = "windows")]
+fn camera_list_for_open() -> Vec<(u32, String)> {
+    let cache = camera_list_cache_handle();
+    let started = std::time::Instant::now();
+    let mut waited = false;
+    loop {
+        let Ok(mut guard) = cache.lock() else {
+            return list_cameras_dshow();
+        };
+        if !guard.refreshing {
+            if waited {
+                // The listing that was running has just finished.
+                return guard.cameras.clone();
+            }
+            guard.refreshing = true;
+            break;
+        }
+        drop(guard);
+        if started.elapsed() > std::time::Duration::from_secs(5) {
+            // A listing that hangs is not waited for any longer.
+            return list_cameras_dshow();
+        }
+        waited = true;
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let (cams, audios, stderr) = enumerate_blocking();
+    if let Ok(mut g) = cache.lock() {
+        g.refreshed_at = std::time::Instant::now();
+        g.cameras = cams.clone();
+        g.audio_inputs = audios;
+        g.last_stderr = stderr;
+        g.refreshing = false;
+    }
+    cams
+}
+
 /// Cached audio input list (Windows-only — populated by the same
 /// `ffmpeg -list_devices` call that fills the camera list). On
 /// macOS / Linux this is unused because the camera-mode audio path
@@ -1688,5 +1865,41 @@ mod p432b_tests {
                 "{bad}: {error}"
             );
         }
+    }
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod stage34_list_tests {
+    use super::*;
+    use std::time::Duration;
+
+    /// A camera opening while the periodic listing runs uses that listing
+    /// instead of starting a second ffmpeg (the result here could not have
+    /// come from a real listing).
+    #[test]
+    fn a_camera_open_uses_the_listing_already_running() {
+        let cache = camera_list_cache_handle();
+        {
+            let mut g = cache.lock().unwrap();
+            g.refreshing = true;
+            g.cameras = vec![(0, "listed before".into())];
+        }
+        let finisher = crate::capability::spawn(move || {
+            std::thread::sleep(Duration::from_millis(150));
+            let mut g = cache.lock().unwrap();
+            g.cameras = vec![(0, "listed by the running refresh".into())];
+            g.refreshed_at = Instant::now();
+            g.refreshing = false;
+        });
+        let started = Instant::now();
+        let cameras = camera_list_for_open();
+        finisher.join().unwrap();
+        assert_eq!(
+            cameras,
+            vec![(0, "listed by the running refresh".to_string())]
+        );
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(!cache.lock().unwrap().refreshing);
+        assert_eq!(camera_list_snapshot(), cameras);
     }
 }

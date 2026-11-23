@@ -316,6 +316,79 @@ pub fn output_image(
     }
 }
 
+/// P6 Stage 3.4: what the Player shows when the output's camera is not
+/// delivering frames, instead of its last image (which would look live).
+pub const CAMERA_UNAVAILABLE: &str = "Camera unavailable — reconnecting…";
+
+/// P6 Stage 3.4: whether the image feeding `output` comes (through any
+/// chain of nodes) from a camera the Player requires that is unavailable
+/// now. `health` gives each node's published camera health (`None` for
+/// anything that is not a required camera). Outputs that do not depend on
+/// such a camera are unaffected.
+pub fn output_waits_for_camera(
+    connections: &[crate::graph::Connection],
+    output: NodeId,
+    health: impl Fn(NodeId) -> Option<crate::nodes::video_in_node::CameraHealth>,
+) -> bool {
+    use crate::nodes::video_in_node::CameraHealth;
+    let mut seen = std::collections::HashSet::new();
+    let mut upstream = vec![output];
+    while let Some(id) = upstream.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        if id != output && health(id) == Some(CameraHealth::Unavailable) {
+            return true;
+        }
+        upstream.extend(
+            connections
+                .iter()
+                .filter(|c| c.to_node == id)
+                .map(|c| c.from_node),
+        );
+    }
+    false
+}
+
+/// P6 Stage 3.4: the camera health node `id` published this frame (Video
+/// In cameras the Player requires).
+pub fn published_camera_health(
+    ctx: &egui::Context,
+    id: NodeId,
+) -> Option<crate::nodes::video_in_node::CameraHealth> {
+    ctx.data(|d| {
+        d.get_temp::<Option<crate::nodes::video_in_node::CameraHealth>>(
+            crate::nodes::video_in_node::VideoInNode::camera_health_id(id),
+        )
+    })
+    .flatten()
+}
+
+/// P6 Stage 3.4: what the Player's window shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputView {
+    /// The project may not use devices: a message, no image.
+    NotPermitted,
+    /// [`CAMERA_UNAVAILABLE`], no image.
+    CameraUnavailable,
+    /// The output's image.
+    Image,
+    /// Nothing yet (black).
+    Nothing,
+}
+
+pub fn output_view(permitted: bool, waits_for_camera: bool, has_image: bool) -> OutputView {
+    if !permitted {
+        OutputView::NotPermitted
+    } else if waits_for_camera {
+        OutputView::CameraUnavailable
+    } else if has_image {
+        OutputView::Image
+    } else {
+        OutputView::Nothing
+    }
+}
+
 /// P6.1: whether the Player may show its output on a display. The Video
 /// Out node's Window / Display sink requires the Devices capability (it
 /// drives a display); the Player's own window is that same output, so it
@@ -797,22 +870,44 @@ impl super::PatchworkApp {
         let permitted = output_permitted();
         let image = output_image(&self.graph, &values, node);
         let blocked = self.graph.blocked_packages().len();
+        // P6 Stage 3.4: an output fed by a camera that stopped is not shown
+        // as if it were live (its last image would stay frozen).
+        let waits_for_camera = output_waits_for_camera(&self.graph.connections, node, |id| {
+            published_camera_health(ctx, id)
+        });
+        let view = output_view(permitted, waits_for_camera, image.is_some());
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(egui::Color32::BLACK))
             .show(ctx, |ui| {
-                if !permitted {
-                    ui.vertical_centered(|ui| {
-                        ui.add_space(ui.available_height() * 0.4);
-                        ui.label(
-                            egui::RichText::new(
-                                "This project has not been allowed to use devices, so its \
+                match view {
+                    OutputView::NotPermitted => {
+                        ui.vertical_centered(|ui| {
+                            ui.add_space(ui.available_height() * 0.4);
+                            ui.label(
+                                egui::RichText::new(
+                                    "This project has not been allowed to use devices, so its \
                                  video output is not shown. Allow it in Patchwork.",
-                            )
-                            .color(egui::Color32::from_rgb(255, 180, 80)),
-                        );
-                    });
-                } else if let Some((img, source)) = image.as_ref() {
-                    show_fitted(ui, node, img, *source);
+                                )
+                                .color(egui::Color32::from_rgb(255, 180, 80)),
+                            );
+                        });
+                    }
+                    OutputView::CameraUnavailable => {
+                        ui.vertical_centered(|ui| {
+                            ui.add_space(ui.available_height() * 0.45);
+                            ui.label(
+                                egui::RichText::new(CAMERA_UNAVAILABLE)
+                                    .size(28.0)
+                                    .color(egui::Color32::from_gray(230)),
+                            );
+                        });
+                    }
+                    OutputView::Image => {
+                        if let Some((img, source)) = image.as_ref() {
+                            show_fitted(ui, node, img, *source);
+                        }
+                    }
+                    OutputView::Nothing => {}
                 }
                 if blocked > 0 {
                     ui.put(
@@ -1090,5 +1185,7 @@ mod stage21_tests;
 mod stage28_tests;
 #[cfg(test)]
 mod stage29_tests;
+#[cfg(test)]
+mod stage34_tests;
 #[cfg(test)]
 mod tests;

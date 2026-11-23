@@ -14,7 +14,8 @@
 use crate::graph::{ImageData, NodeId, PortDef, PortKind, PortValue};
 use crate::node_trait::{NodeBehavior, RenderContext};
 use crate::nodes::video_player::{
-    VideoDecoder, cached_camera_list, fast_downsample, list_screens, refresh_camera_list_now,
+    VideoDecoder, cached_camera_list, camera_list_snapshot, fast_downsample, list_screens,
+    refresh_camera_list_now,
 };
 use eframe::egui;
 use serde::{Deserialize, Serialize};
@@ -142,6 +143,10 @@ pub struct VideoInNode {
     player_start_attempts: u8,
     #[serde(skip)]
     player_retry_at: Option<std::time::Instant>,
+    /// P6 Stage 3.4: whether the camera is delivering frames (for the
+    /// Player's recovery and its "camera unavailable" screen).
+    #[serde(skip)]
+    camera_watch: CameraWatch,
 
     /// P6 Stage 2.9: the camera's microphone capture is running (or was
     /// attempted) because the Audio output is wired.
@@ -364,6 +369,7 @@ impl Clone for VideoInNode {
             start_on_play: self.start_on_play,
             player_start_attempts: 0,
             player_retry_at: None,
+            camera_watch: CameraWatch::default(),
             camera_mic: false,
             status: String::new(),
             current_frame: None,
@@ -414,6 +420,7 @@ impl Default for VideoInNode {
             start_on_play: false,
             player_start_attempts: 0,
             player_retry_at: None,
+            camera_watch: CameraWatch::default(),
             camera_mic: false,
             status: String::new(),
             current_frame: None,
@@ -474,34 +481,182 @@ static CAMERA_OWNERS: std::sync::LazyLock<
 > = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
 impl VideoInNode {
-    /// P6 Stage 2.8: Player start attempts before giving up, and the pause
-    /// before attempt n+1 (`n` × this).
+    /// P6 Stage 2.8: the Player's first start attempts, and the pause
+    /// before attempt n+1 (`n` × this) among them.
     pub(crate) const PLAYER_START_ATTEMPTS: u8 = 5;
     pub(crate) const PLAYER_RETRY_STEP: std::time::Duration = std::time::Duration::from_secs(2);
+    /// P6 Stage 3.4: after the first attempts, the pause between attempts
+    /// for as long as the camera stays unavailable.
+    pub(crate) const PLAYER_RECOVERY_INTERVAL: std::time::Duration =
+        std::time::Duration::from_secs(10);
+    /// P6 Stage 3.4: a running camera whose last frame is older than this
+    /// is not live.
+    pub(crate) const CAMERA_LIVE_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
+    /// P6 Stage 3.4: how long a camera that has just started (and has not
+    /// failed) may take to deliver its first frame before it counts as
+    /// unavailable.
+    pub(crate) const FIRST_FRAME_GRACE: std::time::Duration = std::time::Duration::from_secs(8);
+    /// P6 Stage 3.4: the Player restarts a capture that has delivered no
+    /// frame for this long (a capture that hangs instead of exiting).
+    pub(crate) const PLAYER_STALL_RESTART: std::time::Duration = std::time::Duration::from_secs(10);
+
+    /// P6 Stage 3.4: the Player requires this camera: a Camera source set
+    /// to "Start when played", in the Player. Never in the editor.
+    pub(crate) fn player_camera_required(&self, player: bool) -> bool {
+        player && self.start_on_play && self.source == VideoSource::Camera
+    }
 
     /// P6.1: whether the Player should start this camera now: only a
     /// Camera source set to "Start when played" and not running. Outside
     /// the Player (`player` false) never. P6 Stage 2.8: a camera that did
-    /// not start, or stopped, is retried after 2, 4, 6 and 8 s (five
-    /// attempts in all, counted since its last frame), never every frame.
+    /// not start, or stopped, is retried after 2, 4, 6 and 8 s, never every
+    /// frame. P6 Stage 3.4: after those five attempts it is retried every
+    /// 10 s for as long as it is required (counted since its last frame).
+    #[cfg(test)]
     pub(crate) fn take_player_start(&mut self, player: bool) -> bool {
         self.take_player_start_at(player, std::time::Instant::now())
     }
 
     pub(crate) fn take_player_start_at(&mut self, player: bool, now: std::time::Instant) -> bool {
-        if !player
-            || !self.start_on_play
+        if !self.player_camera_required(player)
             || self.active
-            || self.source != VideoSource::Camera
-            || self.player_start_attempts >= Self::PLAYER_START_ATTEMPTS
             || self.player_retry_at.is_some_and(|at| now < at)
         {
             return false;
         }
-        self.player_start_attempts += 1;
-        self.player_retry_at =
-            Some(now + Self::PLAYER_RETRY_STEP * u32::from(self.player_start_attempts));
+        self.player_start_attempts = self.player_start_attempts.saturating_add(1);
+        let pause = if self.player_start_attempts < Self::PLAYER_START_ATTEMPTS {
+            Self::PLAYER_RETRY_STEP * u32::from(self.player_start_attempts)
+        } else {
+            Self::PLAYER_RECOVERY_INTERVAL
+        };
+        self.player_retry_at = Some(now + pause);
         true
+    }
+
+    /// P6 Stage 3.4: the first attempts are over; the camera is being
+    /// recovered at the slower pace (and quietly: the loss was logged).
+    fn in_slow_recovery(&self) -> bool {
+        self.player_start_attempts >= Self::PLAYER_START_ATTEMPTS
+    }
+
+    /// P6 Stage 3.4: whether the camera is delivering frames at `now`.
+    pub(crate) fn camera_health_at(&self, now: std::time::Instant) -> CameraHealth {
+        let watch = &self.camera_watch;
+        if self.active {
+            if let Some(at) = watch.last_frame_at {
+                return if now.saturating_duration_since(at) <= Self::CAMERA_LIVE_WINDOW {
+                    CameraHealth::Live
+                } else {
+                    CameraHealth::Unavailable
+                };
+            }
+            let in_grace = watch
+                .opened_at
+                .is_none_or(|at| now.saturating_duration_since(at) <= Self::FIRST_FRAME_GRACE);
+            return if !watch.lost && in_grace {
+                CameraHealth::Starting
+            } else {
+                CameraHealth::Unavailable
+            };
+        }
+        if watch.lost {
+            CameraHealth::Unavailable
+        } else {
+            CameraHealth::Starting
+        }
+    }
+
+    /// P6 Stage 3.4: a running capture that has delivered no frame for
+    /// [`Self::PLAYER_STALL_RESTART`] (since its last frame, or since it
+    /// started when it never delivered one).
+    fn capture_stalled(&self, now: std::time::Instant) -> bool {
+        let since = self
+            .camera_watch
+            .last_frame_at
+            .or(self.camera_watch.opened_at);
+        self.active
+            && since
+                .is_some_and(|at| now.saturating_duration_since(at) > Self::PLAYER_STALL_RESTART)
+    }
+
+    /// P6 Stage 3.4: after new frames were taken, a capture the Player
+    /// requires that has delivered none for [`Self::PLAYER_STALL_RESTART`]
+    /// is closed (ending its ffmpeg); [`Self::player_camera_tick`] then
+    /// starts it again. Returns whether it was closed. Outside the Player,
+    /// nothing.
+    pub(crate) fn player_camera_watchdog(
+        &mut self,
+        node_id: NodeId,
+        player: bool,
+        now: std::time::Instant,
+    ) -> bool {
+        if !self.player_camera_required(player) || !self.capture_stalled(now) {
+            return false;
+        }
+        self.close_decoder(node_id);
+        self.camera_watch.lost = true;
+        self.status = "No frames from the camera".into();
+        if !self.in_slow_recovery() {
+            crate::system_log::warn(format!(
+                "Player: Video In #{node_id}: the camera stopped sending frames; restarting it"
+            ));
+        }
+        true
+    }
+
+    /// P6 Stage 3.4: the Player's camera start for this frame: the camera
+    /// is started when the schedule says ([`Self::take_player_start_at`]).
+    /// Each start goes through [`Self::open_decoder`], so device ownership
+    /// and the permission checks apply every time. Returns whether a start
+    /// was attempted. Outside the Player, nothing.
+    pub(crate) fn player_camera_tick(
+        &mut self,
+        node_id: NodeId,
+        player: bool,
+        now: std::time::Instant,
+    ) -> bool {
+        if !self.take_player_start_at(player, now) {
+            return false;
+        }
+        // The same start as the Start button: device ownership, the camera
+        // permissions (checked when the camera opens) and failures (shown in
+        // the status line) all apply.
+        self.open_decoder(node_id, 0.0);
+        if self.active {
+            self.camera_watch.opened_at = Some(now);
+        } else {
+            self.camera_watch.lost = true;
+            if self.player_start_attempts <= Self::PLAYER_START_ATTEMPTS {
+                let more = if self.player_start_attempts == Self::PLAYER_START_ATTEMPTS {
+                    format!(
+                        " (retrying every {} s while it is unavailable)",
+                        Self::PLAYER_RECOVERY_INTERVAL.as_secs()
+                    )
+                } else {
+                    String::new()
+                };
+                crate::system_log::warn(format!(
+                    "Player: Video In #{node_id} could not start its camera: {}{more}",
+                    self.status
+                ));
+            }
+        }
+        true
+    }
+
+    /// P6 Stage 3.4: whether to refresh the camera list in the background
+    /// (every 10 s while asked for). Not in the Player (its camera starts
+    /// list the devices themselves) and not while the camera is live;
+    /// otherwise as before, for choosing a device.
+    pub(crate) fn refreshes_device_list(player: bool, live: bool) -> bool {
+        !player && !live
+    }
+
+    /// P6 Stage 3.4: where a camera the Player requires publishes its
+    /// [`CameraHealth`] each frame (`None` when not required).
+    pub(crate) fn camera_health_id(node_id: NodeId) -> egui::Id {
+        egui::Id::new(("video_in_camera_health", node_id))
     }
 
     /// P6 Stage 2.9: what the camera's microphone capture must do now. A
@@ -741,6 +896,9 @@ impl VideoInNode {
         self.current_frame = None;
         self.preview_tex = None;
         self.active = false;
+        // P6 Stage 3.4: the next capture is timed from its own start.
+        self.camera_watch.opened_at = None;
+        self.camera_watch.last_frame_at = None;
         self.status = "Stopped".into();
         // Drop the resolved URL so a Restart re-resolves YouTube / Vimeo
         // (those URLs are signed and expire). For direct URLs the next
@@ -751,6 +909,17 @@ impl VideoInNode {
     }
 
     fn poll_decoder(&mut self, node_id: NodeId, ctx: Option<&mut RenderContext>) {
+        self.poll_decoder_at(node_id, ctx, std::time::Instant::now());
+    }
+
+    /// [`Self::poll_decoder`] at `now` (frame times are kept for the
+    /// camera's health).
+    pub(crate) fn poll_decoder_at(
+        &mut self,
+        node_id: NodeId,
+        ctx: Option<&mut RenderContext>,
+        now: std::time::Instant,
+    ) {
         let mut guard = match self.decoder.lock() {
             Ok(g) => g,
             Err(_) => return,
@@ -780,6 +949,14 @@ impl VideoInNode {
             // P6 Stage 2.8: a working camera gets a fresh retry budget.
             self.player_start_attempts = 0;
             self.player_retry_at = None;
+            // P6 Stage 3.4: live again.
+            if self.camera_watch.lost && self.source == VideoSource::Camera {
+                crate::system_log::log(format!(
+                    "Video In #{node_id}: the camera is sending frames again"
+                ));
+            }
+            self.camera_watch.lost = false;
+            self.camera_watch.last_frame_at = Some(now);
         } else if self.current_frame.is_none() {
             // No frames yet. ffmpeg often prints a transient format-
             // negotiation warning during the first second (e.g.
@@ -816,6 +993,10 @@ impl VideoInNode {
                 .map(|l| l.trim().to_string());
             self.current_frame = None;
             self.active = false;
+            // P6 Stage 3.4: the camera is lost until it sends frames again.
+            self.camera_watch.lost = !want_restart;
+            self.camera_watch.opened_at = None;
+            self.camera_watch.last_frame_at = None;
             decoder.disconnected = false;
             *guard = None; // free the slot so next Start spawns fresh
             drop(guard);
@@ -846,11 +1027,13 @@ impl VideoInNode {
                 // immediately and we'd spam the log. Log at most once every
                 // 3 seconds; reset on first successful frame above so a
                 // genuine new disconnect after recovery logs again.
-                let now = std::time::Instant::now();
-                let should_log = self
-                    .last_disconnect_log_at
-                    .map(|t| now.duration_since(t).as_secs_f32() >= 3.0)
-                    .unwrap_or(true);
+                // P6 Stage 3.4: and not again while the Player keeps
+                // retrying a camera that stays unavailable.
+                let should_log = !self.in_slow_recovery()
+                    && self
+                        .last_disconnect_log_at
+                        .map(|t| now.saturating_duration_since(t).as_secs_f32() >= 3.0)
+                        .unwrap_or(true);
                 if should_log {
                     crate::system_log::warn(format!(
                         "Video In disconnected (id:{}){} — if you just clicked Start, the camera may still be in use by the previous ffmpeg; wait a moment before retrying",
@@ -875,6 +1058,27 @@ const AUDIO_PORT: usize = 1;
 pub(crate) enum MicChange {
     Start,
     Stop,
+}
+
+/// P6 Stage 3.4: whether a camera is delivering frames.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CameraHealth {
+    /// Starting and not failed yet (no frame so far, within its grace).
+    Starting,
+    /// Frames are arriving.
+    Live,
+    /// Not running, failed, or no frames lately: what is shown from it is
+    /// not live.
+    Unavailable,
+}
+
+/// P6 Stage 3.4: when the current capture started and last delivered a
+/// frame, and whether the camera has been lost since its last frame.
+#[derive(Debug, Clone, Default)]
+struct CameraWatch {
+    opened_at: Option<std::time::Instant>,
+    last_frame_at: Option<std::time::Instant>,
+    lost: bool,
 }
 
 impl NodeBehavior for VideoInNode {
@@ -1082,7 +1286,16 @@ impl NodeBehavior for VideoInNode {
 
 impl VideoInNode {
     fn render_camera_ui(&mut self, ui: &mut egui::Ui, ctx: &mut RenderContext) {
-        let cameras = cached_camera_list();
+        let player = crate::app::player::player_autostart(ui.ctx());
+        let now = std::time::Instant::now();
+        // P6 Stage 3.4: the device list is refreshed in the background only
+        // when it may be needed (see `refreshes_device_list`).
+        let live = self.active && self.camera_health_at(now) == CameraHealth::Live;
+        let cameras = if Self::refreshes_device_list(player, live) {
+            cached_camera_list()
+        } else {
+            camera_list_snapshot()
+        };
         // Hide screen-capture devices from the Camera picker — they
         // belong under Source = Screen. Without this filter OBS / Camo
         // users end up with "Capture screen 0" in their camera list.
@@ -1234,7 +1447,8 @@ impl VideoInNode {
         // Start / Stop
         let mut toggle_start = false;
         let mut toggle_stop = false;
-        let player_start = self.take_player_start(crate::app::player::player_autostart(ui.ctx()));
+        // P6 Stage 3.4: the Player starts (and recovers) the camera here.
+        self.player_camera_tick(ctx.node_id, player, now);
         // P6 Stage 2.8: the camera's state, for the Player's diagnostics.
         ui.ctx().data_mut(|d| {
             d.insert_temp(
@@ -1252,20 +1466,11 @@ impl VideoInNode {
                 toggle_start = true;
             }
         });
-        if player_start {
-            toggle_start = true;
-        }
         if toggle_start {
-            // The same start as the button: device ownership, the camera
-            // permissions (checked when ffmpeg opens the camera) and
-            // failures (shown in the status line) all apply.
+            // Device ownership, the camera permissions (checked when ffmpeg
+            // opens the camera) and failures (shown in the status line) all
+            // apply.
             self.open_decoder(ctx.node_id, 0.0);
-            if player_start && !self.active {
-                crate::system_log::warn(format!(
-                    "Player: Video In #{} could not start its camera: {}",
-                    ctx.node_id, self.status
-                ));
-            }
             // P6 Stage 2.9: the microphone is not opened here; it runs only
             // while the Audio output is wired (`sync_camera_mic`, below).
         }
@@ -1294,7 +1499,16 @@ impl VideoInNode {
         }
 
         // Pull any new frames from the decoder thread
-        self.poll_decoder(ctx.node_id, Some(ctx));
+        self.poll_decoder_at(ctx.node_id, Some(ctx), now);
+        // P6 Stage 3.4: a capture that stopped delivering frames is restarted.
+        self.player_camera_watchdog(ctx.node_id, player, now);
+        // P6 Stage 3.4: the health of a camera the Player requires, for its
+        // "camera unavailable" screen.
+        let health = self
+            .player_camera_required(player)
+            .then(|| self.camera_health_at(now));
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(Self::camera_health_id(ctx.node_id), health));
 
         // Preview (shared with Screen source)
         self.render_preview(ui, ctx);
@@ -2889,6 +3103,10 @@ pub fn register(registry: &mut crate::node_trait::NodeRegistryInner) {
         Box::new(n)
     });
 }
+
+#[cfg(test)]
+#[path = "video_in_recovery_tests.rs"]
+mod recovery_tests;
 
 #[cfg(test)]
 mod p432b_tests {
