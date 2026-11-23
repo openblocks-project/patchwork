@@ -15,6 +15,7 @@
 #   CARGO_HOME                      -> /cargo   (/cargo/registry/src/<index>/<crate>-<version>/src/...)
 #   <sysroot>\lib\rustlib\src\rust  -> /rustc/<rustc commit hash>  (rustc's own name for these)
 #   this repository                 -> /patchwork
+# C/C++ dependencies get the matching MSVC /d1trimfile prefixes (below).
 # Crash and error messages keep the crate, version, file and line. Nothing
 # machine-specific is committed: the real paths are worked out here, at
 # build time. Program behaviour is unchanged.
@@ -45,6 +46,22 @@ $flags += "--remap-path-prefix=$repo=/patchwork"
 $flags += "--remap-path-prefix=$cargoHome=/cargo"
 $flags += "--remap-path-prefix=$rustSrc=/rustc/$hash"
 
+# C and C++ compiled by dependency build scripts (the `cc` crate, MSVC
+# cl.exe: libopus, hidapi, ring) is not covered by rustc's remapping: its
+# __FILE__ strings (assertion and error messages) would keep absolute
+# paths. MSVC's /d1trimfile:<prefix> strips the prefix from them, leaving
+# registry\src\<index>\<crate>-<version>\<file>. `cc` splits CFLAGS at
+# whitespace, so the prefixes must not contain spaces.
+$trim = @("$cargoHome\", "$repo\")
+foreach ($p in $trim) {
+  if ($p -match '\s') { throw "Path contains whitespace, which CFLAGS cannot carry: $p" }
+}
+$cTrim = ($trim | ForEach-Object { "/d1trimfile:$_" }) -join ' '
+$savedCFlags = $env:CFLAGS
+$savedCxxFlags = $env:CXXFLAGS
+$env:CFLAGS = (@($env:CFLAGS, $cTrim) | Where-Object { $_ }) -join ' '
+$env:CXXFLAGS = (@($env:CXXFLAGS, $cTrim) | Where-Object { $_ }) -join ' '
+
 $env:CARGO_ENCODED_RUSTFLAGS = $flags -join [char]0x1f
 try {
   Push-Location $repo
@@ -53,6 +70,8 @@ try {
 } finally {
   Pop-Location
   Remove-Item Env:CARGO_ENCODED_RUSTFLAGS -ErrorAction SilentlyContinue
+  $env:CFLAGS = $savedCFlags
+  $env:CXXFLAGS = $savedCxxFlags
 }
 
 # Check: no account name or profile path left in either executable.
@@ -79,4 +98,12 @@ foreach ($exe in 'patchwork.exe', 'patchwork-player.exe') {
     Write-Host "OK: $exe contains no build-machine account name or profile path."
   }
 }
-if ($failed) { exit 1 }
+if ($failed) {
+  # A dependency's C/C++ build that predates these flags is kept by cargo
+  # when its build script does not watch CFLAGS (audiopus_sys builds libopus
+  # with CMake and does not).
+  Write-Host 'If C/C++ dependencies were built earlier without this script, run'
+  Write-Host '  cargo clean --release -p audiopus_sys'
+  Write-Host 'and build again (a fresh target folder is always clean).'
+  exit 1
+}
