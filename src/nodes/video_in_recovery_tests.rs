@@ -383,3 +383,30 @@ fn the_device_list_is_refreshed_only_when_it_may_be_needed() {
     assert!(!VideoInNode::refreshes_device_list(true, false));
     assert!(!VideoInNode::refreshes_device_list(true, true));
 }
+
+#[test]
+fn closing_the_project_ends_its_camera_capture() {
+    // P6 Stage 3.6: when the Player exits, its graph is dropped with it; a
+    // running camera's capture (its ffmpeg) ends then. (The OS also ends
+    // every child ffmpeg with the Player process: `video_io::child_job`.)
+    let _rig = Rig::new();
+    let mut node = camera();
+    let t0 = Instant::now();
+    will_open(1);
+    frame(&mut node, true, t0);
+    send_frame();
+    frame(&mut node, true, t0);
+    assert_eq!(node.camera_health_at(t0), CameraHealth::Live);
+    let mut graph = crate::graph::Graph::new();
+    graph.add_node(
+        crate::graph::NodeType::Dynamic {
+            inner: crate::graph::DynNode {
+                node: Box::new(node),
+            },
+        },
+        [0.0, 0.0],
+    );
+    assert_eq!(open_now(), 1);
+    drop(graph);
+    assert_eq!(open_now(), 0, "the capture ended with the project");
+}

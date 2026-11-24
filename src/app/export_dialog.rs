@@ -46,7 +46,13 @@ pub(super) struct ExportForm {
     pub replace_confirmed: bool,
     /// P6 Stage 2.6: distributable (default) or internal test build.
     pub purpose: ExportPurpose,
+    /// P6 Stage 3.6: "Run as fullscreen kiosk" (off by default).
+    pub kiosk: bool,
 }
+
+/// P6 Stage 3.6: the kiosk option, and what it does.
+pub(super) const KIOSK_CHECKBOX: &str = "Run as fullscreen kiosk";
+pub(super) const KIOSK_EXPLANATION: &str = "The app starts fullscreen on the Video Out's      display (the main display if that one is not connected). Escape and F11 will not      leave fullscreen. Alt+F4 still closes it, for staff. A staff guide is included.";
 
 /// The suffix of an internal test build's folder, so it is never mistaken
 /// for (or replaces) a distributable export of the same app.
@@ -215,6 +221,7 @@ impl ExportForm {
             },
             overwrite: self.existing() == Existing::EarlierExport && self.replace_confirmed,
             purpose: self.purpose,
+            kiosk: self.kiosk,
         })
     }
 }
@@ -357,6 +364,7 @@ impl ExportDialog {
             self.form.parent.clone(),
             self.form.output,
             self.form.purpose,
+            self.form.kiosk,
         );
         egui::Grid::new("export_app_fields")
             .num_columns(2)
@@ -379,6 +387,14 @@ impl ExportDialog {
                         ExportPurpose::InternalTest,
                         "Internal test build — NOT FOR DISTRIBUTION",
                     );
+                });
+                ui.end_row();
+
+                // P6 Stage 3.6: optional kiosk (the project is not changed).
+                ui.label("Display");
+                ui.vertical(|ui| {
+                    ui.checkbox(&mut self.form.kiosk, KIOSK_CHECKBOX);
+                    ui.label(egui::RichText::new(KIOSK_EXPLANATION).small().weak());
                 });
                 ui.end_row();
 
@@ -479,6 +495,7 @@ impl ExportDialog {
             self.form.parent.clone(),
             self.form.output,
             self.form.purpose,
+            self.form.kiosk,
         );
         if before != after {
             // A different destination needs its own confirmation, and an
@@ -765,6 +782,21 @@ mod tests {
         form.replace_confirmed = true;
         assert!(blocking(&form).is_empty());
         assert!(form.request(&runtime_ok().unwrap()).unwrap().overwrite);
+    }
+
+    #[test]
+    fn the_kiosk_option_is_off_by_default_and_reaches_the_request() {
+        let (tmp, graph, project) = setup("dlg_kiosk", 1);
+        let mut form = ExportForm::for_project(&project, &graph);
+        form.parent = Some(tmp.0.clone());
+        assert!(!form.kiosk);
+        assert!(!form.request(&runtime_ok().unwrap()).unwrap().kiosk);
+        form.kiosk = true;
+        let request = form.request(&runtime_ok().unwrap()).unwrap();
+        assert!(request.kiosk);
+        // The rest of the form is unchanged by it.
+        assert_eq!(request.destination, tmp.0.join("Light Show"));
+        assert_eq!(request.purpose, ExportPurpose::Distribution);
     }
 
     #[test]

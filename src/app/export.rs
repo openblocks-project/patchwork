@@ -27,6 +27,7 @@
 //! [`ExportJob`] runs an export on its own thread with progress and
 //! cancellation, one at a time (File → Export as App, `export_dialog`).
 
+pub mod installer;
 pub mod pe;
 pub mod runtime;
 
@@ -84,6 +85,42 @@ pub struct ExportRequest {
     pub overwrite: bool,
     /// P6 Stage 2.6: distributable, or an internal test build.
     pub purpose: ExportPurpose,
+    /// P6 Stage 3.6: run the app as a fullscreen kiosk (recorded in its
+    /// manifest; the project itself is not changed). Off by default.
+    pub kiosk: bool,
+}
+
+/// P6 Stage 3.6: the staff guide beside a kiosk app's executable.
+pub const KIOSK_GUIDE_FILE: &str = "KIOSK-STAFF-GUIDE.txt";
+
+/// P6 Stage 3.6: what staff need to run a kiosk app (no passwords: the app
+/// has none, and closing it uses the normal Windows ways).
+pub fn kiosk_guide(app_name: &str) -> String {
+    format!(
+        "{app_name} — kiosk guide for staff\r\n\
+         \r\n\
+         This app was exported to run as a fullscreen kiosk. It starts fullscreen on the\r\n\
+         display chosen in the project (or the main display when that one is not\r\n\
+         connected). Escape and F11 do not leave fullscreen. It shows the project only;\r\n\
+         nothing can be edited, and the Patchwork editor cannot be opened from it.\r\n\
+         \r\n\
+         Closing the app\r\n\
+         - Press Alt+F4 (with a keyboard connected).\r\n\
+         - Or press Ctrl+Shift+Esc to open Task Manager and end \"{app_name}\".\r\n\
+         Closing it ends its camera and ffmpeg processes too.\r\n\
+         \r\n\
+         Starting it again\r\n\
+         - Double-click \"{app_name}.exe\" in this folder.\r\n\
+         - To start it whenever staff sign in to Windows, put a shortcut to\r\n\
+         \x20 \"{app_name}.exe\" in the Startup folder (press Windows+R, type shell:startup,\r\n\
+         \x20 press Enter). Remove the shortcut to stop that.\r\n\
+         \r\n\
+         The first time it runs on a computer, it asks for permission to run this\r\n\
+         project; someone must choose Allow once.\r\n\
+         \r\n\
+         Kiosk mode does not lock Windows: Ctrl+Alt+Delete, Task Manager and the other\r\n\
+         Windows shortcuts keep working.\r\n"
+    )
 }
 
 /// What an export is for.
@@ -1636,6 +1673,13 @@ fn write_export(
         copy_into(staging, item, control)?;
     }
     write_notices(staging, request, plan)?;
+    if request.kiosk {
+        std::fs::write(
+            staging.join(KIOSK_GUIDE_FILE),
+            kiosk_guide(&request.app_name),
+        )
+        .map_err(|e| format!("{KIOSK_GUIDE_FILE} cannot be written: {e}"))?;
+    }
     if control.cancelled() {
         return Err(CANCELLED.to_string());
     }
@@ -1649,7 +1693,7 @@ fn write_export(
     let text = std::fs::read_to_string(project.join(PROJECT_FILE))
         .map_err(|e| format!("The exported project cannot be read: {e}"))?;
     let digest = crate::library::trust::content::project_digest(&text)?;
-    let manifest = serde_json::json!({
+    let mut manifest = serde_json::json!({
         "schema": MANIFEST_SCHEMA,
         "format": MANIFEST_FORMAT,
         "project": PROJECT_DIR,
@@ -1658,6 +1702,11 @@ fn write_export(
         "patchwork_version": env!("CARGO_PKG_VERSION"),
         "project_sha256": digest,
     });
+    // P6 Stage 3.6: only a kiosk export records the setting, so other
+    // exports write exactly the manifest they wrote before.
+    if request.kiosk {
+        manifest["kiosk"] = serde_json::Value::Bool(true);
+    }
     std::fs::write(
         staging.join(MANIFEST_FILE),
         serde_json::to_string_pretty(&manifest).unwrap_or_default(),
@@ -1670,7 +1719,7 @@ fn write_export(
         progress.done_bytes,
         progress.total_bytes,
     );
-    verify_export(staging, env, plan, &digest)?;
+    verify_export(staging, env, plan, &digest, request.kiosk)?;
     Ok(digest)
 }
 
@@ -1786,10 +1835,18 @@ fn verify_export(
     env: &ExportEnvironment,
     plan: &ExportPlan,
     digest: &str,
+    kiosk: bool,
 ) -> Result<(), String> {
     // The manifest launch (structure, containment, no links).
     let launch = super::player::manifest::load_manifest(staging, env.user_data.as_deref())
         .map_err(|e| format!("The export does not launch: {e}"))?;
+    // P6 Stage 3.6: it runs as a kiosk exactly when that was asked for.
+    if launch.manifest.kiosk != kiosk {
+        return Err("The exported kiosk setting is not the one chosen.".to_string());
+    }
+    if kiosk && !staging.join(KIOSK_GUIDE_FILE).is_file() {
+        return Err(format!("The kiosk app is missing {KIOSK_GUIDE_FILE}."));
+    }
     // The project loads from its new place, and is the content recorded.
     let graph = super::io::load_project_graph(&launch.launch.project_json)
         .map_err(|e| format!("The exported project does not load: {e}"))?;

@@ -50,6 +50,10 @@ pub struct PlayerManifest {
     pub patchwork_version: String,
     /// The project's content digest at export (not a signature).
     pub project_sha256: String,
+    /// P6 Stage 3.6: run as a fullscreen kiosk (optional; absent in
+    /// manifests written before it, and in normal exports: off).
+    #[serde(default)]
+    pub kiosk: bool,
 }
 
 /// What an export adds to a Player launch.
@@ -61,6 +65,8 @@ pub struct ExportInfo {
     pub patchwork_version: String,
     /// The content digest recorded at export.
     pub expected_digest: String,
+    /// P6 Stage 3.6: the export runs as a fullscreen kiosk.
+    pub kiosk: bool,
 }
 
 /// Parse and check the manifest's fields (not the file system).
@@ -260,6 +266,7 @@ pub fn load_manifest(
                 title: manifest.title.clone(),
                 patchwork_version: manifest.patchwork_version.clone(),
                 expected_digest: manifest.project_sha256.clone(),
+                kiosk: manifest.kiosk,
             }),
         },
         manifest,

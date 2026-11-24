@@ -416,6 +416,30 @@ pub fn escape_leaves_fullscreen(escape_pressed: bool, fullscreen: Option<bool>) 
     escape_pressed && fullscreen == Some(true)
 }
 
+/// P6 Stage 3.6: the fullscreen change the keys ask for this frame, if any.
+/// A normal Player leaves fullscreen on Escape (as before) and ignores F11.
+/// A kiosk changes nothing on either key: it stays fullscreen. Closing the
+/// window (Alt+F4) is not affected in either.
+pub fn fullscreen_key_change(
+    escape_pressed: bool,
+    f11_pressed: bool,
+    fullscreen: Option<bool>,
+    kiosk: bool,
+) -> Option<bool> {
+    let _ = f11_pressed;
+    if kiosk {
+        return None;
+    }
+    escape_leaves_fullscreen(escape_pressed, fullscreen).then_some(false)
+}
+
+/// P6 Stage 3.6: whether the window starts fullscreen: as the Video Out
+/// node's saved setting says, or always for a kiosk (the setting itself is
+/// not changed).
+pub fn starts_fullscreen(video_out_fullscreen: bool, kiosk: bool) -> bool {
+    video_out_fullscreen || kiosk
+}
+
 /// Seconds between attempts to reconnect one MIDI Out node's port.
 pub const MIDI_OUT_RETRY_SECS: f64 = 5.0;
 
@@ -567,6 +591,14 @@ impl PlayerState {
     }
 
     /// The name shown for the project: the export's title, else its folder.
+    /// P6 Stage 3.6: an exported app whose manifest asks for a kiosk.
+    pub(super) fn kiosk(&self) -> bool {
+        self.launch
+            .export
+            .as_ref()
+            .is_some_and(|export| export.kiosk)
+    }
+
     fn project_name(&self) -> String {
         match &self.launch.export {
             Some(export) => export.title.clone(),
@@ -796,6 +828,7 @@ impl super::PatchworkApp {
             return;
         };
         let output = state.output.clone();
+        let kiosk = state.kiosk();
         if !state.configured {
             state.configured = true;
             let title = match &state.launch.export {
@@ -805,7 +838,7 @@ impl super::PatchworkApp {
             let title = player_title(title, super::export::runtime::internal_test_label());
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
             if let Ok(node) = output {
-                self.place_player_window(ctx, node);
+                self.place_player_window(ctx, node, kiosk);
             }
         }
         // P6 Stage 2.6: a runtime that embeds uncleared components says so
@@ -813,11 +846,17 @@ impl super::PatchworkApp {
         if let Some(label) = super::export::runtime::internal_test_label() {
             internal_test_badge(ctx, label);
         }
-        // P6.1: Escape leaves fullscreen (and does nothing else).
-        let (escape, fullscreen) =
-            ctx.input(|i| (i.key_pressed(egui::Key::Escape), i.viewport().fullscreen));
-        if escape_leaves_fullscreen(escape, fullscreen) {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+        // P6.1: Escape leaves fullscreen (and does nothing else). P6 Stage
+        // 3.6: not in a kiosk.
+        let (escape, f11, fullscreen) = ctx.input(|i| {
+            (
+                i.key_pressed(egui::Key::Escape),
+                i.key_pressed(egui::Key::F11),
+                i.viewport().fullscreen,
+            )
+        });
+        if let Some(on) = fullscreen_key_change(escape, f11, fullscreen, kiosk) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(on));
         }
         let node = match output {
             Ok(node) => node,
@@ -1000,7 +1039,7 @@ impl super::PatchworkApp {
 
     /// Put the window on the output's chosen display, fullscreen when the
     /// Video Out node asks for it (its saved settings).
-    fn place_player_window(&mut self, ctx: &egui::Context, node: NodeId) {
+    fn place_player_window(&mut self, ctx: &egui::Context, node: NodeId, kiosk: bool) {
         let Some(NodeType::Dynamic { inner }) = self.graph.nodes.get(&node).map(|n| &n.node_type)
         else {
             return;
@@ -1025,7 +1064,8 @@ impl super::PatchworkApp {
                 display.origin.1 as f32,
             )));
         }
-        if fullscreen {
+        // P6 Stage 3.6: a kiosk starts fullscreen whatever the node says.
+        if starts_fullscreen(fullscreen, kiosk) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
         }
     }
@@ -1187,5 +1227,7 @@ mod stage28_tests;
 mod stage29_tests;
 #[cfg(test)]
 mod stage34_tests;
+#[cfg(test)]
+mod stage36_tests;
 #[cfg(test)]
 mod tests;

@@ -227,6 +227,7 @@ impl Fx {
             ffmpeg: None,
             overwrite: false,
             purpose: super::ExportPurpose::Distribution,
+            kiosk: false,
         }
     }
 }
@@ -1503,6 +1504,8 @@ fn manual_real_export() {
         } else {
             super::ExportPurpose::Distribution
         },
+        // P6 Stage 3.6: PATCHWORK_EXPORT_KIOSK=1: "Run as fullscreen kiosk".
+        kiosk: std::env::var("PATCHWORK_EXPORT_KIOSK").as_deref() == Ok("1"),
     };
     let env = ExportEnvironment::this_computer();
     let report = export_portable(&request, &env);
@@ -1595,6 +1598,8 @@ fn manual_mediapipe_internal_test_export() {
         }),
         overwrite: false,
         purpose: super::ExportPurpose::Distribution,
+        // P6 Stage 3.6: PATCHWORK_EXPORT_KIOSK=1: "Run as fullscreen kiosk".
+        kiosk: std::env::var("PATCHWORK_EXPORT_KIOSK").as_deref() == Ok("1"),
     };
     let refused = export_portable(&request, &env);
     eprintln!("DISTRIBUTION: {:#?}", refused.errors);
@@ -1949,4 +1954,649 @@ fn embedded_assets_are_cleared_or_block_the_export() {
             .any(|(name, text)| *name == "Outfit-OFL.txt"
                 && text.contains("SIL OPEN FONT LICENSE Version 1.1"))
     );
+}
+
+// ── P6 Stage 3.6: kiosk exports ─────────────────────────────────────────────
+
+fn kiosk_request(fx: &Fx, name: &str) -> ExportRequest {
+    ExportRequest {
+        kiosk: true,
+        ..fx.request(name)
+    }
+}
+
+#[test]
+fn a_kiosk_export_records_the_setting_and_nothing_else_changes() {
+    let fx = Fx::new("x_kiosk");
+    let (graph, output) = base_graph();
+    fx.save(&graph);
+    let source_before = snapshot(&fx.project);
+
+    let normal = export_portable(&fx.request("Normal"), &fx.env());
+    assert!(normal.succeeded(), "{normal:#?}");
+    let kiosk = export_portable(&kiosk_request(&fx, "Kiosk"), &fx.env());
+    assert!(kiosk.succeeded(), "{kiosk:#?}");
+    let (normal_dir, kiosk_dir) = (fx.out.join("Normal"), fx.out.join("Kiosk"));
+
+    // The source project is untouched, and both exports carry the same
+    // project content (node order in the file aside): the Video Out's own
+    // settings included. Its digest is compared below.
+    assert_eq!(snapshot(&fx.project), source_before);
+    let project = |dir: &Path| -> serde_json::Value {
+        serde_json::from_slice(&std::fs::read(dir.join("project").join(PROJECT_FILE)).unwrap())
+            .unwrap()
+    };
+    assert_eq!(project(&normal_dir), project(&kiosk_dir));
+    let fullscreen = |dir: &Path| {
+        let text = project(dir).to_string();
+        (
+            text.contains(r#"\"fullscreen\":false"#) || text.contains(r#""fullscreen":false"#),
+            text.contains("fullscreen\\\":true") || text.contains(r#""fullscreen":true"#),
+        )
+    };
+    assert_eq!(
+        fullscreen(&kiosk_dir),
+        (true, false),
+        "the Video Out stays windowed"
+    );
+
+    // The manifest: still format 1; the setting only in the kiosk export.
+    let manifest = |dir: &Path| -> serde_json::Value {
+        serde_json::from_str(&std::fs::read_to_string(dir.join(MANIFEST_FILE)).unwrap()).unwrap()
+    };
+    let (n, k) = (manifest(&normal_dir), manifest(&kiosk_dir));
+    assert_eq!(n["format"], 1);
+    assert_eq!(k["format"], 1);
+    assert!(
+        n.get("kiosk").is_none(),
+        "a normal export writes no kiosk field"
+    );
+    assert_eq!(k["kiosk"], true);
+    assert_eq!(n["project_sha256"], k["project_sha256"]);
+    assert_eq!(k["output"], output);
+
+    // The staff guide: only in the kiosk export; no password anywhere.
+    assert!(!normal_dir.join(super::KIOSK_GUIDE_FILE).exists());
+    assert!(!normal.files.iter().any(|f| f == super::KIOSK_GUIDE_FILE));
+    assert!(kiosk.files.iter().any(|f| f == super::KIOSK_GUIDE_FILE));
+    let guide = std::fs::read_to_string(kiosk_dir.join(super::KIOSK_GUIDE_FILE)).unwrap();
+    for needed in [
+        "Alt+F4",
+        "Task Manager",
+        "Kiosk.exe",
+        "shell:startup",
+        "Escape",
+    ] {
+        assert!(guide.contains(needed), "{needed}: {guide}");
+    }
+    assert!(!guide.to_lowercase().contains("password:"));
+
+    // As the Player loads them.
+    let launch = |dir: &Path| {
+        super::super::player::manifest::load_manifest(dir, None)
+            .unwrap()
+            .launch
+            .export
+            .unwrap()
+    };
+    assert!(launch(&kiosk_dir).kiosk);
+    assert!(!launch(&normal_dir).kiosk);
+}
+
+#[test]
+fn a_kiosk_app_only_ever_plays_its_project() {
+    // Neither runtime opens the editor (or anything else) from a kiosk
+    // export, whatever the command line says.
+    use crate::app::launch::{Binary, Start, decide};
+    let fx = Fx::new("x_kiosk_launch");
+    fx.save(&base_graph().0);
+    assert!(export_portable(&kiosk_request(&fx, "Kiosk"), &fx.env()).succeeded());
+    let dir = fx.out.join("Kiosk");
+    let args = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    for binary in [Binary::Player, Binary::Editor] {
+        for command in [
+            &[][..],
+            &["--editor"][..],
+            &["catalogue", "x"][..],
+            &["other.pwproj"][..],
+        ] {
+            match decide(binary, &args(command), Some(&dir)) {
+                Start::Player(super::super::player::PlayerStart::Launch(launch)) => {
+                    assert!(launch.export.unwrap().kiosk, "{binary:?} {command:?}");
+                }
+                other => panic!("{binary:?} {command:?}: {other:?}"),
+            }
+        }
+    }
+}
+
+// ── P6 Stage 3.7: Windows installers ────────────────────────────────────────
+
+mod installer_tests {
+    use super::super::installer::*;
+    use super::*;
+
+    /// An internal test export of the base project (as every installer of
+    /// today must be).
+    fn internal_export(fx: &Fx, name: &str, kiosk: bool) -> PathBuf {
+        let request = ExportRequest {
+            purpose: super::super::ExportPurpose::InternalTest,
+            kiosk,
+            ..fx.request(name)
+        };
+        let report = export_portable(&request, &fx.env());
+        assert!(report.succeeded(), "{report:#?}");
+        report.destination.unwrap()
+    }
+
+    fn request(fx: &Fx, export: &Path) -> InstallerRequest {
+        InstallerRequest {
+            export_dir: export.to_path_buf(),
+            output_dir: fx.out.join("Installers ✓"),
+            overwrite: false,
+            makensis: None,
+            user_data: Some(fx.home.clone()),
+            forbidden_text: vec!["C:\\Users\\Someone".to_string()],
+        }
+    }
+
+    fn errors(result: Result<InstallerPlan, Vec<String>>) -> String {
+        result.expect_err("refused").join("\n")
+    }
+
+    /// The uninstall section of a script.
+    fn uninstall_section(script: &str) -> &str {
+        let start = script.find("Section \"Uninstall\"").unwrap();
+        &script[start..]
+    }
+
+    /// A stand-in for makensis: copies `program` to the staged installer.
+    fn fake_makensis(fx: &Fx, program: &[u8], tag: &str) -> PathBuf {
+        let dir = fx.out.join(format!("fake-nsis-{tag}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let built = dir.join("built.exe");
+        std::fs::write(&built, program).unwrap();
+        let bat = dir.join("makensis.bat");
+        std::fs::write(
+            &bat,
+            format!("@copy /y \"{}\" {STAGED_SETUP} >nul\r\n", built.display()),
+        )
+        .unwrap();
+        bat
+    }
+
+    /// A Windows GUI program of installer size.
+    fn setup_like() -> Vec<u8> {
+        let mut bytes = fake_exe(Some(BuildProfile::Release), &[]);
+        bytes.resize(256 * 1024, 0);
+        bytes
+    }
+
+    #[test]
+    fn the_script_installs_exactly_the_export_per_user() {
+        let fx = Fx::new("i_script");
+        fx.save(&base_graph().0);
+        let export = internal_export(&fx, "Light Show", false);
+        let plan = plan_installer(&request(&fx, &export)).unwrap();
+        let files: Vec<String> = plan.files.iter().map(|f| f.path.clone()).collect();
+        assert_eq!(files, list_files(&export));
+        assert_eq!(plan.exe, "Light Show.exe");
+        for needed in [
+            "Light Show.exe",
+            "DirectML.dll",
+            "VCRUNTIME140.dll",
+            "MSVCP140.dll",
+            "player.json",
+            "project/project.json",
+            "licenses/Patchwork-LICENSE.txt",
+            runtime::INTERNAL_TEST_MARKER,
+        ] {
+            assert!(files.iter().any(|f| f == needed), "{needed}");
+        }
+        let script = nsis_script(&plan).unwrap();
+        for file in &files {
+            let line = format!("  File \"payload\\{}\"", file.replace('/', "\\"));
+            assert!(script.contains(&line), "{line}");
+        }
+        let key = format!(
+            "WriteRegStr HKCU \"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{}\" \
+             \"DisplayName\"",
+            plan.app_id
+        );
+        for needed in [
+            "Unicode true",
+            "RequestExecutionLevel user",
+            "InstallDir \"$LOCALAPPDATA\\Programs\\Light Show\"",
+            "CreateShortcut \"$SMPROGRAMS\\Light Show.lnk\" \"$INSTDIR\\Light Show.exe\"",
+            "Section /o \"Desktop shortcut\" SecDesktop",
+            // Silent installs ask for it explicitly; off otherwise.
+            "${GetOptions} $R0 \"/DESKTOPSHORTCUT\" $R1",
+            "    SectionSetFlags ${SecDesktop} ${SF_SELECTED}",
+            "CreateShortcut \"$DESKTOP\\Light Show.lnk\" \"$INSTDIR\\Light Show.exe\"",
+            "!define MUI_FINISHPAGE_RUN \"$INSTDIR\\Light Show.exe\"",
+            "WriteUninstaller \"$INSTDIR\\Uninstall.exe\"",
+            "\"UninstallString\" '\"$INSTDIR\\Uninstall.exe\"'",
+            key.as_str(),
+        ] {
+            assert!(script.contains(needed), "{needed}\n{script}");
+        }
+        // Per user only; nothing system-wide; no Startup entry.
+        for never in [
+            "HKLM",
+            "RequestExecutionLevel admin",
+            "$SMSTARTUP",
+            "$PROGRAMFILES",
+            "SetShellVarContext all",
+        ] {
+            assert!(!script.contains(never), "{never}");
+        }
+    }
+
+    #[test]
+    fn unicode_names_and_paths_are_escaped() {
+        assert_eq!(nsis_string("plain").unwrap(), "\"plain\"");
+        assert_eq!(nsis_string("a$b").unwrap(), "\"a$$b\"");
+        assert_eq!(nsis_string("${X} $INSTDIR").unwrap(), "\"$${X} $$INSTDIR\"");
+        assert_eq!(nsis_string("say \"hi\"").unwrap(), "\"say $\\\"hi$\\\"\"");
+        assert_eq!(nsis_string("a\r\nb\tc").unwrap(), "\"a$\\r$\\nb$\\tc\"");
+        assert!(nsis_string("bell\u{7}").is_err());
+
+        // An app named to look like NSIS: it stays a name.
+        let fx = Fx::new("i_unicode");
+        fx.save(&base_graph().0);
+        let name = "Musée ${Lumière} $INSTDIR 光's; Show";
+        let export = internal_export(&fx, name, false);
+        let mut req = request(&fx, &export);
+        req.output_dir = fx.out.join("Exports ünïcode 光");
+        let plan = plan_installer(&req).unwrap();
+        let script = nsis_script(&plan).unwrap();
+        assert!(script.contains("Name \"Musée $${Lumière} $$INSTDIR 光's; Show (INTERNAL TEST"));
+        assert!(script.contains(
+            "InstallDir \"$LOCALAPPDATA\\Programs\\Musée $${Lumière} $$INSTDIR 光's; Show\""
+        ));
+        assert!(!script.contains(" ${Lumière}"));
+        // Written as UTF-8 with a byte order mark (how NSIS 3 reads it).
+        match build_installer(&req).unwrap() {
+            InstallerOutcome::SourceOnly { source_dir, .. } => {
+                let bytes = std::fs::read(source_dir.join(SCRIPT_FILE)).unwrap();
+                assert_eq!(&bytes[..3], &[0xEF, 0xBB, 0xBF]);
+                assert_eq!(std::str::from_utf8(&bytes[3..]).unwrap(), script);
+                assert!(
+                    source_dir
+                        .join(PAYLOAD_DIR)
+                        .join(format!("{name}.exe"))
+                        .is_file()
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn required_files_and_the_runtime_are_checked() {
+        let fx = Fx::new("i_required");
+        fx.save(&base_graph().0);
+        let export = internal_export(&fx, "Show", false);
+        let req = request(&fx, &export);
+        assert!(plan_installer(&req).is_ok());
+
+        for (file, said) in [
+            ("DirectML.dll", "directml.dll"),
+            ("VCRUNTIME140.dll", "vcruntime140.dll"),
+            ("licenses/SOURCE.txt", "licenses/SOURCE.txt"),
+            ("Show.exe", "has no Show.exe"),
+        ] {
+            let path = export.join(file);
+            let kept = std::fs::read(&path).unwrap();
+            std::fs::remove_file(&path).unwrap();
+            let refused = errors(plan_installer(&req));
+            assert!(refused.contains(said), "{file}: {refused}");
+            std::fs::write(&path, kept).unwrap();
+        }
+        // A console program in the Player's place.
+        let exe = export.join("Show.exe");
+        let kept = std::fs::read(&exe).unwrap();
+        std::fs::write(
+            &exe,
+            fake_exe_as(
+                Some(BuildProfile::Release),
+                RUNTIME_IMPORTS,
+                super::super::pe::SUBSYSTEM_CONSOLE,
+                None,
+            ),
+        )
+        .unwrap();
+        assert!(errors(plan_installer(&req)).contains("not the Patchwork Player runtime"));
+        std::fs::write(&exe, kept).unwrap();
+        // Not an export at all.
+        let mut not_export = req.clone();
+        not_export.export_dir = fx.project.clone();
+        assert!(errors(plan_installer(&not_export)).contains("Not a usable portable export"));
+        // Nothing secret or trust-related.
+        std::fs::write(export.join("content.json"), "{}").unwrap();
+        assert!(errors(plan_installer(&req)).contains("content.json"));
+        std::fs::remove_file(export.join("content.json")).unwrap();
+        // No personal path of this computer, in either encoding or case.
+        let utf16: Vec<u8> = "x C:\\USERS\\someone\\x"
+            .encode_utf16()
+            .flat_map(|u| u.to_le_bytes())
+            .collect();
+        std::fs::write(export.join("licenses").join("extra.txt"), utf16).unwrap();
+        assert!(errors(plan_installer(&req)).contains("personal path"));
+        std::fs::write(
+            export.join("licenses").join("extra.txt"),
+            "x c:\\users\\Someone\\x",
+        )
+        .unwrap();
+        assert!(errors(plan_installer(&req)).contains("personal path"));
+    }
+
+    #[test]
+    fn the_installer_is_checked_before_it_is_published() {
+        let fx = Fx::new("i_integrity");
+        fx.save(&base_graph().0);
+        let export = internal_export(&fx, "Show", false);
+        let req = request(&fx, &export);
+
+        // The project changed after export: refused.
+        let project = export.join("project").join(PROJECT_FILE);
+        let text = std::fs::read_to_string(&project).unwrap();
+        std::fs::write(&project, text.replace("0.5", "0.75")).unwrap();
+        assert!(errors(plan_installer(&req)).contains("changed after export"));
+        std::fs::write(&project, &text).unwrap();
+
+        // A file changed between the check and the build: refused.
+        let plan = plan_installer(&req).unwrap();
+        std::fs::write(export.join("licenses").join("SOURCE.txt"), "changed").unwrap();
+        let payload = fx.out.join("payload-check");
+        assert!(
+            stage_payload(&plan, &export, &payload)
+                .unwrap_err()
+                .contains("changed after the export was checked")
+        );
+
+        let export = internal_export(&fx, "Show 2", false);
+        let mut req = request(&fx, &export);
+        // makensis produced something that is not an installer: nothing is
+        // published, and no staging is left.
+        req.makensis = Some(fake_makensis(&fx, b"not a program", "bad"));
+        assert!(build_installer(&req).unwrap_err()[0].contains("not a Windows program"));
+        assert!(!req.output_dir.join("Show 2 Setup.exe").exists());
+        let leftovers: Vec<_> = std::fs::read_dir(&req.output_dir)
+            .map(|d| d.flatten().map(|e| e.file_name()).collect())
+            .unwrap_or_default();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
+
+        // A good build is published with its checksum.
+        let program = setup_like();
+        req.makensis = Some(fake_makensis(&fx, &program, "good"));
+        match build_installer(&req).unwrap() {
+            InstallerOutcome::Built {
+                installer,
+                size,
+                sha256,
+            } => {
+                assert_eq!(installer, req.output_dir.join("Show 2 Setup.exe"));
+                assert_eq!(std::fs::read(&installer).unwrap(), program);
+                assert_eq!(size, program.len() as u64);
+                assert_eq!(sha256, sha256_hex(&program));
+            }
+            other => panic!("{other:?}"),
+        }
+        // The export itself was not changed by any of it.
+        assert!(plan_installer(&req).is_ok());
+    }
+
+    #[test]
+    fn the_installation_folder_is_safe_and_uninstall_stays_inside_it() {
+        let fx = Fx::new("i_boundaries");
+        fx.save(&base_graph().0);
+        let export = internal_export(&fx, "Show", false);
+        let plan = plan_installer(&request(&fx, &export)).unwrap();
+        let script = nsis_script(&plan).unwrap();
+        // Refused folders: a drive, the profile, Patchwork's data; a folder
+        // that is not empty and not this app.
+        for check in [
+            "${If} $0 <= 3",
+            "${If} \"$INSTDIR\" == \"$PROFILE\"",
+            "${OrIf} \"$INSTDIR\" == \"$PROFILE\\.patchwork\"",
+            "${If} $1 == \"$PROFILE\\.patchwork\\\"",
+            "${If} $0 != \"empty\"",
+            "!define MUI_PAGE_CUSTOMFUNCTION_LEAVE CheckInstallFolder",
+        ] {
+            assert!(script.contains(check), "{check}");
+        }
+        // The installing section checks too (silent installs skip pages).
+        let install = &script[script.find("SecApp").unwrap()..];
+        assert!(install.contains("Call CheckInstallFolder"));
+
+        // Uninstall: only the folder this app was installed in, only its
+        // files, by name; never a whole folder or a wildcard.
+        let uninstall = uninstall_section(&script);
+        assert!(uninstall.contains(&format!("${{If}} $0 != \"{}\"", plan.app_id)));
+        assert!(!script.contains("RMDir /r"));
+        assert!(!uninstall.contains('*'));
+        let deletes: Vec<&str> = uninstall
+            .lines()
+            .filter(|l| l.trim_start().starts_with("Delete "))
+            .collect();
+        assert_eq!(deletes.len(), plan.files.len() + 4);
+        for delete in &deletes {
+            let target = delete.trim_start().trim_start_matches("Delete ");
+            assert!(
+                target.starts_with("\"$INSTDIR\\")
+                    || target == "\"$SMPROGRAMS\\Show.lnk\""
+                    || target == "\"$DESKTOP\\Show.lnk\"",
+                "{delete}"
+            );
+        }
+        for file in &plan.files {
+            let line = format!("  Delete \"$INSTDIR\\{}\"", file.path.replace('/', "\\"));
+            assert!(uninstall.contains(&line), "{line}");
+        }
+        let rmdirs: Vec<&str> = uninstall.lines().filter(|l| l.contains("RMDir")).collect();
+        for rmdir in &rmdirs {
+            assert!(
+                rmdir.trim_start().starts_with("RMDir \"$INSTDIR"),
+                "{rmdir}"
+            );
+        }
+        // Folders are removed deepest first, the installation folder last.
+        assert_eq!(rmdirs.last().unwrap().trim(), "RMDir \"$INSTDIR\"");
+        let third = rmdirs
+            .iter()
+            .position(|l| l.contains("licenses\\third-party"))
+            .unwrap();
+        let licenses = rmdirs
+            .iter()
+            .position(|l| l.ends_with("\\licenses\""))
+            .unwrap();
+        assert!(third < licenses);
+        // Nothing outside the app's own key.
+        let key = format!(
+            "\"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{}\"",
+            plan.app_id
+        );
+        for reg in script.lines().filter(|l| l.contains("HKCU")) {
+            assert!(reg.contains(&key), "{reg}");
+        }
+    }
+
+    #[test]
+    fn an_existing_installation_or_installer_is_not_silently_replaced() {
+        let fx = Fx::new("i_existing");
+        fx.save(&base_graph().0);
+        let export = internal_export(&fx, "Show", false);
+        let mut req = request(&fx, &export);
+        let plan = plan_installer(&req).unwrap();
+        let script = nsis_script(&plan).unwrap();
+        // An earlier installation of this app is uninstalled first.
+        assert!(script.contains("ExecWait '\"$INSTDIR\\Uninstall.exe\" /S _?=$INSTDIR'"));
+        assert!(script.contains(&format!("FileWrite $2 \"{}\"", plan.app_id)));
+        // The same app name keeps its Installed apps entry; another does not.
+        assert_eq!(plan.app_id, app_id("Show"));
+        assert_ne!(app_id("Show"), app_id("Show 2"));
+        assert!(plan.app_id.is_ascii());
+
+        // An earlier installer (here its source) is kept unless replacing
+        // was chosen.
+        let first = build_installer(&req).unwrap();
+        let InstallerOutcome::SourceOnly { source_dir, .. } = &first else {
+            panic!("{first:?}");
+        };
+        std::fs::write(source_dir.join("note.txt"), "keep").unwrap();
+        let refused = build_installer(&req).unwrap_err().join("\n");
+        assert!(refused.contains("already exists"), "{refused}");
+        assert!(source_dir.join("note.txt").is_file());
+        req.overwrite = true;
+        assert_eq!(build_installer(&req).unwrap(), first);
+        assert!(!source_dir.join("note.txt").exists());
+
+        let program = setup_like();
+        req.overwrite = false;
+        req.makensis = Some(fake_makensis(&fx, &program, "existing"));
+        assert!(build_installer(&req).is_ok());
+        let again = build_installer(&req).unwrap_err().join("\n");
+        assert!(again.contains("already exists"), "{again}");
+    }
+
+    #[test]
+    fn building_an_installer_touches_no_trust_records() {
+        let fx = Fx::new("i_trust");
+        fx.save(&base_graph().0);
+        let export = internal_export(&fx, "Show", false);
+        std::fs::create_dir_all(fx.home.join("trust")).unwrap();
+        std::fs::write(fx.home.join("trust").join("content.json"), "{\"x\":1}").unwrap();
+        let home_before = snapshot(&fx.home);
+        let export_before = snapshot(&export);
+        let mut req = request(&fx, &export);
+        build_installer(&req).unwrap();
+        req.makensis = Some(fake_makensis(&fx, &setup_like(), "trust"));
+        build_installer(&req).unwrap();
+        assert_eq!(snapshot(&fx.home), home_before);
+        assert_eq!(snapshot(&export), export_before);
+        // The script itself writes no trust records and preapproves nothing.
+        let script = nsis_script(&plan_installer(&req).unwrap()).unwrap();
+        assert!(!script.to_lowercase().contains("trust"));
+        for write in script
+            .lines()
+            .map(str::trim_start)
+            .filter(|l| l.starts_with("FileOpen") || l.starts_with("CopyFiles"))
+        {
+            assert!(
+                write.contains("$INSTDIR\\patchwork-installed-app.txt"),
+                "{write}"
+            );
+        }
+    }
+
+    #[test]
+    fn internal_test_labels_are_kept_and_required() {
+        let fx = Fx::new("i_labels");
+        fx.save(&base_graph().0);
+        let export = internal_export(&fx, "Show", false);
+        let req = request(&fx, &export);
+        let plan = plan_installer(&req).unwrap();
+        assert!(plan.internal_test);
+        assert_eq!(
+            plan.display_name(),
+            "Show (INTERNAL TEST - NOT FOR DISTRIBUTION)"
+        );
+        let script = nsis_script(&plan).unwrap();
+        let branding = format!(
+            "BrandingText \"Patchwork — {}\"",
+            runtime::INTERNAL_TEST_LABEL
+        );
+        let comments = format!("\"Comments\" \"{}\"", runtime::INTERNAL_TEST_LABEL);
+        for labelled in [
+            "Name \"Show (INTERNAL TEST - NOT FOR DISTRIBUTION)\"",
+            branding.as_str(),
+            comments.as_str(),
+            "\"DisplayName\" \"Show (INTERNAL TEST - NOT FOR DISTRIBUTION)\"",
+            "!insertmacro MUI_PAGE_LICENSE \"payload\\licenses\\NOT-FOR-DISTRIBUTION.txt\"",
+        ] {
+            assert!(script.contains(labelled), "{labelled}");
+        }
+        // Half a label: refused.
+        std::fs::remove_file(export.join(runtime::INTERNAL_TEST_MARKER)).unwrap();
+        assert!(errors(plan_installer(&req)).contains("internal test labels"));
+
+        // A distributable export, while components are not cleared: refused.
+        let normal = export_portable(&fx.request("Normal"), &fx.env());
+        assert!(normal.succeeded());
+        let refused = plan_installer(&request(&fx, &fx.out.join("Normal")));
+        if runtime::UNRESOLVED_COMPONENTS.is_empty() {
+            assert!(!refused.unwrap().internal_test);
+        } else {
+            assert!(errors(refused).contains("only an internal test build"));
+        }
+    }
+
+    #[test]
+    fn the_kiosk_setting_and_hashes_are_installed_unchanged() {
+        let fx = Fx::new("i_kiosk");
+        fx.save(&base_graph().0);
+        let kiosk = internal_export(&fx, "Kiosk", true);
+        let normal = internal_export(&fx, "Normal", false);
+        let k = plan_installer(&request(&fx, &kiosk)).unwrap();
+        let n = plan_installer(&request(&fx, &normal)).unwrap();
+        assert!(k.kiosk);
+        assert!(!n.kiosk);
+        assert_eq!(k.project_sha256, n.project_sha256);
+        // An installation is exactly the export: player.json (and its kiosk
+        // setting) and the Player byte for byte.
+        let installed = fx.out.join("installed");
+        stage_payload(&k, &kiosk, &installed).unwrap();
+        std::fs::write(installed.join(INSTALL_MARKER), &k.app_id).unwrap();
+        std::fs::write(installed.join(UNINSTALLER), b"MZ").unwrap();
+        assert_eq!(verify_installed(&installed, &k), Vec::<String>::new());
+        assert!(
+            std::fs::read_to_string(installed.join("player.json"))
+                .unwrap()
+                .contains("\"kiosk\": true")
+        );
+        std::fs::write(installed.join("Kiosk.exe"), b"patched").unwrap();
+        std::fs::write(installed.join("left.txt"), b"x").unwrap();
+        std::fs::remove_file(installed.join("player.json")).unwrap();
+        let problems = verify_installed(&installed, &k).join("\n");
+        for said in [
+            "Kiosk.exe differs",
+            "player.json is missing",
+            "left.txt was not in the export",
+        ] {
+            assert!(problems.contains(said), "{said}: {problems}");
+        }
+    }
+}
+
+/// Manual (P6 Stage 3.7): the installer of a real portable export, with this
+/// computer's NSIS (when installed) and its profile path refused in every
+/// file. `cargo test --release -- --ignored manual_build_installer
+/// --nocapture` with PATCHWORK_INSTALLER_EXPORT (the export folder) and
+/// PATCHWORK_INSTALLER_OUT (where the installer, or its source, goes).
+#[test]
+#[ignore = "manual: installer of a real export"]
+fn manual_build_installer() {
+    use super::installer::{InstallerRequest, build_installer, plan_installer};
+    let var = |name: &str| std::env::var_os(name).map(PathBuf::from);
+    let (Some(export), Some(out)) = (
+        var("PATCHWORK_INSTALLER_EXPORT"),
+        var("PATCHWORK_INSTALLER_OUT"),
+    ) else {
+        eprintln!("set PATCHWORK_INSTALLER_EXPORT and PATCHWORK_INSTALLER_OUT");
+        return;
+    };
+    let request = InstallerRequest::for_this_computer(export, out);
+    eprintln!("makensis: {:?}", request.makensis);
+    let plan = plan_installer(&request).unwrap_or_else(|e| panic!("{e:#?}"));
+    eprintln!(
+        "plan: {} files, {} bytes, internal test {}, kiosk {}, project {}",
+        plan.files.len(),
+        plan.total_size(),
+        plan.internal_test,
+        plan.kiosk,
+        plan.project_sha256
+    );
+    let outcome = build_installer(&request).unwrap_or_else(|e| panic!("{e:#?}"));
+    eprintln!("OUTCOME: {outcome:#?}");
 }
