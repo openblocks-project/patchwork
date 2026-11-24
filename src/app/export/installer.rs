@@ -25,10 +25,6 @@
 //!   whole folder), its shortcuts and its registry entry. Anything else in
 //!   the folder, and every user file, stays.
 
-// Used by tests and the manual build until the Export as App dialog offers
-// it (see the Stage 3.7 report).
-#![cfg_attr(not(test), allow(dead_code))]
-
 use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
@@ -87,7 +83,8 @@ pub struct InstallerRequest {
 
 impl InstallerRequest {
     /// The installer for `export_dir`, published in `output_dir`, with this
-    /// computer's tool, data folder and profile path.
+    /// computer's tool, data folder and profile path (the manual build).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn for_this_computer(export_dir: PathBuf, output_dir: PathBuf) -> Self {
         Self {
             export_dir,
@@ -100,8 +97,19 @@ impl InstallerRequest {
     }
 }
 
+/// Tests: the profile folder to refuse instead of the real one (their
+/// fixtures live in the real profile's temporary folder). Every test that
+/// sets it sets the same value; the manual build never does.
+#[cfg(test)]
+pub(crate) static TEST_PERSONAL_PATHS: std::sync::Mutex<Option<Vec<String>>> =
+    std::sync::Mutex::new(None);
+
 /// The profile folder of the user running this, in both separator styles.
 pub fn personal_paths() -> Vec<String> {
+    #[cfg(test)]
+    if let Some(paths) = TEST_PERSONAL_PATHS.lock().ok().and_then(|p| p.clone()) {
+        return paths;
+    }
     std::env::var("USERPROFILE")
         .ok()
         .filter(|p| p.len() > 3)
@@ -110,21 +118,62 @@ pub fn personal_paths() -> Vec<String> {
 }
 
 /// `makensis.exe`: `PATCHWORK_MAKENSIS`, then `PATH`, then the standard NSIS
-/// install folders. Nothing is installed when it is missing.
+/// install folders, then a per-user copy (the NSIS zip extracted to
+/// `%LOCALAPPDATA%\Programs\NSIS` or `…\NSIS-<version>`). Nothing is
+/// installed when it is missing.
 pub fn find_makensis() -> Option<PathBuf> {
     if let Some(path) = std::env::var_os("PATCHWORK_MAKENSIS").map(PathBuf::from) {
         return path.is_file().then_some(path);
     }
-    let on_path = std::env::var_os("PATH")
-        .map(|paths| std::env::split_paths(&paths).collect::<Vec<_>>())
-        .unwrap_or_default()
-        .into_iter()
-        .map(|dir| dir.join("makensis.exe"));
-    let standard = ["ProgramFiles(x86)", "ProgramFiles"]
+    let path_dirs: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|paths| std::env::split_paths(&paths).collect())
+        .unwrap_or_default();
+    let program_dirs: Vec<PathBuf> = ["ProgramFiles(x86)", "ProgramFiles"]
         .iter()
-        .filter_map(|var| std::env::var_os(var))
-        .map(|dir| PathBuf::from(dir).join("NSIS").join("makensis.exe"));
-    on_path.chain(standard).find(|p| p.is_file())
+        .filter_map(|var| std::env::var_os(var).map(PathBuf::from))
+        .collect();
+    let user_programs = std::env::var_os("LOCALAPPDATA").map(|d| PathBuf::from(d).join("Programs"));
+    makensis_candidates(&path_dirs, &program_dirs, user_programs.as_deref())
+        .into_iter()
+        .find(|p| p.is_file())
+}
+
+/// Where `makensis.exe` is looked for, in order (see [`find_makensis`]).
+/// Per-user copies: `NSIS`, then `NSIS-<version>` folders, newest first.
+pub fn makensis_candidates(
+    path_dirs: &[PathBuf],
+    program_dirs: &[PathBuf],
+    user_programs: Option<&Path>,
+) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = path_dirs.iter().map(|d| d.join("makensis.exe")).collect();
+    out.extend(
+        program_dirs
+            .iter()
+            .map(|d| d.join("NSIS").join("makensis.exe")),
+    );
+    if let Some(programs) = user_programs {
+        let mut versioned: Vec<(Vec<u32>, PathBuf)> = std::fs::read_dir(programs)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .filter_map(|e| {
+                        let name = e.file_name().to_string_lossy().into_owned();
+                        let version = name.strip_prefix("NSIS-")?;
+                        let parts: Option<Vec<u32>> =
+                            version.split('.').map(|p| p.parse().ok()).collect();
+                        Some((parts?, e.path()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        versioned.sort_by(|a, b| b.0.cmp(&a.0));
+        let dirs = std::iter::once(programs.join("NSIS")).chain(versioned.into_iter().map(|v| v.1));
+        for dir in dirs {
+            out.push(dir.join("Bin").join("makensis.exe"));
+            out.push(dir.join("makensis.exe"));
+        }
+    }
+    out
 }
 
 /// One installed file.
@@ -964,7 +1013,8 @@ fn publish(from: &Path, to: &Path, overwrite: bool) -> Result<(), String> {
 
 /// Check an installation folder against the plan: every planned file is
 /// present and unchanged. Besides them only the uninstaller and the marker
-/// may be there. Returns the problems found.
+/// may be there. Returns the problems found. (Installation tests.)
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn verify_installed(install_dir: &Path, plan: &InstallerPlan) -> Vec<String> {
     let mut problems = Vec::new();
     for file in &plan.files {

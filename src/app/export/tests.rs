@@ -228,6 +228,7 @@ impl Fx {
             overwrite: false,
             purpose: super::ExportPurpose::Distribution,
             kiosk: false,
+            create_installer: false,
         }
     }
 }
@@ -1506,6 +1507,7 @@ fn manual_real_export() {
         },
         // P6 Stage 3.6: PATCHWORK_EXPORT_KIOSK=1: "Run as fullscreen kiosk".
         kiosk: std::env::var("PATCHWORK_EXPORT_KIOSK").as_deref() == Ok("1"),
+        create_installer: false,
     };
     let env = ExportEnvironment::this_computer();
     let report = export_portable(&request, &env);
@@ -1600,6 +1602,7 @@ fn manual_mediapipe_internal_test_export() {
         purpose: super::ExportPurpose::Distribution,
         // P6 Stage 3.6: PATCHWORK_EXPORT_KIOSK=1: "Run as fullscreen kiosk".
         kiosk: std::env::var("PATCHWORK_EXPORT_KIOSK").as_deref() == Ok("1"),
+        create_installer: false,
     };
     let refused = export_portable(&request, &env);
     eprintln!("DISTRIBUTION: {:#?}", refused.errors);
@@ -2566,6 +2569,156 @@ mod installer_tests {
         ] {
             assert!(problems.contains(said), "{said}: {problems}");
         }
+    }
+    // ── P6 Stage 3.9: the installer from Export as App ──────────────────
+
+    /// The export the dialog would make, with the installer asked for. The
+    /// fixtures live in this computer's temporary folder, inside the real
+    /// profile, so a stand-in profile path is refused instead.
+    fn dialog_request(fx: &Fx, name: &str, kiosk: bool) -> ExportRequest {
+        *TEST_PERSONAL_PATHS.lock().unwrap() = Some(vec![r"C:\Users\Someone".to_string()]);
+        ExportRequest {
+            purpose: super::super::ExportPurpose::InternalTest,
+            kiosk,
+            create_installer: true,
+            ..fx.request(name)
+        }
+    }
+
+    fn export_for(fx: &Fx, request: &ExportRequest) -> ExportReport {
+        let report = export_portable(request, &fx.env());
+        assert!(report.succeeded(), "{report:#?}");
+        report
+    }
+
+    #[test]
+    fn the_export_job_builds_the_installer_after_the_export() {
+        let _lock = job_lock();
+        let fx = Fx::new("i_job");
+        fx.save(&base_graph().0);
+        let program = setup_like();
+        let fake = fake_makensis(&fx, &program, "job");
+        // The job finds NSIS the way the dialog does.
+        // SAFETY: tests that read PATCHWORK_MAKENSIS hold `job_lock`.
+        unsafe { std::env::set_var("PATCHWORK_MAKENSIS", &fake) };
+        let report = ExportJob::start(dialog_request(&fx, "Job Show", true), fx.env())
+            .unwrap()
+            .wait();
+        // Not asked for: no installer.
+        let plain = ExportJob::start(fx.request("Plain"), fx.env())
+            .unwrap()
+            .wait();
+        unsafe { std::env::remove_var("PATCHWORK_MAKENSIS") };
+        assert!(report.succeeded(), "{report:#?}");
+        match report.installer.clone().expect("an installer result") {
+            Ok(InstallerOutcome::Built {
+                installer,
+                size,
+                sha256,
+            }) => {
+                assert_eq!(installer, fx.out.join("Job Show Setup.exe"));
+                assert_eq!(std::fs::read(&installer).unwrap(), program);
+                assert_eq!(size, program.len() as u64);
+                assert_eq!(sha256, sha256_hex(&program));
+            }
+            other => panic!("{other:?}"),
+        }
+        // The export is complete and kept its kiosk setting.
+        let plan = plan_installer(&request(&fx, &fx.out.join("Job Show"))).unwrap();
+        assert!(plan.kiosk);
+        assert!(plain.succeeded());
+        assert_eq!(plain.installer, None);
+    }
+
+    #[test]
+    fn without_nsis_the_export_stays_and_nothing_else_is_written() {
+        let fx = Fx::new("i_no_nsis");
+        fx.save(&base_graph().0);
+        let req = dialog_request(&fx, "No Nsis", false);
+        let report = export_for(&fx, &req);
+        let before = list_files(&fx.out);
+        let result = super::super::installer_for_export(&report, &req, None);
+        let errors = result.unwrap_err().join("\n");
+        assert!(
+            errors.contains("NSIS 3 (makensis.exe) was not found"),
+            "{errors}"
+        );
+        assert!(errors.contains("nsis.sourceforge.io"), "{errors}");
+        assert!(errors.contains("never installs it"), "{errors}");
+        assert!(errors.contains("portable export is complete"), "{errors}");
+        // No installer, no installer source: the folder is as the export left it.
+        assert_eq!(list_files(&fx.out), before);
+        assert!(plan_installer(&request(&fx, &fx.out.join("No Nsis"))).is_ok());
+    }
+
+    #[test]
+    fn a_failed_installer_keeps_the_portable_export() {
+        let fx = Fx::new("i_failed");
+        fx.save(&base_graph().0);
+        let req = dialog_request(&fx, "Failing", false);
+        let report = export_for(&fx, &req);
+        let export = fx.out.join("Failing");
+        let before = snapshot(&export);
+        let bad = fake_makensis(&fx, b"not a program", "failed");
+        let errors = super::super::installer_for_export(&report, &req, Some(bad))
+            .unwrap_err()
+            .join("\n");
+        assert!(errors.contains("not a Windows program"), "{errors}");
+        assert_eq!(snapshot(&export), before);
+        assert!(!fx.out.join("Failing Setup.exe").exists());
+        // A failed export has no installer at all.
+        let failed = ExportReport {
+            errors: vec!["x".to_string()],
+            ..ExportReport::default()
+        };
+        assert!(
+            super::super::installer_for_export(&failed, &req, Some(PathBuf::from("x"))).is_err()
+        );
+    }
+
+    #[test]
+    fn an_earlier_installer_is_replaced_only_with_the_export() {
+        let fx = Fx::new("i_replace");
+        fx.save(&base_graph().0);
+        let mut req = dialog_request(&fx, "Again", false);
+        let report = export_for(&fx, &req);
+        let fake = fake_makensis(&fx, &setup_like(), "replace");
+        assert!(super::super::installer_for_export(&report, &req, Some(fake.clone())).is_ok());
+        let setup = fx.out.join("Again Setup.exe");
+        std::fs::write(&setup, b"an earlier installer").unwrap();
+        let refused = super::super::installer_for_export(&report, &req, Some(fake.clone()))
+            .unwrap_err()
+            .join("\n");
+        assert!(refused.contains("already exists"), "{refused}");
+        assert_eq!(std::fs::read(&setup).unwrap(), b"an earlier installer");
+        // Replacing the export was confirmed: the installer is replaced too.
+        req.overwrite = true;
+        assert!(super::super::installer_for_export(&report, &req, Some(fake)).is_ok());
+        assert_eq!(std::fs::read(&setup).unwrap(), setup_like());
+    }
+
+    #[test]
+    fn nsis_is_found_on_path_installed_or_extracted_per_user() {
+        let fx = Fx::new("i_find");
+        let programs = fx.out.join("Programs");
+        for dir in ["NSIS-3.9", "NSIS-3.13", "NSIS-beta", "Other"] {
+            std::fs::create_dir_all(programs.join(dir)).unwrap();
+        }
+        let path_dirs = [PathBuf::from("C:\\tools")];
+        let program_dirs = [PathBuf::from("C:\\Program Files (x86)")];
+        let found = makensis_candidates(&path_dirs, &program_dirs, Some(&programs));
+        let expected = [
+            PathBuf::from("C:\\tools\\makensis.exe"),
+            PathBuf::from("C:\\Program Files (x86)\\NSIS\\makensis.exe"),
+            programs.join("NSIS").join("Bin").join("makensis.exe"),
+            programs.join("NSIS").join("makensis.exe"),
+            programs.join("NSIS-3.13").join("Bin").join("makensis.exe"),
+            programs.join("NSIS-3.13").join("makensis.exe"),
+            programs.join("NSIS-3.9").join("Bin").join("makensis.exe"),
+            programs.join("NSIS-3.9").join("makensis.exe"),
+        ];
+        assert_eq!(found, expected);
+        assert_eq!(makensis_candidates(&[], &[], None), Vec::<PathBuf>::new());
     }
 }
 

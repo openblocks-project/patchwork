@@ -48,11 +48,49 @@ pub(super) struct ExportForm {
     pub purpose: ExportPurpose,
     /// P6 Stage 3.6: "Run as fullscreen kiosk" (off by default).
     pub kiosk: bool,
+    /// P6 Stage 3.9: "Create Windows installer (.exe)" (off by default).
+    pub create_installer: bool,
 }
 
 /// P6 Stage 3.6: the kiosk option, and what it does.
 pub(super) const KIOSK_CHECKBOX: &str = "Run as fullscreen kiosk";
 pub(super) const KIOSK_EXPLANATION: &str = "The app starts fullscreen on the Video Out's      display (the main display if that one is not connected). Escape and F11 will not      leave fullscreen. Alt+F4 still closes it, for staff. A staff guide is included.";
+
+/// P6 Stage 3.9: the installer option, and what it does.
+pub(super) const INSTALLER_CHECKBOX: &str = "Create Windows installer (.exe)";
+
+/// What the installer option says, given where NSIS was found (if at all).
+pub(super) fn installer_note(app_name: &str, makensis: Option<&Path>) -> String {
+    match makensis {
+        Some(tool) => format!(
+            "After exporting, creates \"{app_name} Setup.exe\" beside the export folder: a \
+             per-user installer (no administrator rights) with Start menu and optional \
+             desktop shortcuts and an uninstaller. Uses NSIS at {}.",
+            tool.display()
+        ),
+        None => "NSIS 3 (makensis.exe) was not found, so no installer can be created. Download \
+                 NSIS 3 from https://nsis.sourceforge.io and extract the zip to \
+                 %LOCALAPPDATA%\\Programs\\NSIS (no installation needed), or set \
+                 PATCHWORK_MAKENSIS to its makensis.exe. Patchwork never installs it for you."
+            .to_string(),
+    }
+}
+
+/// "Size: 101.4 MB (106,313,687 bytes)".
+pub(super) fn installer_size(bytes: u64) -> String {
+    let digits = bytes.to_string();
+    let mut grouped = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i) % 3 == 0 {
+            grouped.push(',');
+        }
+        grouped.push(c);
+    }
+    format!(
+        "Size: {:.1} MB ({grouped} bytes)",
+        bytes as f64 / (1024.0 * 1024.0)
+    )
+}
 
 /// The suffix of an internal test build's folder, so it is never mistaken
 /// for (or replaces) a distributable export of the same app.
@@ -222,6 +260,7 @@ impl ExportForm {
             overwrite: self.existing() == Existing::EarlierExport && self.replace_confirmed,
             purpose: self.purpose,
             kiosk: self.kiosk,
+            create_installer: self.create_installer,
         })
     }
 }
@@ -245,6 +284,9 @@ pub(super) fn licensing_blockers() -> Vec<String> {
 pub(super) struct ExportDialog {
     form: ExportForm,
     runtime: Result<RuntimeSource, String>,
+    /// P6 Stage 3.9: NSIS, looked up when the dialog opens and when the
+    /// installer option is ticked.
+    makensis: Option<PathBuf>,
     job: Option<ExportJob>,
     report: Option<ExportReport>,
     start_error: Option<String>,
@@ -258,6 +300,7 @@ impl ExportDialog {
         Self {
             form: ExportForm::for_project(source, graph),
             runtime,
+            makensis: export::installer::find_makensis(),
             job: None,
             report: None,
             start_error: None,
@@ -365,6 +408,7 @@ impl ExportDialog {
             self.form.output,
             self.form.purpose,
             self.form.kiosk,
+            self.form.create_installer,
         );
         egui::Grid::new("export_app_fields")
             .num_columns(2)
@@ -395,6 +439,30 @@ impl ExportDialog {
                 ui.vertical(|ui| {
                     ui.checkbox(&mut self.form.kiosk, KIOSK_CHECKBOX);
                     ui.label(egui::RichText::new(KIOSK_EXPLANATION).small().weak());
+                });
+                ui.end_row();
+
+                // P6 Stage 3.9: optional installer, after the export.
+                ui.label("Installer");
+                ui.vertical(|ui| {
+                    if ui
+                        .checkbox(&mut self.form.create_installer, INSTALLER_CHECKBOX)
+                        .changed()
+                        && self.form.create_installer
+                    {
+                        self.makensis = export::installer::find_makensis();
+                    }
+                    if self.form.create_installer {
+                        let note = installer_note(&self.form.app_name, self.makensis.as_deref());
+                        if self.makensis.is_some() {
+                            ui.label(egui::RichText::new(note).small().weak());
+                        } else {
+                            ui.colored_label(
+                                egui::Color32::from_rgb(230, 190, 90),
+                                egui::RichText::new(note).small(),
+                            );
+                        }
+                    }
                 });
                 ui.end_row();
 
@@ -496,6 +564,7 @@ impl ExportDialog {
             self.form.output,
             self.form.purpose,
             self.form.kiosk,
+            self.form.create_installer,
         );
         if before != after {
             // A different destination needs its own confirmation, and an
@@ -575,6 +644,9 @@ impl ExportDialog {
             if ui.button("Show in Explorer").clicked() {
                 let _ = open::that(dest);
             }
+            if let Some(installer) = &report.installer {
+                Self::show_installer(ui, installer);
+            }
         } else if report.cancelled {
             ui.label("The export was cancelled. Nothing was written.");
         } else {
@@ -591,6 +663,58 @@ impl ExportDialog {
                 egui::Color32::from_rgb(230, 190, 90),
                 format!("⚠ {warning}"),
             );
+        }
+    }
+
+    /// P6 Stage 3.9: the installer's result (the export itself succeeded).
+    fn show_installer(
+        ui: &mut egui::Ui,
+        installer: &Result<export::installer::InstallerOutcome, Vec<String>>,
+    ) {
+        use export::installer::InstallerOutcome;
+        ui.add_space(6.0);
+        match installer {
+            Ok(InstallerOutcome::Built {
+                installer,
+                size,
+                sha256,
+            }) => {
+                ui.colored_label(
+                    egui::Color32::from_rgb(120, 200, 130),
+                    format!("Installer created: {}", installer.display()),
+                );
+                ui.label(installer_size(*size));
+                ui.horizontal(|ui| {
+                    ui.label("SHA-256:");
+                    ui.add(
+                        egui::Label::new(egui::RichText::new(sha256).monospace().small())
+                            .selectable(true),
+                    );
+                });
+                if ui.button("Show installer in Explorer").clicked() {
+                    if let Some(folder) = installer.parent() {
+                        let _ = open::that(folder);
+                    }
+                }
+            }
+            Ok(InstallerOutcome::SourceOnly { source_dir, reason }) => {
+                ui.colored_label(
+                    egui::Color32::from_rgb(230, 190, 90),
+                    format!(
+                        "The installer was not compiled ({reason}). Its source is in {}.",
+                        source_dir.display()
+                    ),
+                );
+            }
+            Err(errors) => {
+                ui.colored_label(
+                    egui::Color32::from_rgb(230, 190, 90),
+                    "The portable export is complete, but the installer was not created:",
+                );
+                for error in errors {
+                    ui.colored_label(egui::Color32::from_rgb(230, 190, 90), format!("• {error}"));
+                }
+            }
         }
     }
 
@@ -782,6 +906,50 @@ mod tests {
         form.replace_confirmed = true;
         assert!(blocking(&form).is_empty());
         assert!(form.request(&runtime_ok().unwrap()).unwrap().overwrite);
+    }
+
+    #[test]
+    fn the_installer_option_is_off_by_default_and_reaches_the_request() {
+        let (tmp, graph, project) = setup("dlg_installer", 1);
+        let mut form = ExportForm::for_project(&project, &graph);
+        form.parent = Some(tmp.0.clone());
+        assert!(!form.create_installer);
+        assert!(
+            !form
+                .request(&runtime_ok().unwrap())
+                .unwrap()
+                .create_installer
+        );
+        form.create_installer = true;
+        form.kiosk = true;
+        let request = form.request(&runtime_ok().unwrap()).unwrap();
+        assert!(request.create_installer);
+        assert!(request.kiosk, "the kiosk setting goes with it");
+        assert_eq!(request.destination, tmp.0.join("Light Show"));
+        assert_eq!(INSTALLER_CHECKBOX, "Create Windows installer (.exe)");
+    }
+
+    #[test]
+    fn the_installer_option_says_what_it_does_or_why_it_cannot() {
+        let found = installer_note("Light Show", Some(Path::new(r"C:\NSIS\Bin\makensis.exe")));
+        assert!(found.contains("\"Light Show Setup.exe\" beside the export folder"));
+        assert!(found.contains("no administrator rights"));
+        assert!(found.contains(r"C:\NSIS\Bin\makensis.exe"));
+        let missing = installer_note("Light Show", None);
+        for said in [
+            "NSIS 3 (makensis.exe) was not found",
+            "https://nsis.sourceforge.io",
+            r"%LOCALAPPDATA%\Programs\NSIS",
+            "PATCHWORK_MAKENSIS",
+            "never installs it",
+        ] {
+            assert!(missing.contains(said), "{said}: {missing}");
+        }
+        assert_eq!(
+            installer_size(106_313_687),
+            "Size: 101.4 MB (106,313,687 bytes)"
+        );
+        assert_eq!(installer_size(999), "Size: 0.0 MB (999 bytes)");
     }
 
     #[test]

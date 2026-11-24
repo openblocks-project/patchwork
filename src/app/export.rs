@@ -88,6 +88,9 @@ pub struct ExportRequest {
     /// P6 Stage 3.6: run the app as a fullscreen kiosk (recorded in its
     /// manifest; the project itself is not changed). Off by default.
     pub kiosk: bool,
+    /// P6 Stage 3.9: after a successful export, build its Windows installer
+    /// (`<app> Setup.exe`, beside the export folder). Off by default.
+    pub create_installer: bool,
 }
 
 /// P6 Stage 3.6: the staff guide beside a kiosk app's executable.
@@ -235,6 +238,47 @@ pub struct ExportReport {
     /// P6 Stage 2.6: the export is an internal test build, NOT for
     /// distribution.
     pub internal_test_build: bool,
+    /// P6 Stage 3.9: the installer, when one was asked for and the export
+    /// succeeded. Its failure never undoes the export.
+    pub installer: Option<Result<installer::InstallerOutcome, Vec<String>>>,
+}
+
+/// P6 Stage 3.9: why no installer is built when NSIS is missing.
+pub const NSIS_MISSING: &str = "The Windows installer was not created: NSIS 3 (makensis.exe) was \
+     not found. The portable export is complete. To create installers, download NSIS 3 from \
+     https://nsis.sourceforge.io (the zip needs no installation: extract it to \
+     %LOCALAPPDATA%\\Programs\\NSIS), or set PATCHWORK_MAKENSIS to its makensis.exe, then \
+     export again. Patchwork never installs it for you.";
+
+/// P6 Stage 3.9: the installer of a finished export, published beside the
+/// export folder. Replaces an earlier installer of the same name only when
+/// replacing the export was confirmed. Without `makensis` nothing is built.
+pub fn installer_for_export(
+    report: &ExportReport,
+    request: &ExportRequest,
+    makensis: Option<PathBuf>,
+) -> Result<installer::InstallerOutcome, Vec<String>> {
+    let Some(export_dir) = report.destination.clone().filter(|_| report.succeeded()) else {
+        return Err(vec![
+            "There is no finished export to build an installer from.".to_string(),
+        ]);
+    };
+    let Some(makensis) = makensis else {
+        return Err(vec![NSIS_MISSING.to_string()]);
+    };
+    let output_dir = export_dir
+        .parent()
+        .ok_or("The export folder has no parent folder.")
+        .map_err(|e| vec![e.to_string()])?
+        .to_path_buf();
+    installer::build_installer(&installer::InstallerRequest {
+        export_dir,
+        output_dir,
+        overwrite: request.overwrite,
+        makensis: Some(makensis),
+        user_data: super::player::manifest::trust_dir(),
+        forbidden_text: installer::personal_paths(),
+    })
 }
 
 impl ExportReport {
@@ -426,7 +470,7 @@ impl ExportJob {
             .name("patchwork-export".to_string())
             .spawn(move || {
                 let _slot = slot;
-                let report = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let mut report = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     export_portable_with(&request, &env, &shared)
                 }))
                 .unwrap_or_else(|_| ExportReport {
@@ -435,6 +479,26 @@ impl ExportJob {
                     ],
                     ..ExportReport::default()
                 });
+                // P6 Stage 3.9: the installer, on this same thread.
+                if request.create_installer && report.succeeded() {
+                    shared.set_step(
+                        "Creating the Windows installer (this can take a few minutes)",
+                        0,
+                        0,
+                    );
+                    report.installer = Some(
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            installer_for_export(&report, &request, installer::find_makensis())
+                        }))
+                        .unwrap_or_else(|_| {
+                            Err(vec![
+                                "Creating the installer stopped unexpectedly; the portable export \
+                                 is complete."
+                                    .to_string(),
+                            ])
+                        }),
+                    );
+                }
                 let _ = send.send(report);
             })
             .map_err(|e| format!("The export cannot start: {e}"))?;
