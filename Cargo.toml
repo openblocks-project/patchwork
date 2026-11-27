@@ -19,6 +19,16 @@ name = "patchwork-player"
 path = "src/player_main.rs"
 test = false
 
+[features]
+# P6 Stage 3.12: build the editor (`patchwork`) for the Windows GUI
+# subsystem too, so the installed editor opens no console window. Turned on
+# by scripts\build-release-windows.ps1 (installer builds); a plain
+# `cargo build`/`cargo run` keeps the console editor, so the catalogue
+# tool's CI (`patchwork.exe catalogue …`) and development logging are
+# unchanged. Started from a terminal, the GUI editor still prints there
+# (see `app::launch::attach_parent_console`).
+windows-gui-editor = []
+
 [dependencies]
 #eframe = { version = "0.31.0", features = ["wgpu"] }
 eframe = { version = "0.31.0", default-features = false, features = ["wgpu", "glow", "default_fonts"] }

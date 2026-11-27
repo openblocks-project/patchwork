@@ -1,3 +1,10 @@
+// P6 Stage 3.12: installer builds (`--features windows-gui-editor`) are GUI
+// programs, without a console window; every other build stays a console
+// program. Never for the test harness, whose output is the console.
+#![cfg_attr(
+    all(windows, feature = "windows-gui-editor", not(test)),
+    windows_subsystem = "windows"
+)]
 mod app;
 mod artnet;
 mod audio;

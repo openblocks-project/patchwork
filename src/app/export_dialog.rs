@@ -96,6 +96,23 @@ pub(super) fn installer_size(bytes: u64) -> String {
 /// for (or replaces) a distributable export of the same app.
 pub(super) const INTERNAL_TEST_FOLDER_SUFFIX: &str = " (INTERNAL TEST - NOT FOR DISTRIBUTION)";
 
+/// P6 Stage 3.11: the ffmpeg an installed Patchwork carries in `dir`
+/// (`ffmpeg.exe` with its notices in `licenses\ffmpeg`), if complete.
+pub(super) fn bundled_ffmpeg(dir: &Path) -> Option<(PathBuf, Vec<PathBuf>)> {
+    let ffmpeg = dir.join("ffmpeg.exe");
+    if !ffmpeg.is_file() {
+        return None;
+    }
+    let mut licences: Vec<PathBuf> = std::fs::read_dir(dir.join("licenses").join("ffmpeg"))
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_file())
+        .collect();
+    licences.sort();
+    (!licences.is_empty()).then_some((ffmpeg, licences))
+}
+
 impl ExportForm {
     /// The form for the project saved at `source`, whose graph is `graph`.
     pub fn for_project(source: &Path, graph: &Graph) -> Self {
@@ -294,11 +311,24 @@ pub(super) struct ExportDialog {
 
 impl ExportDialog {
     pub fn open(source: &Path, graph: &Graph) -> Self {
-        let runtime = std::env::current_exe()
+        let exe = std::env::current_exe();
+        let runtime = exe
+            .as_ref()
             .map_err(|e| format!("Patchwork's own folder cannot be found: {e}"))
-            .and_then(|exe| export::runtime::discover(&exe));
+            .and_then(|exe| export::runtime::discover(exe));
+        let mut form = ExportForm::for_project(source, graph);
+        // P6 Stage 3.11: an installed Patchwork offers its own ffmpeg (the
+        // user can still choose another).
+        if form.needs_ffmpeg {
+            if let Some((ffmpeg, licences)) =
+                exe.ok().and_then(|e| e.parent().and_then(bundled_ffmpeg))
+            {
+                form.ffmpeg = Some(ffmpeg);
+                form.ffmpeg_licences = licences;
+            }
+        }
         Self {
-            form: ExportForm::for_project(source, graph),
+            form,
             runtime,
             makensis: export::installer::find_makensis(),
             job: None,
@@ -602,8 +632,9 @@ impl ExportDialog {
                 );
                 ui.label(
                     "• DirectML (Microsoft DirectML licence terms) and the Visual C++ runtime \
-                     (Visual Studio Distributable Code: requires a licensed Visual Studio) are \
-                     included unmodified, with their notices in licenses/.",
+                     (Visual Studio Distributable Code: requires a licensed Visual Studio; \
+                     taken from an installed Patchwork's own copy, its redistribution is not \
+                     established) are included unmodified, with their notices in licenses/.",
                 );
                 ui.label(
                     "• ffmpeg is included only when the project needs it, from the file you \
@@ -927,6 +958,28 @@ mod tests {
         assert!(request.kiosk, "the kiosk setting goes with it");
         assert_eq!(request.destination, tmp.0.join("Light Show"));
         assert_eq!(INSTALLER_CHECKBOX, "Create Windows installer (.exe)");
+    }
+
+    #[test]
+    fn an_installed_patchwork_offers_its_own_ffmpeg() {
+        let (tmp, _graph, _project) = setup("dlg_ffmpeg", 1);
+        let dir = tmp.0.join("Patchwork");
+        std::fs::create_dir_all(dir.join("licenses").join("ffmpeg")).unwrap();
+        // No ffmpeg: nothing offered.
+        assert_eq!(bundled_ffmpeg(&dir), None);
+        std::fs::write(dir.join("ffmpeg.exe"), b"MZ").unwrap();
+        // ffmpeg without its notices: nothing offered either.
+        assert_eq!(bundled_ffmpeg(&dir), None);
+        let licences = dir.join("licenses").join("ffmpeg");
+        std::fs::write(licences.join("README.txt"), "r").unwrap();
+        std::fs::write(licences.join("LICENSE"), "l").unwrap();
+        assert_eq!(
+            bundled_ffmpeg(&dir),
+            Some((
+                dir.join("ffmpeg.exe"),
+                vec![licences.join("LICENSE"), licences.join("README.txt")]
+            ))
+        );
     }
 
     #[test]

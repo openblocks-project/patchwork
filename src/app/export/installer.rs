@@ -185,11 +185,21 @@ pub struct InstalledFile {
     pub sha256: String,
 }
 
-/// What the installer installs, from a checked export.
+/// P6 Stage 3.11: what an installer installs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstallerKind {
+    /// An app exported from Patchwork (its Player and project).
+    App,
+    /// The Patchwork editor itself ([`super::editor_package`]).
+    Editor,
+}
+
+/// What the installer installs, from a checked export or editor package.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InstallerPlan {
+    pub kind: InstallerKind,
     pub app_name: String,
-    /// `<app>.exe`, the Player runtime.
+    /// `<app>.exe` (the Player runtime), or `patchwork.exe` (the editor).
     pub exe: String,
     /// The Installed apps key name (stable per app name; ASCII).
     pub app_id: String,
@@ -197,6 +207,7 @@ pub struct InstallerPlan {
     /// Labelled NOT FOR DISTRIBUTION.
     pub internal_test: bool,
     pub kiosk: bool,
+    /// The project's digest (apps; empty for the editor).
     pub project_sha256: String,
     /// Every file of the export, sorted.
     pub files: Vec<InstalledFile>,
@@ -242,6 +253,224 @@ pub fn app_id(app_name: &str) -> String {
     format!("PatchworkApp-{hex}")
 }
 
+/// P6 Stage 3.11: the editor's Installed apps key name (never an app's:
+/// those are `PatchworkApp-…`).
+#[cfg_attr(not(test), allow(dead_code))] // Release packaging (editor installer).
+pub const EDITOR_APP_ID: &str = "PatchworkEditor";
+
+/// What [`check_package`] found in a folder to install.
+struct PackageCheck {
+    lower: Vec<String>,
+    internal_test: bool,
+    planned: Vec<InstalledFile>,
+}
+
+impl PackageCheck {
+    fn has(&self, rel: &str) -> bool {
+        self.lower.iter().any(|f| f == &rel.to_ascii_lowercase())
+    }
+}
+
+/// The checks every folder an installer installs passes (`what`: "export"
+/// or "package"): no links, nothing secret, no name the installer uses,
+/// the runtime libraries and notices, labelled exactly as what it is, no
+/// personal path in any file; every file hashed.
+fn check_package(
+    dir: &Path,
+    what: &str,
+    forbidden_text: &[String],
+    errors: &mut Vec<String>,
+) -> PackageCheck {
+    let mut files = Vec::new();
+    match walk(dir) {
+        Ok(found) => files = found,
+        Err(e) => errors.push(e),
+    }
+    let lower: Vec<String> = files.iter().map(|f| f.to_ascii_lowercase()).collect();
+    for (file, low) in files.iter().zip(&lower) {
+        let name = low.rsplit('/').next().unwrap_or_default();
+        if super::FORBIDDEN_NAMES.contains(&name) {
+            errors.push(format!("The {what} contains {file}; refused."));
+        }
+        if low == &UNINSTALLER.to_ascii_lowercase() || low == &INSTALL_MARKER.to_ascii_lowercase() {
+            errors.push(format!(
+                "The {what} contains {file}, a name the installer uses itself."
+            ));
+        }
+    }
+    let has = |rel: &str| lower.iter().any(|f| f == &rel.to_ascii_lowercase());
+    for library in REQUIRED_LIBRARIES {
+        if !has(library) {
+            errors.push(format!(
+                "The {what} is missing {library}, which the Player needs."
+            ));
+        }
+    }
+    for notice in REQUIRED_NOTICES {
+        if !has(notice) {
+            errors.push(format!("The {what} is missing {notice}."));
+        }
+    }
+    // Labelled exactly as what it is: an internal test build carries both
+    // markers; a build with uncleared components must be one.
+    let markers = [
+        runtime::INTERNAL_TEST_MARKER.to_string(),
+        format!("licenses/{}", runtime::NOT_FOR_DISTRIBUTION_NOTICE),
+    ];
+    let marked = markers.iter().filter(|m| has(m)).count();
+    let internal_test = marked > 0;
+    if marked == 1 {
+        errors.push(format!(
+            "The {what} is missing one of its internal test labels."
+        ));
+    }
+    if !internal_test && !runtime::UNRESOLVED_COMPONENTS.is_empty() {
+        errors.push(format!(
+            "The {what} is labelled distributable, but Patchwork embeds components not cleared \
+             for redistribution: only an internal test build can have an installer."
+        ));
+    }
+    // Hash every file; refuse personal paths.
+    let needles = needles(forbidden_text);
+    let mut planned = Vec::new();
+    for file in &files {
+        match std::fs::read(dir.join(file)) {
+            Ok(bytes) => {
+                if needles.iter().any(|n| contains_ignore_case(&bytes, n)) {
+                    errors.push(format!(
+                        "{file} contains a personal path of this computer; refused (build the \
+                         Player with scripts/build-release-windows.ps1)."
+                    ));
+                }
+                planned.push(InstalledFile {
+                    path: file.clone(),
+                    size: bytes.len() as u64,
+                    sha256: hex(&Sha256::digest(&bytes)),
+                });
+            }
+            Err(e) => errors.push(format!("{file}: {e}")),
+        }
+    }
+    PackageCheck {
+        lower,
+        internal_test,
+        planned,
+    }
+}
+
+/// `exe` in `dir` is a release-flavoured Patchwork `flavor` program (and a
+/// GUI program when `gui`); its build information.
+#[cfg_attr(not(test), allow(dead_code))] // Release packaging (editor installer).
+fn check_patchwork_program(
+    dir: &Path,
+    exe: &str,
+    flavor: super::launch::Binary,
+    gui: bool,
+    errors: &mut Vec<String>,
+) -> Option<super::pe::BuildInfo> {
+    let bytes = match std::fs::read(dir.join(exe)) {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            errors.push(format!("The package has no {exe}."));
+            return None;
+        }
+    };
+    let info = super::pe::build_info(&bytes).ok();
+    let right_flavor = info.as_ref().is_some_and(|i| i.flavor == flavor.flavor());
+    let right_subsystem = !gui || super::pe::subsystem(&bytes) == Ok(super::pe::SUBSYSTEM_GUI);
+    if !right_flavor {
+        errors.push(format!(
+            "{exe} is not the Patchwork {} program.",
+            flavor.flavor()
+        ));
+        return None;
+    }
+    if !right_subsystem {
+        errors.push(format!(
+            "{exe} is a console program; the Patchwork {} must be a GUI program.",
+            flavor.flavor()
+        ));
+        return None;
+    }
+    info
+}
+
+/// P6 Stage 3.11: check an editor package ([`super::editor_package`]) at
+/// `request.export_dir` and plan its installer. Every problem is listed;
+/// nothing is written.
+#[cfg_attr(not(test), allow(dead_code))] // Release packaging (editor installer).
+pub fn plan_editor_installer(request: &InstallerRequest) -> Result<InstallerPlan, Vec<String>> {
+    let dir = &request.export_dir;
+    let mut errors = Vec::new();
+    let check = check_package(dir, "package", &request.forbidden_text, &mut errors);
+    // Beside the editor, a manifest would make it a Player.
+    if check.has(super::super::player::manifest::MANIFEST_FILE) {
+        errors.push(
+            "The package contains player.json: it would start as a Player, not the editor."
+                .to_string(),
+        );
+    }
+    let editor = check_patchwork_program(
+        dir,
+        super::editor_package::EDITOR_EXE,
+        super::launch::Binary::Editor,
+        true,
+        &mut errors,
+    );
+    let player = check_patchwork_program(
+        dir,
+        runtime::PLAYER_EXE,
+        super::launch::Binary::Player,
+        true,
+        &mut errors,
+    );
+    if let (Some(e), Some(p)) = (&editor, &player) {
+        if e.commit != p.commit || e.modified != p.modified {
+            errors.push("The editor and the Player were built from different source.".to_string());
+        }
+    }
+    for needed in [
+        "ffmpeg.exe",
+        super::editor_package::OPTIONAL_TOOLS_FILE,
+        "licenses/VCRuntime-NOTICE.txt",
+        "licenses/DirectML-NOTICE.txt",
+    ] {
+        if !check.has(needed) {
+            errors.push(format!("The package is missing {needed}."));
+        }
+    }
+    // ffmpeg is never installed without its licence notices.
+    if check.has("ffmpeg.exe")
+        && !check
+            .lower
+            .iter()
+            .any(|f| f.starts_with("licenses/ffmpeg/"))
+    {
+        errors.push("The package has ffmpeg.exe without its notices in licenses/ffmpeg.".into());
+    }
+    if runtime::find_bundled_vc_redist(dir).is_none() {
+        errors.push(
+            "The package has no bundled Visual C++ redistributable folder (redist\\…), which \
+             Export as App needs on computers without Visual Studio."
+                .to_string(),
+        );
+    }
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+    Ok(InstallerPlan {
+        kind: InstallerKind::Editor,
+        app_id: EDITOR_APP_ID.to_string(),
+        app_name: super::editor_package::EDITOR_NAME.to_string(),
+        exe: super::editor_package::EDITOR_EXE.to_string(),
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        internal_test: check.internal_test,
+        kiosk: false,
+        project_sha256: String::new(),
+        files: check.planned,
+    })
+}
+
 /// Check the export at `export_dir` and plan its installer. Every problem
 /// is listed; nothing is written.
 pub fn plan_installer(request: &InstallerRequest) -> Result<InstallerPlan, Vec<String>> {
@@ -271,26 +500,21 @@ pub fn plan_installer(request: &InstallerRequest) -> Result<InstallerPlan, Vec<S
     }
     let graph = super::super::io::load_project_graph(project_json).ok();
 
-    // Every file: no links, nothing secret, no name the installer uses.
-    let mut files = Vec::new();
-    match walk(dir) {
-        Ok(found) => files = found,
-        Err(e) => errors.push(e),
-    }
-    let lower: Vec<String> = files.iter().map(|f| f.to_ascii_lowercase()).collect();
-    for (file, low) in files.iter().zip(&lower) {
-        let name = low.rsplit('/').next().unwrap_or_default();
-        if super::FORBIDDEN_NAMES.contains(&name) {
-            errors.push(format!("The export contains {file}; refused."));
-        }
-        if low == &UNINSTALLER.to_ascii_lowercase() || low == &INSTALL_MARKER.to_ascii_lowercase() {
-            errors.push(format!(
-                "The export contains {file}, a name the installer uses itself."
-            ));
-        }
-    }
-    let has = |rel: &str| lower.iter().any(|f| f == &rel.to_ascii_lowercase());
+    let check = check_package(dir, "export", &request.forbidden_text, &mut errors);
+    let has = |rel: &str| check.has(rel);
 
+    // P6 Stage 3.12: an app named like the editor would share its shortcuts.
+    if manifest
+        .title
+        .trim()
+        .eq_ignore_ascii_case(super::editor_package::EDITOR_NAME)
+    {
+        errors.push(
+            "An app cannot be called Patchwork (the editor's own name); export it again \
+             under another name."
+                .to_string(),
+        );
+    }
     // The program is the Player runtime, named after the app.
     let exe = format!("{}.exe", manifest.title);
     if !has(&exe) {
@@ -305,74 +529,22 @@ pub fn plan_installer(request: &InstallerRequest) -> Result<InstallerPlan, Vec<S
             Err(e) => errors.push(format!("{exe}: {e}")),
         }
     }
-    for library in REQUIRED_LIBRARIES {
-        if !has(library) {
-            errors.push(format!(
-                "The export is missing {library}, which the Player needs."
-            ));
-        }
-    }
     if graph.as_ref().is_some_and(super::needs_ffmpeg) && !has("ffmpeg.exe") {
         errors.push("The project uses ffmpeg, and the export has no ffmpeg.exe.".to_string());
-    }
-    for notice in REQUIRED_NOTICES {
-        if !has(notice) {
-            errors.push(format!("The export is missing {notice}."));
-        }
-    }
-
-    // Labelled exactly as what it is: an internal test build carries both
-    // markers; a build with uncleared components must be one.
-    let markers = [
-        runtime::INTERNAL_TEST_MARKER.to_string(),
-        format!("licenses/{}", runtime::NOT_FOR_DISTRIBUTION_NOTICE),
-    ];
-    let marked = markers.iter().filter(|m| has(m)).count();
-    let internal_test = marked > 0;
-    if marked == 1 {
-        errors.push("The export is missing one of its internal test labels.".to_string());
-    }
-    if !internal_test && !runtime::UNRESOLVED_COMPONENTS.is_empty() {
-        errors.push(
-            "The export is labelled distributable, but Patchwork embeds components not cleared \
-             for redistribution: only an internal test build can have an installer."
-                .to_string(),
-        );
-    }
-
-    // Hash every file; refuse personal paths.
-    let needles = needles(&request.forbidden_text);
-    let mut planned = Vec::new();
-    for file in &files {
-        match std::fs::read(dir.join(file)) {
-            Ok(bytes) => {
-                if needles.iter().any(|n| contains_ignore_case(&bytes, n)) {
-                    errors.push(format!(
-                        "{file} contains a personal path of this computer; refused (build the \
-                         Player with scripts/build-release-windows.ps1)."
-                    ));
-                }
-                planned.push(InstalledFile {
-                    path: file.clone(),
-                    size: bytes.len() as u64,
-                    sha256: hex(&Sha256::digest(&bytes)),
-                });
-            }
-            Err(e) => errors.push(format!("{file}: {e}")),
-        }
     }
     if !errors.is_empty() {
         return Err(errors);
     }
     Ok(InstallerPlan {
+        kind: InstallerKind::App,
         app_id: app_id(&manifest.title),
         app_name: manifest.title.clone(),
         exe,
         version: manifest.patchwork_version.clone(),
-        internal_test,
+        internal_test: check.internal_test,
         kiosk: manifest.kiosk,
         project_sha256: manifest.project_sha256.clone(),
-        files: planned,
+        files: check.planned,
     })
 }
 
@@ -518,6 +690,35 @@ fn version_resource(version: &str) -> Option<String> {
     Some(parts.join("."))
 }
 
+/// The installer's welcome page.
+fn welcome_text(plan: &InstallerPlan) -> String {
+    let app = &plan.app_name;
+    let label = runtime::INTERNAL_TEST_LABEL;
+    let mut text = match plan.kind {
+        InstallerKind::App => format!("This installs {app} for the current Windows user."),
+        InstallerKind::Editor => {
+            "This installs the Patchwork editor for the current Windows user.".to_string()
+        }
+    };
+    if plan.internal_test {
+        text.push_str(&format!(
+            "\r\n\r\n{label}: it embeds components that are not cleared for \
+             redistribution. Use it only for internal development and testing."
+        ));
+    }
+    text.push_str("\r\n\r\nNo administrator rights are needed. ");
+    text.push_str(&match plan.kind {
+        InstallerKind::App => {
+            format!("The first time {app} runs, it asks for permission to run its project.")
+        }
+        InstallerKind::Editor => "Your projects, settings, library, packages and permission \
+             records (in your project folders and %USERPROFILE%\\.patchwork) are not changed by \
+             installing or uninstalling Patchwork, and nothing is approved for you."
+            .to_string(),
+    });
+    text
+}
+
 /// The NSIS script for `plan`. Source files are read from [`PAYLOAD_DIR`]
 /// beside the script; the installer is written to `setup.exe` beside it.
 pub fn nsis_script(plan: &InstallerPlan) -> Result<String, String> {
@@ -606,19 +807,7 @@ pub fn nsis_script(plan: &InstallerPlan) -> Result<String, String> {
     }
     line(String::new());
     // Pages.
-    let welcome = if plan.internal_test {
-        format!(
-            "This installs {app} for the current Windows user.\r\n\r\n{label}: it embeds \
-             components that are not cleared for redistribution. Use it only for internal \
-             development and testing.\r\n\r\nNo administrator rights are needed. The first \
-             time {app} runs, it asks for permission to run its project."
-        )
-    } else {
-        format!(
-            "This installs {app} for the current Windows user. No administrator rights are \
-             needed. The first time {app} runs, it asks for permission to run its project."
-        )
-    };
+    let welcome = welcome_text(plan);
     line(format!("!define MUI_WELCOMEPAGE_TEXT {}", q(&welcome)?));
     line("!insertmacro MUI_PAGE_WELCOME".into());
     let licence = if plan.internal_test {
@@ -916,7 +1105,20 @@ pub fn check_setup(path: &Path, plan: &InstallerPlan) -> Result<(u64, String), S
 
 /// Build the installer (or, without `makensis`, its source) for the export.
 pub fn build_installer(request: &InstallerRequest) -> Result<InstallerOutcome, Vec<String>> {
-    let plan = plan_installer(request)?;
+    build_from_plan(plan_installer(request)?, request)
+}
+
+/// P6 Stage 3.11: the installer of the editor package at
+/// `request.export_dir` ("Patchwork Setup.exe"), as [`build_installer`].
+#[cfg_attr(not(test), allow(dead_code))] // Release packaging (editor installer).
+pub fn build_editor_installer(request: &InstallerRequest) -> Result<InstallerOutcome, Vec<String>> {
+    build_from_plan(plan_editor_installer(request)?, request)
+}
+
+fn build_from_plan(
+    plan: InstallerPlan,
+    request: &InstallerRequest,
+) -> Result<InstallerOutcome, Vec<String>> {
     let one = |e: String| vec![e];
     let final_setup = request.output_dir.join(plan.setup_file_name());
     let final_source = request

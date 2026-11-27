@@ -27,6 +27,7 @@
 //! [`ExportJob`] runs an export on its own thread with progress and
 //! cancellation, one at a time (File → Export as App, `export_dialog`).
 
+pub mod editor_package;
 pub mod installer;
 pub mod pe;
 pub mod runtime;
@@ -794,6 +795,14 @@ pub fn check_app_name(name: &str) -> Result<(), String> {
     if is_reserved_name(name) {
         return bad("is reserved by Windows");
     }
+    // P6 Stage 3.12: the editor's own name (the app's installer, folder and
+    // shortcuts would be the editor's).
+    if name
+        .trim()
+        .eq_ignore_ascii_case(editor_package::EDITOR_NAME)
+    {
+        return bad("is the Patchwork editor's own name");
+    }
     Ok(())
 }
 
@@ -1437,9 +1446,52 @@ fn check_runtime(
             return check;
         }
     };
+    let found = native_dependencies(exe, imports, &request.runtime.dependency_dirs, env, errors);
+    check.files = found.files;
+    check.dependencies = found.dependencies;
+    check.notices = found.notices;
+    check.files.sort_by(|a, b| a.to.cmp(&b.to));
+    check.dependencies.sort_by_key(|d| d.to_ascii_lowercase());
+    check.files.insert(
+        0,
+        CopyItem {
+            from: exe.clone(),
+            to: format!("{}.exe", request.app_name),
+        },
+    );
+    check.dependencies.insert(
+        0,
+        format!("{}.exe (Patchwork Player runtime)", request.app_name),
+    );
+    check
+}
+
+/// P6 Stage 3.11: what [`native_dependencies`] found.
+#[derive(Default)]
+struct NativeDependencies {
+    files: Vec<CopyItem>,
+    dependencies: Vec<String>,
+    notices: BTreeMap<String, String>,
+}
+
+/// Every DLL `exe` (importing `imports`), or a DLL it needs, imports that
+/// Windows does not provide, found in `dependency_dirs` or beside `exe` and
+/// approved by the dependency rules ([`runtime`]); never from system
+/// folders. Shared by exports (the Player runtime) and the editor package.
+fn native_dependencies(
+    exe: &Path,
+    imports: Vec<String>,
+    dependency_dirs: &[PathBuf],
+    env: &ExportEnvironment,
+    errors: &mut Vec<String>,
+) -> NativeDependencies {
+    let mut out = NativeDependencies::default();
     let system_root = std::env::var_os("SystemRoot").and_then(|s| std::fs::canonicalize(s).ok());
-    let mut dirs: Vec<PathBuf> = exe.parent().map(Path::to_path_buf).into_iter().collect();
-    dirs.extend(request.runtime.dependency_dirs.iter().cloned());
+    // P6 Stage 3.11: the redistributable folders first, then the program's
+    // own folder (an installed editor keeps its own Visual C++ runtime beside
+    // it to start; the approved copies are those in the redistributable).
+    let mut dirs: Vec<PathBuf> = dependency_dirs.to_vec();
+    dirs.extend(exe.parent().map(Path::to_path_buf));
     for dir in &dirs {
         if let (Some(root), Ok(dir)) = (&system_root, std::fs::canonicalize(dir)) {
             if dir.starts_with(root) {
@@ -1479,8 +1531,7 @@ fn check_runtime(
                 match &approval {
                     runtime::Approval::Pinned(index) => {
                         let pinned = &env.dependencies.pinned[*index];
-                        check
-                            .notices
+                        out.notices
                             .insert(pinned.notice_file.clone(), pinned.notice.clone());
                     }
                     runtime::Approval::VcRuntime { redist } => {
@@ -1506,39 +1557,45 @@ fn check_runtime(
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_else(|| dll.clone());
-                check.files.push(CopyItem {
+                out.files.push(CopyItem {
                     from: found,
                     to: name,
                 });
-                check.dependencies.push(dll);
+                out.dependencies.push(dll);
             }
             Err(why) => errors.push(why),
         }
     }
     if let Some(redist) = vc_redist {
-        check.notices.insert(
+        // P6 Stage 3.12: an installed Patchwork's own copy is not a Visual
+        // Studio installation; its notice says so.
+        let bundled = exe
+            .parent()
+            .is_some_and(|own| redist.starts_with(own.join(runtime::BUNDLED_REDIST_DIR)));
+        let notice = if bundled {
+            runtime::VC_RUNTIME_BUNDLED_NOTICE
+        } else {
+            runtime::VC_RUNTIME_NOTICE
+        };
+        out.notices.insert(
             "VCRuntime-NOTICE.txt".to_string(),
             format!(
-                "{}\r\nSource folder: {}\r\n",
-                runtime::VC_RUNTIME_NOTICE,
-                redist.display()
+                "{notice}\r\nSource folder: {}\r\n",
+                redist_label(&redist, exe)
             ),
         );
     }
-    check.files.sort_by(|a, b| a.to.cmp(&b.to));
-    check.dependencies.sort_by_key(|d| d.to_ascii_lowercase());
-    check.files.insert(
-        0,
-        CopyItem {
-            from: exe.clone(),
-            to: format!("{}.exe", request.app_name),
-        },
-    );
-    check.dependencies.insert(
-        0,
-        format!("{}.exe (Patchwork Player runtime)", request.app_name),
-    );
-    check
+    out
+}
+
+/// The redistributable folder as the notice names it: relative to the
+/// program's own folder when it is inside it (an installed Patchwork's
+/// bundled copy: its path would name the user), else as it is.
+fn redist_label(redist: &Path, exe: &Path) -> String {
+    match exe.parent().and_then(|own| redist.strip_prefix(own).ok()) {
+        Some(inside) => format!("<Patchwork folder>\\{}", inside.display()),
+        None => redist.display().to_string(),
+    }
 }
 
 /// `name` in the first of `dirs` that has it (case-insensitively), as an

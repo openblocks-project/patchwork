@@ -408,6 +408,10 @@ fn a_minimal_project_exports_to_a_launchable_folder() {
     assert!(source.contains("exactly this commit"), "{source}");
     let vc = std::fs::read_to_string(dest.join("licenses").join("VCRuntime-NOTICE.txt")).unwrap();
     assert!(vc.contains(&fx.redist.display().to_string()), "{vc}");
+    assert!(
+        vc.contains("Included unmodified from the Visual Studio installation"),
+        "{vc}"
+    );
     // The notice points at its own "Source folder" line, which is where
     // the folder is recorded (THIRD-PARTY-NOTICES.txt does not name it).
     assert!(vc.contains("named below (\"Source folder\")"), "{vc}");
@@ -1459,6 +1463,8 @@ fn application_names_must_be_plain_file_names() {
         "com1",
         "LPT9",
         &"x".repeat(65),
+        "Patchwork",
+        "patchwork",
     ] {
         assert!(check_app_name(bad).is_err(), "{bad:?}");
     }
@@ -2752,4 +2758,487 @@ fn manual_build_installer() {
     );
     let outcome = build_installer(&request).unwrap_or_else(|e| panic!("{e:#?}"));
     eprintln!("OUTCOME: {outcome:#?}");
+}
+
+// ── P6 Stage 3.11: the Patchwork editor installer ───────────────────────────
+
+mod editor_package_tests {
+    use super::super::editor_package::*;
+    use super::super::installer::*;
+    use super::*;
+
+    /// The fixture's runtime folder with a release editor beside the Player
+    /// (same source), and an ffmpeg with its notice.
+    fn editor_fixture(fx: &Fx) -> (PathBuf, FfmpegSource) {
+        let editor = fx.runtime.join("patchwork.exe");
+        std::fs::write(
+            &editor,
+            fake_exe_as(
+                Some(BuildProfile::Release),
+                RUNTIME_IMPORTS,
+                super::super::pe::SUBSYSTEM_GUI,
+                Some(super::super::pe::build_info_bytes(
+                    "editor",
+                    TEST_COMMIT,
+                    "0",
+                )),
+            ),
+        )
+        .unwrap();
+        let tools = fx.out.join("ffmpeg build");
+        std::fs::create_dir_all(&tools).unwrap();
+        std::fs::write(
+            tools.join("ffmpeg.exe"),
+            fake_exe(Some(BuildProfile::Release), &[]),
+        )
+        .unwrap();
+        std::fs::write(tools.join("LICENSE.txt"), "ffmpeg licence").unwrap();
+        (
+            editor,
+            FfmpegSource {
+                executable: tools.join("ffmpeg.exe"),
+                licence_files: vec![tools.join("LICENSE.txt")],
+            },
+        )
+    }
+
+    /// Embedded components are not cleared (as today): internal test.
+    fn env(fx: &Fx) -> ExportEnvironment {
+        ExportEnvironment {
+            unresolved: vec![("the models".to_string(), "rights unresolved".to_string())],
+            ..fx.env()
+        }
+    }
+
+    fn package_request(fx: &Fx, editor: &Path, ffmpeg: &FfmpegSource) -> EditorPackageRequest {
+        EditorPackageRequest {
+            editor: editor.to_path_buf(),
+            ffmpeg: ffmpeg.clone(),
+            destination: fx.out.join("Patchwork package"),
+            runtime: Some(RuntimeSource {
+                executable: fx.runtime.join("patchwork-player.exe"),
+                dependency_dirs: vec![fx.redist.clone()],
+            }),
+        }
+    }
+
+    fn installer_request(dir: &Path, out: &Path) -> InstallerRequest {
+        InstallerRequest {
+            export_dir: dir.to_path_buf(),
+            output_dir: out.to_path_buf(),
+            overwrite: false,
+            makensis: None,
+            user_data: None,
+            forbidden_text: vec![r"C:\Users\Someone".to_string()],
+        }
+    }
+
+    const MIRROR: &str = "redist/VC/Redist/MSVC/14.44.35112/x64/Microsoft.VC143.CRT";
+
+    #[test]
+    fn the_editor_package_holds_the_editor_its_runtime_and_notices() {
+        let fx = Fx::new("e_package");
+        let (editor, ffmpeg) = editor_fixture(&fx);
+        let home_before = snapshot(&fx.home);
+        let req = package_request(&fx, &editor, &ffmpeg);
+        let files = package_editor(&req, &env(&fx)).unwrap();
+        let dir = &req.destination;
+        for needed in [
+            "patchwork.exe",
+            "patchwork-player.exe",
+            "DirectML.dll",
+            "VCRUNTIME140.dll",
+            "MSVCP140.dll",
+            &format!("{MIRROR}/VCRUNTIME140.dll"),
+            &format!("{MIRROR}/MSVCP140.dll"),
+            "ffmpeg.exe",
+            "licenses/ffmpeg/LICENSE.txt",
+            "licenses/Patchwork-LICENSE.txt",
+            "licenses/SOURCE.txt",
+            "licenses/THIRD-PARTY-NOTICES.txt",
+            "licenses/DirectML-NOTICE.txt",
+            "licenses/VCRuntime-NOTICE.txt",
+            "licenses/NOT-FOR-DISTRIBUTION.txt",
+            runtime::INTERNAL_TEST_MARKER,
+            OPTIONAL_TOOLS_FILE,
+        ] {
+            assert!(files.iter().any(|f| f == needed), "{needed}: {files:?}");
+        }
+        // Never a manifest (it would start the Player), a project or user
+        // data; the programs byte for byte.
+        for never in [
+            "player.json",
+            "project/",
+            "keys.json",
+            "content.json",
+            "settings.json",
+        ] {
+            assert!(!files.iter().any(|f| f.contains(never)), "{never}");
+        }
+        assert_eq!(
+            std::fs::read(dir.join("patchwork.exe")).unwrap(),
+            std::fs::read(&editor).unwrap()
+        );
+        assert_eq!(
+            std::fs::read(dir.join("patchwork-player.exe")).unwrap(),
+            std::fs::read(fx.runtime.join("patchwork-player.exe")).unwrap()
+        );
+        let source = std::fs::read_to_string(dir.join("licenses").join("SOURCE.txt")).unwrap();
+        assert!(source.contains(TEST_COMMIT), "{source}");
+        assert!(source.contains("exactly this commit"), "{source}");
+        assert!(source.contains("patchwork-player.exe"), "{source}");
+        let tools = std::fs::read_to_string(dir.join(OPTIONAL_TOOLS_FILE)).unwrap();
+        for tool in ["ffprobe", "yt-dlp", "esptool", "espeak-ng", "cargo"] {
+            assert!(tools.contains(tool), "{tool}");
+        }
+        let notices =
+            std::fs::read_to_string(dir.join("licenses").join("THIRD-PARTY-NOTICES.txt")).unwrap();
+        assert!(notices.contains(runtime::INTERNAL_TEST_LABEL));
+        assert!(notices.contains("MediaPipe"));
+        assert_eq!(snapshot(&fx.home), home_before, "no user data touched");
+
+        // Its installer: the editor, per user, labelled; nothing approved.
+        let out = fx.out.join("Installers");
+        let plan = plan_editor_installer(&installer_request(dir, &out)).unwrap();
+        assert_eq!(plan.kind, InstallerKind::Editor);
+        assert_eq!(plan.app_id, EDITOR_APP_ID);
+        assert_eq!(plan.exe, "patchwork.exe");
+        assert!(plan.internal_test);
+        assert_eq!(plan.setup_file_name(), "Patchwork Setup.exe");
+        let script = nsis_script(&plan).unwrap();
+        for needed in [
+            "Name \"Patchwork (INTERNAL TEST - NOT FOR DISTRIBUTION)\"",
+            "InstallDir \"$LOCALAPPDATA\\Programs\\Patchwork\"",
+            "CreateShortcut \"$SMPROGRAMS\\Patchwork.lnk\" \"$INSTDIR\\patchwork.exe\"",
+            "CreateShortcut \"$DESKTOP\\Patchwork.lnk\" \"$INSTDIR\\patchwork.exe\"",
+            "!define MUI_FINISHPAGE_RUN \"$INSTDIR\\patchwork.exe\"",
+            "Uninstall\\PatchworkEditor\"",
+            "the Patchwork editor for the current Windows user",
+            "%USERPROFILE%\\.patchwork) are not changed",
+            "nothing is approved for you",
+            "RequestExecutionLevel user",
+        ] {
+            assert!(script.contains(needed), "{needed}");
+        }
+        assert!(!script.contains("RMDir /r"));
+        assert!(!script.contains("HKLM"));
+        let program = {
+            let mut bytes = fake_exe(Some(BuildProfile::Release), &[]);
+            bytes.resize(256 * 1024, 0);
+            bytes
+        };
+        let makensis = {
+            let bat = fx.out.join("makensis.bat");
+            let built = fx.out.join("built.exe");
+            std::fs::write(&built, &program).unwrap();
+            std::fs::write(
+                &bat,
+                format!("@copy /y \"{}\" {STAGED_SETUP} >nul\r\n", built.display()),
+            )
+            .unwrap();
+            bat
+        };
+        let mut req = installer_request(dir, &out);
+        req.makensis = Some(makensis);
+        match build_editor_installer(&req).unwrap() {
+            InstallerOutcome::Built { installer, .. } => {
+                assert_eq!(installer, out.join("Patchwork Setup.exe"));
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_installed_patchwork_exports_with_its_bundled_runtime() {
+        let fx = Fx::new("e_exports");
+        let (editor, ffmpeg) = editor_fixture(&fx);
+        let req = package_request(&fx, &editor, &ffmpeg);
+        package_editor(&req, &env(&fx)).unwrap();
+        let installed = &req.destination;
+        // Export as App finds the Player and the bundled Visual C++ folder
+        // beside the installed editor (no Visual Studio needed).
+        let found = runtime::discover(&installed.join("patchwork.exe")).unwrap();
+        assert_eq!(found.executable, installed.join("patchwork-player.exe"));
+        assert_eq!(
+            found.dependency_dirs,
+            vec![installed.join(MIRROR.replace('/', "\\"))]
+        );
+        // An export from it: the Visual C++ files come from the bundled
+        // folder (not the copies beside the editor, which no rule approves),
+        // and the notice does not name the installation path.
+        fx.save(&base_graph().0);
+        let request = ExportRequest {
+            runtime: found,
+            ..fx.request("From Installed")
+        };
+        let report = export_portable(&request, &fx.env());
+        assert!(report.succeeded(), "{report:#?}");
+        let notice = std::fs::read_to_string(
+            fx.out
+                .join("From Installed")
+                .join("licenses")
+                .join("VCRuntime-NOTICE.txt"),
+        )
+        .unwrap();
+        assert!(
+            notice.contains(
+                "Source folder: <Patchwork folder>\\redist\\VC\\Redist\\MSVC\\14.44.35112\\x64\\Microsoft.VC143.CRT"
+            ),
+            "{notice}"
+        );
+        assert!(
+            !notice.contains(&installed.display().to_string()),
+            "{notice}"
+        );
+        // P6 Stage 3.12: and says it is not a Visual Studio installation.
+        assert!(
+            notice.contains("from the copy bundled with the installed Patchwork"),
+            "{notice}"
+        );
+        assert!(
+            notice.contains("Whether they may be redistributed"),
+            "{notice}"
+        );
+        assert!(
+            !notice.contains("from the Visual Studio installation"),
+            "{notice}"
+        );
+    }
+
+    #[test]
+    fn the_editor_internal_test_notice_is_about_the_editor() {
+        let unresolved = vec![("Models".to_string(), "not cleared".to_string())];
+        let text = super::super::editor_package::editor_not_for_distribution_text(&unresolved);
+        assert!(text.contains("Patchwork is an internal test build of the Patchwork editor"));
+        assert!(text.contains("Patchwork packaged again as a distributable build"));
+        assert!(!text.contains("Patchwork project"), "{text}");
+        assert!(!text.contains("app exported again"), "{text}");
+        assert!(text.contains("NOT cleared for distribution"), "{text}");
+    }
+
+    #[test]
+    fn an_editor_package_is_refused_when_it_is_not_exactly_the_editor() {
+        let fx = Fx::new("e_refused");
+        let (editor, ffmpeg) = editor_fixture(&fx);
+        let env = env(&fx);
+
+        // Built from different source than the Player.
+        let other = fx.out.join("other").join("patchwork.exe");
+        std::fs::create_dir_all(other.parent().unwrap()).unwrap();
+        std::fs::write(
+            &other,
+            fake_exe_as(
+                Some(BuildProfile::Release),
+                RUNTIME_IMPORTS,
+                super::super::pe::SUBSYSTEM_GUI,
+                Some(super::super::pe::build_info_bytes(
+                    "editor",
+                    "0123456789012345678901234567890123456789",
+                    "0",
+                )),
+            ),
+        )
+        .unwrap();
+        let errors = package_editor(&package_request(&fx, &other, &ffmpeg), &env)
+            .unwrap_err()
+            .join("\n");
+        assert!(errors.contains("different source"), "{errors}");
+        // The Player given as the editor.
+        let player = fx.runtime.join("patchwork-player.exe");
+        let errors = package_editor(&package_request(&fx, &player, &ffmpeg), &env)
+            .unwrap_err()
+            .join("\n");
+        assert!(errors.contains("not the editor build"), "{errors}");
+        // P6 Stage 3.12: a console editor (a plain `cargo build`) would open
+        // a console window beside the installed editor.
+        let console = fx.out.join("console").join("patchwork.exe");
+        std::fs::create_dir_all(console.parent().unwrap()).unwrap();
+        let console_editor = fake_exe_as(
+            Some(BuildProfile::Release),
+            RUNTIME_IMPORTS,
+            super::super::pe::SUBSYSTEM_CONSOLE,
+            Some(super::super::pe::build_info_bytes(
+                "editor",
+                TEST_COMMIT,
+                "0",
+            )),
+        );
+        std::fs::write(&console, &console_editor).unwrap();
+        let errors = package_editor(&package_request(&fx, &console, &ffmpeg), &env)
+            .unwrap_err()
+            .join("\n");
+        assert!(errors.contains("is a console program"), "{errors}");
+        assert!(errors.contains("windows-gui-editor"), "{errors}");
+        // ffmpeg without its notices.
+        let bare = FfmpegSource {
+            licence_files: Vec::new(),
+            ..ffmpeg.clone()
+        };
+        let errors = package_editor(&package_request(&fx, &editor, &bare), &env)
+            .unwrap_err()
+            .join("\n");
+        assert!(errors.contains("licence notices"), "{errors}");
+        assert!(!fx.out.join("Patchwork package").exists());
+
+        // A good package, then changes the installer refuses.
+        let req = package_request(&fx, &editor, &ffmpeg);
+        package_editor(&req, &env).unwrap();
+        assert!(
+            package_editor(&req, &env).unwrap_err()[0].contains("already exists"),
+            "never written over"
+        );
+        let dir = &req.destination;
+        let out = fx.out.join("Installers");
+        let gui_editor = std::fs::read(dir.join("patchwork.exe")).unwrap();
+        std::fs::write(dir.join("patchwork.exe"), &console_editor).unwrap();
+        let errors = plan_editor_installer(&installer_request(dir, &out))
+            .unwrap_err()
+            .join("\n");
+        assert!(
+            errors.contains("patchwork.exe is a console program"),
+            "{errors}"
+        );
+        std::fs::write(dir.join("patchwork.exe"), gui_editor).unwrap();
+        // P6 Stage 3.12: ffmpeg never without its notices; the dependency
+        // notices are required.
+        let ffmpeg_notices = dir.join("licenses").join("ffmpeg");
+        let kept_notices = fx.out.join("kept-ffmpeg-notices");
+        std::fs::rename(&ffmpeg_notices, &kept_notices).unwrap();
+        let vc_notice = dir.join("licenses").join("VCRuntime-NOTICE.txt");
+        let kept_vc = std::fs::read(&vc_notice).unwrap();
+        std::fs::remove_file(&vc_notice).unwrap();
+        let errors = plan_editor_installer(&installer_request(dir, &out))
+            .unwrap_err()
+            .join("\n");
+        assert!(errors.contains("without its notices"), "{errors}");
+        assert!(
+            errors.contains("missing licenses/VCRuntime-NOTICE.txt"),
+            "{errors}"
+        );
+        std::fs::rename(&kept_notices, &ffmpeg_notices).unwrap();
+        std::fs::write(&vc_notice, kept_vc).unwrap();
+        plan_editor_installer(&installer_request(dir, &out)).unwrap();
+        std::fs::write(dir.join("player.json"), "{}").unwrap();
+        let errors = plan_editor_installer(&installer_request(dir, &out))
+            .unwrap_err()
+            .join("\n");
+        assert!(errors.contains("start as a Player"), "{errors}");
+        std::fs::remove_file(dir.join("player.json")).unwrap();
+        std::fs::remove_dir_all(dir.join("redist")).unwrap();
+        let errors = plan_editor_installer(&installer_request(dir, &out))
+            .unwrap_err()
+            .join("\n");
+        assert!(errors.contains("Visual C++ redistributable"), "{errors}");
+        std::fs::remove_file(dir.join(runtime::INTERNAL_TEST_MARKER)).unwrap();
+        std::fs::remove_file(dir.join("licenses").join("NOT-FOR-DISTRIBUTION.txt")).unwrap();
+        let errors = plan_editor_installer(&installer_request(dir, &out))
+            .unwrap_err()
+            .join("\n");
+        if !runtime::UNRESOLVED_COMPONENTS.is_empty() {
+            assert!(errors.contains("only an internal test build"), "{errors}");
+        }
+    }
+}
+
+/// Manual (P6 Stage 3.11): the Patchwork editor installer from the release
+/// build. `cargo test --release -- --ignored manual_build_editor_installer
+/// --nocapture` with PATCHWORK_EDITOR_EXE (target\release\patchwork.exe,
+/// built with scripts/build-release-windows.ps1), PATCHWORK_EXPORT_FFMPEG,
+/// PATCHWORK_EXPORT_FFMPEG_LICENCES (';'-separated) and
+/// PATCHWORK_INSTALLER_OUT.
+#[test]
+#[ignore = "manual: editor installer from the release build"]
+fn manual_build_editor_installer() {
+    use super::editor_package::{EditorPackageRequest, package_editor};
+    use super::installer::{InstallerRequest, build_editor_installer, plan_editor_installer};
+    let var = |name: &str| std::env::var_os(name).map(PathBuf::from);
+    let (Some(editor), Some(ffmpeg), Some(licences), Some(out)) = (
+        var("PATCHWORK_EDITOR_EXE"),
+        var("PATCHWORK_EXPORT_FFMPEG"),
+        std::env::var("PATCHWORK_EXPORT_FFMPEG_LICENCES").ok(),
+        var("PATCHWORK_INSTALLER_OUT"),
+    ) else {
+        eprintln!(
+            "set PATCHWORK_EDITOR_EXE, PATCHWORK_EXPORT_FFMPEG(_LICENCES), PATCHWORK_INSTALLER_OUT"
+        );
+        return;
+    };
+    let package = out.join("Patchwork package (INTERNAL TEST - NOT FOR DISTRIBUTION)");
+    // An existing package is used as it is (PATCHWORK_EDITOR_PACKAGE=reuse),
+    // e.g. to write the installer source again; it is still checked.
+    if std::env::var("PATCHWORK_EDITOR_PACKAGE").as_deref() != Ok("reuse") {
+        let files = package_editor(
+            &EditorPackageRequest {
+                editor,
+                ffmpeg: FfmpegSource {
+                    executable: ffmpeg,
+                    licence_files: licences.split(';').map(PathBuf::from).collect(),
+                },
+                destination: package.clone(),
+                runtime: None,
+            },
+            &ExportEnvironment::this_computer(),
+        )
+        .unwrap_or_else(|e| panic!("{e:#?}"));
+        eprintln!("PACKAGE: {} files in {}", files.len(), package.display());
+        for file in &files {
+            eprintln!("  {file}");
+        }
+    }
+    let request = InstallerRequest::for_this_computer(package, out);
+    eprintln!("makensis: {:?}", request.makensis);
+    let plan = plan_editor_installer(&request).unwrap_or_else(|e| panic!("{e:#?}"));
+    eprintln!(
+        "plan: {} files, {} bytes, internal test {}",
+        plan.files.len(),
+        plan.total_size(),
+        plan.internal_test
+    );
+    let outcome = build_editor_installer(&request).unwrap_or_else(|e| panic!("{e:#?}"));
+    eprintln!("OUTCOME: {outcome:#?}");
+}
+
+/// Manual (P6 Stage 3.11): what File > Export as App does with "Internal test
+/// build", "Run as fullscreen kiosk" and "Create Windows installer (.exe)"
+/// ticked: the same background job, with the runtime, Visual C++ files and
+/// ffmpeg the dialog takes from the editor at PATCHWORK_EXPORT_EDITOR (e.g.
+/// an installed Patchwork). PATCHWORK_EXPORT_PROJECT (a saved project
+/// folder) and PATCHWORK_EXPORT_OUT (the location).
+#[test]
+#[ignore = "manual: export and installer as the dialog makes them"]
+fn manual_export_app_with_installer() {
+    let var = |name: &str| std::env::var_os(name).map(PathBuf::from);
+    let (Some(editor), Some(project), Some(out)) = (
+        var("PATCHWORK_EXPORT_EDITOR"),
+        var("PATCHWORK_EXPORT_PROJECT"),
+        var("PATCHWORK_EXPORT_OUT"),
+    ) else {
+        eprintln!("set PATCHWORK_EXPORT_EDITOR, PATCHWORK_EXPORT_PROJECT, PATCHWORK_EXPORT_OUT");
+        return;
+    };
+    let runtime = super::runtime::discover(&editor).expect("runtime");
+    eprintln!("runtime: {runtime:#?}");
+    let (ffmpeg, licences) = crate::app::export_dialog::bundled_ffmpeg(editor.parent().unwrap())
+        .expect("bundled ffmpeg");
+    let name = project.file_name().unwrap().to_string_lossy().into_owned();
+    let request = ExportRequest {
+        source_project: project.clone(),
+        destination: out.join(format!("{name} (INTERNAL TEST - NOT FOR DISTRIBUTION)")),
+        app_name: name,
+        output: None,
+        runtime,
+        ffmpeg: Some(FfmpegSource {
+            executable: ffmpeg,
+            licence_files: licences,
+        }),
+        overwrite: false,
+        purpose: super::ExportPurpose::InternalTest,
+        kiosk: true,
+        create_installer: true,
+    };
+    let report = ExportJob::start(request, ExportEnvironment::this_computer())
+        .expect("job")
+        .wait();
+    eprintln!("REPORT: {report:#?}");
+    assert!(report.succeeded());
 }

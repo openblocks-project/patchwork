@@ -18,7 +18,9 @@
 # C/C++ dependencies get the matching MSVC /d1trimfile prefixes (below).
 # Crash and error messages keep the crate, version, file and line. Nothing
 # machine-specific is committed: the real paths are worked out here, at
-# build time. Program behaviour is unchanged.
+# build time. Program behaviour is unchanged, except that the editor is
+# built as a GUI program (feature windows-gui-editor, P6 Stage 3.12): it
+# opens no console window, and started from a terminal it prints there.
 #
 # The flags go in CARGO_ENCODED_RUSTFLAGS (so paths containing spaces work)
 # after any RUSTFLAGS you already set. Changing flags makes cargo rebuild
@@ -65,7 +67,10 @@ $env:CXXFLAGS = (@($env:CXXFLAGS, $cTrim) | Where-Object { $_ }) -join ' '
 $env:CARGO_ENCODED_RUSTFLAGS = $flags -join [char]0x1f
 try {
   Push-Location $repo
-  & cargo build --release --locked --bin patchwork --bin patchwork-player @args
+  # windows-gui-editor: the editor is a GUI program too (no console window;
+  # started from a terminal it still prints there). Plain `cargo build`
+  # keeps the console editor.
+  & cargo build --release --locked --features windows-gui-editor --bin patchwork --bin patchwork-player @args
   if ($LASTEXITCODE -ne 0) { throw "cargo build failed (exit $LASTEXITCODE)" }
 } finally {
   Pop-Location
@@ -74,8 +79,18 @@ try {
   $env:CXXFLAGS = $savedCxxFlags
 }
 
-# Check: no account name or profile path left in either executable.
+# Check: both are GUI programs (PE optional header Subsystem 2), so neither
+# opens a console window.
 $targetDir = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $repo 'target' }
+foreach ($exe in 'patchwork.exe', 'patchwork-player.exe') {
+  $bytes = [IO.File]::ReadAllBytes((Join-Path $targetDir "release\$exe"))
+  $pe = [BitConverter]::ToInt32($bytes, 0x3C)
+  $subsystem = [BitConverter]::ToUInt16($bytes, $pe + 24 + 68)
+  if ($subsystem -ne 2) { throw "$exe is not a GUI program (subsystem $subsystem)" }
+  Write-Host "OK: $exe is a GUI program (no console window)."
+}
+
+# Check: no account name or profile path left in either executable.
 $needles = @($env:USERPROFILE, $env:USERNAME) | Where-Object { $_ } | Select-Object -Unique
 $latin1 = [Text.Encoding]::GetEncoding(28591)
 $failed = $false

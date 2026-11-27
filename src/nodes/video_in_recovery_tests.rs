@@ -222,6 +222,9 @@ fn a_capture_that_stops_sending_frames_is_restarted_without_a_second_one() {
 fn a_first_capture_that_never_sends_a_frame_is_restarted() {
     let _rig = Rig::new();
     let mut node = camera();
+    // Its own device: the claim it checks below is process-wide, and the
+    // other tests (running in parallel) claim device 907.
+    node.device_id = "908".into();
     let t0 = Instant::now();
     will_open(1);
     frame(&mut node, true, t0);

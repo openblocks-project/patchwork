@@ -228,6 +228,24 @@ Distributable Code list:
 https://learn.microsoft.com/visualstudio/releases/2022/redistribution
 ";
 
+/// P6 Stage 3.12: the notice when the Visual C++ files come from the copy an
+/// installed Patchwork bundles (`redist\...`), not from Visual Studio.
+pub const VC_RUNTIME_BUNDLED_NOTICE: &str = "\
+Microsoft Visual C++ runtime
+Copyright (c) Microsoft Corporation. All rights reserved.
+
+Included unmodified from the copy bundled with the installed Patchwork
+editor (\"Source folder\", below). Patchwork's packager took that copy from a
+Visual Studio VC\\Redist\\MSVC folder. These files are \"Distributable Code\"
+under the Microsoft Software License Terms for Visual Studio, which permit
+holders of a validly licensed copy of Visual Studio to distribute them with
+their programs, subject to those terms. Whether they may be redistributed
+from this bundled copy by someone without such a licence is NOT
+established: until it is, do not distribute an app exported this way. The
+Distributable Code list:
+https://learn.microsoft.com/visualstudio/releases/2022/redistribution
+";
+
 /// A DLL accepted only as one exact file.
 #[derive(Debug, Clone)]
 pub struct PinnedDll {
@@ -420,8 +438,46 @@ pub fn find_vc_redist(program_files: &[PathBuf]) -> Option<PathBuf> {
     best.map(|(_, dir)| dir)
 }
 
+/// P6 Stage 3.11: the folder an installed Patchwork bundles its Visual C++
+/// redistributable files in (Visual Studio's own layout, so the same rules
+/// approve them: the folder shape and Microsoft's signature on each file).
+pub const BUNDLED_REDIST_DIR: &str = "redist";
+
+/// The newest redistributable folder bundled beside the editor in `dir`
+/// (`redist\VC\Redist\MSVC\<version>\x64\Microsoft.VC14x.CRT`), if any.
+pub fn find_bundled_vc_redist(dir: &Path) -> Option<PathBuf> {
+    let msvc = dir
+        .join(BUNDLED_REDIST_DIR)
+        .join("VC")
+        .join("Redist")
+        .join("MSVC");
+    let mut best: Option<(Vec<u64>, PathBuf)> = None;
+    for version in std::fs::read_dir(&msvc).ok()?.flatten() {
+        let Some(numbers) = version.file_name().to_str().and_then(|n| {
+            n.split('.')
+                .map(|p| p.parse::<u64>().ok())
+                .collect::<Option<Vec<u64>>>()
+        }) else {
+            continue;
+        };
+        let Ok(crts) = std::fs::read_dir(version.path().join("x64")) else {
+            continue;
+        };
+        for crt in crts.flatten().map(|e| e.path()) {
+            if is_vc_redist_dir(&crt)
+                && crt.join("vcruntime140.dll").is_file()
+                && best.as_ref().is_none_or(|(b, _)| numbers > *b)
+            {
+                best = Some((numbers.clone(), crt));
+            }
+        }
+    }
+    best.map(|(_, dir)| dir)
+}
+
 /// The runtime for exports made by the editor at `editor_exe`: the Player
-/// build beside it, and this computer's Visual Studio redistributables.
+/// build beside it, and the Visual C++ redistributable files bundled with
+/// an installed Patchwork, else this computer's Visual Studio ones.
 pub fn discover(editor_exe: &Path) -> Result<super::RuntimeSource, String> {
     let dir = editor_exe
         .parent()
@@ -438,11 +494,14 @@ pub fn discover(editor_exe: &Path) -> Result<super::RuntimeSource, String> {
         .iter()
         .filter_map(|var| std::env::var_os(var).map(PathBuf::from))
         .collect();
-    let redist = find_vc_redist(&program_files).ok_or(
-        "No Visual Studio redistributable folder (VC\\Redist\\MSVC\\…\\x64\\Microsoft.VC14x.CRT) \
-         was found. Install Visual Studio 2022 (or its Build Tools) with the C++ workload; the \
-         Visual C++ runtime is only taken from there.",
-    )?;
+    let redist = find_bundled_vc_redist(dir)
+        .or_else(|| find_vc_redist(&program_files))
+        .ok_or(
+            "No Visual Studio redistributable folder (VC\\Redist\\MSVC\\…\\x64\\Microsoft.VC14x.CRT) \
+             was found. Install Visual Studio 2022 (or its Build Tools) with the C++ workload, \
+             or use an installed Patchwork (which bundles them); the Visual C++ runtime is only \
+             taken from there.",
+        )?;
     Ok(super::RuntimeSource {
         executable: player,
         dependency_dirs: vec![redist],
